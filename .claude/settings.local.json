@@ -1,0 +1,36 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(*)",
+      "Write(*)",
+      "Edit(*)",
+      "Bash(*)",
+      "WebFetch(domain:*)",
+      "Skill(*)",
+      "WebFetch(domain:api.sofascore.com)",
+      "WebSearch",
+      "WebFetch(domain:en.wikipedia.org)",
+      "WebFetch(domain:www.api-football.com)",
+      "WebFetch(domain:www.fifa.com)",
+      "WebFetch(domain:www.aljazeera.com)",
+      "WebFetch(domain:basketball.statshub.com)",
+      "WebFetch(domain:sports.bzzoiro.com)",
+      "WebFetch(domain:croissanceconsulting.com)",
+      "mcp__ide__getDiagnostics",
+      "WebFetch(domain:www.flashscore.com)",
+      "WebFetch(domain:cupofnations2025.com)",
+      "WebFetch(domain:www.elespanol.com)",
+      "WebFetch(domain:www.euroleaguebasketball.net)",
+      "WebFetch(domain:www.fotmob.com)",
+      "WebFetch(domain:www.statshub.com)",
+      "WebFetch(domain:understat.com)",
+      "WebFetch(domain:dashboard.api-football.com)",
+      "WebFetch(domain:rapidapi.com)",
+      "WebFetch(domain:www.basketball-reference.com)",
+      "WebFetch(domain:www.landofbasketball.com)",
+      "WebFetch(domain:www.espn.com)",
+      "Bash(mkdir -p ~/Desktop/\"Claude projets\"/\"Projets betting \"/public)",
+      "Bash(cp \"/Users/sacha/.claude/image-cache/16c0615b-7f0b-43a1-b6ad-1536590eef0a/27.png\" ~/Desktop/\"Claude projets\"/\"Projets betting \"/public/hud-bg.png)"
+    ]
+  }
+}

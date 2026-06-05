@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm *)",
+      "Bash(node *)",
+      "Bash(curl *)",
+      "Bash(find *)",
+      "Bash(grep *)",
+      "Bash(ls *)",
+      "Bash(rm *)",
+      "Bash(mkdir *)",
+      "Bash(cat *)",
+      "Bash(kill *)",
+      "Bash(lsof *)",
+      "Read",
+      "Edit",
+      "Write"
+    ]
+  }
+}

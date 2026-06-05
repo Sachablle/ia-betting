@@ -1,0 +1,10 @@
+{
+  "lnb_108": [
+    { "id": 1090, "name": "Lamar Stevens",  "position": "F", "jersey": "—" },
+    { "id": 1081, "name": "Justin Robinson", "position": "G", "jersey": "—" },
+    { "id": 1082, "name": "Jared Rhoden",    "position": "G", "jersey": "—" }
+  ],
+  "_exclude": {
+    "acb_1695": [47]
+  }
+}

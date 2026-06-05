@@ -1,0 +1,223 @@
+import { lazy, Suspense, useState, useEffect, useRef } from 'react';
+import { BrowserRouter, Routes, Route, Navigate, useParams, useNavigate, useLocation } from 'react-router-dom';
+import LeftNav from './components/LeftNav';
+import StarField from './components/StarField';
+import DashboardPage from './pages/DashboardPage';
+
+const ALERT_KEY = 'nba_prop_alerts';
+
+function purgeAlerts() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(ALERT_KEY) || '[]');
+    const now = Date.now();
+    const valid = raw.filter(a => {
+      if (!a.player || !a.fixtureDate || !a.stat || a.line == null || !['over','under'].includes(a.direction)) return false;
+      const t = new Date(a.fixtureDate).getTime();
+      if (isNaN(t)) return false;
+      const status = a.status || 'pending';
+      if (status === 'pending') return t > now;
+      return t > now - 7 * 24 * 3600 * 1000;
+    });
+    if (valid.length !== raw.length) {
+      localStorage.setItem(ALERT_KEY, JSON.stringify(valid));
+      return true;
+    }
+  } catch {}
+  return false;
+}
+
+function useAlertCount() {
+  const [count, setCount] = useState(0);
+  const refresh = () => {
+    try {
+      purgeAlerts();
+      const raw = JSON.parse(localStorage.getItem(ALERT_KEY) || '[]');
+      const now = Date.now();
+      // Mirror groupAlerts logic: group by player+date+direction, keep highest status
+      // A pending alert is invisible if the same fingerprint has an accepted/rejected version
+      const STATUS_RANK = { accepted: 2, rejected: 1, pending: 0 };
+      const byKey = {};
+      for (const a of raw) {
+        if (!a.player || !a.stat || a.line == null || !['over','under'].includes(a.direction)) continue;
+        const t = new Date(a.fixtureDate).getTime();
+        if (isNaN(t) || t <= now) continue;
+        const dateKey = new Date(a.fixtureDate).toISOString().slice(0, 10);
+        const key = `${a.player}__${dateKey}__${a.stat}__${a.direction}`;
+        const cur = byKey[key];
+        const rank = s => STATUS_RANK[s ?? 'pending'] ?? 0;
+        if (!cur || rank(a.status) > rank(cur.status)) byKey[key] = a;
+      }
+      let n = Object.values(byKey).filter(a => (a.status || 'pending') === 'pending').length;
+      try {
+        const totals = JSON.parse(localStorage.getItem('nba_game_total_alerts') || '[]');
+        n += totals.filter(a => {
+          if ((a.status || 'pending') !== 'pending') return false;
+          const t = new Date(a.date).getTime();
+          return isNaN(t) || t > now;
+        }).length;
+      } catch {}
+      setCount(n);
+    } catch { setCount(0); }
+  };
+  useEffect(() => {
+    refresh();
+    window.addEventListener('nba_alerts_updated', refresh);
+    const tick = setInterval(refresh, 60_000);
+    return () => { window.removeEventListener('nba_alerts_updated', refresh); clearInterval(tick); };
+  }, []);
+  return count;
+}
+
+const importMatchDetail     = () => import('./pages/MatchDetailPage');
+const importBasketballDetail = () => import('./pages/BasketballDetailPage');
+const importPlaceBet        = () => import('./pages/PlaceBetPage');
+const importRunning         = () => import('./pages/RunningPage');
+const importBacktesting     = () => import('./pages/BacktestingPage');
+const importWorldMap        = () => import('./pages/WorldMapPage');
+const importEffectif        = () => import('./pages/EffectifPage');
+
+const MatchDetailPage      = lazy(importMatchDetail);
+const BasketballDetailPage = lazy(importBasketballDetail);
+const PlaceBetPage         = lazy(importPlaceBet);
+const RunningPage          = lazy(importRunning);
+const BacktestingPage      = lazy(importBacktesting);
+const WorldMapPage         = lazy(importWorldMap);
+const EffectifPage         = lazy(importEffectif);
+const UtilisationPage      = lazy(() => import('./pages/UtilisationPage'));
+const AnalyserPage         = lazy(() => import('./pages/AnalyserPage'));
+const SportsPage           = lazy(() => import('./pages/SportsPage'));
+
+// Précharge les pages les plus visitées dès que le navigateur est idle
+
+if (typeof requestIdleCallback !== 'undefined') {
+  requestIdleCallback(() => {
+    importPlaceBet(); importRunning(); importBacktesting(); importWorldMap();
+  });
+}
+
+function BasketballDetailRoute() {
+  const { id } = useParams();
+  return <BasketballDetailPage key={id} />;
+}
+
+// Préchargement au survol d'un lien
+export function preloadPage(path) {
+  if (path.includes('placebet'))   importPlaceBet();
+  else if (path.includes('running'))    importRunning();
+  else if (path.includes('backtesting')) importBacktesting();
+  else if (path.includes('carte'))      importWorldMap();
+  else if (path.includes('effectif'))   importEffectif();
+  else if (path.includes('basketball')) importBasketballDetail();
+  else if (path.includes('football'))   importMatchDetail();
+}
+
+function PageLoader() {
+  return <div className="page" style={{ opacity: 0 }} />;
+}
+
+function StatsHolo() {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  const navigate = useNavigate();
+  const location = useLocation();
+
+  useEffect(() => {
+    const handler = e => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, []);
+
+  if (location.pathname !== '/analyser') return null;
+
+  const options = [
+    { sport: 'foot',   label: 'Football',   color: '#15803d', bar: 'linear-gradient(90deg,#15803d,#16a34a)' },
+    { sport: 'basket', label: 'Basketball', color: '#c2731a', bar: 'linear-gradient(90deg,#c2731a,#d97706)' },
+  ];
+
+  return (
+    <div ref={ref} style={{ position: 'fixed', top: '5.25rem', right: '1.5rem', zIndex: 9999 }}>
+      <button
+        onClick={() => setOpen(o => !o)}
+        title="Stats avancées"
+        style={{
+          width: 38, height: 38, borderRadius: 10,
+          background: open ? 'rgba(96,165,250,0.12)' : 'rgba(255,255,255,0.04)',
+          border: `1px solid ${open ? '#60a5fa' : 'rgba(255,255,255,0.2)'}`,
+          cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+          backdropFilter: 'blur(8px)', transition: 'all 0.2s',
+          boxShadow: open ? '0 0 16px rgba(96,165,250,0.25)' : 'none',
+        }}
+      >
+        <svg width="18" height="18" viewBox="0 0 20 20" fill="none">
+          <rect x="2" y="12" width="3" height="6" rx="1" fill={open ? '#60a5fa' : '#ffffff'}/>
+          <rect x="8.5" y="7" width="3" height="11" rx="1" fill={open ? '#60a5fa' : '#ffffff'}/>
+          <rect x="15" y="3" width="3" height="15" rx="1" fill={open ? '#60a5fa' : '#ffffff'}/>
+        </svg>
+      </button>
+
+      {open && (
+        <div style={{
+          position: 'absolute', top: 0, right: 46,
+          background: 'rgba(10,15,30,0.75)',
+          backdropFilter: 'blur(24px)',
+          border: 'none',
+          borderRadius: 14, padding: '0.5rem',
+          display: 'flex', flexDirection: 'column', gap: '0.5rem',
+          minWidth: 160,
+          boxShadow: '0 8px 32px rgba(0,0,0,0.5)',
+          animation: 'holoIn 0.18s ease',
+        }}>
+          {options.map(o => (
+            <button key={o.sport} onClick={() => { navigate(`/analyser?sport=${o.sport}`); setOpen(false); }} style={{
+              background: 'transparent',
+              border: `1px solid ${o.color}`,
+              borderRadius: 8, padding: '0.35rem 0.65rem',
+              cursor: 'pointer', textAlign: 'left',
+              display: 'flex', alignItems: 'center',
+              transition: 'opacity 0.15s',
+            }}
+            onMouseEnter={e => e.currentTarget.style.opacity='0.75'}
+            onMouseLeave={e => e.currentTarget.style.opacity='1'}
+            >
+              <span style={{ fontSize: 12, fontWeight: 600, color: o.color }}>{o.label}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default function App() {
+  const alertCount = useAlertCount();
+  return (
+    <BrowserRouter>
+      <div className="app-layout">
+        <StarField />
+        <StatsHolo />
+        <div className="app-body">
+        <LeftNav alertCount={alertCount} />
+        <main className="app-main" style={{ paddingTop: '4.5rem' }}>
+          <Suspense fallback={<PageLoader />}>
+            <Routes>
+              <Route path="/" element={<Navigate to="/dashboard" replace />} />
+              <Route path="/dashboard" element={<DashboardPage />} />
+              <Route path="/sports" element={<Navigate to="/carte" replace />} />
+              <Route path="/football/:id" element={<MatchDetailPage />} />
+              <Route path="/basketball/:id" element={<BasketballDetailRoute />} />
+              <Route path="/placebet" element={<PlaceBetPage />} />
+              <Route path="/running" element={<RunningPage />} />
+              <Route path="/analyser" element={<Navigate to="/backtesting" replace />} />
+              <Route path="/database/effectif" element={<EffectifPage />} />
+              <Route path="/utilisation" element={<UtilisationPage />} />
+              <Route path="/backtesting" element={<BacktestingPage />} />
+              <Route path="/carte" element={<WorldMapPage />} />
+            </Routes>
+          </Suspense>
+        </main>
+        </div>
+      </div>
+    </BrowserRouter>
+  );
+}
+
