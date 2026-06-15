@@ -1,24 +1,28 @@
 import { useState, useEffect, useRef, Fragment, startTransition } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { BBALL_FIXTURES } from '../utils/basketball';
+import { syncBackgroundAlerts, syncGameTotalAlerts, syncOddsDrift, syncFootballAlerts, resolveCompletedFootballAlerts } from '../utils/syncAlerts';
+import { BTTSAlertCard, FootballTotalCard, FootballResultCard } from '../components/FootballAlertCards';
 
 const ALERT_KEY        = 'nba_prop_alerts';
 const HISTORY_KEY      = 'nba_bet_history';
 const GAME_TOTAL_KEY   = 'nba_game_total_alerts';
 const EARLYWIN_KEY     = 'nba_earlywin_alerts';
+const EARLYWIN_MIN_ODDS = 1.45; // cote mini — sous ce seuil, pas d'intérêt même à forte confiance
 const FB_BTTS_KEY      = 'fb_btts_alerts';
-
-const FB_LEAGUE_META = {
-  ligue1:     { name: 'Ligue 1',        flag: '🇫🇷' },
-  pl:         { name: 'Premier League', flag: '🏴󠁧󠁢󠁥󠁮󠁧󠁿' },
-  laliga:     { name: 'La Liga',        flag: '🇪🇸' },
-  bundes:     { name: 'Bundesliga',     flag: '🇩🇪' },
-  seriea:     { name: 'Serie A',        flag: '🇮🇹' },
-};
+const FB_TOTAL_KEY     = 'fb_total_alerts';
+const FB_RESULT_KEY    = 'fb_result_alerts';
+const PURGE_PLAYERS    = ['Justin Bean', 'Jack Kayil', 'Leandro Bolmaro'];
 
 const ESPN_SHORT = { SA: 'SAS', NY: 'NYK', GS: 'GSW', NO: 'NOP', UT: 'UTA' };
 const normAbbr = a => ESPN_SHORT[a?.toUpperCase()] || a?.toUpperCase() || '';
 const lastName = n => n?.split(' ').slice(-1)[0]?.toLowerCase();
+
+const TOTAL_LEAGUE_LABELS = {
+  euroleague: 'EL Total', wnba: 'WNBA Total',
+  acb: 'ACB Total', bbl: 'BBL Total', legaa: 'Lega A Total', lnb: 'LNB Total',
+};
+const totalLeagueLabel = league => TOTAL_LEAGUE_LABELS[league] || 'NBA Total';
 
 async function resolveCompletedBets(alerts, save) {
   const now = Date.now();
@@ -69,8 +73,9 @@ async function resolveCompletedBets(alerts, save) {
           lastName(p.name) === lastName(a.player)
         );
         if (!player || player.dnp) { if (players.length > 0) { a._delete = true; changed = true; } continue; }
-        const actual = player.stats?.[a.stat];
+        let actual = player.stats?.[a.stat];
         if (actual == null) continue;
+        if (a.stat === 'tpm' && typeof actual === 'string') actual = parseInt(actual.split('-')[0]) || 0;
         a.actualStat = actual;
         a.resolvedAt = Date.now();
         a.status = (a.direction === 'over' ? actual > a.line : actual < a.line) ? 'won' : 'lost';
@@ -113,19 +118,29 @@ function groupAlerts(alerts) {
     const STATUS_RANK = { accepted: 2, rejected: 1, pending: 0 };
     const rank = s => STATUS_RANK[s] ?? 0;
     if (rank(a.status) > rank(map[key].status)) map[key].status = a.status;
-    // Déduplique par stat+direction : garde la meilleure probabilité
+    // Déduplique par stat+direction : garde l'alerte la plus récente (sinon une vieille valeur figée
+    // avec un % plus haut masquerait pour toujours la projection à jour — bug constaté le 8 juin)
     const statKey = `${a.stat}__${a.direction}`;
     const existing = map[key].stats.findIndex(s => `${s.stat}__${s.direction}` === statKey);
-    const entry = { stat: a.stat, direction: a.direction, line: a.line, unibetLine: a.unibetLine, betclicLine: a.betclicLine, winamaxLine: a.winamaxLine, estimate: a.estimate, probability: a.probability, pinnacleOdds: a.pinnacleOdds, unibetOdds: a.unibetOdds, betclicOdds: a.betclicOdds, winamaxOdds: a.winamaxOdds, acceptedUnibetOdds: a.acceptedUnibetOdds ?? null, acceptedBetclicOdds: a.acceptedBetclicOdds ?? null, acceptedWinamaxOdds: a.acceptedWinamaxOdds ?? null, oddsAlert: a.oddsAlert || null };
+    const entry = { stat: a.stat, direction: a.direction, line: a.line, unibetLine: a.unibetLine, betclicLine: a.betclicLine, winamaxLine: a.winamaxLine, estimate: a.estimate, probability: a.probability, pinnacleOdds: a.pinnacleOdds, unibetOdds: a.unibetOdds, betclicOdds: a.betclicOdds, winamaxOdds: a.winamaxOdds, acceptedUnibetOdds: a.acceptedUnibetOdds ?? null, acceptedBetclicOdds: a.acceptedBetclicOdds ?? null, acceptedWinamaxOdds: a.acceptedWinamaxOdds ?? null, oddsAlert: a.oddsAlert || null, directionFlip: a.directionFlip || null, obsolete: a.obsolete || false, savedAt: a.savedAt || 0 };
     if (existing === -1) map[key].stats.push(entry);
-    else if (a.probability > map[key].stats[existing].probability) map[key].stats[existing] = entry;
-    if (a.oddsAlert) map[key].hasOddsAlert = true;
+    else if ((a.savedAt || 0) > (map[key].stats[existing].savedAt || 0)) map[key].stats[existing] = entry;
     if (a.injuryAlert) map[key].hasInjuryAlert = true;
-    map[key].maxProb = Math.max(map[key].maxProb, a.probability);
+    if (a.playerIsQ) map[key].playerIsQ = true;
+    if (a.teamHasQ?.length) map[key].teamHasQ = a.teamHasQ;
     map[key].ids.push(a.id);
     if (a.acceptedAt) map[key].acceptedAt = Math.max(map[key].acceptedAt, a.acceptedAt);
     if (a.acceptedBookmaker && !map[key].acceptedBookmaker) map[key].acceptedBookmaker = a.acceptedBookmaker;
   }
+  // maxProb calculé APRÈS dédup, à partir des stats retenues (la plus récente par stat+direction)
+  // — sinon une vieille entrée dupliquée avec un % plus haut faussait l'affichage pour toujours
+  // hasOddsAlert dérivé des stats réellement affichées (post-dédup) — sinon un vieux doublon
+  // avec un mouvement de cote périmé affichait le badge "!" sans aucun détail visible
+  Object.values(map).forEach(g => {
+    g.maxProb = g.stats.reduce((m, s) => Math.max(m, s.probability), 0);
+    g.hasOddsAlert = g.stats.some(s => s.oddsAlert);
+    g.hasDirectionFlip = g.stats.some(s => s.directionFlip);
+  });
   return Object.values(map).sort((a, b) => {
     if (a.acceptedAt && b.acceptedAt) return b.acceptedAt - a.acceptedAt;
     const dateDiff = new Date(a.fixtureDate) - new Date(b.fixtureDate);
@@ -217,6 +232,11 @@ function resolveMatchId({ ids, fixture, fixtureDate, homeTeam, awayTeam, eventId
   // EU basket (ACB/BBL/LegaA/LNB) — eventId = api-sports game ID
   const EU_BBALL = ['acb', 'lnb', 'bbl', 'legaa'];
   if (EU_BBALL.includes(league) && eventId) return `${eventId}?league=${league}`;
+  // NBA — ID ESPN direct : la page résout alors fixture.id = ID ESPN, exactement comme via
+  // le chemin de navigation normal (Sport → Match, qui clique sur la ligne du scoreboard live).
+  // Sans ça, le fuzzy-matching ci-dessous renvoyait l'ID statique 'bXXX' → snapshot introuvable
+  // (clé backend = ID ESPN) → recalcul local divergent (vieux % affiché en cliquant sur l'alerte).
+  if (league === 'nba' && eventId) return `${eventId}`;
 
   const norm  = s => (s || '').toLowerCase().replace(/[^a-z]/g, '');
   const fuzzy = (a, b) => { const na = norm(a), nb = norm(b); return na.includes(nb) || nb.includes(na) || (na.length >= 5 && nb.length >= 5 && na.slice(0,5) === nb.slice(0,5)); };
@@ -336,7 +356,8 @@ function CompactAcceptedCard({ group, onDismiss, onVoid, variant = 'accepted' })
   const [oddsOpen, setOddsOpen] = useState(false);
   const { player, fixtureDate, stats, maxProb, ids } = group;
   const oddsAlerts = stats.filter(s => s.oddsAlert);
-  const colors = group.hasOddsAlert
+  const flipAlerts = stats.filter(s => s.directionFlip);
+  const colors = (group.hasOddsAlert || group.hasDirectionFlip)
     ? { border: 'rgba(239,68,68,0.4)', bg: 'rgba(239,68,68,0.05)', bgHover: 'rgba(239,68,68,0.1)' }
     : (CARD_ACCENT[variant] || CARD_ACCENT.accepted);
 
@@ -361,7 +382,7 @@ function CompactAcceptedCard({ group, onDismiss, onVoid, variant = 'accepted' })
     >
       {/* Ligne principale : [badge + colonne gauche] + [colonne stat+cote] + prob + × */}
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: '0.6rem' }}>
-        {group.hasOddsAlert && (
+        {(group.hasOddsAlert || group.hasDirectionFlip) && (
           <span style={{ width: 14, height: 14, borderRadius: 7, background: '#ef4444', color: '#fff', fontSize: 9, fontWeight: 900, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, marginTop: 2 }}>!</span>
         )}
 
@@ -379,6 +400,11 @@ function CompactAcceptedCard({ group, onDismiss, onVoid, variant = 'accepted' })
               {s.oddsAlert.ubTo    != null && <span>Unibet : {s.oddsAlert.ubFrom?.toFixed(2)} → <b>{s.oddsAlert.ubTo?.toFixed(2)}</b> · </span>}
               {s.oddsAlert.bcTo    != null && <span>Betclic : {s.oddsAlert.bcFrom?.toFixed(2)} → <b>{s.oddsAlert.bcTo?.toFixed(2)}</b> · </span>}
               {s.oddsAlert.wmTo    != null && <span>Winamax : {s.oddsAlert.wmFrom?.toFixed(2)} → <b>{s.oddsAlert.wmTo?.toFixed(2)}</b></span>}
+            </div>
+          ))}
+          {flipAlerts.map(s => (
+            <div key={`flip-${s.stat}`} style={{ fontSize: 9, color: '#fca5a5', lineHeight: 1.5 }}>
+              Le modèle penche désormais pour <b>{s.directionFlip.to === 'over' ? 'over' : 'under'} {s.directionFlip.line}</b> ({s.directionFlip.probability}%)
             </div>
           ))}
         </div>
@@ -505,7 +531,7 @@ function GameTotalCard({ alert, onAccept, onReject, onDismiss }) {
   const leagueParam = league && league !== 'nba' ? `?league=${league}` : '';
   const isOver      = direction === 'over';
   const accent     = isOver ? '#4ade80' : '#f87171';
-  const leagueLabel = league === 'euroleague' ? 'EL Total' : league === 'wnba' ? 'WNBA Total' : 'NBA Total';
+  const leagueLabel = totalLeagueLabel(league);
 
   const now      = Date.now();
   const msLeft   = new Date(date).getTime() - now;
@@ -691,7 +717,7 @@ function TotalResultCard({ alert, onDismiss }) {
       <button onClick={() => onDismiss(id)} style={{ position: 'absolute', top: 8, right: 10, background: 'none', border: 'none', color: 'var(--text-dim)', cursor: 'pointer', fontSize: 16, lineHeight: 1, padding: 0 }}>×</button>
       <div className="bc-header">
         <span className="bc-flag">🏀</span>
-        <span className="bc-league">{alert.league === 'euroleague' ? 'EL Total' : alert.league === 'wnba' ? 'WNBA Total' : 'NBA Total'} · {homeShort || home} vs {awayShort || away}</span>
+        <span className="bc-league">{totalLeagueLabel(alert.league)} · {homeShort || home} vs {awayShort || away}</span>
         <span style={{ marginLeft: 'auto', marginRight: 24, fontSize: 11, fontWeight: 800, padding: '2px 9px', borderRadius: 10, color: accent, background: accentBg }}>
           {isWon ? '✓ GAGNÉ' : '✗ PERDU'}
         </span>
@@ -714,8 +740,34 @@ function TotalResultCard({ alert, onDismiss }) {
   );
 }
 
+// Bandes de couleur par catégorie (stat × ligue) — calibrées sur la plage de confiance réelle
+// que le nouveau modèle (post-refonte 6 juin 2026) atteint pour chaque catégorie.
+// NBA/WNBA : reb/ast plafonnent bas (~70%/69%) → bandes basses. EU : plages plus larges (jusqu'à 90%+).
+const PROP_BADGE_BANDS = {
+  nba_short: {
+    pts: { high: 70, mid: 62 },
+    reb: { high: 62, mid: 55 },
+    ast: { high: 58, mid: 52 },
+    tpm: { high: 62, mid: 55 },
+  },
+  eu: {
+    pts: { high: 75, mid: 67 },
+    reb: { high: 68, mid: 61 },
+    ast: { high: 70, mid: 62 },
+    tpm: { high: 68, mid: 61 },
+  },
+};
+const EU_PROP_LEAGUES = new Set(['acb', 'lnb', 'bbl', 'legaa', 'euroleague']);
+function propBadgeClass(stat, league, prob) {
+  const bands = (EU_PROP_LEAGUES.has(league) ? PROP_BADGE_BANDS.eu : PROP_BADGE_BANDS.nba_short)[stat];
+  if (!bands) return prob >= 85 ? 'high' : 'mid';
+  if (prob >= bands.high) return 'high';
+  if (prob >= bands.mid) return 'mid';
+  return 'low';
+}
+
 function PropAlertCard({ group, onDismiss, onAccept, onReject }) {
-  const { player, fixtureDate, stats, maxProb, ids, status, injury, league } = group;
+  const { player, fixtureDate, stats, maxProb, ids, status, injury, league, playerIsQ, teamHasQ } = group;
   const leagueLabel = league === 'wnba' ? 'WNBA Props' : league === 'euroleague' ? 'EL Props' : league === 'acb' ? 'ACB Props' : league === 'bbl' ? 'BBL Props' : league === 'legaa' ? 'Lega A Props' : league === 'lnb' ? 'LNB Props' : 'NBA Props';
   const navigate = useNavigate();
 
@@ -766,8 +818,9 @@ function PropAlertCard({ group, onDismiss, onAccept, onReject }) {
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '0.15rem', flexShrink: 0 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
             {group.hasInjuryAlert && <span style={{ fontSize: 9, fontWeight: 800, padding: '2px 6px', borderRadius: 4, background: 'rgba(245,158,11,0.15)', color: '#f59e0b', border: '1px solid rgba(245,158,11,0.4)' }}>OUT</span>}
-            {!group.hasInjuryAlert && injury === 'Questionable' && <span style={{ fontSize: 9, fontWeight: 800, padding: '2px 6px', borderRadius: 4, background: 'rgba(251,146,60,0.15)', color: '#fb923c', border: '1px solid rgba(251,146,60,0.4)' }}>Q</span>}
-            <span className={`bc-edge-badge ${maxProb >= 85 ? 'high' : 'mid'}`}>{maxProb}%</span>
+            {!group.hasInjuryAlert && (playerIsQ || injury === 'Questionable') && <span title="Joueur incertain — Under autorisé, Over bloqué" style={{ fontSize: 9, fontWeight: 800, padding: '2px 6px', borderRadius: 4, background: 'rgba(251,146,60,0.18)', color: '#fb923c', border: '1px solid rgba(251,146,60,0.5)' }}>⚠️ Q</span>}
+            {teamHasQ?.length > 0 && <span title={`Coéquipier(s) incertain(s) : ${teamHasQ.join(', ')}`} style={{ fontSize: 9, fontWeight: 800, padding: '2px 6px', borderRadius: 4, background: 'rgba(251,146,60,0.10)', color: '#fb923c', border: '1px dashed rgba(251,146,60,0.4)' }}>Coéq. Q</span>}
+            <span className={`bc-edge-badge ${propBadgeClass(primaryStat?.stat, league, maxProb)}`}>{maxProb}%</span>
           </div>
           <span style={{ fontSize: 9, color: 'var(--text-dim)', textAlign: 'right', whiteSpace: 'nowrap' }}>
             {new Date(fixtureDate).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
@@ -775,7 +828,7 @@ function PropAlertCard({ group, onDismiss, onAccept, onReject }) {
         </div>
       </div>
 
-      {stats.map(({ stat, direction, line, estimate, unibetOdds, betclicOdds, winamaxOdds, oddsAlert }) => {
+      {stats.map(({ stat, direction, line, estimate, unibetOdds, betclicOdds, winamaxOdds, oddsAlert, obsolete }) => {
         const isO = direction === 'over';
         const clr = isO ? '#4ade80' : '#f87171';
         const bg  = isO ? 'rgba(74,222,128,0.06)' : 'rgba(248,113,113,0.06)';
@@ -783,8 +836,9 @@ function PropAlertCard({ group, onDismiss, onAccept, onReject }) {
           <Fragment key={stat}>
             {/* Boîte ligne */}
             <div style={{ margin: '0.4rem 0 0', padding: '0.45rem 0.6rem', borderRadius: 6, background: oddsAlert ? 'rgba(239,68,68,0.08)' : bg }}>
-              <div style={{ fontSize: 13, fontWeight: 700, color: clr }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: clr, display: 'flex', alignItems: 'center', gap: 6 }}>
                 {isO ? '▲ Over' : '▼ Under'} {line} {STAT_LABEL[stat] ?? stat}
+                {isPending && obsolete && <span style={{ fontSize: 9, fontWeight: 800, padding: '2px 6px', borderRadius: 4, background: 'rgba(148,163,184,0.15)', color: '#94a3b8', border: '1px solid rgba(148,163,184,0.4)' }}>OBSOLÈTE</span>}
               </div>
               {estimate != null && (
                 <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 3 }}>
@@ -831,89 +885,6 @@ function PropAlertCard({ group, onDismiss, onAccept, onReject }) {
       })}
 
       {!isPending && <button className="bc-cta" onClick={goToMatch}>Voir le match →</button>}
-    </div>
-  );
-}
-
-
-function BTTSAlertCard({ alert, onAccept, onReject, onDismiss }) {
-  const navigate = useNavigate();
-  const meta = FB_LEAGUE_META[alert.league] || { name: alert.league, flag: '⚽' };
-  const isPending  = alert.status === 'pending';
-  const isAccepted = alert.status === 'accepted';
-
-  const now = Date.now();
-  const msLeft    = new Date(alert.fixtureDate).getTime() - now;
-  const hoursLeft = msLeft / 3_600_000;
-  const daysLeft  = Math.floor(hoursLeft / 24);
-  const hRem      = Math.floor(hoursLeft % 24);
-  const mRem      = Math.floor((msLeft % 3_600_000) / 60_000);
-  const timeLabel = msLeft <= 0 ? 'Imminent' : daysLeft > 0 ? `${daysLeft}j ${hRem}h` : hoursLeft >= 1 ? `${Math.floor(hoursLeft)}h ${mRem}m` : `${mRem}m`;
-  const barPct    = Math.min(Math.max(msLeft / (7 * 24 * 3_600_000) * 100, 0), 100);
-
-  return (
-    <div
-      className="bet-card"
-      style={{ position: 'relative', '--league-accent': '#10b981', borderColor: 'rgba(16,185,129,0.25)', cursor: alert.fixtureId ? 'pointer' : 'default' }}
-      onClick={() => { if (alert.fixtureId) navigate(`/football/${alert.fixtureId}`); }}
-    >
-      {isPending
-        ? <button onClick={e => { e.stopPropagation(); onReject(alert.id); }} style={{ position: 'absolute', top: 8, right: 10, background: 'none', border: 'none', cursor: 'pointer', padding: 0, lineHeight: 1 }}><svg width="14" height="14" viewBox="0 0 18 18" fill="none"><circle cx="9" cy="9" r="7.5" stroke="#ef4444" strokeWidth="1.5"/><path d="M6 6l6 6M12 6l-6 6" stroke="#ef4444" strokeWidth="1.75" strokeLinecap="round"/></svg></button>
-        : <button onClick={e => { e.stopPropagation(); onDismiss(alert.id); }} style={{ position: 'absolute', top: 8, right: 10, background: 'none', border: 'none', color: 'var(--text-dim)', cursor: 'pointer', fontSize: 16, lineHeight: 1, padding: 0 }}>×</button>
-      }
-      <div className="bc-header">
-        <span className="bc-flag">{meta.flag}</span>
-        <span className="bc-league">{meta.name}</span>
-        {!isPending && (
-          <span style={{ marginLeft: 'auto', marginRight: 24, fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 10, color: isAccepted ? '#4ade80' : '#f87171', background: isAccepted ? 'rgba(74,222,128,0.12)' : 'rgba(248,113,113,0.1)' }}>
-            {isAccepted ? '✓ Accepté' : '✗ Rejeté'}
-          </span>
-        )}
-      </div>
-
-      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginTop: '0.4rem', paddingRight: '4px' }}>
-        <span className="bc-team bc-team-home">{alert.fixture}</span>
-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '0.15rem', flexShrink: 0 }}>
-          <span className={`bc-edge-badge ${alert.probability >= 85 ? 'high' : 'mid'}`}>{alert.probability}%</span>
-          <span style={{ fontSize: 10, color: 'var(--text-dim)' }}>
-            {new Date(alert.fixtureDate).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}{alert.round ? ` · ${alert.round}` : ''}
-          </span>
-        </div>
-      </div>
-
-      <div style={{ margin: '0.4rem 0 0', padding: '0.45rem 0.6rem', borderRadius: 6, background: 'rgba(16,185,129,0.06)' }}>
-        <div style={{ fontSize: 13, fontWeight: 700, color: '#10b981' }}>✓ Les deux équipes marquent</div>
-        {alert.edge != null && (
-          <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 3 }}>
-            Edge vs Pinnacle : <b style={{ color: alert.edge >= 3 ? '#10b981' : 'var(--text-dim)' }}>{alert.edge >= 0 ? '+' : ''}{alert.edge}%</b>
-          </div>
-        )}
-      </div>
-
-      <div className="bc-stats" style={{ margin: '0.35rem 0 0.25rem' }}>
-        <div className="bc-prob">
-          <div className="bc-prob-bar-track">
-            <div className="bc-prob-bar-fill" style={{ width: `${barPct}%`, background: '#10b981' }} />
-          </div>
-          <span className="bc-prob-pct" style={{ color: '#60a5fa', fontSize: 10 }}>{timeLabel}</span>
-        </div>
-      </div>
-
-      <div style={{ display: 'flex', gap: '0.5rem' }}>
-        {[{ label: 'Pinnacle', odds: alert.pinnacleOdds, color: 'var(--text)' }, { label: 'Unibet', odds: alert.unibetOdds, color: '#1db954' }, { label: 'Betclic', odds: alert.betclicOdds, color: '#e0292e' }]
-          .filter(b => b.odds)
-          .map(({ label, odds, color }) => (
-            <div key={label}
-              onClick={isPending ? e => { e.stopPropagation(); onAccept(alert.id, label.toLowerCase(), odds); } : undefined}
-              style={{ flex: 1, textAlign: 'center', background: 'rgba(255,255,255,0.04)', borderRadius: 6, padding: '0.3rem', cursor: isPending ? 'pointer' : 'default', transition: 'background 0.15s' }}
-              onMouseEnter={isPending ? e => e.currentTarget.style.background = 'rgba(255,255,255,0.1)' : undefined}
-              onMouseLeave={isPending ? e => e.currentTarget.style.background = 'rgba(255,255,255,0.04)' : undefined}
-            >
-              <div style={{ fontSize: 9, color: 'var(--text-dim)', marginBottom: 2 }}>{label}</div>
-              <div style={{ fontSize: 13, fontWeight: 700, color, fontVariantNumeric: 'tabular-nums' }}>{odds.toFixed(2)}</div>
-            </div>
-          ))}
-      </div>
     </div>
   );
 }
@@ -1070,6 +1041,8 @@ export default function PlaceBetPage() {
   const [rawTotalAlerts, setRawTotalAlerts]     = useState([]);
   const [rawEarlywinAlerts, setRawEarlywinAlerts] = useState([]);
   const [bttsAlerts, setBttsAlerts]             = useState([]);
+  const [fbTotalAlerts, setFbTotalAlerts]       = useState([]);
+  const [fbResultAlerts, setFbResultAlerts]     = useState([]);
   // historyExists : true dès qu'une alerte a été acceptée/rejetée, ne repasse jamais à false
   const [historyExists, setHistoryExists] = useState(() => {
     try {
@@ -1078,6 +1051,11 @@ export default function PlaceBetPage() {
     } catch { return false; }
   });
 
+  const saveBttsAlerts = (alerts) => {
+    try { localStorage.setItem(FB_BTTS_KEY, JSON.stringify(alerts)); } catch {}
+    setBttsAlerts(alerts);
+  };
+
   const loadBttsAlerts = () => {
     try {
       const now = Date.now();
@@ -1085,11 +1063,14 @@ export default function PlaceBetPage() {
       const valid = raw.filter(a => {
         const t = new Date(a.fixtureDate).getTime();
         if (isNaN(t)) return false;
-        if (['accepted', 'rejected'].includes(a.status)) return t > now - 7 * 24 * 3600_000;
+        // Conservées indéfiniment pour le backtesting — seules les alertes encore "pending"
+        // (jamais acceptées/rejetées) sont purgées une fois le match passé.
+        if (['accepted', 'rejected', 'won', 'lost'].includes(a.status)) return true;
         return t > now;
       });
       if (valid.length !== raw.length) localStorage.setItem(FB_BTTS_KEY, JSON.stringify(valid));
       setBttsAlerts(valid);
+      resolveCompletedFootballAlerts(valid, saveBttsAlerts);
     } catch { setBttsAlerts([]); }
   };
 
@@ -1097,29 +1078,113 @@ export default function PlaceBetPage() {
     const now = Date.now();
     const updated = bttsAlerts.map(a => a.id === id ? {
       ...a, status,
+      ...(status === 'rejected' ? { rejectedAt: now } : {}),
       ...(status === 'accepted' && !a.acceptedAt ? {
         acceptedAt: now,
         acceptedBookmaker:    bk ?? null,
         acceptedPinnacleOdds: bk === 'pinnacle' ? (odds ?? a.pinnacleOdds) : null,
         acceptedUnibetOdds:   bk === 'unibet'   ? (odds ?? a.unibetOdds)   : null,
         acceptedBetclicOdds:  bk === 'betclic'  ? (odds ?? a.betclicOdds)  : null,
+        acceptedWinamaxOdds:  bk === 'winamax'  ? (odds ?? a.winamaxOdds)  : null,
       } : {})
     } : a);
-    try { localStorage.setItem(FB_BTTS_KEY, JSON.stringify(updated)); } catch {}
-    setBttsAlerts(updated);
+    saveBttsAlerts(updated);
   };
 
   const dismissBtts = (id) => {
-    const updated = bttsAlerts.filter(a => a.id !== id);
-    try { localStorage.setItem(FB_BTTS_KEY, JSON.stringify(updated)); } catch {}
-    setBttsAlerts(updated);
+    saveBttsAlerts(bttsAlerts.filter(a => a.id !== id));
+  };
+
+  const loadFbTotalAlerts = () => {
+    try {
+      const now = Date.now();
+      const raw = JSON.parse(localStorage.getItem(FB_TOTAL_KEY) || '[]');
+      const valid = raw.filter(a => {
+        const t = new Date(a.fixtureDate).getTime();
+        if (isNaN(t)) return false;
+        // Conservées indéfiniment pour le backtesting — seules les alertes encore "pending"
+        // (jamais acceptées/rejetées) sont purgées une fois le match passé.
+        if (['accepted', 'rejected', 'won', 'lost'].includes(a.status)) return true;
+        return t > now;
+      });
+      if (valid.length !== raw.length) localStorage.setItem(FB_TOTAL_KEY, JSON.stringify(valid));
+      setFbTotalAlerts(valid);
+      resolveCompletedFootballAlerts(valid, saveFbTotalAlerts);
+    } catch { setFbTotalAlerts([]); }
+  };
+
+  const saveFbTotalAlerts = (alerts) => {
+    try { localStorage.setItem(FB_TOTAL_KEY, JSON.stringify(alerts)); } catch {}
+    setFbTotalAlerts(alerts);
+  };
+
+  const updateFbTotalStatus = (id, status, bk = null, odds = null) => {
+    const now = Date.now();
+    const updated = fbTotalAlerts.map(a => a.id === id ? {
+      ...a, status,
+      ...(status === 'rejected' ? { rejectedAt: now } : {}),
+      ...(status === 'accepted' && !a.acceptedAt ? {
+        acceptedAt: now,
+        acceptedBookmaker:   bk ?? null,
+        acceptedUnibetOdds:  bk === 'unibet'  ? (odds ?? a.unibetOdds)  : null,
+        acceptedBetclicOdds: bk === 'betclic' ? (odds ?? a.betclicOdds) : null,
+        acceptedWinamaxOdds: bk === 'winamax' ? (odds ?? a.winamaxOdds) : null,
+      } : {})
+    } : a);
+    saveFbTotalAlerts(updated);
+  };
+
+  const dismissFbTotal = (id) => {
+    saveFbTotalAlerts(fbTotalAlerts.filter(a => a.id !== id));
+  };
+
+  const loadFbResultAlerts = () => {
+    try {
+      const now = Date.now();
+      const raw = JSON.parse(localStorage.getItem(FB_RESULT_KEY) || '[]');
+      const valid = raw.filter(a => {
+        const t = new Date(a.fixtureDate).getTime();
+        if (isNaN(t)) return false;
+        // Conservées indéfiniment pour le backtesting — seules les alertes encore "pending"
+        // (jamais acceptées/rejetées) sont purgées une fois le match passé.
+        if (['accepted', 'rejected', 'won', 'lost'].includes(a.status)) return true;
+        return t > now;
+      });
+      if (valid.length !== raw.length) localStorage.setItem(FB_RESULT_KEY, JSON.stringify(valid));
+      setFbResultAlerts(valid);
+      resolveCompletedFootballAlerts(valid, saveFbResultAlerts);
+    } catch { setFbResultAlerts([]); }
+  };
+
+  const saveFbResultAlerts = (alerts) => {
+    try { localStorage.setItem(FB_RESULT_KEY, JSON.stringify(alerts)); } catch {}
+    setFbResultAlerts(alerts);
+  };
+
+  const updateFbResultStatus = (id, status, bk = null, odds = null) => {
+    const now = Date.now();
+    const updated = fbResultAlerts.map(a => a.id === id ? {
+      ...a, status,
+      ...(status === 'rejected' ? { rejectedAt: now } : {}),
+      ...(status === 'accepted' && !a.acceptedAt ? {
+        acceptedAt: now,
+        acceptedBookmaker:   bk ?? null,
+        acceptedUnibetOdds:  bk === 'unibet'  ? (odds ?? a.unibetOdds)  : null,
+        acceptedBetclicOdds: bk === 'betclic' ? (odds ?? a.betclicOdds) : null,
+        acceptedWinamaxOdds: bk === 'winamax' ? (odds ?? a.winamaxOdds) : null,
+      } : {})
+    } : a);
+    saveFbResultAlerts(updated);
+  };
+
+  const dismissFbResult = (id) => {
+    saveFbResultAlerts(fbResultAlerts.filter(a => a.id !== id));
   };
 
   const saveAlerts = (alerts) => {
     try {
       localStorage.setItem(ALERT_KEY, JSON.stringify(alerts));
       setRawAlerts([...alerts]);
-      window.dispatchEvent(new Event('nba_alerts_updated'));
     } catch {}
   };
 
@@ -1165,6 +1230,8 @@ export default function PlaceBetPage() {
       const valid = merged.filter(a => {
         // Purge alertes malformées (champs critiques manquants)
         if (!a.player || !a.fixtureDate || !a.stat || a.line == null || !['over','under'].includes(a.direction)) return false;
+        // Purge joueurs blacklistés (sauf si déjà terminé)
+        if (PURGE_PLAYERS.includes(a.player) && !['won','lost','void'].includes(a.status)) return false;
         const matchTime = new Date(a.fixtureDate).getTime();
         if (isNaN(matchTime)) return false;
         const status = a.status || 'pending';
@@ -1209,7 +1276,7 @@ export default function PlaceBetPage() {
     const REFRESH_MS = 10 * 60 * 1000;
     const now = Date.now();
     const toEnrich = alerts.filter(a =>
-      ['pts', 'reb', 'ast'].includes(a.stat) &&
+      ['pts', 'reb', 'ast', 'tpm'].includes(a.stat) &&
       (a.homeTeam || a.awayTeam) &&
       (a.league !== 'euroleague') &&
       new Date(a.fixtureDate).getTime() > now &&
@@ -1220,18 +1287,20 @@ export default function PlaceBetPage() {
     const byGame = {};
     for (const a of toEnrich) {
       const key = `${a.homeTeam}__${a.awayTeam}`;
-      if (!byGame[key]) byGame[key] = { homeTeam: a.homeTeam, awayTeam: a.awayTeam, ids: new Set() };
+      if (!byGame[key]) byGame[key] = { homeTeam: a.homeTeam, awayTeam: a.awayTeam, league: a.league || 'nba', fixtureDate: a.fixtureDate, ids: new Set() };
       byGame[key].ids.add(a.id);
     }
     let updated = false;
     const ln = n => n?.split(' ').slice(-1)[0]?.toLowerCase();
-    for (const { homeTeam, awayTeam, ids } of Object.values(byGame)) {
+    // Une requête par match, en parallèle (pas de dépendance entre elles) — évite que
+    // plusieurs matchs en cache froid s'enchaînent en série et retardent l'affichage des cotes.
+    await Promise.all(Object.values(byGame).map(async ({ homeTeam, awayTeam, league, fixtureDate, ids }) => {
       try {
-        const url = `/api/basketball/player-props?league=nba&refresh=1` +
+        const url = `/api/basketball/player-props?league=${league}&date=${encodeURIComponent(fixtureDate || '')}` +
           (homeTeam ? `&home=${encodeURIComponent(homeTeam)}` : '') +
           (awayTeam ? `&away=${encodeURIComponent(awayTeam)}` : '');
         const data = await fetch(url).then(r => r.json());
-        if (!data?.found) continue;
+        if (!data?.found) return;
         for (const a of alerts) {
           if (!ids.has(a.id)) continue;
           const stat = a.stat;
@@ -1241,16 +1310,33 @@ export default function PlaceBetPage() {
           const ubStat = entry?.[1]?.unibet?.[stat];
           const bcStat = entry?.[1]?.betclic?.[stat];
           const wmStat = entry?.[1]?.winamax?.[stat];
-          if (ubStat?.over != null) { a.unibetOdds = ubStat.over; a.unibetLine = ubStat.line; updated = true; }
-          if (bcStat?.over != null) { a.betclicOdds = bcStat.over; a.betclicLine = bcStat.line; updated = true; }
-          if (wmStat?.over != null) { a.winamaxOdds = wmStat.over; a.winamaxLine = wmStat.line; updated = true; }
+          // Respecter la direction de l'alerte (over/under) — sinon une alerte "under" se voit
+          // écrasée par la cote "over" du bookmaker (bug de flicker des cotes affichées)
+          const isOver = a.direction === 'over';
+          const ubOdds = isOver ? ubStat?.over : ubStat?.under;
+          const bcOdds = isOver ? bcStat?.over : bcStat?.under;
+          const wmOdds = isOver ? wmStat?.over : wmStat?.under;
+          if (ubOdds != null) { a.unibetOdds = ubOdds; a.unibetLine = ubStat.line; updated = true; }
+          if (bcOdds != null) { a.betclicOdds = bcOdds; a.betclicLine = bcStat.line; updated = true; }
+          if (wmOdds != null) { a.winamaxOdds = wmOdds; a.winamaxLine = wmStat.line; updated = true; }
           a.lastEnriched = Date.now();
         }
       } catch {}
-    }
+    }));
     if (updated) {
-      try { localStorage.setItem(ALERT_KEY, JSON.stringify(alerts)); } catch {}
-      setRawAlerts([...alerts]);
+      try {
+        // Re-lire le localStorage courant : si l'utilisateur a accepté/rejeté pendant le fetch async,
+        // ne pas écraser son statut avec l'ancienne version.
+        const TERMINAL = ['accepted', 'rejected', 'won', 'lost', 'void'];
+        const currentRaw = JSON.parse(localStorage.getItem(ALERT_KEY) || '[]');
+        const enrichedById = {};
+        alerts.forEach(a => { enrichedById[a.id] = a; });
+        const merged = currentRaw.map(a =>
+          TERMINAL.includes(a.status) ? a : (enrichedById[a.id] || a)
+        );
+        localStorage.setItem(ALERT_KEY, JSON.stringify(merged));
+        setRawAlerts([...merged]);
+      } catch {}
     }
   };
 
@@ -1280,8 +1366,34 @@ export default function PlaceBetPage() {
       } catch {}
     }
 
+    // ACB / LNB / BBL / Lega A — score depuis le scoreboard officiel
+    const EU_LEAGUES = new Set(['acb', 'lnb', 'bbl', 'legaa']);
+    const euAlerts = toResolve.filter(a => EU_LEAGUES.has(a.league));
+    if (euAlerts.length) {
+      const byLeague = {};
+      euAlerts.forEach(a => { (byLeague[a.league] ??= []).push(a); });
+      for (const [lg, als] of Object.entries(byLeague)) {
+        try {
+          const sb = await fetch(`/api/euro/${lg}/scoreboard`).then(r => r.json());
+          for (const a of als) {
+            const game = (sb.games || []).find(g =>
+              g.status === 'STATUS_FINAL' &&
+              ((g.home.short === a.homeShort && g.away.short === a.awayShort) ||
+               (g.home.name === a.home && g.away.name === a.away))
+            );
+            if (!game || game.home.score == null || game.away.score == null) continue;
+            const total = game.home.score + game.away.score;
+            if (!total) continue;
+            a.actualTotal = total;
+            a.status = (a.direction === 'over' ? total > a.line : total < a.line) ? 'won' : 'lost';
+            changed = true;
+          }
+        } catch {}
+      }
+    }
+
     // NBA / WNBA — score depuis le boxscore ESPN (homeScore/awayScore ajoutés au endpoint)
-    const nbaAlerts = toResolve.filter(a => a.league !== 'euroleague');
+    const nbaAlerts = toResolve.filter(a => a.league !== 'euroleague' && !EU_LEAGUES.has(a.league));
     for (const a of nbaAlerts) {
       try {
         const hTeam = a.homeShort || (a.fixture || '').split(' vs ')[0];
@@ -1364,6 +1476,7 @@ export default function PlaceBetPage() {
         const status = a.status || 'pending';
         if (status === 'won' || status === 'lost') return matchTime > cutoff7d;
         if (status === 'accepted' || status === 'rejected') return matchTime > cutoff7d;
+        if (status === 'pending' && (a.odds ?? 0) < EARLYWIN_MIN_ODDS) return false;
         return matchTime > now;
       });
       if (valid.length !== raw.length) localStorage.setItem(EARLYWIN_KEY, JSON.stringify(valid));
@@ -1389,143 +1502,11 @@ export default function PlaceBetPage() {
   };
 
   // Merge backend background alerts into localStorage
-  const fetchBackgroundAlerts = async () => {
-    try {
-      const { alerts: bgAlerts } = await fetch('/api/nba/background-alerts').then(r => r.json());
-      if (!bgAlerts?.length) return;
-      const existing = JSON.parse(localStorage.getItem(ALERT_KEY) || '[]');
-      const history = JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]');
-      // On cherche dans existing + history pour bloquer les re-générations post-dismiss
-      const allKnown = [...existing, ...history];
-      const byId = {};
-      existing.forEach(a => { byId[a.id] = a; });
-
-      // Cherche un match par empreinte (joueur+stat+direction+line ±1, même jour ±36h)
-      const findByFingerprint = (a, status) => {
-        const aTime = new Date(a.fixtureDate).getTime();
-        return allKnown.find(p => {
-          if (status && p.status !== status) return false;
-          if (p.player !== a.player || p.stat !== a.stat || p.direction !== a.direction) return false;
-          if (Math.abs((p.line ?? 0) - (a.line ?? 0)) >= 1.0) return false;
-          const pTime = new Date(p.fixtureDate).getTime();
-          if (!isNaN(pTime) && !isNaN(aTime) && Math.abs(pTime - aTime) > 36 * 3600_000) return false;
-          return true;
-        });
-      };
-
-      let changed = false;
-      bgAlerts.forEach(a => {
-        // Bloquer toute alerte sans probabilité réelle (probability=0 → gap alert ou bug)
-        if (!(a.probability > 0)) return;
-        // Rejeté/terminé (même empreinte, même jour) → jamais renvoyé
-        if (findByFingerprint(a, 'rejected')) return;
-        if (findByFingerprint(a, 'won')) return;
-        if (findByFingerprint(a, 'lost')) return;
-        if (findByFingerprint(a, 'void')) return;
-
-        const prev = byId[a.id];
-
-        // Accepté avec un ID différent (PropsSection vs background) → cherche par empreinte
-        const acceptedMatch = (!prev || prev.status !== 'accepted')
-          ? findByFingerprint(a, 'accepted')
-          : null;
-
-        if (acceptedMatch) {
-          // Pour les alertes acceptées : référence = cotes au moment du clic (acceptedXxxOdds)
-          // Tout mouvement ≥ 0.02 est affiché (1.70→1.65 = 0.05 → visible)
-          const refUb = acceptedMatch.acceptedUnibetOdds  ?? acceptedMatch.unibetOdds;
-          const refBc = acceptedMatch.acceptedBetclicOdds ?? acceptedMatch.betclicOdds;
-          const refWm = acceptedMatch.acceptedWinamaxOdds ?? acceptedMatch.winamaxOdds;
-          const lineShift = Math.abs((a.line ?? 0) - (acceptedMatch.line ?? 0)) >= 1.0;
-          const ubShift   = a.unibetOdds  != null && refUb != null && Math.abs(a.unibetOdds  - refUb) >= 0.02;
-          const bcShift   = a.betclicOdds != null && refBc != null && Math.abs(a.betclicOdds - refBc) >= 0.02;
-          const wmShift   = a.winamaxOdds != null && refWm != null && Math.abs(a.winamaxOdds - refWm) >= 0.02;
-          if (lineShift || ubShift || bcShift || wmShift) {
-            byId[acceptedMatch.id] = {
-              ...acceptedMatch,
-              oddsAlert: {
-                lineFrom: acceptedMatch.line, lineTo: lineShift ? a.line : null,
-                ubFrom: refUb, ubTo: ubShift ? a.unibetOdds : null,
-                bcFrom: refBc, bcTo: bcShift ? a.betclicOdds : null,
-                wmFrom: refWm, wmTo: wmShift ? a.winamaxOdds : null,
-              },
-              unibetOdds:  a.unibetOdds  ?? acceptedMatch.unibetOdds,
-              betclicOdds: a.betclicOdds ?? acceptedMatch.betclicOdds,
-              winamaxOdds: a.winamaxOdds ?? acceptedMatch.winamaxOdds,
-            };
-            changed = true;
-          }
-          return; // on ne crée pas de nouvelle alerte
-        }
-
-        // Pending avec un ID différent (PropsSection vs background) → cherche par empreinte
-        const pendingMatch = (!prev || prev.status !== 'pending')
-          ? findByFingerprint(a, 'pending')
-          : null;
-
-        if (pendingMatch) {
-          // Alerte pending identique existe déjà — mettre à jour les cotes si elles ont bougé
-          const lineShift = Math.abs((a.line ?? 0) - (pendingMatch.line ?? 0)) >= 1.0;
-          const ubShift   = a.unibetOdds  != null && pendingMatch.unibetOdds  != null && Math.abs(a.unibetOdds  - pendingMatch.unibetOdds)  >= 0.05;
-          const bcShift   = a.betclicOdds != null && pendingMatch.betclicOdds != null && Math.abs(a.betclicOdds - pendingMatch.betclicOdds) >= 0.05;
-          const wmShift   = a.winamaxOdds != null && pendingMatch.winamaxOdds != null && Math.abs(a.winamaxOdds - pendingMatch.winamaxOdds) >= 0.05;
-          if (lineShift || ubShift || bcShift || wmShift) {
-            byId[pendingMatch.id] = {
-              ...pendingMatch,
-              oddsAlert: {
-                lineFrom: pendingMatch.line, lineTo: lineShift ? a.line : null,
-                ubFrom: pendingMatch.unibetOdds, ubTo: ubShift ? a.unibetOdds : null,
-                bcFrom: pendingMatch.betclicOdds, bcTo: bcShift ? a.betclicOdds : null,
-                wmFrom: pendingMatch.winamaxOdds, wmTo: wmShift ? a.winamaxOdds : null,
-              },
-              unibetOdds:  a.unibetOdds  ?? pendingMatch.unibetOdds,
-              betclicOdds: a.betclicOdds ?? pendingMatch.betclicOdds,
-              winamaxOdds: a.winamaxOdds ?? pendingMatch.winamaxOdds,
-            };
-            changed = true;
-          }
-          return; // Ne pas créer de doublon
-        }
-
-        if (!prev || (prev.status || 'pending') === 'pending') {
-          byId[a.id] = { ...a, status: prev?.status || 'pending' };
-          changed = true;
-        } else if (prev.status === 'accepted') {
-          // Même ID, cote/cut bougé
-          const lineShift = a.line != null && prev.line != null && Math.abs(a.line - prev.line) >= 0.5;
-          const ubShift   = a.unibetOdds  != null && prev.unibetOdds  != null && Math.abs(a.unibetOdds  - prev.unibetOdds)  >= 0.05;
-          const bcShift   = a.betclicOdds != null && prev.betclicOdds != null && Math.abs(a.betclicOdds - prev.betclicOdds) >= 0.05;
-          const wmShift   = a.winamaxOdds != null && prev.winamaxOdds != null && Math.abs(a.winamaxOdds - prev.winamaxOdds) >= 0.05;
-          if (lineShift || ubShift || bcShift || wmShift) {
-            byId[a.id] = {
-              ...prev,
-              oddsAlert: {
-                lineFrom: prev.line, lineTo: lineShift ? a.line : null,
-                ubFrom: prev.unibetOdds, ubTo: ubShift ? a.unibetOdds : null,
-                bcFrom: prev.betclicOdds, bcTo: bcShift ? a.betclicOdds : null,
-                wmFrom: prev.winamaxOdds, wmTo: wmShift ? a.winamaxOdds : null,
-              },
-              unibetOdds:  a.unibetOdds  ?? prev.unibetOdds,
-              betclicOdds: a.betclicOdds ?? prev.betclicOdds,
-              winamaxOdds: a.winamaxOdds ?? prev.winamaxOdds,
-              line: lineShift ? a.line : prev.line,
-            };
-            changed = true;
-          }
-        }
-        // rejeté même ID : on ne touche pas
-      });
-      if (changed) {
-        localStorage.setItem(ALERT_KEY, JSON.stringify(Object.values(byId)));
-        window.dispatchEvent(new Event('nba_alerts_updated'));
-      }
-    } catch {}
-  };
+  const fetchBackgroundAlerts = syncBackgroundAlerts;
 
   useEffect(() => {
-    // Purge immédiate des alertes void + alertes spécifiques à supprimer
+    // Purge immédiate des alertes void + joueurs blacklistés
     try {
-      const PURGE_PLAYERS = ['Sabrina Ionescu', 'Justin Bean', 'Jack Kayil', 'Leandro Bolmaro'];
       const raw = JSON.parse(localStorage.getItem(ALERT_KEY) || '[]');
       const clean = raw.filter(a => a.status !== 'void' && !PURGE_PLAYERS.includes(a.player));
       if (clean.length !== raw.length) localStorage.setItem(ALERT_KEY, JSON.stringify(clean));
@@ -1534,7 +1515,12 @@ export default function PlaceBetPage() {
     loadTotalAlerts();
     loadEarlywinAlerts();
     loadBttsAlerts();
+    loadFbTotalAlerts();
+    loadFbResultAlerts();
     fetchBackgroundAlerts();
+    syncGameTotalAlerts();
+    syncFootballAlerts();
+    syncOddsDrift().then(loadAlerts);
     applySettlements();
     // Sync initiale : remonte toutes les alertes accepted du localStorage vers le backend
     try {
@@ -1547,8 +1533,10 @@ export default function PlaceBetPage() {
     window.addEventListener('nba_alerts_updated', loadTotalAlerts);
     window.addEventListener('nba_alerts_updated', loadEarlywinAlerts);
     window.addEventListener('fb_btts_alerts_updated', loadBttsAlerts);
+    window.addEventListener('fb_total_alerts_updated', loadFbTotalAlerts);
+    window.addEventListener('fb_result_alerts_updated', loadFbResultAlerts);
     // Refresh cotes toutes les 2 min (mouvements de cotes sur alertes en jeu)
-    const timer = setInterval(() => { loadAlerts(); loadTotalAlerts(); loadEarlywinAlerts(); fetchBackgroundAlerts(); applySettlements(); }, 2 * 60 * 1000);
+    const timer = setInterval(() => { loadAlerts(); loadTotalAlerts(); loadEarlywinAlerts(); fetchBackgroundAlerts(); syncGameTotalAlerts(); syncFootballAlerts(); syncOddsDrift().then(loadAlerts); applySettlements(); }, 2 * 60 * 1000);
     // Aussi au retour sur la page (changement d'onglet / navigation)
     const onVisible = () => { if (document.visibilityState === 'visible') fetchBackgroundAlerts(); };
     document.addEventListener('visibilitychange', onVisible);
@@ -1558,6 +1546,8 @@ export default function PlaceBetPage() {
       window.removeEventListener('nba_alerts_updated', loadEarlywinAlerts);
       document.removeEventListener('visibilitychange', onVisible);
       window.removeEventListener('fb_btts_alerts_updated', loadBttsAlerts);
+      window.removeEventListener('fb_total_alerts_updated', loadFbTotalAlerts);
+      window.removeEventListener('fb_result_alerts_updated', loadFbResultAlerts);
       clearInterval(timer);
     };
   }, []);
@@ -1759,26 +1749,46 @@ export default function PlaceBetPage() {
           <div style={{ fontSize: 11, fontWeight: 700, color: '#10b981', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '0.6rem' }}>
             ⚽ Football · BTTS
           </div>
-          {bttsAlerts.filter(a => a.status === 'pending').map(a => (
-            <BTTSAlertCard key={a.id} alert={a} onAccept={(id, bk, odds) => updateBttsStatus(id, 'accepted', bk, odds)} onReject={id => updateBttsStatus(id, 'rejected')} onDismiss={dismissBtts} />
-          ))}
+          <div className="bet-grid">
+            {bttsAlerts.filter(a => a.status === 'pending').map(a => (
+              <BTTSAlertCard key={a.id} alert={a} onAccept={(id, bk, odds) => updateBttsStatus(id, 'accepted', bk, odds)} onReject={id => updateBttsStatus(id, 'rejected')} onDismiss={dismissBtts} />
+            ))}
+          </div>
         </div>
       )}
-      {bttsAlerts.filter(a => a.status === 'accepted').length > 0 && (
+
+      {/* ── O/U FOOT ── */}
+      {fbTotalAlerts.filter(a => a.status === 'pending').length > 0 && (
         <div style={{ marginBottom: '1.5rem' }}>
-          <div style={{ fontSize: 11, fontWeight: 700, color: '#4ade80', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '0.6rem' }}>
-            ⚽ Football BTTS · Acceptés
+          <div style={{ fontSize: 11, fontWeight: 700, color: '#10b981', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '0.6rem' }}>
+            ⚽ Football · Over/Under
           </div>
-          {bttsAlerts.filter(a => a.status === 'accepted').map(a => (
-            <BTTSAlertCard key={a.id} alert={a} onAccept={(id, bk, odds) => updateBttsStatus(id, 'accepted', bk, odds)} onReject={id => updateBttsStatus(id, 'rejected')} onDismiss={dismissBtts} />
-          ))}
+          <div className="bet-grid">
+            {fbTotalAlerts.filter(a => a.status === 'pending').map(a => (
+              <FootballTotalCard key={a.id} alert={a} onAccept={(id, bk, odds) => updateFbTotalStatus(id, 'accepted', bk, odds)} onReject={id => updateFbTotalStatus(id, 'rejected')} onDismiss={dismissFbTotal} />
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ── RÉSULTAT 1X2 FOOT ── */}
+      {fbResultAlerts.filter(a => a.status === 'pending').length > 0 && (
+        <div style={{ marginBottom: '1.5rem' }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: '#10b981', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '0.6rem' }}>
+            ⚽ Football · Résultat
+          </div>
+          <div className="bet-grid">
+            {fbResultAlerts.filter(a => a.status === 'pending').map(a => (
+              <FootballResultCard key={a.id} alert={a} onAccept={(id, bk, odds) => updateFbResultStatus(id, 'accepted', bk, odds)} onReject={id => updateFbResultStatus(id, 'rejected')} onDismiss={dismissFbResult} />
+            ))}
+          </div>
         </div>
       )}
 
       {/* ── EN ATTENTE ── */}
       {pendingGroups.length === 0 && pendingTotalAlerts.length === 0 && !hasHistory && (
         <p style={{ color: 'var(--text-dim)', fontSize: 12, marginTop: 'calc(0.5rem - 1.5cm)', marginLeft: 'calc(-2.5rem + 0.5cm)' }}>
-          Les alertes NBA Props apparaissent ici dès qu'un joueur atteint 85% de confiance dans l'Analyse Props.
+          Les alertes Props apparaissent ici dès qu'un joueur dépasse le seuil de confiance de sa catégorie dans l'Analyse Props.
         </p>
       )}
       {pendingGroups.length === 0 && pendingTotalAlerts.length === 0 && hasHistory && (

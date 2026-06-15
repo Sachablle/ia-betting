@@ -1,0 +1,141 @@
+import { useState, useEffect } from 'react';
+import { FIXTURES } from './fixtures';
+
+// Module-level singleton — one fetch per app session, shared across all pages
+let _cdmFixtures = null;
+let _fetching = false;
+let _listeners = new Set();
+
+function notify() {
+  _listeners.forEach(fn => fn(_cdmFixtures));
+}
+
+// Stats équipe pas encore disponibles pour les sélections nationales (CDM) —
+// valeurs neutres pour que StatBar/FormStrip s'affichent sans planter.
+const NEUTRAL_TEAM_STATS = {
+  goalsFor: 0, goalsAgainst: 0, xG: 0, xGA: 0,
+  shotsPerGame: 0, shotsOnTarget: 0, possession: 0,
+  form: [], upcoming: [],
+};
+
+function mapTeam(t) {
+  return { name: t?.name, short: t?.short, logoId: t?.logo, score: t?.score ?? null, ...NEUTRAL_TEAM_STATS };
+}
+
+function mapGame(g) {
+  return {
+    id: `fdcdm_${g.id}`,
+    league: 'cdm',
+    round: g.round || '',
+    date: g.date,
+    status: g.status,
+    venue: { name: 'À définir', city: '', capacity: 0 },
+    weather: { icon: '🌍', temp: 0, condition: '—', wind: 0, humidity: 0 },
+    home: mapTeam(g.home),
+    away: mapTeam(g.away),
+    h2h: [],
+  };
+}
+
+async function fetchAndApply() {
+  if (_fetching) return;
+  _fetching = true;
+  try {
+    const d = await fetch('/api/fd/worldcup').then(r => r.json());
+    _cdmFixtures = (d.games || []).map(mapGame);
+  } catch {
+    _cdmFixtures = _cdmFixtures || [];
+  }
+  _fetching = false;
+  notify();
+}
+
+function useCdmFixtures() {
+  const [fixtures, setFixtures] = useState(_cdmFixtures || []);
+
+  useEffect(() => {
+    _listeners.add(setFixtures);
+    if (_cdmFixtures) setFixtures(_cdmFixtures);
+    else if (!_fetching) fetchAndApply();
+    return () => _listeners.delete(setFixtures);
+  }, []);
+
+  return fixtures;
+}
+
+// ── 5 grands championnats (live, football-data.org) ──────────────────────────
+
+// Stats avancées (xG, tirs, possession) pas fournies par football-data.org —
+// neutres en attendant un upgrade api-football Pro (cf. project_xg_upgrade).
+const NEUTRAL_ADV_STATS = { xG: 0, xGA: 0, shotsPerGame: 0, shotsOnTarget: 0, possession: 0, upcoming: [] };
+
+function mapFdTeam(t) {
+  return {
+    name: t?.name, short: t?.short, logoId: t?.logoId, score: null,
+    position: t?.position ?? null, points: t?.points ?? null, played: t?.played ?? 0,
+    wins: t?.wins ?? 0, draws: t?.draws ?? 0, losses: t?.losses ?? 0,
+    goalsFor: t?.goalsFor ?? 0, goalsAgainst: t?.goalsAgainst ?? 0,
+    form: t?.form || [],
+    ...NEUTRAL_ADV_STATS,
+  };
+}
+
+function mapFdMatch(m) {
+  return {
+    id: `fd_${m.id}`,
+    league: m.league,
+    round: m.round || '',
+    date: m.date,
+    status: 'STATUS_SCHEDULED',
+    venue: { name: 'À définir', city: '', capacity: 0 },
+    weather: { icon: '⚽', temp: 0, condition: '—', wind: 0, humidity: 0 },
+    home: mapFdTeam(m.home),
+    away: mapFdTeam(m.away),
+    h2h: m.h2h || [],
+  };
+}
+
+let _fdFixtures = null;
+let _fdFetching = false;
+let _fdListeners = new Set();
+
+function notifyFd() {
+  _fdListeners.forEach(fn => fn(_fdFixtures));
+}
+
+async function fetchAndApplyFd() {
+  if (_fdFetching) return;
+  _fdFetching = true;
+  try {
+    const d = await fetch('/api/fd/matches').then(r => r.json());
+    _fdFixtures = (d.matches || []).map(mapFdMatch);
+  } catch {
+    _fdFixtures = _fdFixtures || [];
+  }
+  _fdFetching = false;
+  notifyFd();
+}
+
+function useFdFixtures() {
+  const [fixtures, setFixtures] = useState(_fdFixtures || []);
+
+  useEffect(() => {
+    _fdListeners.add(setFixtures);
+    if (_fdFixtures) setFixtures(_fdFixtures);
+    else if (!_fdFetching) fetchAndApplyFd();
+    return () => _fdListeners.delete(setFixtures);
+  }, []);
+
+  return fixtures;
+}
+
+// FIXTURES (statiques) + 5 championnats (live, football-data.org) + CDM (live)
+// Pour une ligue donnée, les fixtures live remplacent les statiques dès qu'elles
+// sont disponibles (sinon fallback statique, ex: hors-saison).
+export function useFootballFixtures() {
+  const cdm = useCdmFixtures();
+  const fd = useFdFixtures();
+  const liveLeagues = new Set(fd.map(f => f.league));
+  const staticFixtures = FIXTURES.filter(f => !liveLeagues.has(f.league));
+  return [...staticFixtures, ...fd, ...cdm];
+}

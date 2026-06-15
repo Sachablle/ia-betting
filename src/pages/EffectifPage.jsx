@@ -164,6 +164,48 @@ const LEAGUES = [
     teams: NBA_TEAMS,
   },
   {
+    id: 'wnba', flag: '🇺🇸', name: 'WNBA', country: 'États-Unis',
+    teams: [
+      { name: 'Atlanta Dream',          wnbaId: 20,     abbr: 'atl'  },
+      { name: 'Chicago Sky',            wnbaId: 19,     abbr: 'chi'  },
+      { name: 'Connecticut Sun',        wnbaId: 18,     abbr: 'conn' },
+      { name: 'Dallas Wings',           wnbaId: 3,      abbr: 'dal'  },
+      { name: 'Golden State Valkyries', wnbaId: 129689, abbr: 'gs'   },
+      { name: 'Indiana Fever',          wnbaId: 5,      abbr: 'ind'  },
+      { name: 'Las Vegas Aces',         wnbaId: 17,     abbr: 'lv'   },
+      { name: 'Los Angeles Sparks',     wnbaId: 6,      abbr: 'la'   },
+      { name: 'Minnesota Lynx',         wnbaId: 8,      abbr: 'min'  },
+      { name: 'New York Liberty',       wnbaId: 9,      abbr: 'ny'   },
+      { name: 'Phoenix Mercury',        wnbaId: 11,     abbr: 'phx'  },
+      { name: 'Portland Fire',          wnbaId: 132052, abbr: 'por'  },
+      { name: 'Seattle Storm',          wnbaId: 14,     abbr: 'sea'  },
+      { name: 'Toronto Tempo',          wnbaId: 131935, abbr: 'tor'  },
+      { name: 'Washington Mystics',     wnbaId: 16,     abbr: 'wsh'  },
+    ],
+  },
+  {
+    id: 'acb', flag: '🇪🇸', name: 'ACB', country: 'Espagne',
+    teams: [
+      { name: 'Barcelona' },
+      { name: 'Basket Zaragoza' },
+      { name: 'Baskonia' },
+      { name: 'Basquet Girona' },
+      { name: 'Bilbao' },
+      { name: 'Breogan' },
+      { name: 'Forca Lleida' },
+      { name: 'Gran Canaria' },
+      { name: 'Joventut Badalona' },
+      { name: 'Manresa' },
+      { name: 'MoraBanc Andorra' },
+      { name: 'Murcia' },
+      { name: 'Real Madrid' },
+      { name: 'San Pablo Burgos' },
+      { name: 'Tenerife' },
+      { name: 'Unicaja' },
+      { name: 'Valencia' },
+    ],
+  },
+  {
     id: 'euroleague', flag: '🇪🇺', name: 'EuroLeague', country: 'Europe',
     teams: [
       'Real Madrid', 'FC Barcelona', 'Fenerbahçe', 'Panathinaikos',
@@ -177,7 +219,7 @@ const LEAGUES = [
 
 const SPORT_LABELS = {
   ligue1: 'Football', pl: 'Football', laliga: 'Football', bundes: 'Football', seriea: 'Football',
-  nba: 'Basket', euroleague: 'Basket',
+  nba: 'Basket', wnba: 'Basket', acb: 'Basket', euroleague: 'Basket',
 };
 
 
@@ -289,6 +331,188 @@ function NBALeagueItem({ league }) {
 
         {selectedTeam && (
           <RosterPanel key={selectedTeam.bdlId} team={selectedTeam} onClose={() => setSelected(null)} />
+        )}
+      </div>
+    </div>
+  );
+}
+
+const wnbaRosterCache = {};
+
+function WNBARosterPanel({ team, onClose }) {
+  const [players, setPlayers] = useState(wnbaRosterCache[team.wnbaId] ?? null);
+  const [loading, setLoading] = useState(!wnbaRosterCache[team.wnbaId]);
+  const [error, setError]     = useState(null);
+
+  useEffect(() => {
+    if (wnbaRosterCache[team.wnbaId]) { setPlayers(wnbaRosterCache[team.wnbaId]); setLoading(false); return; }
+    setLoading(true); setPlayers(null); setError(null);
+    fetch(`/api/wnba/players/${team.wnbaId}`)
+      .then(r => r.json())
+      .then(d => { wnbaRosterCache[team.wnbaId] = d.players; setPlayers(d.players); setLoading(false); })
+      .catch(e => { setError(e.message); setLoading(false); });
+  }, [team.wnbaId]);
+
+  return (
+    <div className="ef-roster-panel">
+      <div className="ef-roster-header">
+        <span className="ef-roster-title">{team.name}</span>
+        <button className="ef-roster-close" onClick={onClose}>✕</button>
+      </div>
+      {loading && <div className="ef-roster-state">Chargement…</div>}
+      {error   && <div className="ef-roster-state ef-roster-error">Erreur : {error}</div>}
+      {players && (() => {
+        const sorted = [...players].sort((a, b) => (b.stats?.pts ?? -1) - (a.stats?.pts ?? -1));
+        return (
+          <div className="ef-roster-table">
+            <div className="ef-roster-row ef-roster-head">
+              <span>#</span><span>Joueuse</span><span>Pos</span><span>PPG</span><span>REB</span><span>AST</span><span>MIN</span>
+            </div>
+            {sorted.map((p, i) => (
+              <div key={p.id} className={`ef-roster-row${i < 5 ? ' ef-roster-starter' : ''}`}>
+                <span className="ef-roster-jersey">{p.jersey}</span>
+                <span className="ef-roster-name-wrap"><span className="ef-roster-name">{p.name}</span></span>
+                <span className="ef-roster-pos">{p.position}</span>
+                <span className="ef-roster-stat">{p.stats?.pts != null ? p.stats.pts.toFixed(1) : '—'}</span>
+                <span className="ef-roster-stat">{p.stats?.reb != null ? p.stats.reb.toFixed(1) : '—'}</span>
+                <span className="ef-roster-stat">{p.stats?.ast != null ? p.stats.ast.toFixed(1) : '—'}</span>
+                <span className="ef-roster-stat">{p.stats?.min != null ? p.stats.min.toFixed(1) : '—'}</span>
+              </div>
+            ))}
+          </div>
+        );
+      })()}
+    </div>
+  );
+}
+
+function WNBALeagueItem({ league }) {
+  const [open, setOpen]             = useState(false);
+  const [selectedTeam, setSelected] = useState(null);
+
+  return (
+    <div className="ef-league-item">
+      <button className="ef-card-btn" onClick={() => { setOpen(o => !o); setSelected(null); }}>
+        <div className="ef-card">
+          <span className="ef-card-flag">{league.flag}</span>
+          <div className="ef-card-info">
+            <span className="ef-card-name">{league.name}</span>
+            <span className="ef-card-meta">{league.country} · {league.teams.length} clubs</span>
+          </div>
+          <svg className={`ef-card-chevron ${open ? 'open' : ''}`} width="16" height="16" viewBox="0 0 16 16" fill="none">
+            <path d="M4 6l4 4 4-4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+          </svg>
+        </div>
+      </button>
+      <div className={`ef-teams-wrap ${open ? 'open' : ''}`}>
+        <div className="ef-teams-grid">
+          {league.teams.map(team => (
+            <button
+              key={team.wnbaId}
+              className={`ef-team-chip ef-team-chip--clickable ${selectedTeam?.wnbaId === team.wnbaId ? 'active' : ''}`}
+              onClick={() => setSelected(s => s?.wnbaId === team.wnbaId ? null : team)}
+            >
+              {team.name}
+              {team.abbr && (
+                <img
+                  src={`https://a.espncdn.com/i/teamlogos/wnba/500/${team.abbr}.png`}
+                  alt=""
+                  className="ef-chip-logo"
+                />
+              )}
+            </button>
+          ))}
+        </div>
+        {selectedTeam && (
+          <WNBARosterPanel key={selectedTeam.wnbaId} team={selectedTeam} onClose={() => setSelected(null)} />
+        )}
+      </div>
+    </div>
+  );
+}
+
+const euRosterCache = {};
+
+function EURosterPanel({ team, league, onClose }) {
+  const ck = `${league}_${team.name}`;
+  const [players, setPlayers] = useState(euRosterCache[ck] ?? null);
+  const [loading, setLoading] = useState(!euRosterCache[ck]);
+  const [error, setError]     = useState(null);
+
+  useEffect(() => {
+    if (euRosterCache[ck]) { setPlayers(euRosterCache[ck]); setLoading(false); return; }
+    setLoading(true); setPlayers(null); setError(null);
+    fetch(`/api/euro/${league}/roster/byname/${encodeURIComponent(team.name)}`)
+      .then(r => r.json())
+      .then(d => { euRosterCache[ck] = d.players; setPlayers(d.players); setLoading(false); })
+      .catch(e => { setError(e.message); setLoading(false); });
+  }, [ck]);
+
+  return (
+    <div className="ef-roster-panel">
+      <div className="ef-roster-header">
+        <span className="ef-roster-title">{team.name}</span>
+        <button className="ef-roster-close" onClick={onClose}>✕</button>
+      </div>
+      {loading && <div className="ef-roster-state">Chargement…</div>}
+      {error   && <div className="ef-roster-state ef-roster-error">Erreur : {error}</div>}
+      {players && (() => {
+        const sorted = [...players].sort((a, b) => (b.stats?.pts ?? -1) - (a.stats?.pts ?? -1));
+        return (
+          <div className="ef-roster-table">
+            <div className="ef-roster-row ef-roster-head">
+              <span>#</span><span>Joueur</span><span>Pos</span><span>PPG</span><span>REB</span><span>AST</span><span>MIN</span>
+            </div>
+            {sorted.map((p, i) => (
+              <div key={p.id} className={`ef-roster-row${p.starterFrac >= 0.6 ? ' ef-roster-starter' : ''}`}>
+                <span className="ef-roster-jersey">{p.jersey}</span>
+                <span className="ef-roster-name-wrap"><span className="ef-roster-name">{p.name}</span></span>
+                <span className="ef-roster-pos">{p.position}</span>
+                <span className="ef-roster-stat">{p.stats?.pts != null ? p.stats.pts.toFixed(1) : '—'}</span>
+                <span className="ef-roster-stat">{p.stats?.reb != null ? p.stats.reb.toFixed(1) : '—'}</span>
+                <span className="ef-roster-stat">{p.stats?.ast != null ? p.stats.ast.toFixed(1) : '—'}</span>
+                <span className="ef-roster-stat">{p.stats?.min != null ? p.stats.min.toFixed(1) : '—'}</span>
+              </div>
+            ))}
+          </div>
+        );
+      })()}
+    </div>
+  );
+}
+
+function EULeagueItem({ league }) {
+  const [open, setOpen]             = useState(false);
+  const [selectedTeam, setSelected] = useState(null);
+
+  return (
+    <div className="ef-league-item">
+      <button className="ef-card-btn" onClick={() => { setOpen(o => !o); setSelected(null); }}>
+        <div className="ef-card">
+          <span className="ef-card-flag">{league.flag}</span>
+          <div className="ef-card-info">
+            <span className="ef-card-name">{league.name}</span>
+            <span className="ef-card-meta">{league.country} · {league.teams.length} clubs</span>
+          </div>
+          <svg className={`ef-card-chevron ${open ? 'open' : ''}`} width="16" height="16" viewBox="0 0 16 16" fill="none">
+            <path d="M4 6l4 4 4-4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+          </svg>
+        </div>
+      </button>
+      <div className={`ef-teams-wrap ${open ? 'open' : ''}`}>
+        <div className="ef-teams-grid">
+          {league.teams.map(team => (
+            <button
+              key={team.name}
+              className={`ef-team-chip ef-team-chip--clickable ${selectedTeam?.name === team.name ? 'active' : ''}`}
+              onClick={() => setSelected(s => s?.name === team.name ? null : team)}
+            >
+              {team.name}
+            </button>
+          ))}
+        </div>
+        {selectedTeam && (
+          <EURosterPanel key={selectedTeam.name} team={selectedTeam} league={league.id} onClose={() => setSelected(null)} />
         )}
       </div>
     </div>
@@ -434,9 +658,10 @@ export default function EffectifPage() {
         <h2 className="ef-section-title">Basket</h2>
         <div className="ef-list">
           {basket.map(l =>
-            l.id === 'nba'
-              ? <NBALeagueItem key={l.id} league={l} />
-              : <LeagueItem    key={l.id} league={l} />
+            l.id === 'nba'  ? <NBALeagueItem  key={l.id} league={l} /> :
+            l.id === 'wnba' ? <WNBALeagueItem key={l.id} league={l} /> :
+            l.id === 'acb'  ? <EULeagueItem   key={l.id} league={l} /> :
+                              <LeagueItem     key={l.id} league={l} />
           )}
         </div>
       </section>

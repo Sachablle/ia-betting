@@ -1,14 +1,20 @@
 import { useState, useEffect, useMemo } from 'react';
+import { syncSettlements, resolveCompletedFootballAlerts } from '../utils/syncAlerts';
 
 const ROLLING_N = 20;
 const DEFAULT_ODDS = 1.9;
 
+// Séparation ancien / nouveau modèle — alertes à partir du match Toronto Tempo @ Connecticut Sun (10 juin 2026, 23h UTC)
+const MODEL_SPLIT_MS = new Date('2026-06-10T23:00:00Z').getTime();
+
 // ── Chargement & normalisation ─────────────────────────────────────────────
 
-function countAccepted(periodDays, sportFilter, typeFilter) {
+function countAccepted(periodDays, sportFilter, typeFilter, model = 'new') {
   const now = Date.now();
-  const cutoff = periodDays === Infinity ? 0 : now - periodDays * 24 * 3600_000;
-  const inPeriod = date => { const t = new Date(date).getTime(); return !isNaN(t) && t >= cutoff; };
+  const rawCutoff = periodDays === Infinity ? 0 : now - periodDays * 24 * 3600_000;
+  const cutoff   = model === 'new' ? Math.max(rawCutoff, MODEL_SPLIT_MS) : rawCutoff;
+  const endCutoff = model === 'old' ? MODEL_SPLIT_MS : Infinity;
+  const inPeriod = date => { const t = new Date(date).getTime(); return !isNaN(t) && t >= cutoff && t < endCutoff; };
   const EU = ['euroleague','wnba','acb','lnb','bbl','legaa'];
 
   const props = JSON.parse(localStorage.getItem('nba_prop_alerts') || '[]')
@@ -31,17 +37,35 @@ function countAccepted(periodDays, sportFilter, typeFilter) {
   const btts = JSON.parse(localStorage.getItem('fb_btts_alerts') || '[]')
     .filter(a => a.status === 'accepted' && inPeriod(a.fixtureDate))
     .filter(a => {
-      if (sportFilter !== 'all' && 'football' !== sportFilter) return false;
+      if (sportFilter !== 'all' && sportFilter !== 'foot') return false;
       if (typeFilter !== 'all' && 'btts' !== typeFilter) return false;
       return true;
     });
 
-  return props.length + totals.length + btts.length;
+  const fbTotals = JSON.parse(localStorage.getItem('fb_total_alerts') || '[]')
+    .filter(a => a.status === 'accepted' && inPeriod(a.fixtureDate))
+    .filter(a => {
+      if (sportFilter !== 'all' && sportFilter !== 'foot') return false;
+      if (typeFilter !== 'all' && 'total' !== typeFilter) return false;
+      return true;
+    });
+
+  const fbResults = JSON.parse(localStorage.getItem('fb_result_alerts') || '[]')
+    .filter(a => a.status === 'accepted' && inPeriod(a.fixtureDate))
+    .filter(a => {
+      if (sportFilter !== 'all' && sportFilter !== 'foot') return false;
+      if (typeFilter !== 'all' && 'result' !== typeFilter) return false;
+      return true;
+    });
+
+  return props.length + totals.length + btts.length + fbTotals.length + fbResults.length;
 }
 
-function loadAllResolved(periodDays) {
+function loadAllResolved(periodDays, model = 'new') {
   const now = Date.now();
-  const cutoff = periodDays === Infinity ? 0 : now - periodDays * 24 * 3600_000;
+  const rawCutoff = periodDays === Infinity ? 0 : now - periodDays * 24 * 3600_000;
+  const cutoff    = model === 'new' ? Math.max(rawCutoff, MODEL_SPLIT_MS) : rawCutoff;
+  const endCutoff = model === 'old' ? MODEL_SPLIT_MS : Infinity;
 
   const getOdds = a =>
     a.acceptedUnibetOdds ?? a.acceptedBetclicOdds ?? a.acceptedWinamaxOdds ??
@@ -76,13 +100,45 @@ function loadAllResolved(periodDays) {
     .map(a => ({
       type: 'btts', sport: 'football', label: a.fixture,
       sub: '✓ Les deux équipes marquent', date: a.fixtureDate, status: a.status,
-      odds: a.acceptedOdds ?? a.unibetOdds ?? a.betclicOdds ?? a.pinnacleOdds ?? null,
-      probability: a.probability, actual: null, league: a.league || 'football',
+      odds: a.acceptedUnibetOdds ?? a.acceptedBetclicOdds ?? a.acceptedWinamaxOdds ?? a.acceptedPinnacleOdds ??
+            a.unibetOdds ?? a.betclicOdds ?? a.winamaxOdds ?? a.pinnacleOdds ?? null,
+      probability: a.probability,
+      actual: (a.actualHomeScore != null && a.actualAwayScore != null) ? `${a.actualHomeScore}-${a.actualAwayScore}` : null,
+      league: a.league || 'football', bookmaker: a.acceptedBookmaker,
+    }));
+
+  const fbTotals = JSON.parse(localStorage.getItem('fb_total_alerts') || '[]')
+    .filter(a => ['won', 'lost'].includes(a.status))
+    .map(a => ({
+      type: 'total', sport: 'football',
+      label: `${a.homeShort || a.home} vs ${a.awayShort || a.away}`,
+      sub: `${a.direction === 'over' ? '▲ Plus' : '▼ Moins'} de ${a.line} buts`,
+      date: a.fixtureDate, status: a.status,
+      odds: a.acceptedUnibetOdds ?? a.acceptedBetclicOdds ?? a.acceptedWinamaxOdds ??
+            a.unibetOdds ?? a.betclicOdds ?? a.winamaxOdds ?? null,
+      probability: a.probability,
+      actual: (a.actualHomeScore != null && a.actualAwayScore != null) ? a.actualHomeScore + a.actualAwayScore : null,
+      line: a.line, direction: a.direction, league: a.league || 'football',
       bookmaker: a.acceptedBookmaker,
     }));
 
-  return [...props, ...totals, ...btts]
-    .filter(a => { const t = new Date(a.date).getTime(); return !isNaN(t) && t >= cutoff; })
+  const fbResults = JSON.parse(localStorage.getItem('fb_result_alerts') || '[]')
+    .filter(a => ['won', 'lost'].includes(a.status))
+    .map(a => ({
+      type: 'result', sport: 'football',
+      label: `${a.homeShort || a.home} vs ${a.awayShort || a.away}`,
+      sub: a.direction === 'draw' ? '🏆 Match nul' : `🏆 Victoire ${a.direction === 'home' ? (a.homeShort || a.home) : (a.awayShort || a.away)}`,
+      date: a.fixtureDate, status: a.status,
+      odds: a.acceptedUnibetOdds ?? a.acceptedBetclicOdds ?? a.acceptedWinamaxOdds ??
+            a.unibetOdds ?? a.betclicOdds ?? a.winamaxOdds ?? null,
+      probability: a.probability,
+      actual: (a.actualHomeScore != null && a.actualAwayScore != null) ? `${a.actualHomeScore}-${a.actualAwayScore}` : null,
+      direction: a.direction, league: a.league || 'football',
+      bookmaker: a.acceptedBookmaker,
+    }));
+
+  return [...props, ...totals, ...btts, ...fbTotals, ...fbResults]
+    .filter(a => { const t = new Date(a.date).getTime(); return !isNaN(t) && t >= cutoff && t < endCutoff; })
     .sort((a, b) => new Date(a.date) - new Date(b.date));
 }
 
@@ -177,6 +233,7 @@ function byTypeStats(bets) {
     'Props Ast ▼': bets.filter(b => b.type === 'prop' && b.stat === 'ast' && b.direction === 'under'),
     'Total O/U':   bets.filter(b => b.type === 'total'),
     'BTTS':        bets.filter(b => b.type === 'btts'),
+    'Résultat':    bets.filter(b => b.type === 'result'),
   };
   return Object.entries(groups).map(([label, arr]) => ({ label, ...calcMetrics(arr) })).filter(g => g.total > 0);
 }
@@ -526,7 +583,7 @@ const COMP_FILTERS  = [
   { key: 'pl',         label: 'Premier League',   sport: 'foot'   },
 ];
 const TYPE_FILTERS_BASKET = [{ key: 'all', label: 'Tous' }, { key: 'result', label: 'Résultat' }, { key: 'total', label: 'Over/Under' }, { key: 'prop', label: 'Props' }];
-const TYPE_FILTERS_FOOT   = [{ key: 'all', label: 'Tous' }, { key: 'result', label: 'Résultat' }, { key: 'btts', label: 'BTTS' }];
+const TYPE_FILTERS_FOOT   = [{ key: 'all', label: 'Tous' }, { key: 'result', label: 'Résultat' }, { key: 'btts', label: 'BTTS' }, { key: 'total', label: 'Over/Under' }];
 const TYPE_FILTERS_ALL    = [{ key: 'all', label: 'Tous' }, { key: 'prop', label: 'Props' }, { key: 'total', label: 'Over/Under' }, { key: 'result', label: 'Résultat' }, { key: 'btts', label: 'BTTS' }];
 
 function DropdownFilter({ label, options, value, onChange }) {
@@ -592,23 +649,37 @@ function Section({ title, children, mb = true, defaultOpen = true }) {
 // ── Page principale ────────────────────────────────────────────────────────
 
 export default function BacktestingPage() {
-  const [period,      setPeriod]      = useState(30);
+  const [model,       setModel]       = useState('new');
+  const [period,      setPeriod]      = useState(Infinity);
   const [sportFilter, setSportFilter] = useState('all');
   const [compFilter,  setCompFilter]  = useState('all');
   const [typeFilter,  setTypeFilter]  = useState('all');
   const [allBets,     setAllBets]     = useState([]);
   const [stake,       setStake]       = useState(100);
 
-  // Réinitialise compétition et type quand sport change
+  const handleModelChange = (m) => { setModel(m); setPeriod(Infinity); setSportFilter('all'); setCompFilter('all'); setTypeFilter('all'); };
   const handleSportChange = (v) => { setSportFilter(v); setCompFilter('all'); setTypeFilter('all'); };
 
   // Options dynamiques selon sport sélectionné
   const compOptions = [{ key: 'all', label: 'Toutes' }, ...COMP_FILTERS.filter(c => sportFilter === 'all' || c.sport === sportFilter)];
   const typeOptions = sportFilter === 'basket' ? TYPE_FILTERS_BASKET : sportFilter === 'foot' ? TYPE_FILTERS_FOOT : TYPE_FILTERS_ALL;
 
-  const acceptedCount = useMemo(() => countAccepted(period, sportFilter, typeFilter), [period, sportFilter, typeFilter]);
+  const acceptedCount = useMemo(() => countAccepted(period, sportFilter, typeFilter, model), [period, sportFilter, typeFilter, model]);
 
-  useEffect(() => { setAllBets(loadAllResolved(period)); }, [period]);
+  // Sync settlements au mount (won/lost depuis le backend) puis recharge les données
+  useEffect(() => {
+    const resolveFootball = async (key) => {
+      const alerts = JSON.parse(localStorage.getItem(key) || '[]');
+      await resolveCompletedFootballAlerts(alerts, updated => localStorage.setItem(key, JSON.stringify(updated)));
+    };
+    Promise.all([
+      syncSettlements(),
+      resolveFootball('fb_btts_alerts'),
+      resolveFootball('fb_total_alerts'),
+    ]).then(() => setAllBets(loadAllResolved(period, model)));
+  }, []);
+
+  useEffect(() => { setAllBets(loadAllResolved(period, model)); }, [period, model]);
 
   const filtered = useMemo(() => allBets.filter(b => {
     if (sportFilter === 'basket' && !BASKET_LEAGUES.has(b.sport)) return false;
@@ -642,16 +713,33 @@ export default function BacktestingPage() {
     <div className="page" style={{ paddingBottom: '3rem' }}>
 
       {/* Header */}
-      <div style={{ marginBottom: '2.5rem' }}>
-        <p style={{ fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.12em', color: '#3b82f6', marginBottom: '0.6rem' }}>
-          Performance
-        </p>
-        <h1 style={{ fontSize: '2.2rem', fontWeight: 800, letterSpacing: '-0.04em', color: 'var(--text)', lineHeight: 1.1 }}>
-          Backtesting
-        </h1>
-        <p style={{ color: 'var(--text-sub)', marginTop: '0.6rem', fontSize: 14, maxWidth: 420, lineHeight: 1.6 }}>
-          Suivez la pertinence de vos alertes et la performance de vos paris en temps réel.
-        </p>
+      <div style={{ marginBottom: '2rem', display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', flexWrap: 'wrap', gap: '1rem' }}>
+        <div>
+          <p style={{ fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.12em', color: '#3b82f6', marginBottom: '0.6rem' }}>
+            Performance
+          </p>
+          <h1 style={{ fontSize: '2.2rem', fontWeight: 800, letterSpacing: '-0.04em', color: 'var(--text)', lineHeight: 1.1 }}>
+            Backtesting
+          </h1>
+          <p style={{ color: 'var(--text-sub)', marginTop: '0.6rem', fontSize: 14, maxWidth: 420, lineHeight: 1.6 }}>
+            Suivez la pertinence de vos alertes et la performance de vos paris en temps réel.
+          </p>
+        </div>
+        {/* Toggle modèle */}
+        <div style={{ display: 'flex', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 12, padding: 3, gap: 2, alignSelf: 'flex-start', marginTop: '0.5rem' }}>
+          {[{ key: 'new', label: 'Nouveau modèle', sub: 'depuis le 9 juin' }, { key: 'old', label: 'Ancien modèle', sub: 'avant le 9 juin' }].map(m => (
+            <button key={m.key} onClick={() => handleModelChange(m.key)} style={{
+              background: model === m.key ? (m.key === 'new' ? 'rgba(96,165,250,0.18)' : 'rgba(148,163,184,0.12)') : 'transparent',
+              border: model === m.key ? `1px solid ${m.key === 'new' ? 'rgba(96,165,250,0.4)' : 'rgba(148,163,184,0.2)'}` : '1px solid transparent',
+              borderRadius: 9, padding: '0.45rem 1rem', cursor: 'pointer',
+              display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 1,
+              transition: 'all 0.15s',
+            }}>
+              <span style={{ fontSize: 11, fontWeight: 700, color: model === m.key ? (m.key === 'new' ? '#60a5fa' : '#94a3b8') : 'var(--text-dim)', whiteSpace: 'nowrap' }}>{m.label}</span>
+              <span style={{ fontSize: 9, color: 'var(--text-dim)', whiteSpace: 'nowrap' }}>{m.sub}</span>
+            </button>
+          ))}
+        </div>
       </div>
 
       {/* Filtres */}

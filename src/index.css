@@ -2468,3 +2468,8 @@ body {
   color: var(--text-sub);
   line-height: 1.5;
 }
+
+@keyframes dash-pulse {
+  0%, 100% { transform: scale(1);   opacity: 0.15; }
+  50%       { transform: scale(1.6); opacity: 0;    }
+}

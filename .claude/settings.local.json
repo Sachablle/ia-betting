@@ -30,7 +30,11 @@
       "WebFetch(domain:www.landofbasketball.com)",
       "WebFetch(domain:www.espn.com)",
       "Bash(mkdir -p ~/Desktop/\"Claude projets\"/\"Projets betting \"/public)",
-      "Bash(cp \"/Users/sacha/.claude/image-cache/16c0615b-7f0b-43a1-b6ad-1536590eef0a/27.png\" ~/Desktop/\"Claude projets\"/\"Projets betting \"/public/hud-bg.png)"
+      "Bash(cp \"/Users/sacha/.claude/image-cache/16c0615b-7f0b-43a1-b6ad-1536590eef0a/27.png\" ~/Desktop/\"Claude projets\"/\"Projets betting \"/public/hud-bg.png)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:acb.com)",
+      "WebFetch(domain:www.thesportsdb.com)",
+      "Bash(npx vite *)"
     ]
   }
 }

@@ -1,6 +1,8 @@
 import { useState, useEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { useParams, useNavigate } from 'react-router-dom';
-import { getFixtureById, getLeagueById, getFixturesByLeague } from '../utils/fixtures';
+import { getFixtureById, getLeagueById } from '../utils/fixtures';
+import { useFootballFixtures } from '../utils/useFootballFixtures';
 import { formatFullDate, formatMatchTime, formatCapacity } from '../utils/formatters';
 import FormStrip from '../components/FormStrip';
 import StatBar from '../components/StatBar';
@@ -162,6 +164,79 @@ function computeStaticBTTS(fixture) {
   };
 }
 
+// CDM : λ basés sur la moyenne pondérée buts marqués/encaissés des sélections
+// (qualifs > amicaux, decay temporel — calculé côté backend, /api/football/cdm/teamstats),
+// ajustés par le repos (fatigue) et les attaquants blessés. Pas de h2h (toujours vide pour la CDM).
+function computeCdmBTTS(homeStats, awayStats, fixtureDate, homeInjuredFwd = 0, awayInjuredFwd = 0) {
+  if (homeStats?.goalsFor == null || awayStats?.goalsFor == null) return null;
+
+  // Repos : <1j → -7% attaque / +7% buts encaissés par l'adversaire (fatigue), neutre dès 5j
+  const restFactor = lastMatchDate => {
+    if (!lastMatchDate || !fixtureDate) return 1;
+    const days = (new Date(fixtureDate) - new Date(lastMatchDate)) / 86400000;
+    if (days >= 5) return 1;
+    if (days <= 1) return 0.93;
+    return 0.93 + (days - 1) * 0.0175;
+  };
+  const fHome = restFactor(homeStats.lastMatchDate);
+  const fAway = restFactor(awayStats.lastMatchDate);
+
+  // Attaquants blessés : -5% de force d'attaque par joueur absent, plafonné à -15%
+  const injuryFactor = n => Math.max(0.85, 1 - 0.05 * n);
+  const iHome = injuryFactor(homeInjuredFwd);
+  const iAway = injuryFactor(awayInjuredFwd);
+
+  const lambda_home = (homeStats.goalsFor * iHome * fHome + awayStats.goalsAgainst * (2 - fAway)) / 2;
+  const lambda_away = (awayStats.goalsFor * iAway * fAway + homeStats.goalsAgainst * (2 - fHome)) / 2;
+  const p_home = 1 - Math.exp(-lambda_home);
+  const p_away = 1 - Math.exp(-lambda_away);
+  const btts_poisson = p_home * p_away;
+
+  return {
+    prob: Math.round(btts_poisson * 100),
+    components: [{ label: 'Modèle Poisson (forme pondérée + repos/blessures)', value: btts_poisson, pct: Math.round(btts_poisson * 100), normalizedW: 1 }],
+    lambda_home: +lambda_home.toFixed(2),
+    lambda_away: +lambda_away.toFixed(2),
+    p_home: Math.round(p_home * 100),
+    p_away: Math.round(p_away * 100),
+    isStatic: true,
+  };
+}
+
+// PMF Poisson : P(X=k) = e^-λ · λ^k / k!
+function poissonPmf(lambda, k) {
+  let f = 1;
+  for (let i = 2; i <= k; i++) f *= i;
+  return Math.exp(-lambda) * Math.pow(lambda, k) / f;
+}
+
+// P(Over/Under "line" buts) — réutilise λ_home/λ_away du modèle BTTS (même base Poisson)
+function computeOU(lambda_home, lambda_away, line) {
+  if (lambda_home == null || lambda_away == null) return null;
+  const lambda_total = lambda_home + lambda_away;
+  const kMax = Math.floor(line); // 1.5 → 1, 2.5 → 2
+  let pUnder = 0;
+  for (let k = 0; k <= kMax; k++) pUnder += poissonPmf(lambda_total, k);
+  const pOver = 1 - pUnder;
+  return { lambda_total: +lambda_total.toFixed(2), over: Math.round(pOver * 100), under: Math.round(pUnder * 100) };
+}
+
+// P(victoire dom. / nul / victoire ext.) — grille Poisson indépendante (même base que compute1X2Probs backend)
+function compute1X2(lambda_home, lambda_away, kMax = 10) {
+  if (lambda_home == null || lambda_away == null) return null;
+  let pHome = 0, pDraw = 0, pAway = 0;
+  for (let i = 0; i <= kMax; i++) {
+    const pi = poissonPmf(lambda_home, i);
+    for (let j = 0; j <= kMax; j++) {
+      const p = pi * poissonPmf(lambda_away, j);
+      if (i > j) pHome += p;
+      else if (i === j) pDraw += p;
+      else pAway += p;
+    }
+  }
+  return { pHome: Math.round(pHome * 100), pDraw: Math.round(pDraw * 100), pAway: Math.round(pAway * 100) };
+}
+
 function BTTSSection({ result, home, away, marketOdds }) {
   if (!result) return null;
 
@@ -253,8 +328,41 @@ const FB_BK_LABELS = { unibet: 'Unibet', betclic: 'Betclic', winamax: 'Winamax' 
 const FB_BK_COLORS = { unibet: '#1db954', betclic: '#e0292e', winamax: '#ffffff' };
 const FB_BK_ORDER  = ['unibet', 'betclic', 'winamax'];
 
-function FootballOddsBox({ markets, bttsResult }) {
+function FootballOddsBox({ markets, bttsResult, home, away }) {
   const [tab, setTab] = useState('result');
+  const [totalsLine, setTotalsLine] = useState('1.5');
+  const [showLegend, setShowLegend] = useState(false);
+  const [legendBox, setLegendBox] = useState(null); // { top, left }
+  const cardRef = useRef(null);
+  const legendRef = useRef(null);
+  const legendBtnRef = useRef(null);
+  const LEGEND_W = 250;
+
+  // Ferme la légende au clic en dehors
+  useEffect(() => {
+    if (!showLegend) return;
+    const onDocClick = (e) => {
+      if (legendRef.current?.contains(e.target) || legendBtnRef.current?.contains(e.target)) return;
+      setShowLegend(false);
+    };
+    document.addEventListener('mousedown', onDocClick, true);
+    return () => document.removeEventListener('mousedown', onDocClick, true);
+  }, [showLegend]);
+
+  // Positionne la légende dans la marge à droite de la carte, suit le scroll/resize
+  useEffect(() => {
+    if (!showLegend) return;
+    const update = () => {
+      if (!cardRef.current) return;
+      const r = cardRef.current.getBoundingClientRect();
+      const gutterCenter = r.right + (window.innerWidth - r.right) / 2;
+      setLegendBox({ top: r.top, left: gutterCenter - LEGEND_W / 2 });
+    };
+    update();
+    window.addEventListener('scroll', update, true);
+    window.addEventListener('resize', update);
+    return () => { window.removeEventListener('scroll', update, true); window.removeEventListener('resize', update); };
+  }, [showLegend]);
 
   const h2h  = markets?.h2h;
   const tots = markets?.totals;
@@ -293,11 +401,26 @@ function FootballOddsBox({ markets, bttsResult }) {
     return { yes: (1/p.yes)/s, no: (1/p.no)/s };
   })() : null;
 
-  const fairTots = tots?.bookmakers?.pinnacle ? (() => {
-    const p = tots.bookmakers.pinnacle;
+  const fairTots = tots?.bookmakers?.pinnacle?.[totalsLine] ? (() => {
+    const p = tots.bookmakers.pinnacle[totalsLine];
     const s = 1/p.over + 1/p.under;
     return { over: (1/p.over)/s, under: (1/p.under)/s };
   })() : null;
+
+  const ouResult = bttsResult ? computeOU(bttsResult.lambda_home, bttsResult.lambda_away, parseFloat(totalsLine)) : null;
+  const result1X2 = bttsResult ? compute1X2(bttsResult.lambda_home, bttsResult.lambda_away) : null;
+
+  // Fair 1X2 marché — pas de Pinnacle en foot, on prend le 1er bookmaker scrappé avec les 3 cotes h2h
+  const fairMarket1X2 = (() => {
+    for (const bk of availBks) {
+      const h = h2h?.bookmakers?.[bk];
+      if (h?.home && h?.draw && h?.away) {
+        const s = 1/h.home + 1/h.draw + 1/h.away;
+        return { home: (1/h.home)/s, draw: (1/h.draw)/s, away: (1/h.away)/s };
+      }
+    }
+    return null;
+  })();
 
   const calcEdge = (bkOdds, fair) => (bkOdds != null && fair != null) ? +((bkOdds * fair - 1) * 100).toFixed(1) : null;
 
@@ -325,9 +448,63 @@ function FootballOddsBox({ markets, bttsResult }) {
                  : '80px 1fr 1fr';
 
   return (
-    <div>
-      <div style={{ display: 'flex', gap: '0.6rem', marginBottom: '0.75rem', alignItems: 'center' }}>
+    <div ref={cardRef}>
+      <div style={{ display: 'flex', gap: '0.6rem', marginBottom: '0.75rem', alignItems: 'center', position: 'relative' }}>
         {TABS.map(t => <button key={t.id} style={tabStyle(t.id)} onClick={() => setTab(t.id)}>{t.label}</button>)}
+        {tab === 'buts' && (
+          <div style={{ display: 'flex', gap: '0.3rem', marginLeft: 'auto' }}>
+            {['1.5', '2.5'].map(line => (
+              <button
+                key={line}
+                onClick={() => setTotalsLine(line)}
+                style={{
+                  padding: '0.2rem 0.5rem', borderRadius: 5, border: '1px solid', cursor: 'pointer',
+                  fontSize: 10, fontWeight: 700,
+                  background: totalsLine === line ? 'rgba(251,146,60,0.25)' : 'rgba(251,146,60,0.08)',
+                  color: '#ffffff',
+                  borderColor: totalsLine === line ? 'rgba(251,146,60,0.55)' : 'rgba(251,146,60,0.22)',
+                }}
+              >
+                {line}
+              </button>
+            ))}
+          </div>
+        )}
+        <span
+          ref={legendBtnRef}
+          onClick={() => setShowLegend(v => !v)}
+          style={{
+            width: 16, height: 16, borderRadius: '50%', fontSize: 10, fontWeight: 700,
+            display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+            color: showLegend ? '#fb923c' : 'var(--text-dim)', border: `1px solid ${showLegend ? 'rgba(251,146,60,0.5)' : 'var(--border)'}`,
+            cursor: 'pointer', flexShrink: 0,
+            marginLeft: tab === 'buts' ? '0.3rem' : 'auto',
+          }}
+        >?</span>
+        {showLegend && legendBox && createPortal(
+          <div ref={legendRef} style={{
+            position: 'fixed', top: legendBox.top, left: legendBox.left, zIndex: 200,
+            width: LEGEND_W, maxWidth: 'calc(100vw - 2rem)',
+            background: 'var(--bg-card, #11141c)', border: '1px solid var(--border)', borderRadius: 8,
+            padding: '0.6rem 0.65rem', boxShadow: '0 8px 24px rgba(0,0,0,0.4)',
+          }}>
+            <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text)', marginBottom: '0.4rem' }}>
+              Envoi des alertes — Football
+            </div>
+            <div style={{ fontSize: 9.5, lineHeight: 1.55, color: 'var(--text-dim)' }}>
+              Un modèle de Poisson estime les buts attendus de chaque équipe à partir de leurs stats récentes.
+              <br /><br />
+              <b style={{ color: '#00ff80' }}>BTTS Oui</b> : alerte si probabilité ≥ 68%.
+              <br />
+              <b style={{ color: '#00ff80' }}>Total Over/Under</b> : alerte si probabilité ≥ 65% (ligne 2,5, sinon 1,5).
+              <br /><br />
+              Dans les deux cas, il faut aussi une cote ≥ 1,45 chez Unibet, Betclic ou Winamax sur l'issue concernée.
+              <br /><br />
+              Une seule alerte par match et par type (BTTS / Total), générée automatiquement toutes les 20 min — pas besoin d'ouvrir cette page.
+            </div>
+          </div>,
+          document.body
+        )}
       </div>
 
       {tab === 'result' && (
@@ -350,7 +527,7 @@ function FootballOddsBox({ markets, bttsResult }) {
         const isPinnacle = bk === 'pinnacle';
         const color = isPinnacle ? undefined : FB_BK_COLORS[bk];
         const h = h2h?.bookmakers?.[bk];
-        const t = tots?.bookmakers?.[bk];
+        const t = tots?.bookmakers?.[bk]?.[totalsLine];
         const b = btts?.bookmakers?.[bk];
         return (
           <div key={bk} style={{
@@ -369,7 +546,7 @@ function FootballOddsBox({ markets, bttsResult }) {
             </>}
             {tab === 'buts' && <>
               <div style={{ textAlign: 'center', fontSize: 11, fontVariantNumeric: 'tabular-nums', fontWeight: isPinnacle ? 700 : 400, color: isPinnacle ? 'var(--text)' : color ?? 'var(--text-dim)' }}>
-                {t?.line ?? '—'}
+                {(t?.over != null || t?.under != null) ? totalsLine : '—'}
               </div>
               <Cell val={t?.over}  edgeVal={fairTots ? calcEdge(t?.over,  fairTots.over)  : null} isPinnacle={isPinnacle} color={color} fairPct={fairTots ? fairTots.over * 100  : null} />
               <Cell val={t?.under} edgeVal={fairTots ? calcEdge(t?.under, fairTots.under) : null} isPinnacle={isPinnacle} color={color} fairPct={fairTots ? fairTots.under * 100 : null} />
@@ -385,6 +562,67 @@ function FootballOddsBox({ markets, bttsResult }) {
       {availBks.length === 0 && (
         <div style={{ textAlign: 'center', padding: '1rem 0', color: 'var(--text-dim)', fontSize: 12 }}>Cotes indisponibles</div>
       )}
+
+      {tab === 'buts' && ouResult && (() => {
+        const { over, under, lambda_total } = ouResult;
+        const pinnOver = fairTots ? Math.round(fairTots.over * 100) : null;
+        const edge = pinnOver != null ? over - pinnOver : null;
+        const isOver = edge == null || edge >= 0;
+        const edgeColor = isOver ? '#4ade80' : '#f87171';
+        const edgeBg    = isOver ? 'rgba(74,222,128,0.12)' : 'rgba(248,113,113,0.12)';
+        const probColor = over >= 62 ? '#10b981' : over >= 52 ? '#f59e0b' : '#ef4444';
+        return (
+          <div style={{ borderTop: '1px solid var(--border)', marginTop: '0.5rem', paddingTop: '0.5rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem' }}>
+            <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-dim)' }}>
+              Modèle O/U {totalsLine}<span style={{ fontSize: 9, color: 'var(--text-dim)', marginLeft: 4, fontWeight: 400 }}>λ={lambda_total}</span>
+            </span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+              <span style={{ fontSize: 12, fontWeight: 700, color: probColor }}>+{over}%</span>
+              {pinnOver != null && (
+                <>
+                  <span style={{ fontSize: 10, color: 'var(--text-dim)' }}>vs Pinnacle {pinnOver}%</span>
+                  <span style={{ fontSize: 11, fontWeight: 800, padding: '1px 6px', borderRadius: 4, background: edgeBg, color: edgeColor, border: `1px solid ${isOver ? 'rgba(74,222,128,0.3)' : 'rgba(248,113,113,0.3)'}` }}>
+                    {isOver ? '▲' : '▼'} {Math.abs(edge)}pt
+                  </span>
+                </>
+              )}
+            </div>
+          </div>
+        );
+      })()}
+
+      {tab === 'result' && result1X2 && (() => {
+        const items = [
+          { key: 'home', label: home?.short ?? 'Dom', prob: result1X2.pHome },
+          { key: 'draw', label: 'Nul', prob: result1X2.pDraw },
+          { key: 'away', label: away?.short ?? 'Ext', prob: result1X2.pAway },
+        ];
+        return (
+          <div style={{ borderTop: '1px solid var(--border)', marginTop: '0.5rem', paddingTop: '0.5rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem' }}>
+            <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-dim)' }}>Modèle 1X2</span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.7rem' }}>
+              {items.map(it => {
+                const probColor = it.prob >= 65 ? '#10b981' : it.prob >= 50 ? '#f59e0b' : '#ef4444';
+                const marketProb = fairMarket1X2 ? Math.round(fairMarket1X2[it.key] * 100) : null;
+                const edge = marketProb != null ? it.prob - marketProb : null;
+                const isOver = edge == null || edge >= 0;
+                const edgeColor = isOver ? '#4ade80' : '#f87171';
+                return (
+                  <span key={it.key} style={{ fontSize: 11, display: 'flex', alignItems: 'center', gap: 3 }}>
+                    <span style={{ color: 'var(--text-dim)' }}>{it.label}</span>
+                    <span style={{ fontWeight: 700, color: probColor }}>{it.prob}%</span>
+                    {edge != null && Math.abs(edge) >= 3 && (
+                      <span style={{ fontSize: 9, fontWeight: 800, color: edgeColor }}>
+                        {isOver ? '▲' : '▼'}{Math.abs(edge)}
+                      </span>
+                    )}
+                  </span>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })()}
 
       {tab === 'btts' && bttsResult && (() => {
         const { prob, isStatic } = bttsResult;
@@ -442,6 +680,43 @@ const normTeam = s => (s || '').toLowerCase()
   .normalize('NFD').replace(/[̀-ͯ]/g, '')
   .replace(/\b(fc|sc|ac|rc|ogc|as|afc|1\. fc|club)\b/g, '')
   .replace(/\s+/g, ' ').trim();
+
+// ── CDM : équivalences noms anglais (football-data.org) ↔ français (cotes scrapées) ──
+const CDM_NAME_ALIASES = {
+  algeria: 'algerie', algerie: 'algerie',
+  argentina: 'argentine', argentine: 'argentine',
+  australia: 'australie', australie: 'australie',
+  austria: 'autriche', autriche: 'autriche',
+  belgium: 'belgique', belgique: 'belgique',
+  bosniaherzegovina: 'bosnie', bosnieherzegovine: 'bosnie', bosnieherzeg: 'bosnie',
+  brazil: 'bresil', bresil: 'bresil',
+  capeverde: 'capvert', capvert: 'capvert',
+  colombia: 'colombie', colombie: 'colombie',
+  drcongo: 'congo', rdcongo: 'congo',
+  croatia: 'croatie', croatie: 'croatie',
+  czechia: 'tcheque', republiquetcheque: 'tcheque', reptcheque: 'tcheque', tchequie: 'tcheque',
+  ecuador: 'equateur', equateur: 'equateur',
+  england: 'angleterre', angleterre: 'angleterre',
+  germany: 'allemagne', allemagne: 'allemagne',
+  iraq: 'irak', irak: 'irak',
+  ivorycoast: 'coteivoire', cotedivoire: 'coteivoire',
+  japan: 'japon', japon: 'japon',
+  mexico: 'mexique', mexique: 'mexique',
+  morocco: 'maroc', maroc: 'maroc',
+  netherlands: 'paysbas', paysbas: 'paysbas',
+  newzealand: 'nouvellezelande', nouvellezelande: 'nouvellezelande',
+  norway: 'norvege', norvege: 'norvege',
+  saudiarabia: 'arabiesaoudite', arabiesaoudite: 'arabiesaoudite',
+  scotland: 'ecosse', ecosse: 'ecosse',
+  southafrica: 'afriquedusud', afriquedusud: 'afriquedusud',
+  southkorea: 'coreedusud', coreedusud: 'coreedusud', coree: 'coreedusud',
+  spain: 'espagne', espagne: 'espagne',
+  sweden: 'suede', suede: 'suede',
+  switzerland: 'suisse', suisse: 'suisse',
+  tunisia: 'tunisie', tunisie: 'tunisie',
+  turkiye: 'turquie', turquie: 'turquie', turkey: 'turquie',
+  unitedstates: 'etatsunis', etatsunis: 'etatsunis', usa: 'etatsunis',
+};
 
 function findInTable(table, name) {
   const q = normTeam(name);
@@ -721,10 +996,11 @@ function H2HRow({ match }) {
 export default function MatchDetailPage() {
   const { id } = useParams();
   const navigate = useNavigate();
-  const fixture = getFixtureById(id);
+  const footballFixtures = useFootballFixtures();
+  const fixture = footballFixtures.find(f => f.id === id) || getFixtureById(id);
   const [dropOpen, setDropOpen] = useState(false);
   const dropRef = useRef(null);
-  const [showLineup, setShowLineup] = useState(false);
+  const [showLineup, setShowLineup] = useState(true);
   const [homeForm, setHomeForm] = useState('4-3-3');
   const [awayForm, setAwayForm] = useState('4-3-3');
   const [homeNames, setHomeNames] = useState(Array(11).fill(''));
@@ -736,16 +1012,21 @@ export default function MatchDetailPage() {
   const [showOddsDropdown, setShowOddsDropdown] = useState(false);
   const [liveHomeStats, setLiveHomeStats] = useState(null);
   const [liveAwayStats, setLiveAwayStats] = useState(null);
+  const [homeInjuredFwd, setHomeInjuredFwd] = useState(0);
+  const [awayInjuredFwd, setAwayInjuredFwd] = useState(0);
   const [homeMatches, setHomeMatches] = useState([]);
   const [awayMatches, setAwayMatches] = useState([]);
 
   useEffect(() => {
     if (!fixture) return;
-    const norm = s => (s || '').toLowerCase()
-      .normalize('NFD').replace(/[̀-ͯ]/g, '')
-      .replace(/\b(as|fc|sc|rc|ogc|afc|ac|stade|club)\b/g, '')
-      .replace(/\bst\b/g, 'saint')
-      .replace(/[^a-z]/g, '');
+    const norm = s => {
+      const base = (s || '').toLowerCase()
+        .normalize('NFD').replace(/[̀-ͯ]/g, '')
+        .replace(/\b(as|fc|sc|rc|ogc|afc|ac|stade|club)\b/g, '')
+        .replace(/\bst\b/g, 'saint')
+        .replace(/[^a-z]/g, '');
+      return CDM_NAME_ALIASES[base] || base;
+    };
     const fuzzy = (a, b) => { const na = norm(a), nb = norm(b); return na.includes(nb) || nb.includes(na); };
     fetch('/api/odds')
       .then(r => r.json())
@@ -761,6 +1042,30 @@ export default function MatchDetailPage() {
 
   useEffect(() => {
     if (!fixture) return;
+    if (fixture.league === 'cdm') {
+      const toForm = results => (results || []).slice(0, 5)
+        .map(r => r.gf > r.ga ? 'W' : r.gf === r.ga ? 'D' : 'L');
+      const fetchTeam = (name, setter) => {
+        fetch(`/api/football/cdm/teamstats/${encodeURIComponent(name)}`)
+          .then(r => r.json())
+          .then(d => {
+            if (d.goalsFor == null) return;
+            setter({ goalsFor: d.goalsFor, goalsAgainst: d.goalsAgainst, lastMatchDate: d.lastMatchDate, form: toForm(d.results) });
+          })
+          .catch(() => {});
+      };
+      const fetchInjuredFwd = (name, setter) => {
+        fetch(`/api/football/cdm/squad/${encodeURIComponent(name)}`)
+          .then(r => r.json())
+          .then(d => setter((d.players || []).filter(p => p.position === 'F' && p.injury).length))
+          .catch(() => {});
+      };
+      fetchTeam(fixture.home.name, setLiveHomeStats);
+      fetchTeam(fixture.away.name, setLiveAwayStats);
+      fetchInjuredFwd(fixture.home.name, setHomeInjuredFwd);
+      fetchInjuredFwd(fixture.away.name, setAwayInjuredFwd);
+      return;
+    }
     fetch(`/api/football/standings/${fixture.league}`)
       .then(r => r.json())
       .then(({ table }) => {
@@ -777,6 +1082,14 @@ export default function MatchDetailPage() {
     if (!fixture || !showLineup || homePlayers !== null) return;
     setRosterLoading(true);
     async function fetchOne(name, setter) {
+      if (fixture.league === 'cdm') {
+        try {
+          const r = await fetch(`/api/football/cdm/squad/${encodeURIComponent(name)}`);
+          const d = await r.json();
+          setter(d.players || []);
+        } catch { setter([]); }
+        return;
+      }
       const info = ESPN_FOOTBALL[name];
       if (!info) { setter([]); return; }
       try {
@@ -791,23 +1104,21 @@ export default function MatchDetailPage() {
     ]).finally(() => setRosterLoading(false));
   }, [showLineup]);
 
-  if (!fixture) {
-    return <div className="page"><div className="empty-state">Match introuvable.</div></div>;
-  }
-
-  const league = getLeagueById(fixture.league);
-  const { home, away, venue, weather, h2h, round } = fixture;
+  const league = fixture ? getLeagueById(fixture.league) : null;
+  const { home, away, venue, weather, h2h, round } = fixture || {};
 
   const effHome = liveHomeStats
-    ? { ...home, ...liveHomeStats, form: liveHomeStats.form?.length ? liveHomeStats.form : home.form }
+    ? { ...home, ...liveHomeStats, form: liveHomeStats.form?.length ? liveHomeStats.form : home?.form }
     : home;
   const effAway = liveAwayStats
-    ? { ...away, ...liveAwayStats, form: liveAwayStats.form?.length ? liveAwayStats.form : away.form }
+    ? { ...away, ...liveAwayStats, form: liveAwayStats.form?.length ? liveAwayStats.form : away?.form }
     : away;
 
-  const bttsResult = (homeMatches.length && awayMatches.length && liveHomeStats?.id && liveAwayStats?.id)
-    ? computeBTTS(homeMatches, awayMatches, liveHomeStats.id, liveAwayStats.id)
-    : computeStaticBTTS(fixture);
+  const bttsResult = fixture?.league === 'cdm'
+    ? computeCdmBTTS(liveHomeStats, liveAwayStats, fixture.date, homeInjuredFwd, awayInjuredFwd)
+    : (homeMatches.length && awayMatches.length && liveHomeStats?.id && liveAwayStats?.id)
+      ? computeBTTS(homeMatches, awayMatches, liveHomeStats.id, liveAwayStats.id)
+      : computeStaticBTTS(fixture);
 
   // Sauvegarde alerte BTTS si confiance ≥ 70%
   useEffect(() => {
@@ -850,6 +1161,10 @@ export default function MatchDetailPage() {
     } catch {}
   }, [bttsResult?.prob, matchOdds]);
 
+  if (!fixture) {
+    return <div className="page"><div className="empty-state">Match introuvable.</div></div>;
+  }
+
   return (
     <div className="page detail-page">
 
@@ -889,7 +1204,7 @@ export default function MatchDetailPage() {
           const now = Date.now();
           const isDone = f => f.status === 'STATUS_FULL_TIME' || new Date(f.date).getTime() < now;
           const curDone = isDone(fixture);
-          const others = getFixturesByLeague(fixture.league)
+          const others = footballFixtures.filter(f => f.league === fixture.league)
             .filter(f => f.id !== fixture.id && (curDone ? isDone(f) : !isDone(f)))
             .sort((a, b) => new Date(a.date) - new Date(b.date));
           if (!others.length) return null;
@@ -928,7 +1243,7 @@ export default function MatchDetailPage() {
         </div>
         <div
           className="info-chip"
-          onClick={() => { if (!matchOdds || !Object.keys(matchOdds).length) return; setShowOddsDropdown(v => !v); }}
+          onClick={() => { if (!matchOdds || !Object.keys(matchOdds).length) return; setShowOddsDropdown(v => !v); setShowLineup(false); }}
           style={{ cursor: matchOdds && Object.keys(matchOdds).length ? 'pointer' : 'default', userSelect: 'none', opacity: matchOdds === null ? 0.5 : 1 }}
         >
           {matchOdds === null ? 'Odds…' : matchOdds && Object.keys(matchOdds).length ? 'Odds' : 'Odds N/D'}
@@ -952,7 +1267,7 @@ export default function MatchDetailPage() {
 
       {showOddsDropdown && matchOdds && Object.keys(matchOdds).length > 0 && (
         <section className="detail-card compact-card" style={{ marginBottom: '0.5rem' }}>
-          <FootballOddsBox markets={matchOdds} bttsResult={bttsResult} />
+          <FootballOddsBox markets={matchOdds} bttsResult={bttsResult} home={home} away={away} />
         </section>
       )}
 
@@ -991,56 +1306,26 @@ export default function MatchDetailPage() {
           </div>
         )}
 
-        <section className="detail-card compact-card">
-          <h2 className="card-title">Statistiques saison</h2>
-          <div className="stats-teams-header">
-            <span>{effHome.tla || home.short}</span>
-            <span>{effAway.tla || away.short}</span>
-          </div>
-          <div className="stat-bars">
-            <StatBar label="Buts marqués"       home={effHome.goalsFor}        away={effAway.goalsFor} />
-            <StatBar label="Buts encaissés"      home={effHome.goalsAgainst}    away={effAway.goalsAgainst} higherIsBetter={false} />
-            <StatBar label="xG (saison)"         home={+(effHome.xG || 0).toFixed(1)}  away={+(effAway.xG || 0).toFixed(1)} />
-            <StatBar label="xGA (saison)"        home={+(effHome.xGA || 0).toFixed(1)} away={+(effAway.xGA || 0).toFixed(1)} higherIsBetter={false} />
-            <StatBar label="Tirs / match"        home={effHome.shotsPerGame}    away={effAway.shotsPerGame} />
-            <StatBar label="Tirs cadrés / match" home={effHome.shotsOnTarget}   away={effAway.shotsOnTarget} />
-            <StatBar label="Possession (%)"      home={effHome.possession}      away={effAway.possession} unit="%" />
-          </div>
-        </section>
-
-        <section className="detail-card compact-card">
-          <h2 className="card-title">Bilan de la saison</h2>
-          <div className="record-compare">
-            {[
-              { label: 'Matchs',    hv: effHome.played, av: effAway.played, neutral: true },
-              { label: 'Victoires', hv: effHome.wins,   av: effAway.wins },
-              { label: 'Nuls',      hv: effHome.draws,  av: effAway.draws, neutral: true },
-              { label: 'Défaites',  hv: effHome.losses, av: effAway.losses, higherIsBetter: false },
-            ].map(({ label, hv, av, neutral, higherIsBetter: hib = true }) => {
-              const homeLeads = !neutral && (hib ? hv > av : hv < av);
-              const awayLeads = !neutral && (hib ? av > hv : av < hv);
-              return (
-                <div key={label} className="record-row">
-                  <span className={`rec-val ${homeLeads ? 'rec-best' : awayLeads ? 'rec-worst' : ''}`}>{hv}</span>
-                  <span className="rec-label">{label}</span>
-                  <span className={`rec-val ${awayLeads ? 'rec-best' : homeLeads ? 'rec-worst' : ''}`}>{av}</span>
-                </div>
-              );
-            })}
-          </div>
-          <div className="form-compare" style={{ marginTop: '0.75rem' }}>
-            <div className="form-row-item">
-              <span className="form-team-label">{home.short}</span>
-              <FormStrip form={effHome.form} size="lg" />
+        {showOddsDropdown && (
+          <section className="detail-card compact-card">
+            <h2 className="card-title">Statistiques saison</h2>
+            <div className="stats-teams-header">
+              <span>{effHome.tla || home.short}</span>
+              <span>{effAway.tla || away.short}</span>
             </div>
-            <div className="form-row-item">
-              <span className="form-team-label">{away.short}</span>
-              <FormStrip form={effAway.form} size="lg" />
+            <div className="stat-bars">
+              <StatBar label="Buts marqués"       home={+(effHome.goalsFor || 0).toFixed(2)}     away={+(effAway.goalsFor || 0).toFixed(2)} />
+              <StatBar label="Buts encaissés"      home={+(effHome.goalsAgainst || 0).toFixed(2)} away={+(effAway.goalsAgainst || 0).toFixed(2)} higherIsBetter={false} />
+              <StatBar label="xG (saison)"         home={+(effHome.xG || 0).toFixed(1)}  away={+(effAway.xG || 0).toFixed(1)} />
+              <StatBar label="xGA (saison)"        home={+(effHome.xGA || 0).toFixed(1)} away={+(effAway.xGA || 0).toFixed(1)} higherIsBetter={false} />
+              <StatBar label="Tirs / match"        home={effHome.shotsPerGame}    away={effAway.shotsPerGame} />
+              <StatBar label="Tirs cadrés / match" home={effHome.shotsOnTarget}   away={effAway.shotsOnTarget} />
+              <StatBar label="Possession (%)"      home={effHome.possession}      away={effAway.possession} unit="%" />
             </div>
-          </div>
-        </section>
+          </section>
+        )}
 
-        {(homeMatches.length > 0 || awayMatches.length > 0) && (() => {
+        {showLineup && (homeMatches.length > 0 || awayMatches.length > 0) && (() => {
           const awayId = liveAwayStats?.id;
           const homeId = liveHomeStats?.id;
           const realH2H = homeMatches
@@ -1074,18 +1359,22 @@ export default function MatchDetailPage() {
           );
         })()}
 
-        <CollapsibleCard title="5 prochains matchs" className="upcoming-card">
-          <div className="upcoming-grid">
-            <UpcomingList team={home} />
-            <UpcomingList team={away} />
-          </div>
-        </CollapsibleCard>
+        {showLineup && (
+          <CollapsibleCard title="5 prochains matchs" className="upcoming-card">
+            <div className="upcoming-grid">
+              <UpcomingList team={home} />
+              <UpcomingList team={away} />
+            </div>
+          </CollapsibleCard>
+        )}
 
-        <CollapsibleCard title="Confrontations directes" className="h2h-card">
-          <div className="h2h-list">
-            {[...h2h].reverse().map((m, i) => <H2HRow key={i} match={m} />)}
-          </div>
-        </CollapsibleCard>
+        {showLineup && (
+          <CollapsibleCard title="Confrontations directes" className="h2h-card">
+            <div className="h2h-list">
+              {[...h2h].reverse().map((m, i) => <H2HRow key={i} match={m} />)}
+            </div>
+          </CollapsibleCard>
+        )}
 
 
       </div>

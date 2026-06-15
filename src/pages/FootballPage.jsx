@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
-import { LEAGUES, FIXTURES } from '../utils/fixtures';
+import { LEAGUES } from '../utils/fixtures';
+import { useFootballFixtures } from '../utils/useFootballFixtures';
 import LeagueGroup from '../components/LeagueGroup';
 import MatchRow from '../components/MatchRow';
 import WorldMap from '../components/WorldMap';
@@ -74,6 +75,7 @@ export default function FootballPage() {
   }, []);
 
   const now = new Date();
+  const FIXTURES = useFootballFixtures();
 
   // Injecte les scores ESPN dans les fixtures statiques
   const enriched = FIXTURES.map(f => {

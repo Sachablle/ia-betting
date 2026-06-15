@@ -2,10 +2,11 @@ import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import fetch from 'node-fetch';
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
+import { readFileSync, writeFileSync, writeFile, existsSync, mkdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
-import { computeEstimate, calcStd, probAtLeast } from './compute.js';
+import { computeEstimate, calcStd, winsorizeRecent, getShotVolumeAnchor, probAtLeast, tCDF4, getRestFactor, getScheduleDensityFactor, isPlayoffRound, toDefCat } from './compute.js';
+import { computeLambdas, computeBTTSProb, computeOUProb, compute1X2Probs } from './computeFootball.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const CACHE_DIR   = join(__dirname, 'cache');
@@ -13,12 +14,22 @@ const ODDS_CACHE_FILE = join(CACHE_DIR, 'odds.json');
 const SNAPSHOT_FILE   = join(CACHE_DIR, 'projections-snapshot.json');
 const LINES_FILE      = join(CACHE_DIR, 'player-lines-snapshot.json');
 const EURO_LINEUPS_FILE    = join(CACHE_DIR, 'euro_lineups.json');
+const WORLDCUP_CACHE_FILE  = join(CACHE_DIR, 'worldcup.json');
+const FD_MATCHES_CACHE_FILE = join(CACHE_DIR, 'fd_matches.json');
 const GAMELOGS_CACHE_FILE  = join(CACHE_DIR, 'gamelogs_cache.json');
+const SCRAPER_BLOCK_FILE   = join(CACHE_DIR, 'scraper_blocks.json');
 
 // Cache persistant gamelogs — survit aux redémarrages, jamais remplacé par moins de données
 let _glPersist = {};
 try { if (existsSync(GAMELOGS_CACHE_FILE)) _glPersist = JSON.parse(readFileSync(GAMELOGS_CACHE_FILE, 'utf8')); } catch {}
-function _saveGlPersist() { try { writeFileSync(GAMELOGS_CACHE_FILE, JSON.stringify(_glPersist), 'utf8'); } catch {} }
+let _glSaveTimer = null;
+function _saveGlPersist() {
+  if (_glSaveTimer) clearTimeout(_glSaveTimer);
+  _glSaveTimer = setTimeout(() => {
+    _glSaveTimer = null;
+    writeFile(GAMELOGS_CACHE_FILE, JSON.stringify(_glPersist), 'utf8', () => {});
+  }, 2000);
+}
 function _updateGlCache(key, games) {
   const prev = _glPersist[key]?.games || [];
   if (games.length >= prev.length && games.length > 0) {
@@ -94,6 +105,19 @@ function _saveOddsCacheToDisk(data) {
 
 let _oddsCache = _loadOddsCacheFromDisk();
 
+// Stale-while-revalidate : évite de faire attendre une requête derrière un scrape
+// (jitter anti-ban ~200ms-1.5s) quand on a déjà une réponse en cache, même expirée.
+// Un Set de clés en cours de rafraîchissement empêche les refresh concurrents.
+const _bgRefreshing = new Set();
+function _refreshInBackground(key, refreshFn) {
+  if (_bgRefreshing.has(key)) return;
+  _bgRefreshing.add(key);
+  Promise.resolve()
+    .then(refreshFn)
+    .catch(err => console.error(`Background refresh (${key}):`, err.message))
+    .finally(() => _bgRefreshing.delete(key));
+}
+
 const app = express();
 const PORT = process.env.PORT || 3001;
 
@@ -107,6 +131,73 @@ const ODDS_SPORTS   = [
   'soccer_france_ligue1', 'soccer_epl', 'soccer_spain_la_liga',
   'soccer_germany_bundesliga', 'soccer_italy_serie_a', 'soccer_netherlands_eredivisie',
 ];
+
+// Alias noms d'équipes CDM — uniformise les variantes Unibet/Betclic/Winamax
+// (ex: "Rép.Tchèque" vs "Tchéquie", "USA" vs "Etats-Unis") pour la fusion des cotes
+const COUNTRY_ALIASES = {
+  algeria: 'algerie', algerie: 'algerie',
+  argentina: 'argentine', argentine: 'argentine',
+  australia: 'australie', australie: 'australie',
+  austria: 'autriche', autriche: 'autriche',
+  belgium: 'belgique', belgique: 'belgique',
+  bosniaherzegovina: 'bosnie', bosnieherzegovine: 'bosnie', bosnieherzeg: 'bosnie',
+  brazil: 'bresil', bresil: 'bresil',
+  capeverde: 'capvert', capvert: 'capvert',
+  colombia: 'colombie', colombie: 'colombie',
+  drcongo: 'congo', rdcongo: 'congo',
+  croatia: 'croatie', croatie: 'croatie',
+  czechia: 'tcheque', republiquetcheque: 'tcheque', reptcheque: 'tcheque', tchequie: 'tcheque',
+  ecuador: 'equateur', equateur: 'equateur',
+  england: 'angleterre', angleterre: 'angleterre',
+  germany: 'allemagne', allemagne: 'allemagne',
+  iraq: 'irak', irak: 'irak',
+  ivorycoast: 'coteivoire', cotedivoire: 'coteivoire',
+  japan: 'japon', japon: 'japon',
+  mexico: 'mexique', mexique: 'mexique',
+  morocco: 'maroc', maroc: 'maroc',
+  netherlands: 'paysbas', paysbas: 'paysbas',
+  newzealand: 'nouvellezelande', nouvellezelande: 'nouvellezelande', nllezelande: 'nouvellezelande',
+  norway: 'norvege', norvege: 'norvege',
+  saudiarabia: 'arabiesaoudite', arabiesaoudite: 'arabiesaoudite',
+  scotland: 'ecosse', ecosse: 'ecosse',
+  southafrica: 'afriquedusud', afriquedusud: 'afriquedusud',
+  southkorea: 'coreedusud', coreedusud: 'coreedusud', coree: 'coreedusud',
+  spain: 'espagne', espagne: 'espagne',
+  sweden: 'suede', suede: 'suede',
+  switzerland: 'suisse', suisse: 'suisse',
+  tunisia: 'tunisie', tunisie: 'tunisie',
+  turkiye: 'turquie', turquie: 'turquie', turkey: 'turquie',
+  unitedstates: 'etatsunis', etatsunis: 'etatsunis', usa: 'etatsunis',
+};
+
+// Normalisation/fuzzy-matching de noms d'équipes — utilisé pour fusionner les cotes
+// scrapées (Unibet/Betclic/Winamax) avec les fixtures (FD leagues + CDM)
+const normTeam = s => {
+  const base = (s || '').toLowerCase()
+    .normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .replace(/\b(as|fc|sc|rc|ogc|afc|ac|stade|club|island|islands)\b/g, '')
+    .replace(/\bst\b/g, 'saint')
+    .replace(/[^a-z]/g, '');
+  return COUNTRY_ALIASES[base] || base;
+};
+const fuzzy = (a, b) => {
+  if (!a || !b) return false;
+  const na = normTeam(a), nb = normTeam(b);
+  return na.includes(nb) || nb.includes(na);
+};
+
+// ── Alertes football BTTS + Over/Under (Poisson) ─────────────────────────────
+// Buts/équipe/match attendus — référence pour les facteurs attaque/défense
+const FB_LEAGUE_AVG_GOALS = { ligue1: 1.35, pl: 1.45, laliga: 1.35, bundes: 1.55, seriea: 1.35 };
+const CDM_AVG_GOALS = 1.30;
+// Fallback si aucune stat CDM disponible (avgGF/avgGA normalement calculés dynamiquement
+// sur le pool d'équipes programmées, cf section 4d) — anciennes moyennes observées (~17 sélections).
+const CDM_AVG_GF = 2.15;
+const CDM_AVG_GA = 0.78;
+const FB_BTTS_ALERT_PROB = 0.68;
+const FB_OU_ALERT_PROB   = 0.65;
+const FB_RESULT_ALERT_PROB = 0.65; // par issue (home/draw/away), même seuil que BTTS/O-U — chaque issue est un pari oui/non indépendant
+const FB_MIN_ODDS = 1.45; // cote mini sur la direction proposée (unibet/betclic/winamax)
 
 // ── football-data.org (TEST) ──────────────────────────────────────────────────
 const FD_KEY  = process.env.FD_API_KEY;
@@ -122,15 +213,28 @@ const FD_LEAGUES = [
 async function fdGet(path) {
   const resp = await fetch(`${FD_BASE}${path}`, { headers: { 'X-Auth-Token': FD_KEY } });
   if (!resp.ok) throw new Error(`football-data.org ${resp.status}: ${path}`);
+  _captureFdQuota(resp);
   return resp.json();
 }
 
+// Cache persisté sur disque : survit aux redémarrages (--watch), même pattern
+// que la CDM — un 429 transitoire ne vide plus l'affichage des 5 championnats.
 let _fdCache = null;
 let _fdCacheTs = 0;
+let _fdErrorUntil = 0;
+try {
+  if (existsSync(FD_MATCHES_CACHE_FILE)) {
+    const parsed = JSON.parse(readFileSync(FD_MATCHES_CACHE_FILE, 'utf8'));
+    if (parsed?.matches) { _fdCache = { matches: parsed.matches, count: parsed.matches.length }; _fdCacheTs = parsed.ts || 0; }
+  }
+} catch {}
 
 app.get('/api/fd/matches', async (req, res) => {
   if (!FD_KEY) return res.status(503).json({ error: 'FD_API_KEY not configured' });
   if (_fdCache && Date.now() - _fdCacheTs < 30 * 60 * 1000) return res.json(_fdCache);
+  // FD limite à 10 req/min — si une tentative récente a échoué (429), on sert le cache
+  // périmé (ou une liste vide) au lieu de re-tenter immédiatement et d'aggraver le 429
+  if (Date.now() < _fdErrorUntil) return res.json(_fdCache || { matches: [], count: 0 });
 
   try {
     const allMatches = [];
@@ -184,37 +288,68 @@ app.get('/api/fd/matches', async (req, res) => {
     const result = { matches: allMatches, count: allMatches.length };
     _fdCache = result;
     _fdCacheTs = Date.now();
+    try { writeFileSync(FD_MATCHES_CACHE_FILE, JSON.stringify({ matches: allMatches, ts: _fdCacheTs }), 'utf8'); } catch {}
     res.json(result);
   } catch (err) {
     console.error('football-data.org error:', err.message);
-    res.status(500).json({ error: err.message });
+    _fdErrorUntil = Date.now() + 60 * 1000;
+    res.json(_fdCache || { matches: [], count: 0 });
   }
 });
 
 // ── Coupe du Monde (football-data.org) ───────────────────────────────────────
-let _cdmCache = null, _cdmCacheTs = 0;
+// Cache persisté sur disque : survit aux redémarrages (--watch) pour éviter qu'un
+// rate-limit FD (10 req/min, partagé avec /api/fd/matches) ne vide l'affichage CDM.
+let _cdmCache = null, _cdmCacheTs = 0, _cdmErrorUntil = 0;
+try {
+  if (existsSync(WORLDCUP_CACHE_FILE)) {
+    const parsed = JSON.parse(readFileSync(WORLDCUP_CACHE_FILE, 'utf8'));
+    if (parsed?.games) { _cdmCache = { games: parsed.games }; _cdmCacheTs = parsed.ts || 0; }
+  }
+} catch {}
 app.get('/api/fd/worldcup', async (req, res) => {
   if (!FD_KEY) return res.status(503).json({ error: 'FD_API_KEY not configured' });
-  if (_cdmCache && Date.now() - _cdmCacheTs < 30 * 60 * 1000) return res.json(_cdmCache);
+  if (_cdmCache && Date.now() - _cdmCacheTs < 10 * 60 * 1000) return res.json(_cdmCache);
+  if (Date.now() < _cdmErrorUntil) return res.json(_cdmCache || { games: [] });
   try {
-    const r = await fetch('https://api.football-data.org/v4/competitions/2000/matches?status=SCHEDULED&limit=20', { headers: { 'X-Auth-Token': FD_KEY } });
+    const r = await fetch('https://api.football-data.org/v4/competitions/2000/matches?limit=30', { headers: { 'X-Auth-Token': FD_KEY } });
     if (!r.ok) throw new Error(`FD ${r.status}`);
     const d = await r.json();
-    const games = (d.matches || []).slice(0, 12).map(m => ({
+    const FD_STATUS_MAP = {
+      SCHEDULED: 'STATUS_SCHEDULED', TIMED: 'STATUS_SCHEDULED',
+      IN_PLAY: 'STATUS_IN_PROGRESS', PAUSED: 'STATUS_IN_PROGRESS',
+      FINISHED: 'STATUS_FINAL', AWARDED: 'STATUS_FINAL',
+    };
+    const now = Date.now();
+    const KEEP_MS = 48 * 3600_000;
+    const games = (d.matches || [])
+      .filter(m => {
+        const mapped = FD_STATUS_MAP[m.status];
+        if (!mapped) return false; // POSTPONED, CANCELLED, SUSPENDED
+        if (mapped === 'STATUS_FINAL') return (now - new Date(m.utcDate).getTime()) < KEEP_MS;
+        return true;
+      })
+      .slice(0, 20).map(m => ({
       id:     m.id,
       date:   m.utcDate,
-      status: 'STATUS_SCHEDULED',
+      status: FD_STATUS_MAP[m.status],
       round:  m.stage?.replace(/_/g,' ') || m.matchday ? `J${m.matchday}` : '',
-      home:   { name: m.homeTeam?.name, short: m.homeTeam?.shortName, logo: m.homeTeam?.crest, score: null },
-      away:   { name: m.awayTeam?.name, short: m.awayTeam?.shortName, logo: m.awayTeam?.crest, score: null },
+      home:   { name: m.homeTeam?.name, short: m.homeTeam?.shortName, logo: m.homeTeam?.crest, score: m.score?.fullTime?.home ?? null },
+      away:   { name: m.awayTeam?.name, short: m.awayTeam?.shortName, logo: m.awayTeam?.crest, score: m.score?.fullTime?.away ?? null },
     }));
     _cdmCache = { games }; _cdmCacheTs = Date.now();
+    try { writeFileSync(WORLDCUP_CACHE_FILE, JSON.stringify({ games, ts: _cdmCacheTs }), 'utf8'); } catch {}
     res.json(_cdmCache);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) {
+    console.error('football-data.org worldcup error:', err.message);
+    _cdmErrorUntil = Date.now() + 60 * 1000;
+    res.json(_cdmCache || { games: [] });
+  }
 });
 
 // ── API-Football ─────────────────────────────────────────────────────────────
 const FOOTBALL_KEY  = process.env.FOOTBALL_API_KEY;
+const FOOTBALL_MATCHES_ENABLED = process.env.FOOTBALL_MATCHES_ENABLED === 'true';
 const FOOTBALL_BASE = 'https://v3.football.api-sports.io';
 const FOOTBALL_LEAGUES = [
   { id: 61,  key: 'ligue1' },
@@ -245,6 +380,7 @@ async function footballGet(path) {
     headers: { 'x-apisports-key': FOOTBALL_KEY },
   });
   if (!resp.ok) throw new Error(`API-Football ${resp.status}: ${path}`);
+  _captureFootballQuota(resp);
   return resp.json();
 }
 
@@ -299,7 +435,7 @@ app.get('/api/health', (req, res) => res.json({ ok: true, timestamp: new Date().
 
 // API-Football : matchs enrichis avec stats de classement
 app.get('/api/football/matches', async (req, res) => {
-  if (!FOOTBALL_KEY) {
+  if (!FOOTBALL_KEY || !FOOTBALL_MATCHES_ENABLED) {
     return res.status(503).json({ error: 'FOOTBALL_API_KEY not configured' });
   }
 
@@ -388,6 +524,68 @@ app.get('/api/football/h2h/:homeId/:awayId', async (req, res) => {
 });
 
 // Cotes foot — Unibet (Kambi) + Betclic (scraping) + Winamax (scraping)
+const _mergeFootballBookmaker = (allMatches, sourceOdds, bkKey) => {
+  for (const s of sourceOdds) {
+    if (!s.homeTeam || !s.awayTeam) continue;
+    const existing = allMatches.find(m => fuzzy(m.homeTeam, s.homeTeam) && fuzzy(m.awayTeam, s.awayTeam));
+    if (existing) {
+      if (s.h2h) {
+        if (!existing.markets.h2h) existing.markets.h2h = { bookmakers: {} };
+        existing.markets.h2h.bookmakers[bkKey] = s.h2h;
+      }
+      if (s.btts) {
+        if (!existing.markets.btts) existing.markets.btts = { bookmakers: {} };
+        existing.markets.btts.bookmakers[bkKey] = s.btts;
+      }
+      if (s.totals) {
+        if (!existing.markets.totals) existing.markets.totals = { bookmakers: {} };
+        existing.markets.totals.bookmakers[bkKey] = s.totals;
+      }
+    } else {
+      const markets = {};
+      if (s.h2h)   markets.h2h    = { bookmakers: { [bkKey]: s.h2h } };
+      if (s.btts)  markets.btts   = { bookmakers: { [bkKey]: s.btts } };
+      if (s.totals) markets.totals = { bookmakers: { [bkKey]: s.totals } };
+      allMatches.push({
+        id: `${bkKey}_${s.homeTeam}_${s.awayTeam}`.replace(/\s/g, '_'),
+        sportKey: 'soccer',
+        homeTeam: s.homeTeam,
+        awayTeam: s.awayTeam,
+        commenceTime: s.commenceTime,
+        markets,
+      });
+    }
+  }
+};
+
+async function _refreshOddsCache() {
+  const [ubOdds, bcOdds, wmOdds] = await Promise.all([
+    fetchUnibetFootballOdds().catch(() => []),
+    fetchBetclicOdds().catch(() => []),
+    fetchWinamaxOdds().catch(() => []),
+  ]);
+
+  _updateScraper('unibet_foot',  Array.isArray(ubOdds) && ubOdds.length > 0);
+  _updateScraper('betclic_foot', Array.isArray(bcOdds) && bcOdds.length > 0);
+  _updateScraper('winamax_foot', Array.isArray(wmOdds) && wmOdds.length > 0);
+
+  const allMatches = [];
+  _mergeFootballBookmaker(allMatches, ubOdds, 'unibet');
+  _mergeFootballBookmaker(allMatches, bcOdds, 'betclic');
+  _mergeFootballBookmaker(allMatches, wmOdds, 'winamax');
+
+  if (allMatches.length > 0) {
+    allMatches.sort((a, b) => new Date(a.commenceTime) - new Date(b.commenceTime));
+    const sources = [ubOdds.length ? 'unibet' : '', bcOdds.length ? 'betclic' : '', wmOdds.length ? 'winamax' : ''].filter(Boolean).join('+');
+    const result = { matches: allMatches, count: allMatches.length, source: sources };
+    _oddsCache = { data: result, ts: Date.now() };
+    _saveOddsCacheToDisk(result);
+    return result;
+  }
+  if (_oddsCache.data) return _oddsCache.data;
+  return { matches: [], count: 0, source: 'none' };
+}
+
 app.get('/api/odds', async (req, res) => {
   const forceRefresh = req.query.refresh === '1';
 
@@ -395,71 +593,16 @@ app.get('/api/odds', async (req, res) => {
     return res.json(_oddsCache.data);
   }
 
-  const setCache = result => {
-    _oddsCache = { data: result, ts: Date.now() };
-    _saveOddsCacheToDisk(result);
-    return result;
-  };
+  // Cache présent mais expiré : on le sert tel quel et on rafraîchit en arrière-plan
+  // (évite de faire attendre l'utilisateur derrière le scraping + jitter anti-ban)
+  if (!forceRefresh && _oddsCache.data) {
+    _refreshInBackground('odds', _refreshOddsCache);
+    return res.json(_oddsCache.data);
+  }
 
-  const normTeam = s => (s || '').toLowerCase()
-    .normalize('NFD').replace(/[̀-ͯ]/g, '')
-    .replace(/\b(as|fc|sc|rc|ogc|afc|ac|stade|club)\b/g, '')
-    .replace(/\bst\b/g, 'saint')
-    .replace(/[^a-z]/g, '');
-  const fuzzy = (a, b) => {
-    if (!a || !b) return false;
-    const na = normTeam(a), nb = normTeam(b);
-    return na.includes(nb) || nb.includes(na);
-  };
-
-  const mergeBookmaker = (allMatches, sourceOdds, bkKey) => {
-    for (const s of sourceOdds) {
-      if (!s.homeTeam || !s.awayTeam) continue;
-      const existing = allMatches.find(m => fuzzy(m.homeTeam, s.homeTeam) && fuzzy(m.awayTeam, s.awayTeam));
-      if (existing) {
-        if (s.h2h) {
-          if (!existing.markets.h2h) existing.markets.h2h = { bookmakers: {} };
-          existing.markets.h2h.bookmakers[bkKey] = s.h2h;
-        }
-        if (s.btts) {
-          if (!existing.markets.btts) existing.markets.btts = { bookmakers: {} };
-          existing.markets.btts.bookmakers[bkKey] = s.btts;
-        }
-      } else {
-        const markets = {};
-        if (s.h2h)  markets.h2h  = { bookmakers: { [bkKey]: s.h2h } };
-        if (s.btts) markets.btts = { bookmakers: { [bkKey]: s.btts } };
-        allMatches.push({
-          id: `${bkKey}_${s.homeTeam}_${s.awayTeam}`.replace(/\s/g, '_'),
-          sportKey: 'soccer',
-          homeTeam: s.homeTeam,
-          awayTeam: s.awayTeam,
-          commenceTime: s.commenceTime,
-          markets,
-        });
-      }
-    }
-  };
-
+  // Pas de cache du tout (cold start) ou refresh forcé explicitement : on attend le résultat
   try {
-    const [ubOdds, bcOdds, wmOdds] = await Promise.all([
-      fetchUnibetFootballOdds().catch(() => []),
-      fetchBetclicOdds().catch(() => []),
-      fetchWinamaxOdds().catch(() => []),
-    ]);
-
-    const allMatches = [];
-    mergeBookmaker(allMatches, ubOdds, 'unibet');
-    mergeBookmaker(allMatches, bcOdds, 'betclic');
-    mergeBookmaker(allMatches, wmOdds, 'winamax');
-
-    if (allMatches.length > 0) {
-      allMatches.sort((a, b) => new Date(a.commenceTime) - new Date(b.commenceTime));
-      const sources = [ubOdds.length ? 'unibet' : '', bcOdds.length ? 'betclic' : '', wmOdds.length ? 'winamax' : ''].filter(Boolean).join('+');
-      return res.json(setCache({ matches: allMatches, count: allMatches.length, source: sources }));
-    }
-    if (_oddsCache.data) return res.json(_oddsCache.data);
-    return res.json({ matches: [], count: 0, source: 'none' });
+    return res.json(await _refreshOddsCache());
   } catch (err) {
     if (_oddsCache.data) return res.json(_oddsCache.data);
     res.status(500).json({ error: 'Failed to fetch odds', message: err.message });
@@ -648,8 +791,10 @@ app.get('/api/nba/scoreboard', async (req, res) => {
     const unique = allEvents.filter(ev => { if (seen.has(ev.id)) return false; seen.add(ev.id); return true; });
     const games = unique.map(normalizeGame).filter(Boolean);
     _scoreboardCache = { data: { games }, ts: Date.now() };
+    _updateScraper('espn', games.length > 0);
     res.json({ games });
   } catch (err) {
+    _updateScraper('espn', false);
     // Retourne le cache périmé plutôt qu'une erreur si ESPN est down
     if (_scoreboardCache.data) return res.json(_scoreboardCache.data);
     res.status(500).json({ error: err.message });
@@ -817,46 +962,182 @@ app.get('/api/nba/players/:teamId', async (req, res) => {
 const ESPN_SOCCER   = 'https://site.api.espn.com/apis/site/v2/sports/soccer';
 const _espnFbCache  = {};  // `${league}:${teamId}` → { data, ts }
 
-app.get('/api/football/squad/:league/:teamId', async (req, res) => {
-  const { league, teamId } = req.params;
+async function fetchEspnRoster(league, teamId) {
   const key = `${league}:${teamId}`;
+  const hit = _espnFbCache[key];
+  if (hit && Date.now() - hit.ts < CACHE_6H) return hit.data;
+
+  const url  = `${ESPN_SOCCER}/${league}/teams/${teamId}/roster`;
+  const resp = await fetch(url);
+  if (!resp.ok) throw new Error(`ESPN soccer ${resp.status}`);
+  const data = await resp.json();
+
+  const players = (data.athletes || []).map(p => {
+    const statsMap = {};
+    try {
+      for (const cat of p.statistics?.splits?.categories ?? [])
+        for (const s of cat.stats) statsMap[s.name] = s.value;
+    } catch {}
+    const appearances   = statsMap.appearances  ?? 0;
+    const subIns        = statsMap.subIns        ?? 0;
+    const gamesStarted  = Math.max(0, appearances - subIns);
+    return {
+      id:           p.id,
+      name:         p.displayName,
+      shortName:    p.shortName,
+      position:     p.position?.abbreviation ?? 'M',
+      jerseyNumber: p.jersey ?? null,
+      country:      p.citizenship ?? null,
+      age:          p.age ?? null,
+      appearances,
+      gamesStarted,
+      injury:       p.injuries?.length
+                      ? (p.injuries[0].longComment || p.injuries[0].status || 'Blessé')
+                      : null,
+    };
+  });
+
+  const result = { teamId, players };
+  _espnFbCache[key] = { data: result, ts: Date.now() };
+  return result;
+}
+
+app.get('/api/football/squad/:league/:teamId', async (req, res) => {
   try {
-    const hit = _espnFbCache[key];
-    if (hit && Date.now() - hit.ts < CACHE_6H) return res.json(hit.data);
+    res.json(await fetchEspnRoster(req.params.league, req.params.teamId));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
-    const url  = `${ESPN_SOCCER}/${league}/teams/${teamId}/roster`;
-    const resp = await fetch(url);
-    if (!resp.ok) throw new Error(`ESPN soccer ${resp.status}`);
-    const data = await resp.json();
+// ── ESPN Soccer — CDM 2026, sélections nationales (force attaque/défense) ────
+// Nom (normalisé) → ESPN teamId (league fifa.world)
+const ESPN_CDM = {
+  algeria: 624, argentina: 202, australia: 628, austria: 474, belgium: 459,
+  'bosnia-herzegovina': 452, brazil: 205, canada: 206, 'cape verde': 2597,
+  colombia: 208, 'dr congo': 2850, croatia: 477, curacao: 11678,
+  czechia: 450, ecuador: 209, egypt: 2620, england: 448, france: 478,
+  germany: 481, ghana: 4469, haiti: 2654, iran: 469, iraq: 4375,
+  'ivory coast': 4789, japan: 627, jordan: 2917, mexico: 203, morocco: 2869,
+  netherlands: 449, 'new zealand': 2666, norway: 464, panama: 2659,
+  paraguay: 210, portugal: 482, qatar: 4398, 'saudi arabia': 655,
+  scotland: 580, senegal: 654, 'south africa': 467, 'south korea': 451,
+  spain: 164, sweden: 466, switzerland: 475, tunisia: 659, turkiye: 465,
+  'united states': 660, uruguay: 212, uzbekistan: 2570,
+};
 
-    const players = (data.athletes || []).map(p => {
-      const statsMap = {};
-      try {
-        for (const cat of p.statistics?.splits?.categories ?? [])
-          for (const s of cat.stats) statsMap[s.name] = s.value;
-      } catch {}
-      const appearances   = statsMap.appearances  ?? 0;
-      const subIns        = statsMap.subIns        ?? 0;
-      const gamesStarted  = Math.max(0, appearances - subIns);
-      return {
-        id:           p.id,
-        name:         p.displayName,
-        shortName:    p.shortName,
-        position:     p.position?.abbreviation ?? 'M',
-        jerseyNumber: p.jersey ?? null,
-        country:      p.citizenship ?? null,
-        age:          p.age ?? null,
-        appearances,
-        gamesStarted,
-        injury:       p.injuries?.length
-                        ? (p.injuries[0].longComment || p.injuries[0].status || 'Blessé')
-                        : null,
-      };
-    });
+// ESPN teamId → confédération (pour les qualifs CDM, fifa.worldq.{conf})
+const ESPN_CDM_CONF = {
+  624: 'caf', 202: 'conmebol', 628: 'afc', 474: 'uefa', 459: 'uefa', 452: 'uefa',
+  205: 'conmebol', 206: 'concacaf', 2597: 'caf', 208: 'conmebol', 2850: 'caf',
+  477: 'uefa', 11678: 'concacaf', 450: 'uefa', 209: 'conmebol', 2620: 'caf',
+  448: 'uefa', 478: 'uefa', 481: 'uefa', 4469: 'caf', 2654: 'concacaf',
+  469: 'afc', 4375: 'afc', 4789: 'caf', 627: 'afc', 2917: 'afc', 203: 'concacaf',
+  2869: 'caf', 449: 'uefa', 2666: 'ofc', 464: 'uefa', 2659: 'concacaf',
+  210: 'conmebol', 482: 'uefa', 4398: 'afc', 655: 'afc', 580: 'uefa',
+  654: 'caf', 467: 'caf', 451: 'afc', 164: 'uefa', 466: 'uefa', 475: 'uefa',
+  659: 'caf', 465: 'uefa', 660: 'concacaf', 212: 'conmebol', 2570: 'afc',
+};
 
-    const result = { teamId, players };
-    _espnFbCache[key] = { data: result, ts: Date.now() };
+// Alias noms football-data.org → clé ESPN_CDM
+const CDM_NAME_ALIASES = {
+  'korea republic': 'south korea',
+  'ir iran': 'iran',
+  'cote divoire': 'ivory coast',
+  usa: 'united states',
+  'czech republic': 'czechia',
+  'congo dr': 'dr congo',
+  'cabo verde': 'cape verde',
+  'bosnia and herzegovina': 'bosnia-herzegovina',
+};
+
+function normCdmName(s) {
+  return (s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .replace(/[^a-z\s-]/g, '').replace(/\s+/g, ' ').trim();
+}
+
+function extractCdmResult(event, teamId, type) {
+  const comp = event.competitions?.[0];
+  if (!comp || comp.status?.type?.name !== 'STATUS_FULL_TIME') return null;
+  const us   = comp.competitors?.find(c => String(c.team?.id) === String(teamId));
+  const them = comp.competitors?.find(c => String(c.team?.id) !== String(teamId));
+  if (!us || !them) return null;
+  const gf = parseInt(us.score?.displayValue);
+  const ga = parseInt(them.score?.displayValue);
+  if (isNaN(gf) || isNaN(ga)) return null;
+  return { date: event.date, gf, ga, opponent: them.team?.displayName || '', type };
+}
+
+async function fetchEspnSoccerSchedule(league, teamId) {
+  try {
+    const resp = await fetch(`${ESPN_SOCCER}/${league}/teams/${teamId}/schedule`);
+    if (!resp.ok) return [];
+    return (await resp.json()).events || [];
+  } catch { return []; }
+}
+
+const _cdmStatsCache = {}; // espnId → { data, ts }
+const CDM_STATS_TTL = 24 * 60 * 60 * 1000; // 24h
+
+// Force attaque/défense d'une sélection — basé sur amicaux + qualifs CDM récents (ESPN, gratuit)
+app.get('/api/football/cdm/teamstats/:name', async (req, res) => {
+  const key = normCdmName(req.params.name);
+  const espnId = ESPN_CDM[CDM_NAME_ALIASES[key] || key];
+  if (!espnId) return res.status(404).json({ error: `Sélection inconnue: ${req.params.name}` });
+
+  const cached = _cdmStatsCache[espnId];
+  if (cached && Date.now() - cached.ts < CDM_STATS_TTL) return res.json(cached.data);
+
+  try {
+    const conf = ESPN_CDM_CONF[espnId];
+    const [friendlies, qualifiers] = await Promise.all([
+      fetchEspnSoccerSchedule('fifa.friendly', espnId),
+      conf ? fetchEspnSoccerSchedule(`fifa.worldq.${conf}`, espnId) : Promise.resolve([]),
+    ]);
+
+    const results = [
+      ...friendlies.map(ev => extractCdmResult(ev, espnId, 'friendly')),
+      ...qualifiers.map(ev => extractCdmResult(ev, espnId, 'qualifier')),
+    ]
+      .filter(Boolean)
+      .sort((a, b) => new Date(b.date) - new Date(a.date))
+      .slice(0, 15);
+
+    // Moyenne pondérée : qualifs (×1.3) plus représentatives que les amicaux (×0.85),
+    // et matchs récents (decay exponentiel, demi-vie 9 mois) pèsent plus que les vieux.
+    const HALF_LIFE_DAYS = 270;
+    const now = Date.now();
+    let wSum = 0, gfSum = 0, gaSum = 0;
+    for (const r of results) {
+      const daysAgo = (now - new Date(r.date).getTime()) / 86400000;
+      const recencyW = Math.pow(0.5, daysAgo / HALF_LIFE_DAYS);
+      const typeW = r.type === 'qualifier' ? 1.3 : 0.85;
+      const w = recencyW * typeW;
+      wSum += w;
+      gfSum += r.gf * w;
+      gaSum += r.ga * w;
+    }
+
+    const games = results.length;
+    const goalsFor     = wSum ? gfSum / wSum : null;
+    const goalsAgainst = wSum ? gaSum / wSum : null;
+    const lastMatchDate = results[0]?.date ?? null;
+
+    const result = { espnId, games, goalsFor, goalsAgainst, lastMatchDate, results };
+    _cdmStatsCache[espnId] = { data: result, ts: Date.now() };
     res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Effectif d'une sélection CDM par nom (ex: Mexico, South Africa) — résout l'ID ESPN via ESPN_CDM
+app.get('/api/football/cdm/squad/:name', async (req, res) => {
+  const key = normCdmName(req.params.name);
+  const espnId = ESPN_CDM[CDM_NAME_ALIASES[key] || key];
+  if (!espnId) return res.status(404).json({ error: `Sélection inconnue: ${req.params.name}` });
+  try {
+    res.json(await fetchEspnRoster('fifa.world', espnId));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -1030,7 +1311,7 @@ app.get('/api/nba/playergamelog/:playerId', async (req, res) => {
             pts, reb, ast, min, to, stl, blk, oreb, dreb, pf, pm,
             fgm: fg.made,  fga: fg.att,
             ftm: ft.made,  fta: ft.att,
-            fg3m: tpt.made, fg3a: tpt.att,
+            fg3m: tpt.made, fg3a: tpt.att, tpm: tpt.made,
             tsPct,
             opponentAbbr: meta.opponent?.abbreviation || '?',
             isHome:       meta.atVs !== '@',
@@ -1063,6 +1344,7 @@ app.get('/api/nba/gameline', async (req, res) => {
     const url = `https://api.the-odds-api.com/v4/sports/basketball_nba/odds/?apiKey=${ODDS_KEY}&regions=us&markets=totals,h2h&oddsFormat=decimal&bookmakers=draftkings,fanduel,pinnacle`;
     const resp = await fetch(url);
     if (!resp.ok) throw new Error(`Odds API ${resp.status}`);
+    _captureOddsQuota(resp);
     const games = await resp.json();
 
     const norm = s => s.toLowerCase().replace(/[^a-z]/g, '');
@@ -1135,6 +1417,21 @@ function parseNbaRows(json) {
     h.forEach((k, i) => { obj[k] = row[i]; });
     return obj;
   });
+}
+
+// Redistribution des minutes/stats vers les joueurs actifs quand un titulaire est Out
+// (NBA playoffs, EU, WNBA) — share = part des minutes du joueur actif parmi les actifs
+function computeRedist(outPlayers, activePlayers) {
+  const totalOutMin = outPlayers.reduce((s, p) => s + (p.stats?.min ?? 0), 0);
+  if (!totalOutMin) return {};
+  const totalActiveMin = activePlayers.reduce((s, p) => s + (p.stats?.min ?? 1), 0);
+  if (!totalActiveMin) return {};
+  const factors = {};
+  activePlayers.forEach(p => {
+    const share = (p.stats?.min ?? 0) / totalActiveMin;
+    factors[String(p.id)] = Math.min(1.25, 1 + (share * totalOutMin) / Math.max(p.stats?.min ?? 1, 1));
+  });
+  return factors;
 }
 
 // GET /api/nba/leagueadvanced
@@ -1296,6 +1593,90 @@ app.get('/api/nba/boxscore', async (req, res) => {
 const ESPN_WNBA_SUMMARY = 'https://site.api.espn.com/apis/site/v2/sports/basketball/wnba/summary';
 let _wnbaScoreboardCache = { data: null, ts: 0 };
 
+app.get('/api/wnba/boxscore', async (req, res) => {
+  const { date, home, away } = req.query;
+  if (!date || !home || !away) return res.status(400).json({ error: 'date, home, away requis' });
+
+  const cacheKey = `wnba_bs_${date}_${home}_${away}`;
+  const cached = _espnCache[cacheKey];
+  if (cached && Date.now() - cached.ts < CACHE_5MIN) return res.json(cached.data);
+
+  try {
+    // Convertir UTC → heure de l'Est (UTC-5) pour la date ESPN
+    const dt  = new Date(date);
+    const est = new Date(dt.getTime() - 5 * 60 * 60 * 1000);
+    const ymd = est.toISOString().slice(0, 10).replace(/-/g, '');
+
+    // 1. Scoreboard du jour → trouver l'event ID
+    const sbResp = await fetch(`${ESPN_WNBA_SB}?dates=${ymd}&limit=50`);
+    if (!sbResp.ok) throw new Error(`ESPN scoreboard ${sbResp.status}`);
+    const sbData = await sbResp.json();
+
+    const homeU = home.toUpperCase(), awayU = away.toUpperCase();
+    const game = (sbData.events || []).find(e => {
+      const abbrs = (e.competitions?.[0]?.competitors || []).map(c => c.team?.abbreviation?.toUpperCase() || '');
+      return abbrs.includes(homeU) && abbrs.includes(awayU);
+    });
+
+    if (!game) return res.status(404).json({ error: 'Match introuvable', date: ymd, home, away });
+
+    // 2. Summary → box score
+    const sumResp = await fetch(`${ESPN_WNBA_SUMMARY}?event=${game.id}`);
+    if (!sumResp.ok) throw new Error(`ESPN summary ${sumResp.status}`);
+    const sumData = await sumResp.json();
+
+    // Scores d'équipe depuis les competitors ESPN
+    const competitors = game.competitions?.[0]?.competitors || [];
+    const homeComp = competitors.find(c => c.homeAway === 'home');
+    const awayComp = competitors.find(c => c.homeAway === 'away');
+    const result = {
+      gameId: game.id,
+      status: game.status?.type?.name,
+      homeScore: homeComp?.score != null ? parseInt(homeComp.score) : null,
+      awayScore: awayComp?.score != null ? parseInt(awayComp.score) : null,
+    };
+    for (const teamData of (sumData.boxscore?.players || [])) {
+      const abbr  = teamData.team?.abbreviation?.toUpperCase();
+      const group = teamData.statistics?.[0];
+      if (!group || !abbr) continue;
+      const labels = (group.labels || []).map(l => l.toLowerCase());
+
+      result[abbr] = (group.athletes || []).map(a => {
+        const vals = a.stats || [];
+        const s = {};
+        labels.forEach((l, i) => { s[l] = vals[i] ?? '—'; });
+        return {
+          id:       a.athlete?.id,
+          name:     a.athlete?.displayName,
+          position: a.athlete?.position?.abbreviation || '—',
+          headshot: a.athlete?.headshot?.href || null,
+          starter:  a.starter ?? false,
+          dnp:      !!a.didNotPlay,
+          stats: {
+            min: s.min || '—',
+            pts: parseFloat(s.pts) || 0,
+            reb: parseFloat(s.reb) || 0,
+            ast: parseFloat(s.ast) || 0,
+            stl: parseFloat(s.stl) || 0,
+            blk: parseFloat(s.blk) || 0,
+            to:  parseFloat(s.to)  || 0,
+            fg:  s.fg  || '—',
+            tpm: s['3pt'] || '—',
+            ft:  s.ft  || '—',
+            pm:  s['+/-'] || '—',
+          },
+        };
+      });
+    }
+
+    _espnCache[cacheKey] = { data: result, ts: Date.now() };
+    res.json(result);
+  } catch (err) {
+    console.error('wnba boxscore:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 async function fetchWNBAPlayerStats(playerId) {
   try {
     const resp = await fetch(`${ESPN_WNBA_ATH}/${playerId}/stats?season=${WNBA_SEASON}`);
@@ -1314,8 +1695,10 @@ async function fetchWNBAPlayerStats(playerId) {
     const reb = parseFloat(get('REB')) || null;
     const ast = parseFloat(get('AST')) || null;
     const min = parseFloat(get('MIN')) || null;
+    const threeRaw = get('3PT') || '';
+    const tpm = parseFloat(threeRaw.split('-')[0]) || null;
     if (!pts && !reb && !ast) return null;
-    return { pts, reb, ast, min };
+    return { pts, reb, ast, tpm, min };
   } catch { return null; }
 }
 
@@ -1447,7 +1830,7 @@ app.get('/api/wnba/playergamelog/:playerId', async (req, res) => {
           const tsDenom = 2 * (fg.att + 0.44 * ft.att);
           games.push({
             date: meta.gameDate, pts, reb, ast, min, to, stl, blk, pf,
-            fgm: fg.made, fga: fg.att, ftm: ft.made, fta: ft.att, fg3m: tpt.made, fg3a: tpt.att,
+            fgm: fg.made, fga: fg.att, ftm: ft.made, fta: ft.att, fg3m: tpt.made, fg3a: tpt.att, tpm: tpt.made,
             oreb: 0, dreb: 0, pm: 0,
             tsPct: tsDenom > 0 ? pts / tsDenom : null,
             opponentAbbr: meta.opponent?.abbreviation || '?',
@@ -1514,6 +1897,60 @@ app.get('/api/wnba/boxscore', async (req, res) => {
         };
       });
     }
+    _espnCache[cacheKey] = { data: result, ts: Date.now() };
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── NBA Team Stats ───────────────────────────────────────────────────────────
+app.get('/api/nba/teamstats/:teamId', async (req, res) => {
+  const { teamId } = req.params;
+  const cacheKey = `nba_teamstats_${teamId}`;
+  const cached = _espnCache[cacheKey];
+  if (cached && Date.now() - cached.ts < CACHE_6H) return res.json(cached.data);
+  try {
+    const resp = await fetch(`${ESPN_NBA}/${teamId}/statistics?season=${ESPN_SEASON}`);
+    if (!resp.ok) throw new Error(`ESPN NBA teamstats ${resp.status}`);
+    const data = await resp.json();
+    // ESPN returns results.stats.categories[].stats
+    const categories = data.results?.stats?.categories || data.splits?.categories || [];
+    const statsArr = categories.flatMap(c => c.stats || c.statistics || []);
+    const get = (...keys) => {
+      for (const k of keys) {
+        const s = statsArr.find(s => s.name === k || s.abbreviation === k);
+        if (s) return parseFloat(s.value ?? s.displayValue) || null;
+      }
+      return null;
+    };
+    let oppg = get('avgPointsAllowed', 'avgOpponentPoints');
+    if (oppg == null) {
+      try {
+        const schedResp = await fetch(`${ESPN_NBA}/${teamId}/schedule`);
+        if (schedResp.ok) {
+          const schedJson = await schedResp.json();
+          const ptsAllowed = [];
+          for (const ev of (schedJson.events || [])) {
+            const comp = ev.competitions?.[0];
+            if (!comp?.status?.type?.name?.includes('STATUS_FINAL')) continue;
+            const us   = comp.competitors?.find(c => String(c.id) === String(teamId));
+            const them = comp.competitors?.find(c => String(c.id) !== String(teamId));
+            if (!us || !them) continue;
+            const pa = parseInt(them.score?.displayValue ?? them.score) || 0;
+            if (pa > 0) ptsAllowed.push(pa);
+          }
+          if (ptsAllowed.length) oppg = ptsAllowed.reduce((a, b) => a + b, 0) / ptsAllowed.length;
+        }
+      } catch {}
+    }
+    const result = {
+      ppg:  get('avgPoints'),
+      oppg: oppg ? Math.round(oppg * 10) / 10 : null,
+      rpg:  get('avgRebounds'),
+      apg:  get('avgAssists'),
+      fg:   get('fieldGoalPct'),
+    };
     _espnCache[cacheKey] = { data: result, ts: Date.now() };
     res.json(result);
   } catch (err) {
@@ -1630,6 +2067,9 @@ app.get('/api/wnba/h2h/:homeId', async (req, res) => {
 const ROTO_WNBA_LINEUPS_URL  = 'https://www.rotowire.com/wnba/lineups.php';
 const ROTO_WNBA_INJURIES_URL = 'https://www.rotowire.com/basketball/wnba-injuries.php';
 const _wnbaLineupInjuries = {};
+// RotoWire utilise des abréviations différentes d'ESPN pour certaines équipes WNBA
+const ROTO_WNBA_ABBR = { LVA: 'LV', GSV: 'GS', WAS: 'WSH', NYL: 'NY', PHO: 'PHX' };
+const normWnbaAbbr = a => ROTO_WNBA_ABBR[a?.toUpperCase()] || a?.toUpperCase() || '';
 
 async function fetchRotoWireWNBALineups() {
   const ck = 'roto_wnba_html_all';
@@ -1645,8 +2085,8 @@ async function fetchRotoWireWNBALineups() {
     const homeMatch  = box.match(/data-team="(\w+)"[^>]*data-home="1"/);
     const visitMatch = box.match(/data-team="(\w+)"[^>]*data-home="0"/);
     if (!homeMatch || !visitMatch) continue;
-    const homeAbbr  = (homeMatch[1] || '').toUpperCase();
-    const visitAbbr = (visitMatch[1] || '').toUpperCase();
+    const homeAbbr  = normWnbaAbbr(homeMatch[1]);
+    const visitAbbr = normWnbaAbbr(visitMatch[1]);
     const visitUl = box.match(/<ul class="lineup__list is-visit">([\s\S]*?)<\/ul>/)?.[1] || '';
     const homeUl  = box.match(/<ul class="lineup__list is-home">([\s\S]*?)<\/ul>/)?.[1]  || '';
     const STATUS_NORM_W = { 'out': 'Out', 'ofs': 'Out', 'doubtful': 'Questionable', 'questionable': 'Questionable', 'ques': 'Questionable', 'day-to-day': 'Questionable', 'gtd': 'Questionable', 'game-time decision': 'Questionable' };
@@ -1712,13 +2152,7 @@ app.get('/api/wnba/injuries', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.get('/api/wnba/projectedlineup', async (req, res) => {
-  const { date, home, away } = req.query;
-  if (!date || !home || !away) return res.status(400).json({ error: 'date, home, away requis' });
-  const ck = `wnba_proj_${date.slice(0, 10)}_${home}_${away}`;
-  const hit = _espnCache[ck];
-  if (hit && Date.now() - hit.ts < 3 * 60 * 1000) return res.json(hit.data);
-
+async function _refreshWnbaProjectedLineup(date, home, away, ck) {
   const result = { starters: {}, source: 'none' };
 
   // 1. RotoWire WNBA lineups
@@ -1760,7 +2194,22 @@ app.get('/api/wnba/projectedlineup', async (req, res) => {
   } catch (e) { console.warn('ESPN WNBA projected lineup:', e.message); }
 
   _espnCache[ck] = { data: result, ts: Date.now() };
-  res.json(result);
+  return result;
+}
+
+app.get('/api/wnba/projectedlineup', async (req, res) => {
+  const { date, home, away } = req.query;
+  if (!date || !home || !away) return res.status(400).json({ error: 'date, home, away requis' });
+  const ck = `wnba_proj_${date.slice(0, 10)}_${home}_${away}`;
+  const hit = _espnCache[ck];
+  if (hit && Date.now() - hit.ts < 3 * 60 * 1000) return res.json(hit.data);
+
+  if (hit) {
+    _refreshInBackground(ck, () => _refreshWnbaProjectedLineup(date, home, away, ck));
+    return res.json(hit.data);
+  }
+
+  res.json(await _refreshWnbaProjectedLineup(date, home, away, ck));
 });
 
 // Alias snapshot pour WNBA (même store partagé que NBA, IDs ESPN globalement uniques)
@@ -1800,9 +2249,12 @@ async function bzzFetch(path) {
         signal: ac.signal,
       });
       if (!resp.ok) throw new Error(`bzzoiro ${resp.status} — ${path}`);
-      return resp.json();
+      const data = await resp.json();
+      _updateScraper('bzzoiro', true);
+      return data;
     } finally { clearTimeout(t); }
-  } finally { bzzRelease(); }
+  } catch(e) { _updateScraper('bzzoiro', false); throw e; }
+  finally { bzzRelease(); }
 }
 
 // Notre code interne → bzzoiro team ID (Euroleague)
@@ -2214,6 +2666,7 @@ async function bballFetch(path) {
     resp = await fetch(`${BBALL_BASE}${path}`, { headers: { 'x-apisports-key': BBALL_KEY }, signal: ctrl.signal });
   } finally { clearTimeout(timer); }
   if (!resp.ok) throw new Error(`bball-api ${resp.status} ${path}`);
+  _captureBasketballApiQuota(resp);
   return resp.json();
 }
 
@@ -2384,6 +2837,51 @@ app.get('/api/euro/:league/game/:gameId', async (req, res) => {
 
 const BZZ_LEAGUE_NAME = { acb: 'Liga ACB', bbl: 'Germany BBL', legaa: 'Lega A Basket' };
 
+// Roster par nom d'équipe (bypass api-sports) — utilisé par EffectifPage
+app.get('/api/euro/:league/roster/byname/:teamName', async (req, res) => {
+  const { league, teamName } = req.params;
+  const name = decodeURIComponent(teamName);
+  const bzzId = bzzTeamId(name);
+  if (!bzzId) return res.status(404).json({ error: `Team not found: ${name}` });
+  const ck = `euro_players_${league}_bzz_${bzzId}`;
+  const hit = _euroCache[ck];
+  if (!req.query.refresh && hit && hit.data?.players?.length > 0 && Date.now() - hit.ts < CACHE_6H) return res.json(hit.data);
+  try {
+    const leagueName = BZZ_LEAGUE_NAME[league] || null;
+    const cutoff75 = Date.now() - 75 * 24 * 3600_000;
+    const rosterData = await bzzFetch(`/players/?team=${bzzId}&limit=30`);
+    const roster = rosterData.results || [];
+    const logsArr = await Promise.all(
+      roster.map(p =>
+        bzzFetch(`/players/${p.id}/games/?limit=12`)
+          .then(d => ({ id: p.id, games: _updateGlCache(`bzz_${p.id}`, d.results || []) }))
+          .catch(() => ({ id: p.id, games: _glPersist[`bzz_${p.id}`]?.games || [] }))
+      )
+    );
+    const logMap = {};
+    logsArr.forEach(({ id, games }) => { logMap[id] = games; });
+    const avg = arr => arr.length ? arr.reduce((s, v) => s + v, 0) / arr.length : null;
+    const r1  = v => v != null ? Math.round(v * 10) / 10 : null;
+    const players = roster.map(p => {
+      const allGames = logMap[p.id] || [];
+      const leagueGames = (leagueName ? allGames.filter(g => g.league === leagueName) : allGames).filter(g => (g.minutes || 0) > 3);
+      const recentActive = allGames.filter(g => new Date(g.event_date).getTime() > cutoff75).length;
+      const pts = r1(avg(leagueGames.map(g => g.points ?? 0)));
+      const reb = r1(avg(leagueGames.map(g => g.rebounds ?? 0)));
+      const ast = r1(avg(leagueGames.map(g => g.assists ?? 0)));
+      const min = r1(avg(leagueGames.filter(g => (g.minutes||0) > 0).map(g => g.minutes)));
+      const last5 = leagueGames.slice(0, 5);
+      const starterFrac = last5.length > 0 ? last5.filter(g => g.is_starter).length / last5.length : 0;
+      return { id: p.id, name: p.name, position: p.position || '—', jersey: p.jersey_number || '—', stats: pts != null ? { pts, reb, ast, min: min ?? 0 } : null, starterFrac, recentActive };
+    })
+    .filter(p => p.recentActive > 0 || p.stats != null)
+    .filter((p, i, arr) => arr.findIndex(x => String(x.id) === String(p.id)) === i);
+    const result = { players };
+    _euroCache[ck] = { data: result, ts: Date.now() };
+    res.json(result);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // Roster + stats saison depuis Bzzoiro
 app.get('/api/euro/:league/players/:teamId', async (req, res) => {
   const { league, teamId } = req.params;
@@ -2434,13 +2932,15 @@ app.get('/api/euro/:league/players/:teamId', async (req, res) => {
         const pts = r1(avg(leagueGames.map(g => g.points ?? 0)));
         const reb = r1(avg(leagueGames.map(g => g.rebounds ?? 0)));
         const ast = r1(avg(leagueGames.map(g => g.assists ?? 0)));
+        const tpm = r1(avg(leagueGames.map(g => g.three_pointers_made ?? 0)));
+        const min = r1(avg(leagueGames.filter(g => (g.minutes||0) > 0).map(g => g.minutes)));
         // Fraction de titularisations sur les 5 derniers matchs de ligue
         const last5 = leagueGames.slice(0, 5);
         const starterFrac = last5.length > 0 ? last5.filter(g => g.is_starter).length / last5.length : 0;
         return {
           id: p.id, name: p.name, position: p.position || '—', jersey: p.jersey_number || '—',
           headshot: null,
-          stats: pts != null ? { pts, reb, ast } : null,
+          stats: pts != null ? { pts, reb, ast, tpm: tpm ?? 0, min: min ?? 0 } : null,
           starterFrac,
           recentActive,
         };
@@ -2457,15 +2957,14 @@ app.get('/api/euro/:league/players/:teamId', async (req, res) => {
 
         // 2. Auto-exclusion via gamelog : si le joueur a récemment joué CONTRE cette équipe → il n'en fait pas partie
         const gl = (
+          logMap[p.id] ||
+          _glPersist[`bzz_${p.id}`]?.games ||
           _glPersist[`eu_${p.id}`]?.games ||
           _euroCache[`euro_gl_${p.id}`]?.data?.games ||
           []
         ).filter(g => (g.minutes ?? g.min ?? 0) > 3);
         if (gl.length === 0) return true; // pas de gamelog → conserver (pas assez d'info)
-        const recentOpponent = gl[0]?.opponent;
-        if (!recentOpponent) return true;
-        const norm = s => (s || '').toLowerCase().replace(/[^a-z]/g, '');
-        const oppN = norm(recentOpponent);
+        const normS = s => (s || '').toLowerCase().replace(/[^a-z]/g, '');
         // Cherche le nom de l'équipe courante dans le scoreboard
         const sb = _euroCache[`euro_sb_${league}`]?.data?.games || [];
         let thisTeamName = '';
@@ -2474,9 +2973,12 @@ app.get('/api/euro/:league/players/:teamId', async (req, res) => {
           if (g.away?.id === Number(teamId)) { thisTeamName = g.away.name; break; }
         }
         if (!thisTeamName) return true;
-        const teamN = norm(thisTeamName);
-        // Si l'adversaire du dernier match = cette équipe → joueur appartient à l'autre équipe
-        const playedAgainstUs = oppN.includes(teamN.slice(0, 5)) || teamN.includes(oppN.slice(0, 5));
+        const teamN = normS(thisTeamName);
+        // Si l'un des 5 derniers matchs a cette équipe comme adversaire → joueur n'en fait pas partie
+        const playedAgainstUs = gl.slice(0, 5).some(g => {
+          const oppN = normS(g.opponent || '');
+          return oppN.includes(teamN.slice(0, 5)) || teamN.includes(oppN.slice(0, 5));
+        });
         if (playedAgainstUs) return false;
         return true;
       })
@@ -2504,15 +3006,17 @@ app.get('/api/euro/:league/players/:teamId', async (req, res) => {
     }
     // Supplement depuis les assignations bookmakers (transferts automatiques)
     try {
-      const existingNames = new Set(players.map(p => p.name?.toLowerCase()));
+      const normN = s => (s||'').toLowerCase().normalize('NFC').replace(/[éèêë]/g,'e').replace(/[àâä]/g,'a').replace(/[ùûü]/g,'u').replace(/[îï]/g,'i').replace(/[ôö]/g,'o').replace(/ç/g,'c');
+      const existingNames = new Set(players.map(p => normN(p.name)));
+      const existingIds   = new Set(players.map(p => String(p.id)));
       const teamNum = Number(teamId);
       for (const [playerName, info] of Object.entries(_euroPlayerTeams)) {
         if (info.league !== league || info.teamId !== teamNum) continue;
-        if (existingNames.has(playerName.toLowerCase())) continue;
+        if (existingNames.has(normN(playerName))) continue;
         // Cherche l'ID Bzzoiro via search
         const search = await bzzFetch(`/players/?search=${encodeURIComponent(playerName.split(' ').slice(-1)[0])}&limit=10`).catch(() => null);
         const match = (search?.results || []).find(p => p.name?.toLowerCase().includes(playerName.split(' ').slice(-1)[0].toLowerCase()));
-        if (match) {
+        if (match && !existingIds.has(String(match.id))) {
           const gd = await bzzFetch(`/players/${match.id}/games/?limit=12`).catch(() => null);
           const allGames = gd?.results || [];
           const avg = arr => arr.length ? arr.reduce((s,v)=>s+v,0)/arr.length : null;
@@ -2521,7 +3025,8 @@ app.get('/api/euro/:league/players/:teamId', async (req, res) => {
           const pts = r1(avg(leagueGames.map(g=>g.points??0)));
           const reb = r1(avg(leagueGames.map(g=>g.rebounds??0)));
           const ast = r1(avg(leagueGames.map(g=>g.assists??0)));
-          players.push({ id: match.id, name: playerName, position: match.position||'—', jersey: match.jersey_number||'—', headshot: null, stats: pts!=null?{pts,reb,ast}:null, starterFrac: 0, recentActive: allGames.length });
+          const tpm = r1(avg(leagueGames.map(g=>g.three_pointers_made??0)));
+          players.push({ id: match.id, name: playerName, position: match.position||'—', jersey: match.jersey_number||'—', headshot: null, stats: pts!=null?{pts,reb,ast,tpm:tpm??0}:null, starterFrac: 0, recentActive: allGames.length });
           existingNames.add(playerName.toLowerCase());
         }
       }
@@ -2548,7 +3053,8 @@ app.get('/api/euro/:league/players/:teamId', async (req, res) => {
             const pts = r1(avg(leagueGames.map(g=>g.points??0)));
             const reb = r1(avg(leagueGames.map(g=>g.rebounds??0)));
             const ast = r1(avg(leagueGames.map(g=>g.assists??0)));
-            players.push({ id: cp.id, name: cp.name, position: cp.position||'—', jersey: cp.jersey||'—', headshot: null, stats: pts!=null?{pts,reb,ast}:null, starterFrac: 0, recentActive });
+            const tpm = r1(avg(leagueGames.map(g=>g.three_pointers_made??0)));
+            players.push({ id: cp.id, name: cp.name, position: cp.position||'—', jersey: cp.jersey||'—', headshot: null, stats: pts!=null?{pts,reb,ast,tpm:tpm??0}:null, starterFrac: 0, recentActive });
           } catch {}
         }
         players.sort((a,b)=>(b.stats?.pts??-1)-(a.stats?.pts??-1));
@@ -2611,8 +3117,10 @@ app.get('/api/euro/:league/playergamelog/:playerId', async (req, res) => {
       blk:     g.blocks   ?? 0,
       to:      g.turnovers ?? 0,
       fg:       g.field_goals_made != null ? `${g.field_goals_made}-${g.field_goals_attempted}` : '—',
+      fgm:      g.field_goals_made ?? null, fga: g.field_goals_attempted ?? null,
       tpm:      g.three_pointers_made != null ? `${g.three_pointers_made}-${g.three_pointers_attempted}` : '—',
       ft:       g.free_throws_made != null ? `${g.free_throws_made}-${g.free_throws_attempted}` : '—',
+      ftm:      g.free_throws_made ?? null, fta: g.free_throws_attempted ?? null,
       league:   g.league,
       opponent: g.opponent ?? null,
     }));
@@ -3177,9 +3685,13 @@ async function fetchRotoWireInjuries() {
 app.get('/api/nba/rotowire', async (req, res) => {
   try {
     const all = await fetchRotoWireAllLineups();
+    _updateScraper('rotowire', all != null && Object.keys(all).length > 0);
     const { team } = req.query;
     res.json(team ? (all[toStd(team)] ?? null) : all);
-  } catch (err) { console.warn('RotoWire:', err.message); res.json(null); }
+  } catch (err) {
+    _updateScraper('rotowire', false);
+    console.warn('RotoWire:', err.message); res.json(null);
+  }
 });
 
 // ── NBA Injuries — RotoWire injuries page + MAY NOT PLAY section ─────────────
@@ -3198,14 +3710,7 @@ app.get('/api/nba/injuries', async (req, res) => {
 });
 
 // ── Projected Lineup : RotoWire → ESPN confirmed (jour J) ────────────────────
-app.get('/api/nba/projectedlineup', async (req, res) => {
-  const { date, home, away } = req.query;
-  if (!date || !home || !away) return res.status(400).json({ error: 'date, home, away requis' });
-
-  const ck = `proj_${date.slice(0, 10)}_${home}_${away}`;
-  const hit = _espnCache[ck];
-  if (hit && Date.now() - hit.ts < 3 * 60 * 1000) return res.json(hit.data);
-
+async function _refreshNbaProjectedLineup(date, home, away, ck) {
   const ESPN_ABBR_MAP = { SAS:'SA', NYK:'NY', GSW:'GS', NOP:'NO', UTA:'UT' };
   const ABBR_BACK = Object.fromEntries(Object.entries(ESPN_ABBR_MAP).map(([k,v]) => [v,k]));
   const toEspn = a => ESPN_ABBR_MAP[a.toUpperCase()] || a.toUpperCase();
@@ -3257,20 +3762,52 @@ app.get('/api/nba/projectedlineup', async (req, res) => {
   } catch (e) { console.warn('ESPN projected lineup:', e.message); }
 
   _espnCache[ck] = { data: result, ts: Date.now() };
-  res.json(result);
+  return result;
+}
+
+app.get('/api/nba/projectedlineup', async (req, res) => {
+  const { date, home, away } = req.query;
+  if (!date || !home || !away) return res.status(400).json({ error: 'date, home, away requis' });
+
+  const ck = `proj_${date.slice(0, 10)}_${home}_${away}`;
+  const hit = _espnCache[ck];
+  if (hit && Date.now() - hit.ts < 3 * 60 * 1000) return res.json(hit.data);
+
+  if (hit) {
+    _refreshInBackground(ck, () => _refreshNbaProjectedLineup(date, home, away, ck));
+    return res.json(hit.data);
+  }
+
+  res.json(await _refreshNbaProjectedLineup(date, home, away, ck));
 });
 
 // ── Basketball Odds (scraping Betclic + Winamax + Kambi Unibet) ──────────────
 app.get('/api/basketball/odds', async (req, res) => {
-  const { home, away, league = 'nba', refresh, date } = req.query;
+  let { home, away, league = 'nba', refresh, date } = req.query;
   if (!home || !away) return res.status(400).json({ error: 'home and away required' });
+
+  const NBA_ABBR = { ATL:'Atlanta Hawks',BOS:'Boston Celtics',BKN:'Brooklyn Nets',CHA:'Charlotte Hornets',CHI:'Chicago Bulls',CLE:'Cleveland Cavaliers',DAL:'Dallas Mavericks',DEN:'Denver Nuggets',DET:'Detroit Pistons',GSW:'Golden State Warriors',HOU:'Houston Rockets',IND:'Indiana Pacers',LAC:'LA Clippers',LAL:'Los Angeles Lakers',MEM:'Memphis Grizzlies',MIA:'Miami Heat',MIL:'Milwaukee Bucks',MIN:'Minnesota Timberwolves',NOP:'New Orleans Pelicans',NYK:'New York Knicks',OKC:'Oklahoma City Thunder',ORL:'Orlando Magic',PHI:'Philadelphia 76ers',PHX:'Phoenix Suns',POR:'Portland Trail Blazers',SAC:'Sacramento Kings',SAS:'San Antonio Spurs',TOR:'Toronto Raptors',UTA:'Utah Jazz',WAS:'Washington Wizards' };
+  if (league === 'nba') {
+    // Le frontend envoie parfois les abréviations courtes ESPN (NY, SA, GS, NO, UT)
+    // au lieu des codes standards NBA (NYK, SAS, GSW, NOP, UTA) — normaliser avant lookup
+    const ESPN_SHORT_NORM = { SA: 'SAS', NY: 'NYK', GS: 'GSW', NO: 'NOP', UT: 'UTA' };
+    const normNba = a => ESPN_SHORT_NORM[a?.toUpperCase()] || a?.toUpperCase();
+    home = normNba(home);
+    away = normNba(away);
+    if (NBA_ABBR[home]) home = NBA_ABBR[home];
+    if (NBA_ABBR[away]) away = NBA_ABBR[away];
+  }
 
   const cacheKey = `bball_odds_${league}_${home}_${away}`;
   const cached = _espnCache[cacheKey];
   const matchStarted = date && new Date(date).getTime() < Date.now();
 
-  // Match commencé : cotes figées — retourne le cache sans expiration ni re-scraping
+  // Match commencé : cotes figées — cache mémoire d'abord, snapshot disque en fallback (survit au redémarrage serveur)
   if (matchStarted && cached?.data) return res.json(cached.data);
+  if (matchStarted && !cached?.data) {
+    const snap = _linesSnapshot[cacheKey];
+    if (snap?.data?.found) return res.json(snap.data);
+  }
 
   if (!refresh && cached && Date.now() - cached.ts < 5 * 60 * 1000) return res.json(cached.data);
 
@@ -3298,80 +3835,121 @@ app.get('/api/basketball/odds', async (req, res) => {
     return fuzzy(mName, lwrd(ourName));
   };
 
+  // Cache présent (même périmé) et match pas commencé : on le sert tel quel
+  // et on rafraîchit en arrière-plan (évite le scraping + jitter sur le chemin de la requête)
+  if (!refresh && cached?.data && !matchStarted) {
+    _refreshInBackground(cacheKey, () => _refreshBasketballOdds(home, away, league, cacheKey, cached, matchStarted, matchTeam));
+    return res.json(cached.data);
+  }
+
   try {
-    const [ubData, bcMatches, wmMatches] = await Promise.all([
-      fetchUnibetBasketData(home, away, league).catch(() => null),
-      fetchBetclicBasketOdds(league).catch(() => []),
-      fetchWinamaxBasketOdds(league).catch(() => []),
-    ]);
-
-    const markets = {};
-
-    // Unibet via scraping
-    if (ubData?.h2h) {
-      markets.h2h = markets.h2h || { bookmakers: {} };
-      markets.h2h.bookmakers.unibet = ubData.h2h;
-    }
-    if (ubData?.totals) {
-      markets.totals = markets.totals || { bookmakers: {} };
-      markets.totals.bookmakers.unibet = ubData.totals;
-    }
-
-    // Betclic via scraping
-    const bcMatch = bcMatches.find(m => matchTeam(m.homeTeam, home) && matchTeam(m.awayTeam, away));
-    if (bcMatch) {
-      markets.h2h = markets.h2h || { bookmakers: {} };
-      markets.h2h.bookmakers.betclic = { home: bcMatch.h2h.home, away: bcMatch.h2h.away };
-    }
-
-    // Winamax via scraping
-    const wmMatch = wmMatches.find(m => matchTeam(m.homeTeam, home) && matchTeam(m.awayTeam, away));
-    if (wmMatch) {
-      markets.h2h = markets.h2h || { bookmakers: {} };
-      markets.h2h.bookmakers.winamax = { home: wmMatch.h2h.home, away: wmMatch.h2h.away };
-    }
-
-    // Winamax match details (totals + player props lines)
-    let wmDetails = null;
-    if (wmMatch?.matchId) {
-      wmDetails = await fetchWinamaxMatchDetails(wmMatch.matchId).catch(() => null);
-      if (wmDetails?.totals) {
-        markets.totals = markets.totals || { bookmakers: {} };
-        markets.totals.bookmakers.winamax = wmDetails.totals;
-      }
-    }
-
-    // Betclic match details (totals + earlywin)
-    const bcDetails = await fetchBetclicMatchDetails(home, away, league).catch(() => null);
-    if (bcDetails?.totals) {
-      markets.totals = markets.totals || { bookmakers: {} };
-      markets.totals.bookmakers.betclic = bcDetails.totals;
-    }
-    if (bcDetails?.earlywin) {
-      markets.earlywin = markets.earlywin || { bookmakers: {} };
-      markets.earlywin.bookmakers.betclic = bcDetails.earlywin;
-    }
-
-    // Unibet earlywin
-    if (ubData?.earlywin) {
-      markets.earlywin = markets.earlywin || { bookmakers: {} };
-      markets.earlywin.bookmakers.unibet = ubData.earlywin;
-    }
-
-    if (!Object.keys(markets).length) {
-      // Match commencé mais cache vide (redémarrage serveur) → retourne le dernier cache connu
-      if (matchStarted && cached?.data?.found) return res.json(cached.data);
-      return res.json({ found: false, home, away });
-    }
-
-    const result = { found: true, homeTeam: home, awayTeam: away, markets, source: 'scraped', wmMatchId: wmMatch?.matchId ?? null };
-    _espnCache[cacheKey] = { data: result, ts: Date.now() };
-    res.json(result);
+    return res.json(await _refreshBasketballOdds(home, away, league, cacheKey, cached, matchStarted, matchTeam));
   } catch (err) {
     console.error('basketball odds:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
+
+async function _refreshBasketballOdds(home, away, league, cacheKey, cached, matchStarted, matchTeam) {
+  const [ubData, bcMatches, wmMatches] = await Promise.all([
+    fetchUnibetBasketData(home, away, league).catch(() => null),
+    fetchBetclicBasketOdds(league).catch(() => []),
+    fetchWinamaxBasketOdds(league).catch(() => []),
+  ]);
+
+  _updateScraper('unibet', ubData != null && (
+    ubData.h2h != null || ubData.totals != null ||
+    Object.keys(ubData?.players ?? {}).length > 0 ||
+    Object.keys(ubData?.perfLadders ?? {}).length > 0
+  ));
+  _updateScraper('betclic', Array.isArray(bcMatches) && bcMatches.length > 0);
+  _updateScraper('winamax', Array.isArray(wmMatches) && wmMatches.length > 0);
+
+  const markets = {};
+
+  // Unibet via scraping
+  if (ubData?.h2h) {
+    markets.h2h = markets.h2h || { bookmakers: {} };
+    markets.h2h.bookmakers.unibet = ubData.h2h;
+  }
+  if (ubData?.totals) {
+    markets.totals = markets.totals || { bookmakers: {} };
+    markets.totals.bookmakers.unibet = ubData.totals;
+  }
+
+  // Betclic via scraping
+  const bcMatch = bcMatches.find(m => matchTeam(m.homeTeam, home) && matchTeam(m.awayTeam, away));
+  if (bcMatch) {
+    markets.h2h = markets.h2h || { bookmakers: {} };
+    markets.h2h.bookmakers.betclic = { home: bcMatch.h2h.home, away: bcMatch.h2h.away };
+  }
+
+  // Winamax via scraping
+  const wmMatch = wmMatches.find(m => matchTeam(m.homeTeam, home) && matchTeam(m.awayTeam, away));
+  if (wmMatch) {
+    markets.h2h = markets.h2h || { bookmakers: {} };
+    markets.h2h.bookmakers.winamax = { home: wmMatch.h2h.home, away: wmMatch.h2h.away };
+  }
+
+  // Winamax match details (totals + player props lines)
+  let wmDetails = null;
+  if (wmMatch?.matchId) {
+    wmDetails = await fetchWinamaxMatchDetails(wmMatch.matchId).catch(() => null);
+    if (wmDetails?.totals) {
+      markets.totals = markets.totals || { bookmakers: {} };
+      markets.totals.bookmakers.winamax = wmDetails.totals;
+    }
+  }
+
+  // Betclic match details (totals + earlywin)
+  const bcDetails = await fetchBetclicMatchDetails(home, away, league).catch(() => null);
+  if (bcDetails?.totals) {
+    markets.totals = markets.totals || { bookmakers: {} };
+    markets.totals.bookmakers.betclic = bcDetails.totals;
+  }
+  if (bcDetails?.earlywin) {
+    markets.earlywin = markets.earlywin || { bookmakers: {} };
+    markets.earlywin.bookmakers.betclic = bcDetails.earlywin;
+  }
+
+  // Unibet earlywin
+  if (ubData?.earlywin) {
+    markets.earlywin = markets.earlywin || { bookmakers: {} };
+    markets.earlywin.bookmakers.unibet = ubData.earlywin;
+  }
+
+  // Fallback Betclic : le scraping est intermittent (page non trouvée, marché absent ce cycle…).
+  // Si ce cycle n'a rien renvoyé mais qu'on a des cotes Betclic récentes en cache (< 30 min),
+  // on les conserve plutôt que de les faire disparaître de la boxe odds.
+  const prevMarkets = (cached?.data?.markets && Date.now() - cached.ts < 30 * 60 * 1000) ? cached.data.markets : null;
+  if (!bcMatch && prevMarkets?.h2h?.bookmakers?.betclic) {
+    markets.h2h = markets.h2h || { bookmakers: {} };
+    markets.h2h.bookmakers.betclic = prevMarkets.h2h.bookmakers.betclic;
+  }
+  if (!bcDetails?.totals && prevMarkets?.totals?.bookmakers?.betclic) {
+    markets.totals = markets.totals || { bookmakers: {} };
+    markets.totals.bookmakers.betclic = prevMarkets.totals.bookmakers.betclic;
+  }
+  if (!bcDetails?.earlywin && prevMarkets?.earlywin?.bookmakers?.betclic) {
+    markets.earlywin = markets.earlywin || { bookmakers: {} };
+    markets.earlywin.bookmakers.betclic = prevMarkets.earlywin.bookmakers.betclic;
+  }
+
+  if (!Object.keys(markets).length) {
+    // Match commencé mais scrape vide → cache mémoire puis snapshot disque
+    if (matchStarted && cached?.data?.found) return cached.data;
+    if (matchStarted) {
+      const snap = _linesSnapshot[cacheKey];
+      if (snap?.data?.found) return snap.data;
+    }
+    return { found: false, home, away };
+  }
+
+  const result = { found: true, homeTeam: home, awayTeam: away, markets, source: 'scraped', wmMatchId: wmMatch?.matchId ?? null };
+  _espnCache[cacheKey] = { data: result, ts: Date.now() };
+  _saveLinesSnapshot(cacheKey, result);
+  return result;
+}
 
 // ── Basketball scrapers ───────────────────────────────────────────────────────
 async function _betclicLeagueSlugs(league, H) {
@@ -3409,7 +3987,7 @@ async function fetchBetclicBasketOdds(league = 'nba') {
 
   const pages = await Promise.all(
     slugs.map(slug =>
-      fetch(`https://www.betclic.fr/${slug}`, { headers: H })
+      fetchBk('betclic', `https://www.betclic.fr/${slug}`, { headers: H, signal: AbortSignal.timeout(8000) })
         .then(r => r.ok ? r.text() : '')
         .catch(() => '')
     )
@@ -3460,7 +4038,7 @@ async function fetchBetclicMatchDetails(home, away, league = 'nba') {
   const awaySlug = slugify(awayBase).replace(/-/g, '').slice(0, slugLen);
   let matchPath = null;
   for (const slug of leagueSlugs) {
-    const lr = await fetch(`https://www.betclic.fr/${slug}`, { headers: H }).catch(() => null);
+    const lr = await fetchBk('betclic', `https://www.betclic.fr/${slug}`, { headers: H, signal: AbortSignal.timeout(8000) }).catch(() => null);
     if (!lr?.ok) continue;
     const lHtml = await lr.text();
     const hrefs = [...lHtml.matchAll(/href="(\/basketball[^"]*-m\d+)"/g)].map(m => m[1]);
@@ -3470,7 +4048,7 @@ async function fetchBetclicMatchDetails(home, away, league = 'nba') {
   if (!matchPath) return null;
 
   // 2. Fetch match page
-  const mr = await fetch(`https://www.betclic.fr${matchPath}`, { headers: H });
+  const mr = await fetchBk('betclic', `https://www.betclic.fr${matchPath}`, { headers: H, signal: AbortSignal.timeout(8000) });
   if (!mr.ok) return null;
   const mHtml = await mr.text();
 
@@ -3556,7 +4134,7 @@ async function fetchUnibetBasketData(home, away, league = 'nba') {
   };
 
   // 1. Find match URL from the basketball list page
-  const listR = await fetch('https://www.unibet.fr/paris-basketball', { headers: H });
+  const listR = await fetchBk('unibet', 'https://www.unibet.fr/paris-basketball', { headers: H, signal: AbortSignal.timeout(10000) });
   if (!listR.ok) return null;
   const listHtml = await listR.text();
 
@@ -3595,7 +4173,7 @@ async function fetchUnibetBasketData(home, away, league = 'nba') {
   if (!matchPath) return null;
 
   // 2. Fetch match page (Unibet parfois renvoie 500 avec HTML valide — on parse quand même)
-  const matchR = await fetch(`https://www.unibet.fr${matchPath}`, { headers: H });
+  const matchR = await fetchBk('unibet', `https://www.unibet.fr${matchPath}`, { headers: H, signal: AbortSignal.timeout(10000) });
   if (matchR.status === 404) return null;
   const mHtml = await matchR.text();
 
@@ -3661,9 +4239,10 @@ async function fetchUnibetBasketData(home, away, league = 'nba') {
 
   // 6. Player props — points, rebounds, assists
   const PROP_GROUPS = [
-    { desc: 'Plus / Moins Points - Joueur - Match',           prefix: 'Plus / Moins Points - ',            key: 'pts' },
-    { desc: 'Plus / Moins Rebonds - Joueur - Match',          prefix: 'Plus / Moins Rebonds - ',           key: 'reb' },
-    { desc: 'Plus / Moins Passes Décisives - Joueur - Match', prefix: 'Plus / Moins Passes décisives - ',  key: 'ast' },
+    { desc: 'Plus / Moins Points - Joueur - Match',                     prefix: 'Plus / Moins Points - ',                 key: 'pts' },
+    { desc: 'Plus / Moins Rebonds - Joueur - Match',                    prefix: 'Plus / Moins Rebonds - ',                key: 'reb' },
+    { desc: 'Plus / Moins Passes Décisives - Joueur - Match',           prefix: 'Plus / Moins Passes décisives - ',       key: 'ast' },
+    { desc: 'Plus / Moins Paniers à 3 points réussis - Joueur - Match', prefix: '+/- Paniers 3 pts réussis - ',           key: 'tpm' },
   ];
   // Format "Performance Joueur" ignoré : Over uniquement, pas d'Under → on n'affiche rien pour Unibet
   const PERF_GROUPS = [];
@@ -3684,6 +4263,55 @@ async function fetchUnibetBasketData(home, away, league = 'nba') {
       result.players[name][key] = { line, over: price(overOut.price), under: price(underOut.price) };
     }
   }
+  // Combos à 2 stats (Pts+Reb / Pts+Ast / Reb+Ast) — un seul marché par groupe regroupant tous les joueurs
+  const COMBO_GROUPS = [
+    { desc: 'Performance du Joueur - Total Points + Rebonds - Match', key: 'pr' },
+    { desc: 'Performance du Joueur - Total Points + Passes - Match',  key: 'pa' },
+    { desc: 'Performance du Joueur - Total Rebonds + Passes - Match', key: 'ra' },
+  ];
+  result.combos = {};
+  for (const { desc, key } of COMBO_GROUPS) {
+    const grp = gm.find(g => g.description === desc);
+    if (!grp) continue;
+    const byPlayer = {};
+    for (const mk of grp.markets || []) {
+      for (const o of mk.outcomes || []) {
+        const m = o.description?.match(/^(.+?)\s+([+-])\s*de\s*([\d,.]+)/);
+        if (!m) continue;
+        const name = m[1].trim();
+        const line = parseFloat(m[3].replace(',', '.'));
+        if (!byPlayer[name]) byPlayer[name] = { line };
+        if (m[2] === '+') byPlayer[name].over = price(o.price);
+        else byPlayer[name].under = price(o.price);
+      }
+    }
+    for (const [name, v] of Object.entries(byPlayer)) {
+      if (v.line == null || !v.over || !v.under) continue;
+      if (!result.combos[name]) result.combos[name] = {};
+      result.combos[name][key] = { line: v.line, over: v.over, under: v.under };
+    }
+  }
+
+  // Double Double / Triple Double — paris binaires "1+", on stocke la cote brute
+  const MILESTONE_GROUPS = [
+    { desc: 'Double Double - Match', key: 'dd' },
+    { desc: 'Triple Double - Match', key: 'td' },
+  ];
+  result.milestones = {};
+  for (const { desc, key } of MILESTONE_GROUPS) {
+    const grp = gm.find(g => g.description === desc);
+    if (!grp) continue;
+    for (const mk of grp.markets || []) {
+      for (const o of mk.outcomes || []) {
+        const m = o.description?.match(/^(.+?)\s+1\+/);
+        if (!m) continue;
+        const name = m[1].trim();
+        if (!result.milestones[name]) result.milestones[name] = {};
+        result.milestones[name][key] = price(o.price);
+      }
+    }
+  }
+
   // Format "Performance Joueur" : stocke toutes les lignes → pickMainLine choisira la bonne lors du merge
   if (!result._perfLines) result._perfLines = {};
   for (const { desc, key } of PERF_GROUPS) {
@@ -3698,6 +4326,29 @@ async function fetchUnibetBasketData(home, away, league = 'nba') {
       if (!lines.length) continue;
       if (!result._perfLines[playerName]) result._perfLines[playerName] = {};
       result._perfLines[playerName][key] = lines;
+    }
+  }
+
+  // Ladders "Performance Joueur" — Over uniquement, additif (ne touche pas Analyse Props)
+  const ALT_PERF_GROUPS = [
+    { desc: 'Performance Joueur Points - Match',             key: 'pts' },
+    { desc: 'Performance Joueur - Rebonds - Match',          key: 'reb' },
+    { desc: 'Performance Joueur - Passes Décisives - Match', key: 'ast' },
+    { desc: 'Performance Joueur - Panier à 3pts - Match',    key: 'tpm' },
+  ];
+  result.perfLadders = {};
+  for (const { desc, key } of ALT_PERF_GROUPS) {
+    const grp = gm.find(g => g.description === desc);
+    if (!grp) continue;
+    for (const mk of grp.markets || []) {
+      const outs = mk.outcomes || [];
+      if (!outs.length) continue;
+      const playerName = outs[0]?.description?.replace(/\s+\d+\+$/, '').trim();
+      if (!playerName) continue;
+      const lines = outs.map(o => ({ line: o.spread ?? 0, over: price(o.price) })).filter(l => l.line && l.over).sort((a, b) => a.line - b.line);
+      if (!lines.length) continue;
+      if (!result.perfLadders[playerName]) result.perfLadders[playerName] = {};
+      result.perfLadders[playerName][key] = lines;
     }
   }
 
@@ -3764,11 +4415,32 @@ async function fetchUnibetELViaKambi(home, away) {
   return Object.keys(result).length > 1 ? result : null;
 }
 
-async function fetchWinamaxBasketOdds(league = 'nba') {
-  const H = {
-    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+// Scraping Winamax suspendu — ban CloudFront 13 juin. Repasser à true une fois débloqué.
+const WINAMAX_ENABLED = false;
+
+// Headers complets type navigateur Chrome — Winamax/CloudFront est sensible au fingerprint
+// (un vrai Chrome envoie ~12 headers, pas juste UA + Accept-Language).
+function winamaxHeaders(referer) {
+  return {
+    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
     'Accept-Language': 'fr-FR,fr;q=0.9',
+    'Accept-Encoding': 'gzip, deflate, br',
+    'Sec-Ch-Ua': '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+    'Sec-Ch-Ua-Mobile': '?0',
+    'Sec-Ch-Ua-Platform': '"macOS"',
+    'Sec-Fetch-Dest': 'document',
+    'Sec-Fetch-Mode': 'navigate',
+    'Sec-Fetch-Site': referer ? 'same-origin' : 'none',
+    'Sec-Fetch-User': '?1',
+    'Upgrade-Insecure-Requests': '1',
+    ...(referer ? { Referer: referer } : {}),
   };
+}
+
+async function fetchWinamaxBasketOdds(league = 'nba') {
+  if (!WINAMAX_ENABLED) return [];
+  const H = winamaxHeaders();
   const WM_LEAGUE_IDS = { euroleague: 153, nba: 177, wnba: 591, acb: 271, lnb: 272, bbl: 154, legaa: 269 };
   const tid = WM_LEAGUE_IDS[league];
   const TARGET_TOURNAMENT_IDS = league === 'wnba' ? null : (tid ? new Set([tid]) : new Set([177]));
@@ -3779,8 +4451,8 @@ async function fetchWinamaxBasketOdds(league = 'nba') {
 
   let matches = {}, bets = {}, oddsMap = {};
   for (const url of urls) {
-    const r = await fetch(url, { headers: H });
-    if (!r.ok) continue;
+    const r = await fetchBk('winamax', url, { headers: H, signal: AbortSignal.timeout(10000) }).catch(() => null);
+    if (!r || !r.ok) continue;
     const html = await r.text();
     const stateMatch = html.match(/PRELOADED_STATE = (\{.*\})/);
     if (!stateMatch) continue;
@@ -3815,12 +4487,10 @@ async function fetchWinamaxBasketOdds(league = 'nba') {
 }
 
 async function fetchWinamaxMatchDetails(matchId) {
-  const H = {
-    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Accept-Language': 'fr-FR,fr;q=0.9',
-  };
-  const r = await fetch(`https://www.winamax.fr/paris-sportifs/match/${matchId}`, { headers: H });
-  if (!r.ok) return {};
+  if (!WINAMAX_ENABLED) return {};
+  const H = winamaxHeaders('https://www.winamax.fr/paris-sportifs/sports/2/');
+  const r = await fetchBk('winamax', `https://www.winamax.fr/paris-sportifs/match/${matchId}`, { headers: H, signal: AbortSignal.timeout(10000) }).catch(() => null);
+  if (!r || !r.ok) return {};
   const html = await r.text();
   const stateMatch = html.match(/PRELOADED_STATE = (\{.*\})/);
   if (!stateMatch) return {};
@@ -3843,10 +4513,40 @@ async function fetchWinamaxMatchDetails(matchId) {
   // Game totals
   const totalCands = [];
   const playerBets = {};
+  const milestones = {}; // double-double / triple-double — cote brute par joueur
+  const perfLadders = {}; // ladders "(paliers)" Over uniquement — par joueur, par stat
 
   for (const bet of Object.values(bets)) {
     const title    = bet.betTitle || '';
     const template = bet.template || '';
+
+    // Ladders "(paliers)" — Over uniquement, un bet par palier (marketTotal = seuil)
+    const palierM = title.match(/^Nombre de (points|rebonds|passes décisives) du joueur \(paliers\) - (.+)$/);
+    if (template === 'dynamic' && palierM) {
+      const key = { points: 'pts', rebonds: 'reb', 'passes décisives': 'ast' }[palierM[1]];
+      const name = palierM[2];
+      const odds = getOdds(bet.outcomes?.[0]);
+      const line = bet.marketTotal;
+      if (key && name && odds && line != null) {
+        if (!perfLadders[name]) perfLadders[name] = {};
+        if (!perfLadders[name][key]) perfLadders[name][key] = [];
+        perfLadders[name][key].push({ line, over: odds });
+      }
+      continue;
+    }
+
+    if (template === 'ListOdd' && (title === 'Double-double' || title === 'Triple-double')) {
+      const key = title === 'Double-double' ? 'dd' : 'td';
+      for (const oc of bet.outcomes || []) {
+        const name = getLbl(oc);
+        const odds = getOdds(oc);
+        if (!name || !odds) continue;
+        if (!milestones[name]) milestones[name] = {};
+        milestones[name][key] = odds;
+      }
+      continue;
+    }
+
     if (template !== 'OverUnder') continue;
     const [oc1, oc2] = bet.outcomes || [];
     const lbl1 = getLbl(oc1); const lbl2 = getLbl(oc2);
@@ -3859,9 +4559,14 @@ async function fetchWinamaxMatchDetails(matchId) {
     if (!line) continue;
 
     const WM_PLAYER_PREFIXES = [
-      { prefix: 'Nombre de points du joueur - ',              key: 'pts' },
-      { prefix: 'Nombre de rebonds du joueur - ',             key: 'reb' },
-      { prefix: 'Nombre de passes décisives du joueur - ',    key: 'ast' },
+      { prefix: 'Nombre de points du joueur - ',                  key: 'pts' },
+      { prefix: 'Nombre de rebonds du joueur - ',                 key: 'reb' },
+      { prefix: 'Nombre de passes décisives du joueur - ',        key: 'ast' },
+      { prefix: 'Total du joueur (points + rebonds) - ',          key: 'pr'  },
+      { prefix: 'Total du joueur (points + passes) - ',           key: 'pa'  },
+      { prefix: 'Total du joueur (passes + rebonds) - ',          key: 'ra'  },
+      { prefix: 'Total du joueur (points + rebonds + passes) - ', key: 'pra' },
+      { prefix: 'Nombre de paniers à 3 points du joueur - ',      key: 'tpm' },
     ];
     if (title === 'Nombre de points') {
       totalCands.push({ line, over, under });
@@ -3882,11 +4587,17 @@ async function fetchWinamaxMatchDetails(matchId) {
     players[name] = {};
     for (const [key, cands] of Object.entries(statsBets)) {
       const best = pickBest(cands);
-      if (best) players[name][key] = { line: best.line, over: best.over, under: best.under };
+      if (best) players[name][key] = { line: best.line, over: best.over, under: best.under, allLines: cands.slice().sort((a, b) => a.line - b.line) };
     }
   }
 
-  return { totals: bestTotal, players };
+  for (const name of Object.keys(perfLadders)) {
+    for (const key of Object.keys(perfLadders[name])) {
+      perfLadders[name][key] = perfLadders[name][key].slice().sort((a, b) => a.line - b.line);
+    }
+  }
+
+  return { totals: bestTotal, players, milestones, perfLadders };
 }
 
 // ── Kambi H2H match odds ──────────────────────────────────────────────────────
@@ -3952,13 +4663,13 @@ const BETCLIC_LEAGUES = [
   'top-football-europeen-p0',
 ];
 
-async function fetchBetclicFootballBtts(href) {
+async function fetchBetclicFootballExtras(href) {
   const H = {
     'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     'Accept-Language': 'fr-FR,fr;q=0.9',
   };
   try {
-    const r = await fetch(`https://www.betclic.fr${href}`, { signal: AbortSignal.timeout(8000), headers: H });
+    const r = await fetchBk('betclic', `https://www.betclic.fr${href}`, { signal: AbortSignal.timeout(8000), headers: H });
     if (!r.ok) return null;
     const html = await r.text();
     const idx = html.indexOf('"markets":[{');
@@ -3972,17 +4683,39 @@ async function fetchBetclicFootballBtts(href) {
       else if (c === ']') { depth--; if (depth === 0) { end = pos + i + 1; break; } }
     }
     const mkts = JSON.parse(html.slice(pos, end));
+
+    let btts = null;
     const bttsMkt = mkts.find(mk => {
       const n = (mk.name ?? '').toLowerCase();
       return n === 'les 2 équipes marquent' || (n.includes('2 équipes marquent') && !n.includes('ou'));
     });
-    if (!bttsMkt) return null;
-    const rawSels = bttsMkt.selectionMatrix?.[0]?.selections ?? [];
-    const sels = rawSels.map(s => s.selectionOneof?.selection ?? s);
-    const yesS = sels.find(s => (s.name ?? '').toLowerCase().startsWith('oui'));
-    const noS  = sels.find(s => (s.name ?? '').toLowerCase().startsWith('non'));
-    if (!yesS || !noS) return null;
-    return { yes: yesS.odds, no: noS.odds };
+    if (bttsMkt) {
+      const rawSels = bttsMkt.selectionMatrix?.[0]?.selections ?? [];
+      const sels = rawSels.map(s => s.selectionOneof?.selection ?? s);
+      const yesS = sels.find(s => (s.name ?? '').toLowerCase().startsWith('oui'));
+      const noS  = sels.find(s => (s.name ?? '').toLowerCase().startsWith('non'));
+      if (yesS && noS) btts = { yes: yesS.odds, no: noS.odds };
+    }
+
+    // Total de buts — lignes 1.5 et 2.5 (over/under)
+    let totals = null;
+    const totMkt = mkts.find(mk => mk.name === 'Nombre total de buts');
+    if (totMkt) {
+      const t = {};
+      for (const row of totMkt.selectionMatrix ?? []) {
+        const sels = (row.selections ?? []).map(s => s.selectionOneof?.selection ?? s);
+        for (const sel of sels) {
+          const m = (sel.name ?? '').match(/^([+-]) de (1|2),5$/);
+          if (!m) continue;
+          const line = `${m[2]}.5`;
+          const dir = m[1] === '+' ? 'over' : 'under';
+          t[line] = { ...(t[line] || {}), [dir]: sel.odds };
+        }
+      }
+      if (Object.keys(t).length) totals = t;
+    }
+
+    return { btts, totals };
   } catch { return null; }
 }
 
@@ -4018,7 +4751,7 @@ async function fetchBetclicOdds() {
 
   const pageHtmls = await Promise.all(
     BETCLIC_LEAGUES.map(slug =>
-      fetch(`https://www.betclic.fr/football-sfootball/${slug}`, { headers: H })
+      fetchBk('betclic', `https://www.betclic.fr/football-sfootball/${slug}`, { headers: H, signal: AbortSignal.timeout(8000) })
         .then(r => r.ok ? r.text() : '')
         .catch(() => '')
     )
@@ -4053,12 +4786,13 @@ async function fetchBetclicOdds() {
     }
   }
 
-  // Batch-fetch BTTS depuis les pages match individuelles
-  const bttsArr = await Promise.all(results.map(r =>
-    r._href ? fetchBetclicFootballBtts(r._href).catch(() => null) : Promise.resolve(null)
+  // Batch-fetch BTTS + Over/Under depuis les pages match individuelles
+  const extrasArr = await Promise.all(results.map(r =>
+    r._href ? fetchBetclicFootballExtras(r._href).catch(() => null) : Promise.resolve(null)
   ));
-  bttsArr.forEach((btts, i) => {
-    if (btts) results[i].btts = btts;
+  extrasArr.forEach((extras, i) => {
+    if (extras?.btts)   results[i].btts   = extras.btts;
+    if (extras?.totals) results[i].totals = extras.totals;
     delete results[i]._href;
   });
 
@@ -4066,10 +4800,11 @@ async function fetchBetclicOdds() {
 }
 
 async function fetchWinamaxOdds() {
+  if (!WINAMAX_ENABLED) return [];
   const norm = s => s.toLowerCase().replace(/[^a-z]/g, '');
-  const H = { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36', 'Accept-Language': 'fr-FR,fr;q=0.9' };
-  const r = await fetch('https://www.winamax.fr/paris-sportifs/sports/1/', { headers: H });
-  if (!r.ok) return [];
+  const H = winamaxHeaders();
+  const r = await fetchBk('winamax', 'https://www.winamax.fr/paris-sportifs/sports/1/', { headers: H, signal: AbortSignal.timeout(10000) }).catch(() => null);
+  if (!r || !r.ok) return [];
   const html = await r.text();
   const stateMatch = html.match(/PRELOADED_STATE = (\{.*\})/);
   if (!stateMatch) return [];
@@ -4116,9 +4851,10 @@ async function fetchWinamaxOdds() {
 }
 
 async function fetchWinamaxFootballBtts(matchId) {
-  const H = { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36', 'Accept-Language': 'fr-FR,fr;q=0.9' };
-  const r = await fetch(`https://www.winamax.fr/paris-sportifs/match/${matchId}`, { headers: H, signal: AbortSignal.timeout(8000) });
-  if (!r.ok) return null;
+  if (!WINAMAX_ENABLED) return null;
+  const H = winamaxHeaders('https://www.winamax.fr/paris-sportifs/sports/1/');
+  const r = await fetchBk('winamax', `https://www.winamax.fr/paris-sportifs/match/${matchId}`, { headers: H, signal: AbortSignal.timeout(8000) }).catch(() => null);
+  if (!r || !r.ok) return null;
   const html = await r.text();
   const stateMatch = html.match(/PRELOADED_STATE = (\{.*\})/);
   if (!stateMatch) return null;
@@ -4218,31 +4954,21 @@ async function fetchUnibetFootballOdds() {
     'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     'Accept-Language': 'fr-FR,fr;q=0.9',
   };
-  const LEAGUE_PAGES = [
-    'https://www.unibet.fr/paris-football/france/ligue-1-mcdonalds',
-    'https://www.unibet.fr/paris-football/angleterre/premier-league',
-    'https://www.unibet.fr/paris-football/espagne/laliga',
-    'https://www.unibet.fr/paris-football/allemagne/bundesliga-1',
-    'https://www.unibet.fr/paris-football/italie/serie-a',
-    'https://www.unibet.fr/paris-football/international/coupe-du-monde-usa-2026',
-  ];
   const price = s => parseFloat((s || '0').replace(',', '.'));
 
-  // 1. Fetch all league pages in parallel → collect match hrefs
-  const leagueHtmls = await Promise.all(
-    LEAGUE_PAGES.map(u => fetch(u, { headers: H }).then(r => r.status !== 404 ? r.text() : '').catch(() => ''))
-  );
+  // 1. Scrape la page principale foot pour avoir tous les matchs disponibles
+  const mainHtml = await fetchBk('unibet', 'https://www.unibet.fr/paris-football', { headers: H, signal: AbortSignal.timeout(10000) })
+    .then(r => r.ok ? r.text() : '').catch(() => '');
   const matchPaths = [...new Set(
-    leagueHtmls.flatMap(html =>
-      [...html.matchAll(/href="(\/paris-football\/[^"]*\/\d+\/[^"]+)"/g)].map(m => m[1])
-    )
+    [...mainHtml.matchAll(/href="(\/paris-football\/[^"]*\/\d+\/[^"#]+)"/g)].map(m => m[1])
+      .filter(p => !p.includes('cotes-boostees'))
   )];
 
   if (!matchPaths.length) return [];
 
   // 2. Fetch all match pages in parallel
   const matchHtmls = await Promise.all(
-    matchPaths.map(p => fetch(`https://www.unibet.fr${p}`, { headers: H }).then(r => r.status !== 404 ? r.text() : '').catch(() => ''))
+    matchPaths.map(p => fetchBk('unibet', `https://www.unibet.fr${p}`, { headers: H, signal: AbortSignal.timeout(10000) }).then(r => r.status !== 404 ? r.text() : '').catch(() => ''))
   );
 
   // 3. Parse h2h from groupedMarkets
@@ -4293,6 +5019,24 @@ async function fetchUnibetFootballOdds() {
       const yesOut = bOuts.find(o => (o.description ?? '').toLowerCase().match(/^oui|^yes/));
       const noOut  = bOuts.find(o => (o.description ?? '').toLowerCase().match(/^non|^no/));
       if (yesOut && noOut) entry.btts = { yes: price(yesOut.price), no: price(noOut.price) };
+    }
+
+    // Total de buts — lignes 1.5 et 2.5 (over/under)
+    const totalsGroup = gm.find(g => g.description === 'Plus / Moins Buts - 90 Mins');
+    if (totalsGroup) {
+      const totals = {};
+      for (const sub of totalsGroup.markets ?? []) {
+        const dm = (sub.description ?? '').match(/^Plus \/ Moins (1|2)\.5 But/);
+        if (!dm) continue;
+        const line = `${dm[1]}.5`;
+        for (const o of sub.outcomes ?? []) {
+          const om = (o.description ?? '').match(/^(Plus|Moins) (1|2)\.5$/);
+          if (!om) continue;
+          const dir = om[1] === 'Plus' ? 'over' : 'under';
+          totals[line] = { ...(totals[line] || {}), [dir]: price(o.price) };
+        }
+      }
+      if (Object.keys(totals).length) entry.totals = totals;
     }
 
     results.push(entry);
@@ -4448,6 +5192,7 @@ async function _betclicGrpcCategory(matchIdStr, categoryId) {
   if (!matchBuf) return {};
 
   const ouByPlayer = {};
+  const milestonesByPlayer = {};
   for (const scF of _pbFields(matchBuf).filter(f => f.fn===11 && f.wt===2)) {
     for (const mkF of _pbFields(scF.v).filter(f => f.fn===3 && f.wt===2)) {
       const mkF2 = _pbFields(mkF.v);
@@ -4457,11 +5202,33 @@ async function _betclicGrpcCategory(matchIdStr, categoryId) {
       const isRebPaliers = mkLow.includes('paliers') && mkLow.includes('rebond');
       const isAstPaliers = mkLow.includes('paliers') && (mkLow.includes('passe') || mkLow.includes('assist'));
       const isPtsPaliers = mkLow.includes('paliers') && (mkLow.includes('point') || mkLow.includes('marqueur')) && !isRebPaliers && !isAstPaliers;
-      if (!isPlusMoins && !isRebPaliers && !isAstPaliers && !isPtsPaliers) continue;
+      const isTpmPaliers = mkLow.includes('paniers à 3 points') || mkLow.includes('paniers a 3 points');
+      const milestoneKey = mkLow.includes('triple double') ? 'td' : mkLow.includes('double double') ? 'dd' : null;
+
+      if (milestoneKey) {
+        // f10 path: bare player name + single odds value (binary "double-double oui/non")
+        for (const nsWrap of mkF2.filter(f => f.fn===10 && f.wt===2)) {
+          for (const nsF of _pbFields(nsWrap.v).filter(f => f.fn===1 && f.wt===2)) {
+            const selBuf = _pbFields(nsF.v).find(f => f.fn===1 && f.wt===2)?.v;
+            if (!selBuf) continue;
+            const selF = _pbFields(selBuf);
+            const name = selF.find(f => f.fn===10 && f.wt===2)?.v?.toString('utf8')
+                      ?? selF.find(f => f.fn===11 && f.wt===2)?.v?.toString('utf8');
+            const odds = selF.find(f => f.fn===12 && f.wt===1)?.v;
+            if (!name || !odds) continue;
+            const player = name.trim();
+            if (!milestonesByPlayer[player]) milestonesByPlayer[player] = {};
+            milestonesByPlayer[player][milestoneKey] = odds;
+          }
+        }
+        continue;
+      }
+
+      if (!isPlusMoins && !isRebPaliers && !isAstPaliers && !isPtsPaliers && !isTpmPaliers) continue;
 
       const statKey = isPlusMoins
         ? (mkLow.includes('passes') ? 'ast' : mkLow.includes('rebond') ? 'reb' : 'pts')
-        : isRebPaliers ? 'reb' : isAstPaliers ? 'ast' : 'pts';
+        : isRebPaliers ? 'reb' : isAstPaliers ? 'ast' : isTpmPaliers ? 'tpm' : 'pts';
 
       if (isPlusMoins) {
         // f10 path: over/under pairs — "Player + de X,Y" / "Player - de X,Y"
@@ -4517,7 +5284,7 @@ async function _betclicGrpcCategory(matchIdStr, categoryId) {
     for (const [sk, lines] of Object.entries(stats))
       result[pn][sk] = Object.entries(lines).map(([l,v]) => ({ line: parseFloat(l), ...v })).sort((a,b) => a.line - b.line);
   }
-  return result;
+  return { ou: result, milestones: milestonesByPlayer };
 }
 
 async function fetchBetclicPlayerProps(home, away, league = 'nba') {
@@ -4539,7 +5306,7 @@ async function fetchBetclicPlayerProps(home, away, league = 'nba') {
 
     let matchPath = null;
     for (const slug of leagueSlugs) {
-      const lr = await fetch(`https://www.betclic.fr/${slug}`, { headers: H }).catch(() => null);
+      const lr = await fetchBk('betclic', `https://www.betclic.fr/${slug}`, { headers: H, signal: AbortSignal.timeout(8000) }).catch(() => null);
       if (!lr?.ok) continue;
       const lHtml = await lr.text();
       const hrefs = [...lHtml.matchAll(/href="(\/basketball[^"]*-m\d+)"/g)].map(m => m[1]);
@@ -4552,10 +5319,13 @@ async function fetchBetclicPlayerProps(home, away, league = 'nba') {
     if (!midM) return { ou: {}, brand: null };
     const matchIdStr = midM[1];
 
-    const [ptsP, astP] = await Promise.all([
-      _betclicGrpcCategory(matchIdStr, 'ca_bkb_scrs').catch(() => ({})),
-      _betclicGrpcCategory(matchIdStr, 'ca_bkb_pprp').catch(() => ({})),
+    const [ptsCat, astCat] = await Promise.all([
+      _betclicGrpcCategory(matchIdStr, 'ca_bkb_scrs').catch(() => ({ ou: {}, milestones: {} })),
+      _betclicGrpcCategory(matchIdStr, 'ca_bkb_pprp').catch(() => ({ ou: {}, milestones: {} })),
     ]);
+    const ptsP = ptsCat?.ou ?? {};
+    const astP = astCat?.ou ?? {};
+    const milestones = astCat?.milestones ?? {};
 
     const ou = {};
     for (const [n, s] of Object.entries(ptsP)) { ou[n] = { ...ou[n], ...s }; }
@@ -4567,7 +5337,7 @@ async function fetchBetclicPlayerProps(home, away, league = 'nba') {
     // Fallback HTML pour les ligues où gRPC ne retourne rien (ex: Lega A)
     if (!Object.keys(ou).length) {
       try {
-        const mR = await fetch(`https://www.betclic.fr${matchPath}`, { headers: H });
+        const mR = await fetchBk('betclic', `https://www.betclic.fr${matchPath}`, { headers: H, signal: AbortSignal.timeout(8000) });
         if (mR.ok) {
           const mHtml = await mR.text();
           const mkIdx = mHtml.indexOf('markets\":[');
@@ -4625,16 +5395,49 @@ async function fetchBetclicPlayerProps(home, away, league = 'nba') {
       } catch {}
     }
 
-    return { ou, brand: Object.keys(ou).length ? 'betclic' : null };
+    // "Performance (pts+reb+pas) du joueur" — ladder Over uniquement (sliders par seuil), cotes brutes
+    let praLadders = {};
+    try {
+      const mR2 = await fetchBk('betclic', `https://www.betclic.fr${matchPath}`, { headers: H, signal: AbortSignal.timeout(8000) });
+      if (mR2.ok) {
+        const mHtml2 = await mR2.text();
+        const mkIdx2 = mHtml2.indexOf('markets":[');
+        if (mkIdx2 >= 0) {
+          const pos3 = mkIdx2 + 'markets":'.length;
+          let d3 = 0, end3 = pos3;
+          for (let i = 0; i < 2000000; i++) {
+            const c = mHtml2[pos3 + i];
+            if (!c) break;
+            if (c === '[') d3++;
+            else if (c === ']') { d3--; if (d3 === 0) { end3 = pos3 + i + 1; break; } }
+          }
+          let mkList3 = [];
+          try { mkList3 = JSON.parse(mHtml2.slice(pos3, end3)); } catch {}
+          const praMk = mkList3.find(mk => mk.name === 'Performance (pts+reb+pas) du joueur');
+          for (const sl of praMk?.sliders || []) {
+            const name = sl.name?.trim();
+            if (!name) continue;
+            const lines = [];
+            for (const sv of sl.sliderValues || []) {
+              const sel = sv.selections?.[0]?.selectionOneof?.selection;
+              if (sel?.odds && sv.value != null) lines.push({ line: sv.value, over: sel.odds });
+            }
+            if (lines.length) praLadders[name] = lines.sort((a, b) => a.line - b.line);
+          }
+        }
+      }
+    } catch {}
+
+    return { ou, brand: Object.keys(ou).length ? 'betclic' : null, praLadders, milestones };
   } catch (err) {
     console.error('betclic player props:', err.message);
-    return { ou: {}, brand: null };
+    return { ou: {}, brand: null, milestones: {} };
   }
 }
 
 // ── Basketball player props (Kambi Unibet + Winamax scraping) ────────────────
 app.get('/api/basketball/player-props', async (req, res) => {
-  const { eventId, league = 'nba', home = '', away = '', date = '' } = req.query;
+  const { league = 'nba', home = '', away = '', date = '' } = req.query;
   if (!home || !away) return res.status(400).json({ error: 'home and away required' });
 
   // Inclure la date dans la clé → chaque match a son propre cache (évite la réutilisation inter-matchs)
@@ -4642,11 +5445,31 @@ app.get('/api/basketball/player-props', async (req, res) => {
   const cacheKey = `bball_pprops3_${league}_${home}_${away}${dateKey ? '_' + dateKey : ''}`.toLowerCase().replace(/\s+/g, '_');
   const cached = _espnCache[cacheKey];
   const EU_LEAGUES_SET = new Set(['acb','lnb','bbl','legaa','euroleague']);
-  const cacheStale = cached && EU_LEAGUES_SET.has(league) && cached.data?.found && Object.keys(cached.data?.teamMap || {}).length === 0;
-  if (cached && !req.query.refresh && !cacheStale && Date.now() - cached.ts < 30 * 60 * 1000) return res.json(cached.data);
+  const cacheStaleTeam = cached && EU_LEAGUES_SET.has(league) && cached.data?.found && Object.keys(cached.data?.teamMap || {}).length === 0;
+  // Cache court (5min) si un bookmaker manquant mais d'autres présents → pas encore scrapé au moment du cache
+  const winamaxMissing = cached && !cached.data?.winamaxSource && (cached.data?.unibetSource || cached.data?.betclicSource);
+  const betclicMissing = cached && !cached.data?.betclicSource && (cached.data?.unibetSource || cached.data?.winamaxSource);
+  const unibetMissing  = cached && !cached.data?.unibetSource  && (cached.data?.betclicSource || cached.data?.winamaxSource);
+  const cacheTTL = (winamaxMissing || betclicMissing || unibetMissing) ? 5 * 60 * 1000 : 30 * 60 * 1000;
+  const cacheStale = cacheStaleTeam;
+  if (cached && !req.query.refresh && !cacheStale && Date.now() - cached.ts < cacheTTL) return res.json(cached.data);
 
-  const lastName = n => (n || '').split(' ').slice(-1)[0].toLowerCase();
+  // Cache présent (même périmé au-delà du TTL) : on le sert tel quel et on rafraîchit en
+  // arrière-plan (évite le scraping + jitter sur le chemin de la requête)
+  if (cached && !req.query.refresh && !cacheStale) {
+    _refreshInBackground(cacheKey, () => _refreshPlayerProps(league, home, away, cacheKey, cached));
+    return res.json(cached.data);
+  }
 
+  try {
+    return res.json(await _refreshPlayerProps(league, home, away, cacheKey, cached));
+  } catch (err) {
+    console.error('basketball player-props:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+async function _refreshPlayerProps(league, home, away, cacheKey, cached) {
   const pickMainLine = (lines, refLine) => {
     if (!lines?.length) return null;
     if (refLine != null) return lines.reduce((b, t) => Math.abs(t.line - refLine) < Math.abs(b.line - refLine) ? t : b);
@@ -4657,13 +5480,39 @@ app.get('/api/basketball/player-props', async (req, res) => {
     });
   };
 
-  try {
+  // Fusionne deux listes de lignes (avec/sans Under) par seuil — pour la page "toutes les lignes"
+  const mergeLineArrays = (primary = [], ladder = []) => {
+    const byLine = new Map();
+    for (const l of primary) byLine.set(l.line, { line: l.line, over: l.over ?? null, under: l.under ?? null });
+    for (const l of ladder) {
+      const ex = byLine.get(l.line);
+      if (ex) { if (ex.over == null) ex.over = l.over; }
+      else byLine.set(l.line, { line: l.line, over: l.over, under: null });
+    }
+    return [...byLine.values()].sort((a, b) => a.line - b.line);
+  };
+
+  {
     // Unibet + Winamax + Betclic in parallel
     const [ubData, wmBasketMatches, bcData] = await Promise.all([
       fetchUnibetBasketData(home, away, league).catch(() => null),
       fetchWinamaxBasketOdds(league).catch(() => []),
       fetchBetclicPlayerProps(home, away, league).catch(() => ({ ou: {}, brand: null })),
     ]);
+
+    // Tracking santé scrapers — "ok" = le scraper a renvoyé des données exploitables pour ce match
+    // (pas seulement des props joueurs au format Plus/Moins, qui ne sont pas toujours disponibles)
+    _updateScraper('unibet', ubData != null && (
+      Object.keys(ubData?.players ?? {}).length > 0 ||
+      Object.keys(ubData?.perfLadders ?? {}).length > 0 ||
+      ubData?.h2h != null || ubData?.totals != null
+    ));
+    _updateScraper('betclic', bcData != null && (
+      Object.keys(bcData?.ou ?? {}).length > 0 ||
+      Object.keys(bcData?.praLadders ?? {}).length > 0 ||
+      Object.keys(bcData?.milestones ?? {}).length > 0
+    ));
+    _updateScraper('winamax', Array.isArray(wmBasketMatches) && wmBasketMatches.length > 0);
 
     // Find Winamax matchId for this game
     const norm  = s => (s || '').toLowerCase().replace(/[^a-z]/g, '');
@@ -4700,11 +5549,16 @@ app.get('/api/basketball/player-props', async (req, res) => {
       if (stats.pts) players[name].unibet.pts = stats.pts;
       if (stats.reb) players[name].unibet.reb = stats.reb;
       if (stats.ast) players[name].unibet.ast = stats.ast;
+      if (stats.tpm) players[name].unibet.tpm = stats.tpm;
     }
 
     // Winamax from match page
     const nameMatch = (a, b) => {
       if (!a || !b) return false;
+      // Normalise les apostrophes (ex. "A'ja Wilson" vs "Aja Wilson") — sinon le bookmaker
+      // qui omet l'apostrophe crée une fiche joueur séparée et fragmente les cotes
+      const stripApos = n => n.replace(/['']/g, '');
+      a = stripApos(a); b = stripApos(b);
       if (a.toLowerCase() === b.toLowerCase()) return true;
       const parse = n => {
         n = n.trim();
@@ -4745,14 +5599,100 @@ app.get('/api/basketball/player-props', async (req, res) => {
       if (stats.pts?.length) { const b = pickMainLine(stats.pts, refLine('pts')); if (b) players[key].betclic.pts = b; }
       if (stats.reb?.length) { const b = pickMainLine(stats.reb, refLine('reb')); if (b) players[key].betclic.reb = b; }
       if (stats.ast?.length) { const b = pickMainLine(stats.ast, refLine('ast')); if (b) players[key].betclic.ast = b; }
+      if (stats.tpm?.length) { const b = pickMainLine(stats.tpm, refLine('tpm')); if (b) players[key].betclic.tpm = b; }
+      const bcAll = {};
+      for (const stat of ['pts', 'reb', 'ast', 'tpm']) {
+        if (stats[stat]?.length > 1) bcAll[stat] = stats[stat].slice().sort((a, b) => a.line - b.line);
+      }
+      if (Object.keys(bcAll).length) players[key].betclicAllLines = bcAll;
+    }
+    for (const [name, ms] of Object.entries(bcData?.milestones ?? {})) {
+      const matchedKey = Object.keys(players).find(k => nameMatch(k, name)) ?? name;
+      if (!players[matchedKey]) continue;
+      if (!players[matchedKey].milestones) players[matchedKey].milestones = {};
+      if (!players[matchedKey].milestones.betclic) players[matchedKey].milestones.betclic = {};
+      Object.assign(players[matchedKey].milestones.betclic, ms);
+    }
+
+    // Lignes complètes (allLines) + combos + milestones — additif, pour la page "toutes les lignes du joueur"
+    const wmLadders = wmDetails?.perfLadders ?? {};
+    for (const [name, stats] of Object.entries(wmPlayers)) {
+      const matchedKey = Object.keys(players).find(k => nameMatch(k, name)) ?? name;
+      if (!players[matchedKey]) continue;
+      const wmAll = {};
+      const ladderName = Object.keys(wmLadders).find(k => nameMatch(k, name));
+      const ladder = ladderName ? wmLadders[ladderName] : null;
+      for (const stat of ['pts', 'reb', 'ast', 'tpm']) {
+        if (stats[stat] && !players[matchedKey].winamax?.[stat]) {
+          if (!players[matchedKey].winamax) players[matchedKey].winamax = {};
+          players[matchedKey].winamax[stat] = { line: stats[stat].line, over: stats[stat].over, under: stats[stat].under };
+        }
+        const merged = mergeLineArrays(stats[stat]?.allLines || [], ladder?.[stat] || []);
+        if (merged.length > 1) wmAll[stat] = merged;
+      }
+      if (Object.keys(wmAll).length) players[matchedKey].winamaxAllLines = wmAll;
+      for (const stat of ['pr', 'pa', 'ra', 'pra']) {
+        if (!stats[stat]) continue;
+        if (!players[matchedKey].combos) players[matchedKey].combos = {};
+        if (!players[matchedKey].combos.winamax) players[matchedKey].combos.winamax = {};
+        players[matchedKey].combos.winamax[stat] = { line: stats[stat].line, over: stats[stat].over, under: stats[stat].under };
+        if (stats[stat].allLines?.length > 1) {
+          if (!players[matchedKey].combosAllLines) players[matchedKey].combosAllLines = {};
+          if (!players[matchedKey].combosAllLines.winamax) players[matchedKey].combosAllLines.winamax = {};
+          players[matchedKey].combosAllLines.winamax[stat] = stats[stat].allLines;
+        }
+      }
+    }
+    for (const [name, ms] of Object.entries(wmDetails?.milestones ?? {})) {
+      const matchedKey = Object.keys(players).find(k => nameMatch(k, name)) ?? name;
+      if (!players[matchedKey]) continue;
+      if (!players[matchedKey].milestones) players[matchedKey].milestones = {};
+      if (!players[matchedKey].milestones.winamax) players[matchedKey].milestones.winamax = {};
+      Object.assign(players[matchedKey].milestones.winamax, ms);
+    }
+
+    // Combos & milestones Unibet
+    for (const [name, combos] of Object.entries(ubData?.combos ?? {})) {
+      const matchedKey = Object.keys(players).find(k => nameMatch(k, name)) ?? name;
+      if (!players[matchedKey]) continue;
+      if (!players[matchedKey].combos) players[matchedKey].combos = {};
+      players[matchedKey].combos.unibet = combos;
+    }
+    for (const [name, ms] of Object.entries(ubData?.milestones ?? {})) {
+      const matchedKey = Object.keys(players).find(k => nameMatch(k, name)) ?? name;
+      if (!players[matchedKey]) continue;
+      if (!players[matchedKey].milestones) players[matchedKey].milestones = {};
+      if (!players[matchedKey].milestones.unibet) players[matchedKey].milestones.unibet = {};
+      Object.assign(players[matchedKey].milestones.unibet, ms);
+    }
+
+    // Lignes complètes Unibet — fusion ligne unique (Plus/Moins) + ladder "Performance Joueur" (Over uniquement)
+    for (const [name, ladder] of Object.entries(ubData?.perfLadders ?? {})) {
+      const matchedKey = Object.keys(players).find(k => nameMatch(k, name)) ?? name;
+      if (!players[matchedKey]) continue;
+      const ubAll = {};
+      for (const stat of ['pts', 'reb', 'ast', 'tpm']) {
+        if (!ladder[stat]) continue;
+        const single = players[matchedKey].unibet?.[stat];
+        const merged = mergeLineArrays(single ? [single] : [], ladder[stat]);
+        if (merged.length > 1) ubAll[stat] = merged;
+      }
+      if (Object.keys(ubAll).length) players[matchedKey].unibetAllLines = ubAll;
+    }
+
+    // Ladder PRA Betclic (Over uniquement)
+    for (const [name, ladder] of Object.entries(bcData?.praLadders ?? {})) {
+      const matchedKey = Object.keys(players).find(k => nameMatch(k, name)) ?? name;
+      if (!players[matchedKey]) continue;
+      players[matchedKey].betclicPraLadder = ladder;
     }
 
     const found = Object.keys(players).length > 0;
     // Scrape vide → match en live ou terminé : retourner cache mémoire, puis snapshot disque
     if (!found) {
-      if (cached?.data?.found) return res.json(cached.data);
+      if (cached?.data?.found) return cached.data;
       const disk = _linesSnapshot[cacheKey];
-      if (disk?.data?.found) return res.json(disk.data);
+      if (disk?.data?.found) return disk.data;
     }
     let espnEventId = null;
     if (league === 'wnba' && _wnbaScoreboardCache.data?.games) {
@@ -4876,12 +5816,9 @@ app.get('/api/basketball/player-props', async (req, res) => {
         if (updated) _saveEuroPlayerTeams();
       }
     }
-    res.json(result);
-  } catch (err) {
-    console.error('basketball player-props:', err.message);
-    res.status(500).json({ error: err.message });
+    return result;
   }
-});
+}
 
 // ── Background Alert Generation ───────────────────────────────────────────────
 
@@ -4924,13 +5861,149 @@ const WNBA_SCALE = 114.5 / 87.0; // normalize WNBA pts to NBA-equivalent for com
 let backgroundAlerts = [];
 let _bgOddsCache = { data: null, ts: 0 }; // cache 2h for the full NBA odds list
 
+// Anti-ban Betclic/Unibet/Winamax — pause un bookmaker après un 403/429 pour ne pas aggraver
+// un blocage CDN (cf. project_winamax_ban_juin10/11). Persisté sur disque pour survivre aux
+// restarts (--watch) : sans ça, un restart pendant le cooldown remet le compteur à 0 et
+// l'app retente immédiatement, ce qui peut prolonger le ban côté WAF.
+const BK_BACKOFF_BASE_MS = 30 * 60_000;  // 30min
+const BK_BACKOFF_MAX_MS  = 6 * 3600_000; // 6h plafond
+let _scraperBlockedUntil = { betclic: 0, unibet: 0, winamax: 0 };
+let _scraperFailStreak   = { betclic: 0, unibet: 0, winamax: 0 };
+try {
+  if (existsSync(SCRAPER_BLOCK_FILE)) {
+    const saved = JSON.parse(readFileSync(SCRAPER_BLOCK_FILE, 'utf8'));
+    Object.assign(_scraperBlockedUntil, saved.blockedUntil);
+    Object.assign(_scraperFailStreak, saved.failStreak);
+  }
+} catch {}
+function _saveScraperBlocks() {
+  writeFile(SCRAPER_BLOCK_FILE, JSON.stringify({ blockedUntil: _scraperBlockedUntil, failStreak: _scraperFailStreak }), 'utf8', () => {});
+}
+
+// Cache des pages brutes par URL — évite de re-télécharger la même page plusieurs fois
+// dans un même cycle de refresh (ex: 5 matchs ACB → 1 fetch /sports/2/ au lieu de 5).
+// Winamax a un TTL plus long (30min) : c'est juste de la consultation côté UI pour ce
+// bookmaker, donc on peut être beaucoup moins agressif sur le scraping.
+const _bkPageCache = new Map(); // `${bk}:${url}` -> { ts, status, text }
+const BK_CACHE_TTL = { betclic: 90_000, unibet: 90_000, winamax: 30 * 60_000 };
+
+// Cookie jar par bookmaker — CloudFront pose un cookie __cf_bm après la 1ère requête
+// et s'attend à le revoir ensuite ; sans ça chaque requête a l'air "neuve" (signal bot).
+const _bkCookies = { betclic: {}, unibet: {}, winamax: {} };
+function _bkCookieHeader(bk) {
+  const jar = _bkCookies[bk];
+  const pairs = Object.entries(jar).map(([k, v]) => `${k}=${v}`);
+  return pairs.length ? pairs.join('; ') : null;
+}
+function _bkStoreCookies(bk, setCookieArr) {
+  for (const c of setCookieArr) {
+    const eq = c.indexOf('=');
+    const semi = c.indexOf(';');
+    if (eq === -1) continue;
+    const name = c.slice(0, eq).trim();
+    const value = c.slice(eq + 1, semi === -1 ? undefined : semi).trim();
+    _bkCookies[bk][name] = value;
+  }
+}
+
+async function fetchBk(bk, url, opts) {
+  if (Date.now() < _scraperBlockedUntil[bk]) throw new Error(`${bk}_blocked`);
+
+  const cacheKey = `${bk}:${url}`;
+  const cached = _bkPageCache.get(cacheKey);
+  if (cached) {
+    if (Date.now() - cached.ts < BK_CACHE_TTL[bk]) return new Response(cached.text, { status: cached.status });
+    _bkPageCache.delete(cacheKey);
+  }
+
+  // Jitter anti-bot : évite des requêtes à intervalles parfaitement réguliers (signal bot classique)
+  await new Promise(res => setTimeout(res, 200 + Math.random() * 1300));
+
+  const headers = { ...(opts?.headers || {}) };
+  const cookieHeader = _bkCookieHeader(bk);
+  if (cookieHeader) headers['Cookie'] = cookieHeader;
+
+  const r = await fetch(url, { ...opts, headers });
+  const setCookie = r.headers.getSetCookie?.() || [];
+  if (setCookie.length) _bkStoreCookies(bk, setCookie);
+
+  if (r.status === 403 || r.status === 429) {
+    _scraperFailStreak[bk] = (_scraperFailStreak[bk] || 0) + 1;
+    const backoff = Math.min(BK_BACKOFF_BASE_MS * 2 ** (_scraperFailStreak[bk] - 1), BK_BACKOFF_MAX_MS);
+    _scraperBlockedUntil[bk] = Date.now() + backoff;
+    _saveScraperBlocks();
+    _bgLog.push(`${bk} blocked (HTTP ${r.status}) — pause anti-ban ${Math.round(backoff / 60_000)}min (streak ${_scraperFailStreak[bk]})`);
+    return r;
+  }
+  if (r.ok) {
+    if (_scraperFailStreak[bk]) { _scraperFailStreak[bk] = 0; _saveScraperBlocks(); }
+    const text = await r.text();
+    _bkPageCache.set(cacheKey, { ts: Date.now(), status: r.status, text });
+    return new Response(text, { status: r.status });
+  }
+  return r;
+}
+
+// ── Santé du système — tracking scrapers + cycles bg ─────────────────────────
+let _bgLastRun  = null;
+let _snapshotLastUpdate = null;
+const _scraperHealth = {
+  unibet:      { ts: null, ok: false, lastOk: null, history: [] },
+  betclic:     { ts: null, ok: false, lastOk: null, history: [] },
+  winamax:     { ts: null, ok: false, lastOk: null, history: [] },
+  espn:        { ts: null, ok: false, lastOk: null, history: [] },
+  bzzoiro:     { ts: null, ok: false, lastOk: null, history: [] },
+  rotowire:    { ts: null, ok: false, lastOk: null, history: [] },
+  unibet_foot: { ts: null, ok: false, lastOk: null, history: [] },
+  betclic_foot:{ ts: null, ok: false, lastOk: null, history: [] },
+  winamax_foot:{ ts: null, ok: false, lastOk: null, history: [] },
+};
+function _updateScraper(name, ok) {
+  const now = Date.now();
+  const prev = _scraperHealth[name] ?? { history: [] };
+  const history = [...(prev.history || []), ok ? 1 : 0].slice(-10);
+  _scraperHealth[name] = { ts: now, ok, lastOk: ok ? now : (prev.lastOk ?? null), history };
+}
+
+// Quotas API — mis à jour à chaque appel réel (pas depuis le cache)
+let _oddsApiQuota    = { remaining: null, used: null, ts: null };   // The Odds API (500/mois)
+let _footballApiQuota = { remaining: null, limit: null, ts: null }; // API-Football (100/jour)
+let _basketballApiQuota = { remaining: null, limit: null, ts: null }; // API-Basketball (7500/jour)
+let _fdQuota = { remaining: null, limit: 10, ts: null }; // football-data.org (10/min)
+
+function _captureOddsQuota(resp) {
+  const remaining = parseInt(resp.headers.get('x-requests-remaining'), 10);
+  const used      = parseInt(resp.headers.get('x-requests-used'), 10);
+  if (!isNaN(remaining)) _oddsApiQuota = { remaining, used: isNaN(used) ? null : used, ts: Date.now() };
+}
+function _captureFootballQuota(resp) {
+  const remaining = parseInt(resp.headers.get('x-ratelimit-requests-remaining'), 10);
+  const limit     = parseInt(resp.headers.get('x-ratelimit-requests-limit'), 10);
+  if (!isNaN(remaining)) _footballApiQuota = { remaining, limit: isNaN(limit) ? null : limit, ts: Date.now() };
+}
+function _captureBasketballApiQuota(resp) {
+  const remaining = parseInt(resp.headers.get('x-ratelimit-requests-remaining'), 10);
+  const limit     = parseInt(resp.headers.get('x-ratelimit-requests-limit'), 10);
+  if (!isNaN(remaining)) _basketballApiQuota = { remaining, limit: isNaN(limit) ? null : limit, ts: Date.now() };
+}
+function _captureFdQuota(resp) {
+  const remaining = parseInt(resp.headers.get('x-requests-available-minute'), 10);
+  if (!isNaN(remaining)) _fdQuota = { remaining, limit: 10, ts: Date.now() };
+}
+
 // Snapshot projections pré-match — persisté sur disque pour survivre aux restarts
 const _projectionsSnapshot = (() => {
   try { if (existsSync(SNAPSHOT_FILE)) return JSON.parse(readFileSync(SNAPSHOT_FILE, 'utf8')); } catch {}
   return {};
 })();
+let _snapshotSaveTimer = null;
 function _saveSnapshot() {
-  try { writeFileSync(SNAPSHOT_FILE, JSON.stringify(_projectionsSnapshot), 'utf8'); } catch {}
+  if (_snapshotSaveTimer) clearTimeout(_snapshotSaveTimer);
+  _snapshotSaveTimer = setTimeout(() => {
+    _snapshotSaveTimer = null;
+    writeFile(SNAPSHOT_FILE, JSON.stringify(_projectionsSnapshot), 'utf8', () => {});
+    _snapshotLastUpdate = Date.now();
+  }, 2000);
 }
 
 // Lines snapshot — lignes bookmaker pré-match persistées sur disque
@@ -4938,9 +6011,14 @@ const _linesSnapshot = (() => {
   try { if (existsSync(LINES_FILE)) return JSON.parse(readFileSync(LINES_FILE, 'utf8')); } catch {}
   return {};
 })();
+let _linesSaveTimer = null;
 function _saveLinesSnapshot(cacheKey, data) {
   _linesSnapshot[cacheKey] = { data, ts: Date.now() };
-  try { writeFileSync(LINES_FILE, JSON.stringify(_linesSnapshot), 'utf8'); } catch {}
+  if (_linesSaveTimer) clearTimeout(_linesSaveTimer);
+  _linesSaveTimer = setTimeout(() => {
+    _linesSaveTimer = null;
+    writeFile(LINES_FILE, JSON.stringify(_linesSnapshot), 'utf8', () => {});
+  }, 2000);
 }
 
 async function fetchAllNBAOddsGames() {
@@ -4949,6 +6027,7 @@ async function fetchAllNBAOddsGames() {
   const url = `https://api.the-odds-api.com/v4/sports/basketball_nba/odds/?apiKey=${ODDS_KEY}&regions=us&markets=totals,h2h&oddsFormat=decimal&bookmakers=pinnacle`;
   const resp = await fetch(url);
   if (!resp.ok) throw new Error(`Odds API ${resp.status}`);
+  _captureOddsQuota(resp);
   const data = await resp.json();
   _bgOddsCache = { data, ts: Date.now() };
   return data;
@@ -5007,6 +6086,92 @@ async function bgFetchSchedule(teamId) {
   } catch { return []; }
 }
 
+// Boxscore interne (même logique que /api/nba/boxscore, sans req/res — réutilisable côté alertes)
+async function bgFetchBoxscore(date, home, away) {
+  const cacheKey = `bs_${date}_${home}_${away}`;
+  const cached = _espnCache[cacheKey];
+  if (cached && Date.now() - cached.ts < CACHE_5MIN) return cached.data;
+  try {
+    const dt  = new Date(date);
+    const est = new Date(dt.getTime() - 5 * 60 * 60 * 1000);
+    const ymd = est.toISOString().slice(0, 10).replace(/-/g, '');
+    const sbResp = await fetch(`${ESPN_SCOREBOARD}?dates=${ymd}&limit=50`);
+    if (!sbResp.ok) return null;
+    const sbData = await sbResp.json();
+    const ESPN_ABBR_MAP = { SAS:'SA', NYK:'NY', GSW:'GS', NOP:'NO', UTA:'UT' };
+    const toEspn = a => ESPN_ABBR_MAP[a.toUpperCase()] || a.toUpperCase();
+    const homeE = toEspn(home), awayE = toEspn(away);
+    const game = (sbData.events || []).find(e => {
+      const abbrs = (e.competitions?.[0]?.competitors || []).map(c => c.team?.abbreviation?.toUpperCase() || '');
+      return abbrs.includes(homeE) && abbrs.includes(awayE);
+    });
+    if (!game) return null;
+    const sumResp = await fetch(`${ESPN_SUMMARY}?event=${game.id}`);
+    if (!sumResp.ok) return null;
+    const sumData = await sumResp.json();
+    const ABBR_BACK = Object.fromEntries(Object.entries(ESPN_ABBR_MAP).map(([k,v]) => [v, k]));
+    const toOrig = a => ABBR_BACK[a.toUpperCase()] || a.toUpperCase();
+    const result = { gameId: game.id, status: game.status?.type?.name };
+    for (const teamData of (sumData.boxscore?.players || [])) {
+      const espnAbbr = teamData.team?.abbreviation?.toUpperCase();
+      const abbr     = toOrig(espnAbbr);
+      const group  = teamData.statistics?.[0];
+      if (!group) continue;
+      const labels = (group.labels || []).map(l => l.toLowerCase());
+      result[abbr] = (group.athletes || []).map(a => {
+        const vals = a.stats || [];
+        const s = {};
+        labels.forEach((l, i) => { s[l] = vals[i] ?? '—'; });
+        return {
+          id: a.athlete?.id, name: a.athlete?.displayName,
+          dnp: !!a.didNotPlay,
+          stats: { min: s.min || '—', pts: parseFloat(s.pts) || 0, reb: parseFloat(s.reb) || 0, ast: parseFloat(s.ast) || 0 },
+        };
+      });
+    }
+    _espnCache[cacheKey] = { data: result, ts: Date.now() };
+    return result;
+  } catch { return null; }
+}
+
+// Fusionne les boxscores des matchs précédents de la série PO en cours dans le gamelog —
+// même logique que seriesGamelogs côté frontend (BasketballDetailPage.jsx ~1369-1425).
+// Sans ça, l'EWA playoff du backend tourne sur un gamelog saison régulière périmé.
+const ESPN_SHORT_NORM_BG = { SA: 'SAS', NY: 'NYK', GS: 'GSW', NO: 'NOP', UT: 'UTA' };
+const normAbbrBG = a => ESPN_SHORT_NORM_BG[a?.toUpperCase()] || a?.toUpperCase() || '';
+
+async function bgFetchSeriesGamelogs(game, allNormalized) {
+  const pairKey = g => [g.home.name, g.away.name].sort().join('__');
+  const k = pairKey(game);
+  const seriesDone = allNormalized.filter(g =>
+    g.id !== game.id && g.status?.includes('STATUS_FINAL') && pairKey(g) === k
+  ).sort((a, b) => new Date(b.date) - new Date(a.date));
+  if (!seriesDone.length) return {};
+
+  const results = await Promise.all(seriesDone.map(async f => ({ f, bs: await bgFetchBoxscore(f.date, f.home.short, f.away.short) })));
+  const byPlayer = {};
+  for (const { f: gf, bs } of results) {
+    if (!bs) continue;
+    for (const [abbr, players] of Object.entries(bs)) {
+      if (abbr === 'gameId' || abbr === 'status') continue;
+      const isHome = normAbbrBG(abbr) === normAbbrBG(gf.home.short);
+      const oppAbbr = isHome ? normAbbrBG(gf.away.short) : normAbbrBG(gf.home.short);
+      for (const p of (players || [])) {
+        if (!p.id || p.dnp) continue;
+        const minVal = parseFloat(String(p.stats?.min || '0').split(':')[0]) || 0;
+        if (minVal < 5 && (p.stats?.pts || 0) === 0) continue;
+        const pid = String(p.id);
+        if (!byPlayer[pid]) byPlayer[pid] = [];
+        byPlayer[pid].push({
+          date: gf.date, pts: p.stats?.pts || 0, reb: p.stats?.reb || 0, ast: p.stats?.ast || 0,
+          min: minVal, to: 0, opponentAbbr: oppAbbr, isHome,
+        });
+      }
+    }
+  }
+  return byPlayer;
+}
+
 async function bgFetchGamelog(playerId) {
   const cacheKey = `gl_${playerId}`;
   const cached = _espnCache[cacheKey];
@@ -5020,6 +6185,13 @@ async function bgFetchGamelog(playerId) {
     const iPTS = labels.indexOf('PTS'), iREB = labels.indexOf('REB');
     const iAST = labels.indexOf('AST'), iMIN = labels.indexOf('MIN');
     const iTO  = labels.indexOf('TO');
+    const i3PT = labels.indexOf('3PT');
+    const iFG  = labels.indexOf('FG');   // "fgm-fga"
+    const iFT  = labels.indexOf('FT');   // "ftm-fta"
+    const parseMadeAtt = stats => {
+      const parts = String(stats ?? '').split('-');
+      return parts.length === 2 ? { made: parseInt(parts[0]) || 0, att: parseInt(parts[1]) || 0 } : { made: 0, att: 0 };
+    };
     const eventsMap = json.events || {};
     const games = [];
     for (const st of (json.seasonTypes || [])) {
@@ -5034,8 +6206,13 @@ async function bgFetchGamelog(playerId) {
           const ast = iAST >= 0 ? parseFloat(stats[iAST]) : 0;
           const min = iMIN >= 0 ? parseFloat(String(stats[iMIN]).split(':')[0]) || 0 : 0;
           const to  = iTO  >= 0 ? parseFloat(stats[iTO]) || 0 : 0;
+          const tpm = i3PT >= 0 ? parseFloat(String(stats[i3PT]).split('-')[0]) || 0 : 0;
           if (pts === 0 && reb === 0 && min === 0) continue;
-          games.push({ date: meta.gameDate, pts, reb, ast, min, to, opponentAbbr: meta.opponent?.abbreviation || '?' });
+          const fg = iFG >= 0 ? parseMadeAtt(stats[iFG]) : { made: 0, att: 0 };
+          const ft = iFT >= 0 ? parseMadeAtt(stats[iFT]) : { made: 0, att: 0 };
+          const tsDenom = 2 * (fg.att + 0.44 * ft.att);
+          const tsPct   = tsDenom > 0 ? pts / tsDenom : null;
+          games.push({ date: meta.gameDate, pts, reb, ast, min, to, tpm, fgm: fg.made, fga: fg.att, ftm: ft.made, fta: ft.att, tsPct, opponentAbbr: meta.opponent?.abbreviation || '?', isHome: meta.atVs !== '@' });
         }
       }
     }
@@ -5115,6 +6292,13 @@ async function bgFetchWNBAGamelog(playerId) {
     const iPTS = labels.indexOf('PTS'), iREB = labels.indexOf('REB');
     const iAST = labels.indexOf('AST'), iMIN = labels.indexOf('MIN');
     const iTO  = labels.indexOf('TO');
+    const i3PT = labels.indexOf('3PT');
+    const iFG  = labels.indexOf('FG');   // "fgm-fga"
+    const iFT  = labels.indexOf('FT');   // "ftm-fta"
+    const parseMadeAtt = stats => {
+      const parts = String(stats ?? '').split('-');
+      return parts.length === 2 ? { made: parseInt(parts[0]) || 0, att: parseInt(parts[1]) || 0 } : { made: 0, att: 0 };
+    };
     const eventsMap = json.events || {};
     const games = [];
     for (const st of (json.seasonTypes || [])) {
@@ -5129,8 +6313,13 @@ async function bgFetchWNBAGamelog(playerId) {
           const ast = iAST >= 0 ? parseFloat(stats[iAST]) : 0;
           const min = iMIN >= 0 ? parseFloat(String(stats[iMIN]).split(':')[0]) || 0 : 0;
           const to  = iTO  >= 0 ? parseFloat(stats[iTO]) || 0 : 0;
+          const tpm = i3PT >= 0 ? parseFloat(String(stats[i3PT]).split('-')[0]) || 0 : 0;
           if (pts === 0 && reb === 0 && min === 0) continue;
-          games.push({ date: meta.gameDate, pts, reb, ast, min, to, opponentAbbr: meta.opponent?.abbreviation || '?' });
+          const fg = iFG >= 0 ? parseMadeAtt(stats[iFG]) : { made: 0, att: 0 };
+          const ft = iFT >= 0 ? parseMadeAtt(stats[iFT]) : { made: 0, att: 0 };
+          const tsDenom = 2 * (fg.att + 0.44 * ft.att);
+          const tsPct   = tsDenom > 0 ? pts / tsDenom : null;
+          games.push({ date: meta.gameDate, pts, reb, ast, min, to, tpm, fgm: fg.made, fga: fg.att, ftm: ft.made, fta: ft.att, tsPct, opponentAbbr: meta.opponent?.abbreviation || '?', isHome: meta.atVs !== '@' });
         }
       }
     }
@@ -5141,6 +6330,73 @@ async function bgFetchWNBAGamelog(playerId) {
     if (bestW.length > 0) _espnCache[cacheKey] = { data: result, ts: Date.now() };
     return bestW;
   } catch { return _glPersist[`wnba_${playerId}`]?.games || []; }
+}
+
+async function getWNBATeamAbbr(teamId) {
+  const cacheKey = `wnba_teamabbr_${teamId}`;
+  const cached = _espnCache[cacheKey];
+  if (cached && Date.now() - cached.ts < CACHE_6H) return cached.data;
+  try {
+    const ac = new AbortController(); setTimeout(() => ac.abort(), 10000);
+    const resp = await fetch(`${ESPN_WNBA}/${teamId}`, { signal: ac.signal });
+    if (!resp.ok) return null;
+    const json = await resp.json();
+    const abbr = json.team?.abbreviation || null;
+    if (abbr) _espnCache[cacheKey] = { data: abbr, ts: Date.now() };
+    return abbr;
+  } catch { return null; }
+}
+
+// Défense par poste WNBA — équivalent de /api/nba/teamdefbypos (stats.nba.com), mais
+// construite à partir des gamelogs ESPN déjà exploités ailleurs (stats.wnba.com
+// inaccessible). Pour chaque équipe adverse, moyenne des pts marqués contre elle par
+// poste (G/F/C) sur l'ensemble des joueurs de la ligue. Moyenne ligue par poste
+// recalculée dynamiquement (échelle WNBA != NBA, pas de constante réutilisée).
+async function getWNBADefByPos() {
+  const cacheKey = 'wnba_defbypos_all';
+  const cached = _espnCache[cacheKey];
+  if (cached && Date.now() - cached.ts < CACHE_6H) return cached.data;
+
+  const teamIds = Object.values(ESPN_WNBA_MAP);
+  const [abbrs, rosters] = await Promise.all([
+    Promise.all(teamIds.map(id => getWNBATeamAbbr(id))),
+    Promise.all(teamIds.map(id => bgFetchWNBARoster(id))),
+  ]);
+
+  const idToAbbr = {};
+  teamIds.forEach((id, i) => { if (abbrs[i]) idToAbbr[id] = abbrs[i]; });
+
+  const allPlayers = rosters.flat().filter(p => p.id && p.position);
+  const gamelogs = await Promise.all(allPlayers.map(p => bgFetchWNBAGamelog(p.id)));
+
+  // buckets[abbr][G/F/C] = pts marqués par les adversaires de cette position contre l'équipe `abbr`
+  const buckets = {};
+  Object.values(idToAbbr).forEach(abbr => { buckets[abbr] = { G: [], F: [], C: [] }; });
+
+  allPlayers.forEach((p, i) => {
+    const posKey = toDefCat(p.position);
+    for (const g of (gamelogs[i] || [])) {
+      if (buckets[g.opponentAbbr]) buckets[g.opponentAbbr][posKey].push(g.pts);
+    }
+  });
+
+  const avg = arr => arr.length ? +(arr.reduce((s, v) => s + v, 0) / arr.length).toFixed(2) : null;
+  const teamDefByPosByAbbr = {};
+  for (const [abbr, b] of Object.entries(buckets)) {
+    teamDefByPosByAbbr[abbr] = { G: avg(b.G), F: avg(b.F), C: avg(b.C) };
+  }
+
+  const leagueAvg = {};
+  for (const pos of ['G', 'F', 'C']) {
+    leagueAvg[pos] = avg(Object.values(teamDefByPosByAbbr).map(t => t[pos]).filter(v => v != null));
+  }
+
+  const teamDefByPosById = {};
+  for (const [id, abbr] of Object.entries(idToAbbr)) teamDefByPosById[id] = teamDefByPosByAbbr[abbr];
+
+  const data = { teamDefByPosById, leagueAvg };
+  _espnCache[cacheKey] = { data, ts: Date.now() };
+  return data;
 }
 
 // Merge all entries matching a player name (handles name variants like "Aja Wilson" / "A'ja Wilson")
@@ -5169,6 +6425,131 @@ function calcEWAbg(games, key, n, decay = 0.82) {
 }
 function calcAvgBg(games,key,n){const sl=games.slice(0,n).map(g=>g[key]).filter(v=>v!=null&&!isNaN(v));return sl.length?sl.reduce((a,b)=>a+b,0)/sl.length:null;}
 
+// Écart-type (Bessel n-1) pour les gamelogs EU (champs points/rebounds/assists/tpm, minutes>5)
+function calcStdBgEU(games, key) {
+  const vals = (games || []).filter(g => (g.minutes||0) > 5 && g[key] != null).map(g => g[key]);
+  if (vals.length < 3) return null;
+  const mean = vals.reduce((s, v) => s + v, 0) / vals.length;
+  return Math.sqrt(vals.reduce((s, v) => s + (v - mean) ** 2, 0) / (vals.length - 1));
+}
+
+// ── Game Total O/U — modèle complet (port du frontend computeGameTotal) ──────
+const TOTAL_ALERT_PROB = 0.80; // P(over) ou P(under) minimum pour déclencher
+const MAX_TOTAL_P = 0.88;      // un total ne peut jamais être "certain" à 93%+
+const Q_STATUSES_TOTAL = ['Questionable', 'GTD', 'Game Time Decision', 'Doubtful', 'Day-To-Day'];
+
+// Facteur playoffs spécifique aux totaux — plus fort que pour les props joueurs
+function getPlayoffFactorTotalBg(round) {
+  if (!round) return { val: 1.0, desc: 'Saison régulière' };
+  const r = round.toLowerCase();
+  if (r.includes('final') && !r.includes('conf') && !r.includes('semi'))
+    return { val: 0.87, desc: 'Finales' };
+  if ((r.includes('conf') && r.includes('final')) || r.includes('conference final'))
+    return { val: 0.90, desc: 'Finales de Conférence' };
+  if (r.includes('semi') || r.includes('2nd round'))
+    return { val: 0.93, desc: '2ème tour Playoffs' };
+  if (r.includes('playoff') || r.includes('round 1') || r.includes('1st round') || r.includes('game'))
+    return { val: 0.95, desc: '1er tour Playoffs' };
+  return { val: 1.0, desc: 'Saison régulière' };
+}
+
+function calcGameTotalStdBg(games, fallback = 12) {
+  const vals = (games || []).map(g => g.ptsScored + g.ptsAllowed).filter(v => v > 0);
+  if (vals.length < 3) return fallback;
+  const mean = vals.reduce((s, v) => s + v, 0) / vals.length;
+  return Math.sqrt(vals.reduce((s, v) => s + (v - mean) ** 2, 0) / vals.length);
+}
+
+// Modèle complet : pace matchup, momentum, repos, densité calendrier, facteur playoffs,
+// ancre historique. `homeGames`/`awayGames` = schedules triés du plus récent au plus ancien
+// ({date, ptsScored, ptsAllowed, isHome}). `round` = '' (saison régulière) ou 'game' (playoffs).
+function computeGameTotalFull({ homeGames, awayGames, avgPtsAllowed, ouBaseline, gameDate, round, refTotal, isWNBA }) {
+  if (!homeGames?.length || !awayGames?.length) return null;
+
+  const inPlayoffs = isPlayoffRound(round);
+  const poStart    = new Date(`${new Date(gameDate).getFullYear()}-04-01`);
+  const filterFn   = inPlayoffs ? g => new Date(g.date) >= poStart : () => true;
+  const hGames = homeGames.filter(filterFn);
+  const aGames = awayGames.filter(filterFn);
+  const hEff = hGames.length >= 3 ? hGames : homeGames;
+  const aEff = aGames.length >= 3 ? aGames : awayGames;
+
+  const homeOff = calcEWAbg(hEff, 'ptsScored', 7);
+  const awayOff = calcEWAbg(aEff, 'ptsScored', 7);
+  if (!homeOff || !awayOff) return null;
+
+  const homeDefAllowed = calcEWAbg(hEff, 'ptsAllowed', 7);
+  const awayDefAllowed = calcEWAbg(aEff, 'ptsAllowed', 7);
+  if (!homeDefAllowed || !awayDefAllowed) return null;
+
+  const homeDefFactor = Math.min(1.20, Math.max(0.80, homeDefAllowed / avgPtsAllowed));
+  const awayDefFactor = Math.min(1.20, Math.max(0.80, awayDefAllowed / avgPtsAllowed));
+
+  const homeExpected = homeOff * awayDefFactor;
+  const awayExpected = awayOff * homeDefFactor;
+
+  const homeAtHome = hEff.filter(g => g.isHome === true).slice(0, 5);
+  const awayAtAway = aEff.filter(g => g.isHome === false).slice(0, 5);
+  const homeLocFactor = homeAtHome.length >= 3
+    ? Math.min(1.05, Math.max(0.95, calcEWAbg(homeAtHome, 'ptsScored', 5) / homeOff))
+    : 1.025;
+  const awayLocFactor = awayAtAway.length >= 3
+    ? Math.min(1.05, Math.max(0.95, calcEWAbg(awayAtAway, 'ptsScored', 5) / awayOff))
+    : 0.975;
+
+  const n = Math.min(10, hEff.length, aEff.length);
+  const homeOver = hEff.slice(0, n).filter(g => (g.ptsScored + g.ptsAllowed) > ouBaseline).length;
+  const awayOver = aEff.slice(0, n).filter(g => (g.ptsScored + g.ptsAllowed) > ouBaseline).length;
+  const ouRatio  = n > 0 ? (homeOver + awayOver) / (n * 2) : 0.5;
+  const ouFactor = Math.min(1.08, Math.max(0.92, 1.0 + (ouRatio - 0.5) * 0.12));
+
+  // Pace matchup : si deux équipes jouent vite, le tempo s'emballe
+  const homePaceTotal = homeOff + homeDefAllowed;
+  const awayPaceTotal = awayOff + awayDefAllowed;
+  const leagueRefTotal2 = avgPtsAllowed * 2;
+  const paceMatchupRaw = Math.sqrt((homePaceTotal / leagueRefTotal2) * (awayPaceTotal / leagueRefTotal2));
+  const paceFactor = Math.min(1.07, Math.max(0.93, paceMatchupRaw));
+
+  // Momentum récent (3 matchs)
+  const hRecent3 = hEff.slice(0, 3);
+  const aRecent3 = aEff.slice(0, 3);
+  const hRecentAvg = hRecent3.length >= 2 ? hRecent3.reduce((s, g) => s + g.ptsScored + g.ptsAllowed, 0) / hRecent3.length : homePaceTotal;
+  const aRecentAvg = aRecent3.length >= 2 ? aRecent3.reduce((s, g) => s + g.ptsScored + g.ptsAllowed, 0) / aRecent3.length : awayPaceTotal;
+  const hMomentum = homePaceTotal > 0 ? hRecentAvg / homePaceTotal : 1;
+  const aMomentum = awayPaceTotal > 0 ? aRecentAvg / awayPaceTotal : 1;
+  const momentumFactor = Math.min(1.05, Math.max(0.95, (hMomentum + aMomentum) / 2));
+
+  const playoffF  = getPlayoffFactorTotalBg(round);
+  const homeRestF = getRestFactor(hEff, gameDate);
+  const awayRestF = getRestFactor(aEff, gameDate);
+  const restFactor = (homeRestF.val + awayRestF.val) / 2;
+  const homeDensF = getScheduleDensityFactor(hEff, gameDate);
+  const awayDensF = getScheduleDensityFactor(aEff, gameDate);
+  const densFactor = (homeDensF.val + awayDensF.val) / 2;
+
+  const rawEstimated = (homeExpected * homeLocFactor + awayExpected * awayLocFactor)
+    * ouFactor * playoffF.val * restFactor * densFactor * paceFactor * momentumFactor;
+
+  // Ancre historique : blend 40% modèle / 60% moyenne réelle des deux équipes
+  const hAvgTotal = hEff.length >= 4 ? hEff.slice(0, Math.min(10, hEff.length)).reduce((s, g) => s + (g.ptsScored + g.ptsAllowed), 0) / Math.min(10, hEff.length) : null;
+  const aAvgTotal = aEff.length >= 4 ? aEff.slice(0, Math.min(10, aEff.length)).reduce((s, g) => s + (g.ptsScored + g.ptsAllowed), 0) / Math.min(10, aEff.length) : null;
+  const historicalAvg = hAvgTotal && aAvgTotal ? (hAvgTotal + aAvgTotal) / 2 : null;
+  const estimated = historicalAvg ? +(0.40 * rawEstimated + 0.60 * historicalAvg).toFixed(1) : +rawEstimated.toFixed(1);
+
+  const edge = refTotal ? +((estimated - refTotal) / refTotal * 100).toFixed(1) : null;
+
+  // Probabilité P(total > line) via t-distribution
+  const std = calcGameTotalStdBg([...hEff, ...aEff], isWNBA ? 20 : 12);
+  const rawOver = refTotal ? 1 - tCDF4((refTotal - estimated) / std) : null;
+  const pOver  = rawOver != null ? +Math.min(MAX_TOTAL_P, rawOver).toFixed(3) : null;
+  const pUnder = rawOver != null ? +Math.min(MAX_TOTAL_P, 1 - rawOver).toFixed(3) : null;
+
+  return {
+    estimated, refTotal, edge, pOver, pUnder, std: +std.toFixed(1),
+    direction: edge != null ? (edge > 0 ? 'over' : 'under') : null,
+  };
+}
+
 const EU_PO_KEYWORDS = /quarter.final|semi.final|final|playoff|po round|round of/i;
 
 function computeEUEstimate(player, isHome, oppGames, myGames, gamelogs, gameDate, league, round = '', oppName = '') {
@@ -5189,6 +6570,7 @@ function computeEUEstimate(player, isHome, oppGames, myGames, gamelogs, gameDate
   const basePts = season.pts;
   const baseReb = season.reb || 0;
   const baseAst = season.ast || 0;
+  const baseTpm = season.tpm || 0;
 
   // EWA sur tous les gamelogs (min>5min)
   const recentGl = gamelogs.filter(g=>(g.minutes||0)>5);
@@ -5196,9 +6578,16 @@ function computeEUEstimate(player, isHome, oppGames, myGames, gamelogs, gameDate
   const poGl = inPO ? recentGl.filter(g => new Date(g.date||g.event_date).getMonth()+1 >= 4) : [];
   const gl   = (inPO && poGl.length >= 3) ? poGl : recentGl;
 
-  const ewaPts = calcEWAbg(gl,'points',7)   ?? basePts;
-  const ewaReb = baseReb > 0 ? (calcEWAbg(gl,'rebounds',7)  ?? baseReb) : 0;
-  const ewaAst = baseAst > 0 ? (calcEWAbg(gl,'assists',7)   ?? baseAst) : 0;
+  // Plafonne les pics isolés des matchs récents avant l'EWA (cf. winsorizeRecent, compute.js)
+  const glPtsW = winsorizeRecent(gl, 'points',   basePts, calcStdBgEU(gl, 'points'));
+  const glRebW = winsorizeRecent(gl, 'rebounds', baseReb, calcStdBgEU(gl, 'rebounds'));
+  const glAstW = winsorizeRecent(gl, 'assists',  baseAst, calcStdBgEU(gl, 'assists'));
+  const glTpmW = winsorizeRecent(gl, 'tpm',      baseTpm, calcStdBgEU(gl, 'tpm'));
+
+  const ewaPts = calcEWAbg(glPtsW,'points',7)   ?? basePts;
+  const ewaReb = baseReb > 0 ? (calcEWAbg(glRebW,'rebounds',7)  ?? baseReb) : 0;
+  const ewaAst = baseAst > 0 ? (calcEWAbg(glAstW,'assists',7)   ?? baseAst) : 0;
+  const ewaTpm = baseTpm > 0 ? (calcEWAbg(glTpmW,'tpm',7)       ?? baseTpm) : 0;
 
   // Blend EWA / saison : 65/35 en PO, 60/40 en RS
   const ewaW = inPO ? 0.65 : 0.60;
@@ -5206,10 +6595,12 @@ function computeEUEstimate(player, isHome, oppGames, myGames, gamelogs, gameDate
   const blendPts = +(ewaW * ewaPts + rsW * basePts).toFixed(1);
   const blendReb = baseReb > 0 ? +(ewaW * ewaReb + rsW * baseReb).toFixed(1) : 0;
   const blendAst = baseAst > 0 ? +(ewaW * ewaAst + rsW * baseAst).toFixed(1) : 0;
+  const blendTpm = baseTpm > 0 ? +(ewaW * ewaTpm + rsW * baseTpm).toFixed(1) : 0;
 
   const formFactor    = Math.min(1.35, Math.max(0.70, blendPts / basePts));
   const formFactorReb = baseReb > 0 ? Math.min(1.25, Math.max(0.80, blendReb / baseReb)) : 1.0;
   const formFactorAst = baseAst > 0 ? Math.min(1.25, Math.max(0.80, blendAst / baseAst)) : 1.0;
+  const formFactorTpm = baseTpm > 0 ? Math.min(1.25, Math.max(0.80, blendTpm / baseTpm)) : 1.0;
 
   // Pace adversaire
   const oppPaceRaw = calcEWAbg(oGames,'ptsScored',5);
@@ -5233,7 +6624,7 @@ function computeEUEstimate(player, isHome, oppGames, myGames, gamelogs, gameDate
 
   // Streak (forme récente vs moyenne blend) — atténué ×0.5 en PO
   const streakFactor = (() => {
-    const l3 = gl.slice(0,2).filter(g=>(g.minutes||0)>5).map(g=>g.points).filter(v=>v!=null);
+    const l3 = gl.slice(0,3).filter(g=>(g.minutes||0)>5).map(g=>g.points).filter(v=>v!=null);
     if (l3.length < 2) return 1.0;
     const l3Avg = l3.reduce((s,v)=>s+v,0)/l3.length;
     const raw = Math.min(1.12, Math.max(0.88, l3Avg / blendPts));
@@ -5242,7 +6633,7 @@ function computeEUEstimate(player, isHome, oppGames, myGames, gamelogs, gameDate
 
   // Normalisation minutes — ajuste la projection si le joueur tourne plus ou moins que sa moyenne
   const minNormFactor = (() => {
-    const allMins = recentGl.map(g => g.min).filter(m => m > 0);
+    const allMins = recentGl.map(g => g.minutes || g.min).filter(m => m > 0);
     if (allMins.length < 4) return 1.0;
     const seasonAvgMin = allMins.reduce((s,v)=>s+v,0) / allMins.length;
     const recent2Mins  = allMins.slice(0, 2);
@@ -5303,16 +6694,36 @@ function computeEUEstimate(player, isHome, oppGames, myGames, gamelogs, gameDate
 
   const allMult = restFactor * locFactor * streakFactor * minNormFactor * fgFactor * h2hFactor * densityFactor * injReturnFactor;
 
-  const estimated = basePts * formFactor    * paceFactor * defFactor * allMult;
-  const estReb    = baseReb * formFactorReb *              defFactor * allMult;
-  const estAst    = baseAst * formFactorAst * paceFactor *             allMult;
+  const multPts = Math.min(1.35, Math.max(0.72, formFactor    * paceFactor * defFactor * allMult));
+  const multReb = Math.min(1.25, Math.max(0.78, formFactorReb *              defFactor * allMult));
+  const multAst = Math.min(1.25, Math.max(0.78, formFactorAst * paceFactor *             allMult));
+  const multTpm = Math.min(1.25, Math.max(0.78, formFactorTpm * paceFactor *             allMult));
+  const estimatedRaw = basePts * multPts;
+  const estReb    = baseReb * multReb;
+  const estAst    = baseAst * multAst;
+  const estTpm    = baseTpm * multTpm;
+
+  // Ancrage volume × efficacité saison — n'affecte que pts (reb/ast/tpm inchangés)
+  const volAnchor = getShotVolumeAnchor(gl, 'points', 'minutes');
+  const estimated = volAnchor != null ? estimatedRaw * 0.85 + volAnchor * 0.15 : estimatedRaw;
 
   return {
     pts: Math.max(0, +estimated.toFixed(1)),
     reb: Math.max(0, +estReb.toFixed(1)),
     ast: Math.max(0, +estAst.toFixed(1)),
+    tpm: Math.max(0, +estTpm.toFixed(1)),
+    // Écart de la projection par rapport à la moyenne saison — sert à élargir le std dans probAtLeast
+    deviation: { pts: Math.abs(multPts - 1), reb: Math.abs(multReb - 1), ast: Math.abs(multAst - 1), tpm: Math.abs(multTpm - 1) },
   };
 }
+
+// tpm gamelog au format "M-A" (ex: "3-7") ou déjà numérique si re-normalisé depuis le cache
+const parseTpmMade = t => {
+  if (typeof t === 'number') return t;
+  if (!t || t === '—') return 0;
+  const m = parseInt(String(t).split('-')[0]);
+  return isNaN(m) ? 0 : m;
+};
 
 async function bgFetchEUGamelog(playerId, league, base) {
   const ck = `euro_gl_${playerId}`;
@@ -5323,6 +6734,7 @@ async function bgFetchEUGamelog(playerId, league, base) {
     points:   g.points   ?? g.pts ?? 0,
     rebounds: g.rebounds ?? g.reb ?? 0,
     assists:  g.assists  ?? g.ast ?? 0,
+    tpm:      parseTpmMade(g.tpm),
   }));
   if (hit && Date.now() - hit.ts < CACHE_6H) return normalize(hit.data.games || []);
   try {
@@ -5338,11 +6750,16 @@ async function bgFetchEUGamelog(playerId, league, base) {
 }
 
 async function runEUPropsAlerts(newAlerts, PORT) {
-  const LEAGUES_EU = ['acb','lnb','bbl','legaa'];
+  // LNB exclue : pas de couverture gamelogs fiable (Bzzoiro ne couvre l'EL que pour Paris/Monaco) → projections non fiables, alertes désactivées
+  const LEAGUES_EU = ['acb','bbl','legaa'];
   const base = `http://localhost:${PORT}`;
   const Q_STATUSES = ['Questionable','GTD','Game Time Decision','Doubtful','Day-To-Day'];
-  const ALERT_FLOOR = { pts: 0.80, reb: 0.80, ast: 0.80 };
-  const GL_KEY = { pts: 'points', reb: 'rebounds', ast: 'assists' };
+  // Resserrement du 8 juin 2026 (soir) : plancher = seuil "haute confiance" (badge vert) de
+  // propConfColor/propBadgeClass — n'alerter que sur les % que l'app qualifie déjà de fiables.
+  // Plus de distinction titulaire/remplaçant : le badge vert ne la fait pas non plus.
+  const ALERT_FLOOR = { pts: 0.75, reb: 0.68, ast: 0.70, tpm: 0.68 };
+  const ALERT_FLOOR_BENCH = { pts: 0.75, reb: 0.68, ast: 0.70, tpm: 0.68 };
+  const GL_KEY = { pts: 'points', reb: 'rebounds', ast: 'assists', tpm: 'tpm' };
 
   const calcStdBg = (games, key) => {
     const vals = games.filter(g => (g.minutes||0) > 5 && g[key] != null).map(g => g[key]);
@@ -5350,31 +6767,8 @@ async function runEUPropsAlerts(newAlerts, PORT) {
     const mean = vals.reduce((a,b) => a+b, 0) / vals.length;
     return Math.sqrt(vals.reduce((s,v) => s+(v-mean)**2, 0) / vals.length);
   };
-  const normalCDFbg = z => {
-    const t = 1/(1+0.2316419*Math.abs(z));
-    const d = 0.3989423*Math.exp(-z*z/2);
-    const p = d*t*(0.3193815+t*(-0.3565638+t*(1.7814779+t*(-1.8212560+t*1.3302744))));
-    return z > 0 ? 1-p : p;
-  };
-  const probOver = (est, std, threshold) => {
-    if (!std || std <= 0) return threshold <= est ? 0.70 : 0.30;
-    const z = (threshold - 0.5 - est) / std;
-    return Math.max(0.01, Math.min(0.99, 1 - normalCDFbg(z)));
-  };
-  const probUnder = (est, std, threshold) => 1 - probOver(est, std, threshold);
-
-  const computeRedist = (outPlayers, activePlayers) => {
-    const totalOutMin = outPlayers.reduce((s,p) => s+(p.stats?.min??0), 0);
-    if (!totalOutMin) return {};
-    const totalActiveMin = activePlayers.reduce((s,p) => s+(p.stats?.min??1), 0);
-    if (!totalActiveMin) return {};
-    const factors = {};
-    activePlayers.forEach(p => {
-      const share = (p.stats?.min??0) / totalActiveMin;
-      factors[String(p.id)] = Math.min(1.25, 1+(share*totalOutMin)/Math.max(p.stats?.min??1,1));
-    });
-    return factors;
-  };
+  const probOver  = (est, std, threshold, stat, deviation = 0) => probAtLeast(est, std, threshold, stat, deviation);
+  const probUnder = (est, std, threshold, stat, deviation = 0) => 1 - probAtLeast(est, std, Math.floor(threshold) + 1, stat, deviation);
 
   for (const league of LEAGUES_EU) {
     try {
@@ -5470,11 +6864,25 @@ async function runEUPropsAlerts(newAlerts, PORT) {
             const gamelogs = gamelogById[rosterP.id] || [];
             const lastGlDateEU = gamelogs[0]?.event_date?.slice(0,10) ?? gamelogs[0]?.date?.slice(0,10) ?? null;
 
+            // Filtre minutes EU (champ 'minutes')
+            { const avg = avgRecentMin(gamelogs, 'minutes'); if (avg !== null && avg < MIN_AVG_MINUTES) { _bgLog.push(`skip eu ${rosterP.name}: avg min ${avg.toFixed(1)}`); continue; } }
+
             // Post-it EU : si dernier match du joueur inchangé → utilise la valeur gelée
             if (new Date(game.date) > Date.now()) {
               const snapEU = _projectionsSnapshot[game.id]?.[String(rosterP.id)];
               if (snapEU && snapEU._lastGame === lastGlDateEU && snapEU.pts != null) {
-                estimatesMap[rosterP.id] = { est: { pts: snapEU.pts, reb: snapEU.reb, ast: snapEU.ast }, isHome, gamelogs };
+                // Backfill tpm sur les snapshots gelés avant l'ajout du 10 juin 2026 (pts/reb/ast restent figés)
+                if (snapEU.tpm == null) {
+                  const oppNameBf = isHome ? game.away.name : game.home.name;
+                  const tpmEst = computeEUEstimate(rosterP, isHome, oppGames, myGames, gamelogs, game.date, league, game.round, oppNameBf);
+                  if (tpmEst?.tpm != null) {
+                    const redistFactorBf = isHome ? (homeRedist[String(rosterP.id)] ?? 1) : (awayRedist[String(rosterP.id)] ?? 1);
+                    snapEU.tpm = redistFactorBf > 1 ? +(tpmEst.tpm * redistFactorBf).toFixed(1) : tpmEst.tpm;
+                    snapEU.deviation = { ...(snapEU.deviation || {}), tpm: tpmEst.deviation?.tpm ?? 0 };
+                    _saveSnapshot();
+                  }
+                }
+                estimatesMap[rosterP.id] = { est: { pts: snapEU.pts, reb: snapEU.reb, ast: snapEU.ast, tpm: snapEU.tpm }, isHome, gamelogs };
                 continue;
               }
             }
@@ -5489,6 +6897,7 @@ async function runEUPropsAlerts(newAlerts, PORT) {
               est.pts = +(est.pts * redistFactor).toFixed(1);
               est.reb = +(est.reb * redistFactor).toFixed(1);
               est.ast = +(est.ast * redistFactor).toFixed(1);
+              est.tpm = est.tpm != null ? +(est.tpm * redistFactor).toFixed(1) : est.tpm;
             }
             estimatesMap[rosterP.id] = { est, isHome, gamelogs };
 
@@ -5497,7 +6906,8 @@ async function runEUPropsAlerts(newAlerts, PORT) {
               const lastGlDateEU2 = gamelogById[rosterP.id]?.[0]?.event_date?.slice(0,10) ?? gamelogById[rosterP.id]?.[0]?.date?.slice(0,10) ?? null;
               _projectionsSnapshot[game.id][String(rosterP.id)] = {
                 name: rosterP.name, team: isHome ? game.home.short : game.away.short,
-                pts: est.pts, reb: est.reb, ast: est.ast,
+                pts: est.pts, reb: est.reb, ast: est.ast, tpm: est.tpm,
+                deviation: est.deviation,
                 _lastGame: lastGlDateEU2,
               };
             }
@@ -5514,7 +6924,7 @@ async function runEUPropsAlerts(newAlerts, PORT) {
             if (isHome && homeGated) continue;
             if (!isHome && awayGated) continue;
 
-            for (const stat of ['pts','reb','ast']) {
+            for (const stat of ['pts','reb','ast','tpm']) {
               const refBk = ['unibet','betclic','winamax'].find(b => bkLines[b]?.[stat]?.line);
               if (!refBk) continue;
               const refLine = bkLines[refBk][stat];
@@ -5532,15 +6942,10 @@ async function runEUPropsAlerts(newAlerts, PORT) {
                 return (mean > 0 && sd/mean > 0.35) ? -0.08 : 0;
               })();
 
-              const pOver  = Math.max(0, probOver(estVal, std, refLine.line) + minVarianceAdj);
-              const seasonAvgStat = rosterP.stats?.[stat];
-              const underBlocked = seasonAvgStat && refLine.line > seasonAvgStat * 1.30;
-              _bgLog.push(`EU dbg [${league}] ${rosterP.name} ${stat}: est=${estVal?.toFixed(1)} line=${refLine.line} std=${std?.toFixed(1)} pOver=${Math.round(pOver*100)}% pUnder=${Math.round((underBlocked?0:Math.max(0,probUnder(estVal,std,refLine.line)+minVarianceAdj))*100)}%`);
-              if (underBlocked) _bgLog.push(`EU block Under ${rosterP.name} ${stat}: ${refLine.line} vs avg ${seasonAvgStat}`);
-              const pUnder = underBlocked ? 0 : Math.max(0, probUnder(estVal, std, refLine.line) + minVarianceAdj);
-
-              const l2Clean = glFilt.filter(g => (g.minutes||0) >= 15 && g[GL_KEY[stat]] != null).slice(0,2);
-              const l2AboveLine = l2Clean.length >= 2 && l2Clean.every(g => g[GL_KEY[stat]] > refLine.line);
+              const deviation = est.deviation?.[stat] ?? 0;
+              const pOver  = Math.max(0, probOver(estVal, std, refLine.line, stat, deviation) + minVarianceAdj);
+              const pUnder = Math.max(0, probUnder(estVal, std, refLine.line, stat, deviation) + minVarianceAdj);
+              _bgLog.push(`EU dbg [${league}] ${rosterP.name} ${stat}: est=${estVal?.toFixed(1)} line=${refLine.line} std=${std?.toFixed(1)} pOver=${Math.round(pOver*100)}% pUnder=${Math.round(pUnder*100)}%`);
 
               const ubLine = bkLines.unibet?.[stat] ?? null;
               const bcLine = bkLines.betclic?.[stat] ?? null;
@@ -5564,15 +6969,17 @@ async function runEUPropsAlerts(newAlerts, PORT) {
               };
               // Sauvegarde prob dans snapshot (accessible même sans ouvrir la page)
               if (!_projectionsSnapshot[game.id]) _projectionsSnapshot[game.id] = {};
-              const _se = _projectionsSnapshot[game.id][String(rosterP.id)] || { name: rosterP.name, team: isHome ? game.home.short : game.away.short, pts: est.pts, reb: est.reb, ast: est.ast };
+              const _se = _projectionsSnapshot[game.id][String(rosterP.id)] || { name: rosterP.name, team: isHome ? game.home.short : game.away.short, pts: est.pts, reb: est.reb, ast: est.ast, tpm: est.tpm, deviation: est.deviation };
               if (!_se.probs) _se.probs = {};
               _se.probs[stat] = { pOver: +pOver.toFixed(3), pUnder: +pUnder.toFixed(3), line: refLine.line, ubOver: ubLine?.over??null, bcOver: bcLine?.over??null, wmOver: wmLine?.over??null, ubUnder: ubLine?.under??null, bcUnder: bcLine?.under??null, wmUnder: wmLine?.under??null };
               _projectionsSnapshot[game.id][String(rosterP.id)] = _se;
 
-              const floor = ALERT_FLOOR[stat] || 0.85;
-              if (pOver >= floor && hasValidOverOdds(ubLine?.over??null, wmLine?.over??null, bcLine?.over??null)) newAlerts.push({ ...alertBase, id:`${game.id}_eu_${rosterP.id}_${stat}_over_${refLine.line}`, direction:'over',  probability:Math.round(pOver*100),  unibetOdds:capOdds(ubLine?.over??null),  winamaxOdds:capOdds(wmLine?.over??null),  betclicOdds:capOdds(bcLine?.over??null) });
-              if (pUnder >= floor && !l2AboveLine && hasValidUnderOdds(ubLine?.under??null, wmLine?.under??null, bcLine?.under??null)) newAlerts.push({ ...alertBase, id:`${game.id}_eu_${rosterP.id}_${stat}_under_${refLine.line}`, direction:'under', probability:Math.round(pUnder*100), unibetOdds:capOdds(ubLine?.under??null), winamaxOdds:capOdds(wmLine?.under??null), betclicOdds:capOdds(bcLine?.under??null) });
-              else if (pUnder >= floor && l2AboveLine) _bgLog.push(`EU block Under ${rosterP.name} ${stat}: L2 both above ${refLine.line}`);
+              const _euIsStarter = isHome ? homeStarters.has(String(rosterP.id)) : awayStarters.has(String(rosterP.id));
+              const floor = (_euIsStarter ? ALERT_FLOOR[stat] : ALERT_FLOOR_BENCH[stat]) || 0.85;
+              const _euSeasonAvg = rosterP.stats?.[stat];
+              const _euEdge = Math.abs(estVal - refLine.line);
+              if (pOver >= floor && _euEdge >= minEdgeFor(stat, 'over', _euSeasonAvg) && hasValidOverOdds(ubLine?.over??null, wmLine?.over??null, bcLine?.over??null)) newAlerts.push({ ...alertBase, id:`${game.id}_eu_${rosterP.id}_${stat}_over_${refLine.line}`, direction:'over',  probability:Math.round(pOver*100),  unibetOdds:capOdds(ubLine?.over??null),  winamaxOdds:capOdds(wmLine?.over??null),  betclicOdds:capOdds(bcLine?.over??null) });
+              else if (pUnder >= floor && _euEdge >= minEdgeFor(stat, 'under', _euSeasonAvg) && hasValidUnderOdds(ubLine?.under??null, wmLine?.under??null, bcLine?.under??null)) newAlerts.push({ ...alertBase, id:`${game.id}_eu_${rosterP.id}_${stat}_under_${refLine.line}`, direction:'under', probability:Math.round(pUnder*100), unibetOdds:capOdds(ubLine?.under??null), winamaxOdds:capOdds(wmLine?.under??null), betclicOdds:capOdds(bcLine?.under??null) });
             }
           }
         } catch { /* skip game */ }
@@ -5581,9 +6988,37 @@ async function runEUPropsAlerts(newAlerts, PORT) {
   }
 }
 
-// Alerte valide uniquement si Unibet OU Betclic >= 1.70 (Winamax ignoré pour le filtre)
-const hasValidUnderOdds = (ub, wm, bc) => (ub != null && ub >= 1.70) || (bc != null && bc >= 1.70);
-const hasValidOverOdds  = (ub, wm, bc) => (ub != null && ub >= 1.70) || (bc != null && bc >= 1.70);
+// Alerte valide uniquement si Unibet OU Betclic >= 1.55 (Winamax ignoré pour le filtre)
+// Probabilité "affichage" — recalcule avec les mêmes ajustements que PropsSection (front)
+// pour que le % montré sur l'alerte corresponde à celui d'Analyse Props. N'influence PAS
+// le déclenchement de l'alerte (qui reste basé sur pOver/pUnder bruts + planchers existants).
+function displayProb(estVal, rawStd, fallbackStd, gamelog, refLineLine, stat, deviation, gameDate, lastGameStr, isWNBA = false) {
+  const recentMins = (gamelog || []).slice(0, 8).map(g => g.min).filter(m => m > 0);
+  let minCV = 0;
+  if (recentMins.length >= 3) {
+    const mean = recentMins.reduce((s, v) => s + v, 0) / recentMins.length;
+    if (mean >= 1) {
+      const sd = Math.sqrt(recentMins.reduce((s, v) => s + (v - mean) ** 2, 0) / recentMins.length);
+      minCV = sd / mean;
+    }
+  }
+  const minInflation = 1 + minCV * 0.8;
+  const daysSinceLast = lastGameStr ? (new Date(gameDate) - new Date(lastGameStr)) / 86400000 : 0;
+  const staleInflation = daysSinceLast > 5 ? 1 + Math.min(0.4, (daysSinceLast - 5) * 0.04) : 1;
+  const baseStd = rawStd ?? fallbackStd;
+  if (baseStd == null) return null;
+  const std = baseStd * minInflation * staleInflation;
+  const threshold = Math.ceil(refLineLine);
+  const rawPOver = probAtLeast(estVal, std, threshold, stat, deviation, isWNBA);
+  const gap = Math.abs(estVal - refLineLine) / refLineLine;
+  const sanityMax = gap > 0.25 ? 0.75 : 1.0;
+  const minVarianceAdj = minCV > 0.35 ? -0.08 : 0;
+  const pOver = Math.max(0, Math.min(sanityMax, rawPOver) + minVarianceAdj);
+  return { pOver, pUnder: Math.max(0, 1 - pOver) };
+}
+
+const hasValidUnderOdds = (ub, wm, bc) => (ub != null && ub >= 1.60) || (bc != null && bc >= 1.60);
+const hasValidOverOdds  = (ub, wm, bc) => (ub != null && ub >= 1.60) || (bc != null && bc >= 1.60);
 const capOdds = o => (o != null && o >= 1.40) ? o : null;
 const GAP_THRESHOLD = 0.30;
 const GAP_MIN_ODDS  = 1.40;
@@ -5602,16 +7037,49 @@ function makeGapAlert(base, stat, direction, line, bcOdds, ubOdds, wmOdds, idSuf
     betclicOdds: bcOdds ?? null, unibetOdds: ubOdds ?? null, winamaxOdds: wmOdds };
 }
 
+// Retourne la moyenne de minutes sur les 5 derniers matchs joués (min > 0), ou null si pas de data
+const avgRecentMin = (gl, key = 'min') => {
+  const played = (gl || []).filter(g => (g[key] ?? 0) > 0).slice(0, 5);
+  if (!played.length) return null;
+  return played.reduce((s, g) => s + (g[key] ?? 0), 0) / played.length;
+};
+const MIN_AVG_MINUTES = 10; // en dessous → pas d'alerte (joueur fin de banc)
+
+// Edge minimum (10 juin 2026) — écart |estimation - ligne| requis avant d'envoyer une alerte.
+// Backtest 17 paris : edge < 1.0 → 0% de réussite (paris "pile ou face"). edge >= 1.0 → 62%.
+const MIN_EDGE = 1.0;
+// Franchise players (gros volume saison sur cette stat) : edge renforcé sur Under, car ils
+// peuvent exploser leur ligne n'importe quel soir (cf. A. Reese 9.5 proj → 17 réel).
+const FRANCHISE_MIN_EDGE   = 2.0;
+const FRANCHISE_THRESHOLD  = { pts: 18, reb: 9, ast: 6, tpm: 3 };
+function minEdgeFor(stat, direction, seasonAvgStat) {
+  if (direction === 'under' && seasonAvgStat != null && seasonAvgStat >= FRANCHISE_THRESHOLD[stat]) return FRANCHISE_MIN_EDGE;
+  return MIN_EDGE;
+}
+
+// Resserrement du 8 juin 2026 (soir) : plancher = seuil "haute confiance" (badge vert) de
+// propConfColor/propBadgeClass — n'alerter que sur les % que l'app qualifie déjà de fiables.
+// Remplace l'ancien plancher (calé sur le bas de la bande jaune/cyan), qui généra un volume
+// d'alertes trop élevé. Plus de distinction titulaire/remplaçant : le badge vert ne la fait pas non plus.
+// tpm (3pts) abaissé le 11 juin 2026 (= reb, le stat le plus proche en variance) — plancher de 70%
+// générait 0 alerte tpm depuis son ajout le 10 juin. Provisoire, à recalibrer sur données réelles vers le 20 juin.
+const NBA_ALERT_FLOOR       = { pts: 0.70, reb: 0.62, ast: 0.60, tpm: 0.62 };
+const NBA_ALERT_FLOOR_BENCH = { pts: 0.70, reb: 0.62, ast: 0.60, tpm: 0.62 };
+const WNBA_ALERT_FLOOR       = { pts: 0.70, reb: 0.62, ast: 0.60, tpm: 0.62 };
+const WNBA_ALERT_FLOOR_BENCH = { pts: 0.70, reb: 0.62, ast: 0.60, tpm: 0.62 };
+
 async function generateBackgroundAlerts() {
   if (!ODDS_KEY) { _bgLog = ['no ODDS_KEY']; return; }
+  _bgLastRun = Date.now();
   _bgLog = ['started'];
   console.log('[bg-alerts] Running…');
   try {
     // 1. Fetch upcoming NBA games from ESPN
-    // Fetch i=0 (today UTC), i=1 (tomorrow UTC), i=2 (J+2 UTC) with explicit dates
-    // to avoid ESPN's default timezone ambiguity (ET games can land on a different UTC date)
+    // Fetch i=-10..-1 (10 derniers jours, pour retrouver le dernier match FINAL d'une série → gel des projections)
+    // puis i=0 (aujourd'hui UTC), i=1 (demain UTC), i=2 (J+2 UTC) avec dates explicites
+    // pour éviter l'ambiguïté de fuseau horaire ESPN (matchs ET pouvant tomber sur un jour UTC différent)
     const allEvents = [];
-    for (let i = 0; i <= 2; i++) {
+    for (let i = -10; i <= 2; i++) {
       const dateStr = new Date(Date.now() + i * 86400000).toISOString().slice(0, 10).replace(/-/g, '');
       const r = await fetch(`${ESPN_SCOREBOARD}?dates=${dateStr}&limit=50`);
       if (r.ok) allEvents.push(...((await r.json()).events || []));
@@ -5657,14 +7125,6 @@ async function generateBackgroundAlerts() {
       const t = setTimeout(() => ac.abort(), ms);
       return fetch(url, { signal: ac.signal }).finally(() => clearTimeout(t));
     };
-    let leagueAdv = {};
-    try {
-      leagueAdv = await Promise.race([
-        getLeagueAdv(),
-        new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 8000)),
-      ]);
-    } catch { _bgLog.push('leagueAdv skip'); }
-
     const normTeam = s => s.toLowerCase().replace(/[^a-z]/g, '');
     const lastWord = s => s.trim().split(' ').pop();
     const nameMatch = (a, b) => {
@@ -5681,9 +7141,9 @@ async function generateBackgroundAlerts() {
 
     const newAlerts = [];
 
-    // Helper : construit la base d'une alerte NBA (évite la duplication dans le bloc post-it)
-    const baseAlert = (player, game, isHome, stat, line, estVal) => ({
-      type: 'player_prop', league: 'nba',
+    // Helper : construit la base d'une alerte NBA
+    const baseAlert = (player, game, isHome, stat, line, estVal, teamHasQ = null) => ({
+      type: 'player_prop', league: 'nba', eventId: game.id,
       home: game.home.name, away: game.away.name,
       homeShort: game.home.short, awayShort: game.away.short,
       homeTeam: game.home.name, awayTeam: game.away.name,
@@ -5693,6 +7153,7 @@ async function generateBackgroundAlerts() {
       stat, line, estimate: estVal,
       pinnacleOdds: null,
       injury: player.injury || null,
+      ...(teamHasQ?.length ? { teamHasQ } : {}),
       savedAt: Date.now(),
     });
 
@@ -5754,21 +7215,10 @@ async function generateBackgroundAlerts() {
         console.log(`[bg-alerts] Injury gate ${game.home.short}v${game.away.short}: ${names}`);
       }
 
-      // Redistribution des minutes si joueur clé confirmé Out (playoffs, toujours)
-      const computeRedist = (outPlayers, activePlayers) => {
-        const totalOutMin = outPlayers.reduce((s, p) => s + (p.stats?.min ?? 0), 0);
-        if (!totalOutMin) return {};
-        const totalActiveMin = activePlayers.reduce((s, p) => s + (p.stats?.min ?? 1), 0);
-        if (!totalActiveMin) return {};
-        const factors = {};
-        activePlayers.forEach(p => {
-          const share = (p.stats?.min ?? 0) / totalActiveMin;
-          factors[String(p.id)] = Math.min(1.25, 1 + (share * totalOutMin) / Math.max(p.stats?.min ?? 1, 1));
-        });
-        return factors;
-      };
-      const homeOutKey = isPlayoff ? homePlayers.filter(p => isStarter(p, homeStarters) && p.injury === 'Out') : [];
-      const awayOutKey = isPlayoff ? awayPlayers.filter(p => isStarter(p, awayStarters) && p.injury === 'Out') : [];
+      // Redistribution des minutes si joueur clé confirmé Out — toujours actif (régulière + playoffs),
+      // même logique que WNBA (cf. computeRedist)
+      const homeOutKey = homePlayers.filter(p => isStarter(p, homeStarters) && p.injury === 'Out');
+      const awayOutKey = awayPlayers.filter(p => isStarter(p, awayStarters) && p.injury === 'Out');
 
       const homeTop8 = homePlayers.slice(0, 12).filter(p => p.stats?.pts && p.injury !== 'Out');
       const awayTop8 = awayPlayers.slice(0, 12).filter(p => p.stats?.pts && p.injury !== 'Out');
@@ -5780,14 +7230,13 @@ async function generateBackgroundAlerts() {
 
       const allTop16 = [...homeTop8, ...awayTop8];
       const allGamelogs = await Promise.all(allTop16.map(p => bgFetchGamelog(p.id)));
+      const seriesGamelogsByPlayer = isPlayoff ? await bgFetchSeriesGamelogs(game, allNormalized) : {};
 
       // 5. Process each side (skip la team gatée, garder l'adverse)
       for (const [players, mySchedule, oppSchedule, isHome] of [
         [homeTop8, homeSched, awaySched, true],
         [awayTop8, awaySched, homeSched, false],
       ]) {
-        if (isHome && homeGated) { _bgLog.push(`skip home ${game.home.short} (injury gate)`); continue; }
-        if (!isHome && awayGated) { _bgLog.push(`skip away ${game.away.short} (injury gate)`); continue; }
         const rawOpp = isHome ? game.away.short : game.home.short;
         const oppAbbr = ESPN_ABBR_NORM[rawOpp] || rawOpp;
         const startIdx = isHome ? 0 : homeTop8.length;
@@ -5797,7 +7246,23 @@ async function generateBackgroundAlerts() {
 
         for (let pi = 0; pi < players.length; pi++) {
           const player = players[pi];
-          const gamelog = allGamelogs[startIdx + pi];
+          const rsLog = allGamelogs[startIdx + pi];
+          // Fusionne les boxscores de la série PO en cours (plus récents en tête) avec le gamelog ESPN —
+          // aligné sur seriesGamelogs+mergedGamelog du frontend (BasketballDetailPage.jsx ~1593)
+          const gamelog = [...(seriesGamelogsByPlayer[String(player.id)] || []), ...rsLog];
+
+          // Filtre minutes : joueur qui joue peu (fin de banc, blessé léger) → pas d'alerte
+          { const avg = avgRecentMin(gamelog, 'min'); if (avg !== null && avg < MIN_AVG_MINUTES) { _bgLog.push(`skip ${player.name}: avg min ${avg.toFixed(1)} < ${MIN_AVG_MINUTES}`); continue; } }
+
+          // Gate Q/Doubtful : Under autorisé (minutes réduites → favorable), Over bloqué
+          const playerIsQ = Q_STATUSES.includes(player.injury) && hoursToGame <= 2.5;
+          if (playerIsQ) _bgLog.push(`${player.name}: Q himself → Under only`);
+          // Flag si un titulaire coéquipier est Q (alerte envoyée mais avertissement)
+          const myStarters = isHome ? homeStarters : awayStarters;
+          const myPlayers  = isHome ? homePlayers  : awayPlayers;
+          const teamQNames = hoursToGame <= 2.5
+            ? myPlayers.filter(p => myStarters.has(String(p.id)) && Q_STATUSES.includes(p.injury) && String(p.id) !== String(player.id)).map(p => p.name)
+            : [];
 
           // Projections périmées → pas d'alerte (comparaison par date uniquement, pas heure)
           if (lastPlayed && gamelog?.length) {
@@ -5806,47 +7271,59 @@ async function generateBackgroundAlerts() {
             if (mostRecentStr && mostRecentStr < lastPlayedStr) continue;
           }
 
+          // Redistribution minutes (joueur clé Out) → boost proportionnel, injecté dans le calcul
+          // (même point d'application que le frontend : multiplie basePts/baseReb/baseAst en amont)
+          const redistFactor = isHome ? (homeRedist[String(player.id)] ?? 1) : (awayRedist[String(player.id)] ?? 1);
+          const oppDefByPos  = isHome ? awayDefByPos : homeDefByPos;
+
           // Post-it : si la projection existe déjà ET que le dernier match de série n'a pas changé → skip le recalcul
           const lastGameStr = lastPlayed ? lastPlayed.toISOString().slice(0,10) : null;
           const existingSnap = _projectionsSnapshot[game.id]?.[String(player.id)];
           if (existingSnap && existingSnap._lastGame === lastGameStr) {
+            // Backfill tpm sur les snapshots gelés avant l'ajout du 10 juin 2026 (pts/reb/ast restent figés)
+            if (existingSnap.tpm == null) {
+              const tpmEst = computeEstimate(player, isHome, oppSchedule, mySchedule, gamelog, oppAbbr, game.date, roundStr, null, oppDefByPos, null, redistFactor);
+              if (tpmEst?.tpm != null) {
+                existingSnap.tpm = tpmEst.tpm;
+                existingSnap.deviation = { ...(existingSnap.deviation || {}), tpm: tpmEst.deviation?.tpm ?? 0 };
+                _saveSnapshot();
+              }
+            }
             // Projection gelée — utilise la valeur du post-it sans recalculer
-            const frozenEstimate = { pts: existingSnap.pts, reb: existingSnap.reb, ast: existingSnap.ast };
+            const frozenEstimate = { pts: existingSnap.pts, reb: existingSnap.reb, ast: existingSnap.ast, tpm: existingSnap.tpm };
             const bks = mergePlayerProps(scrapedPlayers, player.name, nameMatch);
             if (!bks) continue;
-            for (const stat of ['pts', 'reb', 'ast']) {
+            for (const stat of ['pts', 'reb', 'ast', 'tpm']) {
               const estVal = frozenEstimate[stat];
               if (estVal == null) continue;
               const refLine = bks.unibet?.[stat] ?? bks.winamax?.[stat] ?? null;
               if (!refLine?.line) continue;
               const std = calcStd(gamelog, stat);
-              const rawPOver = probAtLeast(estVal, std, Math.ceil(refLine.line));
-              const rawPUnder = 1 - probAtLeast(estVal, std, Math.floor(refLine.line));
+              const deviation = existingSnap.deviation?.[stat] ?? 0;
+              const rawPOver = probAtLeast(estVal, std, Math.ceil(refLine.line), stat, deviation);
+              const rawPUnder = 1 - probAtLeast(estVal, std, (Math.floor(refLine.line) + 1), stat, deviation);
               const pOver = Math.max(0, rawPOver);
               const pUnder = Math.max(0, rawPUnder);
+              const disp = displayProb(estVal, std, null, gamelog, refLine.line, stat, deviation, game.date, lastGameStr);
               const wmLine = bks.winamax?.[stat] ?? null;
               const bcLine = bks.betclic?.[stat] ?? null;
-              if (pOver >= 0.80 && hasValidOverOdds(refLine.over??null, wmLine?.over??null, bcLine?.over??null)) newAlerts.push({ ...baseAlert(player, game, isHome, stat, refLine.line, estVal), id:`${game.id}_${player.id}_${stat}_over_${refLine.line}`, direction:'over', probability:Math.round(pOver*100), unibetOdds:capOdds(refLine.over??null), winamaxOdds:capOdds(wmLine?.over??null), betclicOdds:capOdds(bcLine?.over??null) });
-              if (pUnder >= 0.80 && hasValidUnderOdds(refLine.under??null, wmLine?.under??null, bcLine?.under??null)) newAlerts.push({ ...baseAlert(player, game, isHome, stat, refLine.line, estVal), id:`${game.id}_${player.id}_${stat}_under_${refLine.line}`, direction:'under', probability:Math.round(pUnder*100), unibetOdds:capOdds(refLine.under??null), winamaxOdds:capOdds(wmLine?.under??null), betclicOdds:capOdds(bcLine?.under??null) });
+              // Snapshot : aligne .probs sur les % réellement affichés (disp) — source unique avec l'alerte
+              if (existingSnap) {
+                if (!existingSnap.probs) existingSnap.probs = {};
+                existingSnap.probs[stat] = { pOver: +((disp?.pOver ?? pOver)).toFixed(3), pUnder: +((disp?.pUnder ?? pUnder)).toFixed(3), line: refLine.line, ubOver: refLine.over??null, bcOver: bcLine?.over??null, wmOver: wmLine?.over??null, ubUnder: refLine.under??null, bcUnder: bcLine?.under??null, wmUnder: wmLine?.under??null };
+              }
+              const _frozenStarter = isHome ? isStarter(player, homeStarters) : isStarter(player, awayStarters);
+              const _frozenFloor = _frozenStarter ? NBA_ALERT_FLOOR[stat] : NBA_ALERT_FLOOR_BENCH[stat];
+              const _frozenSeasonAvg = player.stats?.[stat];
+              const _frozenEdge = Math.abs(estVal - refLine.line);
+              if (!playerIsQ && pOver >= _frozenFloor && _frozenEdge >= minEdgeFor(stat, 'over', _frozenSeasonAvg) && hasValidOverOdds(refLine.over??null, wmLine?.over??null, bcLine?.over??null)) newAlerts.push({ ...baseAlert(player, game, isHome, stat, refLine.line, estVal, teamQNames), id:`${game.id}_${player.id}_${stat}_over_${refLine.line}`, direction:'over', probability:Math.round((disp?.pOver ?? pOver)*100), unibetOdds:capOdds(refLine.over??null), winamaxOdds:capOdds(wmLine?.over??null), betclicOdds:capOdds(bcLine?.over??null) });
+              else if (!teamQNames?.length && pUnder >= _frozenFloor && _frozenEdge >= minEdgeFor(stat, 'under', _frozenSeasonAvg) && hasValidUnderOdds(refLine.under??null, wmLine?.under??null, bcLine?.under??null)) newAlerts.push({ ...baseAlert(player, game, isHome, stat, refLine.line, estVal, teamQNames), id:`${game.id}_${player.id}_${stat}_under_${refLine.line}`, direction:'under', probability:Math.round((disp?.pUnder ?? pUnder)*100), unibetOdds:capOdds(refLine.under??null), winamaxOdds:capOdds(wmLine?.under??null), betclicOdds:capOdds(bcLine?.under??null), ...(playerIsQ?{playerIsQ:true}:{}) });
             }
             continue;
           }
 
-          const advData = Object.entries(leagueAdv).find(([n]) => n === player.name || n.toLowerCase() === player.name.toLowerCase());
-          const extra = {
-            usg:      advData?.[1]?.usg ?? null,
-            defByPos: isHome ? awayDefByPos : homeDefByPos,
-          };
-          const estimate = computeEstimate(player, isHome, oppSchedule, mySchedule, gamelog, oppAbbr, game.date, roundStr, null, extra);
+          const estimate = computeEstimate(player, isHome, oppSchedule, mySchedule, gamelog, oppAbbr, game.date, roundStr, null, oppDefByPos, null, redistFactor);
           if (!estimate) continue;
-
-          // Redistribution minutes (joueur clé Out) → boost proportionnel
-          const redistFactor = isHome ? (homeRedist[String(player.id)] ?? 1) : (awayRedist[String(player.id)] ?? 1);
-          if (redistFactor > 1) {
-            if (estimate.pts != null) estimate.pts = +(estimate.pts * redistFactor).toFixed(1);
-            if (estimate.reb != null) estimate.reb = +(estimate.reb * redistFactor).toFixed(1);
-            if (estimate.ast != null) estimate.ast = +(estimate.ast * redistFactor).toFixed(1);
-          }
 
           // Snapshot : écrit le post-it UNE FOIS (ou si nouveau match de série joué)
           if (new Date(game.date) > Date.now()) {
@@ -5857,6 +7334,8 @@ async function generateBackgroundAlerts() {
               pts:  estimate.pts,
               reb:  estimate.reb,
               ast:  estimate.ast,
+              tpm:  estimate.tpm,
+              deviation: estimate.deviation,
               _lastGame: lastGameStr, // date du dernier match de série → permet de détecter quand recalculer
             };
             _saveSnapshot();
@@ -5865,7 +7344,7 @@ async function generateBackgroundAlerts() {
           const bks = mergePlayerProps(scrapedPlayers, player.name, nameMatch);
           if (!bks) continue;
 
-          for (const stat of ['pts', 'reb', 'ast']) {
+          for (const stat of ['pts', 'reb', 'ast', 'tpm']) {
             const estVal = estimate[stat];
             if (estVal == null) continue;
             const refLine = bks.unibet?.[stat] ?? bks.winamax?.[stat] ?? null;
@@ -5878,8 +7357,9 @@ async function generateBackgroundAlerts() {
               _bgLog.push(`block Under ${player.name} ${stat}: line ${refLine.line} vs avg ${seasonAvgStat} (+${Math.round((refLine.line/seasonAvgStat-1)*100)}%)`);
               // On n'envoie pas d'alerte Under dans ce cas — continuer avec Over seulement
             }
-            const rawPOver  = probAtLeast(estVal, std, Math.ceil(refLine.line));
-            const rawPUnder = 1 - probAtLeast(estVal, std, Math.floor(refLine.line));
+            const deviation = estimate.deviation?.[stat] ?? 0;
+            const rawPOver  = probAtLeast(estVal, std, Math.ceil(refLine.line), stat, deviation);
+            const rawPUnder = 1 - probAtLeast(estVal, std, (Math.floor(refLine.line) + 1), stat, deviation);
             // Fix 1+6 : minutes très variables → pénalité -8% sur toutes les stats
             const minVarianceAdj = (() => {
               const mins = (gamelog || []).slice(0, 8).map(g => g.min).filter(m => m > 0);
@@ -5892,6 +7372,7 @@ async function generateBackgroundAlerts() {
             const pUnder = seasonAvgStat && refLine.line > seasonAvgStat * 1.30
               ? 0  // bloqué
               : Math.max(0, rawPUnder + minVarianceAdj);
+            const disp = displayProb(estVal, std, null, gamelog, refLine.line, stat, deviation, game.date, lastGameStr);
 
             const wmLine = bks.winamax?.[stat] ?? null;
             const bcLine = bks.betclic?.[stat] ?? null;
@@ -5904,6 +7385,8 @@ async function generateBackgroundAlerts() {
               eventId:      game.id,
               homeTeam:     game.home.name,
               awayTeam:     game.away.name,
+              homeShort:    game.home.short,
+              awayShort:    game.away.short,
               stat,
               line:         refLine.line,
               estimate:     estVal,
@@ -5912,29 +7395,37 @@ async function generateBackgroundAlerts() {
               winamaxLine:  wmLine?.line ?? null,
               betclicLine:  bcLine?.line ?? null,
               injury:       player.injury || null,
+              ...(teamQNames?.length ? { teamHasQ: teamQNames } : {}),
+              ...(playerIsQ ? { playerIsQ: true } : {}),
               savedAt:      Date.now(),
             };
             // Bloquer Under si L2 propres (min≥15) sont toutes > ligne (joueur en feu)
             // Save prob dans snapshot NBA
             if (!_projectionsSnapshot[game.id]) _projectionsSnapshot[game.id] = {};
-            const _sn = _projectionsSnapshot[game.id][String(player.id)] || { name: player.name, team: isHome ? game.home.short : game.away.short, pts: estimate.pts, reb: estimate.reb, ast: estimate.ast };
+            const _sn = _projectionsSnapshot[game.id][String(player.id)] || { name: player.name, team: isHome ? game.home.short : game.away.short, pts: estimate.pts, reb: estimate.reb, ast: estimate.ast, tpm: estimate.tpm, deviation: estimate.deviation };
             if (!_sn.probs) _sn.probs = {};
-            _sn.probs[stat] = { pOver: +pOver.toFixed(3), pUnder: +pUnder.toFixed(3), line: refLine.line, ubOver: refLine.over??null, bcOver: bcLine?.over??null, wmOver: wmLine?.over??null, ubUnder: refLine.under??null, bcUnder: bcLine?.under??null, wmUnder: wmLine?.under??null };
+            _sn.probs[stat] = { pOver: +((disp?.pOver ?? pOver)).toFixed(3), pUnder: +((disp?.pUnder ?? pUnder)).toFixed(3), line: refLine.line, ubOver: refLine.over??null, bcOver: bcLine?.over??null, wmOver: wmLine?.over??null, ubUnder: refLine.under??null, bcUnder: bcLine?.under??null, wmUnder: wmLine?.under??null };
             _projectionsSnapshot[game.id][String(player.id)] = _sn;
 
             const l2CleanNba = (gamelog || []).filter(g => (g.min ?? 0) >= 15 && g[stat] != null).slice(0, 2);
             const l2AboveLineNba = l2CleanNba.length >= 2 && l2CleanNba.every(g => g[stat] > refLine.line);
-            if (pOver  >= 0.85 && hasValidOverOdds(refLine.over??null, wmLine?.over??null, bcLine?.over??null)) newAlerts.push({ ...baseAlert, id: `${game.id}_${player.id}_${stat}_over_${refLine.line}`,  direction: 'over',  probability: Math.round(pOver  * 100), unibetOdds: capOdds(refLine.over  ?? null), winamaxOdds: capOdds(wmLine?.over  ?? null), betclicOdds: capOdds(bcLine?.over  ?? null) });
-            if (pUnder >= 0.85 && !l2AboveLineNba && hasValidUnderOdds(refLine.under??null, wmLine?.under??null, bcLine?.under??null)) newAlerts.push({ ...baseAlert, id: `${game.id}_${player.id}_${stat}_under_${refLine.line}`, direction: 'under', probability: Math.round(pUnder * 100), unibetOdds: capOdds(refLine.under ?? null), winamaxOdds: capOdds(wmLine?.under ?? null), betclicOdds: capOdds(bcLine?.under ?? null) });
-            else if (pUnder >= 0.85 && l2AboveLineNba) _bgLog.push(`block Under ${player.name} ${stat}: L2 both above line ${refLine.line}`);
+            const _nbaIsStarter = isHome ? isStarter(player, homeStarters) : isStarter(player, awayStarters);
+            const _nbaFloor = _nbaIsStarter ? NBA_ALERT_FLOOR[stat] : NBA_ALERT_FLOOR_BENCH[stat];
+            const _nbaEdge = Math.abs(estVal - refLine.line);
+            if (!playerIsQ && pOver  >= _nbaFloor && _nbaEdge >= minEdgeFor(stat, 'over', seasonAvgStat) && hasValidOverOdds(refLine.over??null, wmLine?.over??null, bcLine?.over??null)) newAlerts.push({ ...baseAlert, id: `${game.id}_${player.id}_${stat}_over_${refLine.line}`,  direction: 'over',  probability: Math.round((disp?.pOver ?? pOver) * 100), unibetOdds: capOdds(refLine.over  ?? null), winamaxOdds: capOdds(wmLine?.over  ?? null), betclicOdds: capOdds(bcLine?.over  ?? null) });
+            if (teamQNames?.length > 0) { _bgLog.push(`block Under ${player.name} ${stat}: teammate Q (${teamQNames.join(', ')}) → redistrib risk`); }
+            else if (pUnder >= _nbaFloor && !l2AboveLineNba && _nbaEdge >= minEdgeFor(stat, 'under', seasonAvgStat) && hasValidUnderOdds(refLine.under??null, wmLine?.under??null, bcLine?.under??null)) newAlerts.push({ ...baseAlert, id: `${game.id}_${player.id}_${stat}_under_${refLine.line}`, direction: 'under', probability: Math.round((disp?.pUnder ?? pUnder) * 100), unibetOdds: capOdds(refLine.under ?? null), winamaxOdds: capOdds(wmLine?.under ?? null), betclicOdds: capOdds(bcLine?.under ?? null) });
+            else if (pUnder >= _nbaFloor && l2AboveLineNba) _bgLog.push(`block Under ${player.name} ${stat}: L2 both above line ${refLine.line}`);
+            else if (pUnder >= _nbaFloor && _nbaEdge < minEdgeFor(stat, 'under', seasonAvgStat)) _bgLog.push(`block Under ${player.name} ${stat}: edge ${_nbaEdge.toFixed(1)} < ${minEdgeFor(stat, 'under', seasonAvgStat)}`);
           }
         }
       }
     }
 
     // ── WNBA ── same logic, WNBA-specific helpers + scale ─────────────────────
+    // i=-10..-1 : retrouve le dernier match FINAL d'une série → gel des projections (même fix que NBA)
     const wnbaEvents = [];
-    for (let i = 0; i <= 2; i++) {
+    for (let i = -10; i <= 2; i++) {
       const dateStr = new Date(Date.now() + i * 86400000).toISOString().slice(0, 10).replace(/-/g, '');
       const r = await fetch(`${ESPN_WNBA_SB}?dates=${dateStr}&limit=50`).catch(() => null);
       if (r?.ok) wnbaEvents.push(...((await r.json()).events || []));
@@ -5960,6 +7451,17 @@ async function generateBackgroundAlerts() {
     const scaleGames = (gs, factor) => gs.map(g => g.ptsScored != null
       ? { ...g, ptsScored: +(g.ptsScored * factor).toFixed(1), ptsAllowed: +(g.ptsAllowed * factor).toFixed(1) }
       : g);
+
+    // Défense par poste WNBA — une fois pour tous les matchs (cache 6h)
+    const wnbaDefData = await getWNBADefByPos().catch(() => ({ teamDefByPosById: {}, leagueAvg: {} }));
+
+    // Fetch WNBA injuries une fois pour tous les matchs
+    const wnbaInjuries = await fetchRotoWireWNBAInjuries().catch(() => ({}));
+    const Q_STATUSES_WNBA = ['Questionable', 'GTD', 'Doubtful', 'Day-To-Day'];
+    const applyWNBAInjury = (player) => {
+      const inj = Object.entries(wnbaInjuries).find(([n]) => n === player.name || n.toLowerCase() === player.name.toLowerCase());
+      return inj ? { ...player, injury: inj[1].status } : player;
+    };
 
     for (const game of wnbaGamesNext) {
       const homeId = ESPN_WNBA_MAP[game.home.name];
@@ -5991,10 +7493,31 @@ async function generateBackgroundAlerts() {
       const homeScaled = scaleGames(homeSched, WNBA_SCALE);
       const awayScaled = scaleGames(awaySched, WNBA_SCALE);
 
-      const wnbaHomeTop8 = homePlayers.slice(0, 12).filter(p => p.stats?.pts);
-      const wnbaAwayTop8 = awayPlayers.slice(0, 12).filter(p => p.stats?.pts);
+      const homePatch = homePlayers.map(applyWNBAInjury);
+      const awayPatch = awayPlayers.map(applyWNBAInjury);
+      const wnbaHomeTop8 = homePatch.slice(0, 12).filter(p => p.stats?.pts);
+      const wnbaAwayTop8 = awayPatch.slice(0, 12).filter(p => p.stats?.pts);
+      const homeStartersWNBA = new Set([...homePatch].sort((a,b)=>(b.stats?.pts||0)-(a.stats?.pts||0)).slice(0,5).map(p=>String(p.id)));
+      const awayStartersWNBA = new Set([...awayPatch].sort((a,b)=>(b.stats?.pts||0)-(a.stats?.pts||0)).slice(0,5).map(p=>String(p.id)));
+
+      // Redistribution des minutes si titulaire confirmé Out — toujours actif en WNBA
+      // (rosters à 12 joueurs : l'absence d'un titulaire pèse plus qu'en NBA, pas besoin d'attendre les playoffs)
+      const wnbaHomeOut = homePatch.filter(p => homeStartersWNBA.has(String(p.id)) && p.injury === 'Out');
+      const wnbaAwayOut = awayPatch.filter(p => awayStartersWNBA.has(String(p.id)) && p.injury === 'Out');
+      const homeRedistWNBA = computeRedist(wnbaHomeOut, wnbaHomeTop8.filter(p => p.injury !== 'Out'));
+      const awayRedistWNBA = computeRedist(wnbaAwayOut, wnbaAwayTop8.filter(p => p.injury !== 'Out'));
+      if (wnbaHomeOut.length || wnbaAwayOut.length) {
+        _bgLog.push(`wnba redist ${game.home.short}v${game.away.short}: Out=${[...wnbaHomeOut,...wnbaAwayOut].map(p=>p.name).join(',')}`);
+      }
+
       const allWnba16 = [...wnbaHomeTop8, ...wnbaAwayTop8];
       const allWnbaGamelogs = await Promise.all(allWnba16.map(p => bgFetchWNBAGamelog(p.id)));
+
+      // Défense par poste de chacune des deux équipes (null si données insuffisantes → fallback getDefFactor)
+      const homeDefByPosWNBA = wnbaDefData.teamDefByPosById[homeId]
+        ? { ...wnbaDefData.teamDefByPosById[homeId], _leagueAvg: wnbaDefData.leagueAvg } : null;
+      const awayDefByPosWNBA = wnbaDefData.teamDefByPosById[awayId]
+        ? { ...wnbaDefData.teamDefByPosById[awayId], _leagueAvg: wnbaDefData.leagueAvg } : null;
 
       const hoursToGame = (new Date(game.date).getTime() - Date.now()) / 3600000;
 
@@ -6010,29 +7533,60 @@ async function generateBackgroundAlerts() {
           const gamelog = allWnbaGamelogs[startIdx + pi];
           const lastGlDate = gamelog?.[0]?.date?.slice(0,10) ?? null;
 
+          // Filtre minutes WNBA
+          { const avg = avgRecentMin(gamelog, 'min'); if (avg !== null && avg < MIN_AVG_MINUTES) { _bgLog.push(`skip wnba ${player.name}: avg min ${avg.toFixed(1)}`); continue; } }
+
+          // Per-player Q gate WNBA : Under autorisé, Over bloqué
+          const playerIsQWNBA = Q_STATUSES_WNBA.includes(player.injury) && hoursToGame <= 2.5;
+          if (playerIsQWNBA) _bgLog.push(`wnba ${player.name}: Q herself → Under only`);
+          const myStartersWNBA = isHome ? homeStartersWNBA : awayStartersWNBA;
+          const myPlayersWNBA  = isHome ? homePatch : awayPatch;
+          const teamQNamesWNBA = hoursToGame <= 2.5 ? myPlayersWNBA.filter(p => myStartersWNBA.has(String(p.id)) && Q_STATUSES_WNBA.includes(p.injury) && String(p.id) !== String(player.id)).map(p => p.name) : [];
+          const redistFactorWNBA = isHome ? (homeRedistWNBA[String(player.id)] ?? 1) : (awayRedistWNBA[String(player.id)] ?? 1);
+          const oppDefByPosWNBA = isHome ? awayDefByPosWNBA : homeDefByPosWNBA;
+
           // Post-it WNBA : gel si dernier match du joueur n'a pas changé
           if (new Date(game.date) > Date.now()) {
             const snap = _projectionsSnapshot[game.id]?.[String(player.id)];
             if (snap && snap._lastGame === lastGlDate && snap.pts != null) {
+              // Backfill tpm sur les snapshots gelés avant l'ajout du 10 juin 2026 (pts/reb/ast restent figés)
+              if (snap.tpm == null) {
+                const tpmEst = computeEstimate(player, isHome, oppScaled, myScaled, gamelog, oppAbbr, game.date, '', null, oppDefByPosWNBA, null, redistFactorWNBA, true);
+                if (tpmEst?.tpm != null) {
+                  snap.tpm = tpmEst.tpm;
+                  snap.deviation = { ...(snap.deviation || {}), tpm: tpmEst.deviation?.tpm ?? 0 };
+                  _saveSnapshot();
+                }
+              }
               const bks = mergePlayerProps(scrapedPlayers, player.name, nameMatch);
               if (bks) {
-                for (const stat of ['pts','reb','ast']) {
+                for (const stat of ['pts','reb','ast','tpm']) {
                   const estVal = snap[stat]; if (estVal == null) continue;
                   const refLine = bks.unibet?.[stat] ?? bks.winamax?.[stat] ?? null; if (!refLine?.line) continue;
-                  const std = calcStd(gamelog, stat) ?? (stat==='pts'?6:stat==='reb'?2.5:1.5);
-                  const pOver = Math.max(0, probAtLeast(estVal, std, Math.ceil(refLine.line)));
-                  const pUnder = Math.max(0, 1-probAtLeast(estVal, std, Math.floor(refLine.line)));
+                  const std = calcStd(gamelog, stat) ?? (stat==='pts'?6:stat==='reb'?2.5:stat==='tpm'?1.2:1.5);
+                  const pOver = Math.max(0, probAtLeast(estVal, std, Math.ceil(refLine.line), stat, 0, true));
+                  const pUnder = Math.max(0, 1-probAtLeast(estVal, std, (Math.floor(refLine.line) + 1), stat, 0, true));
+                  const disp = displayProb(estVal, std, null, gamelog, refLine.line, stat, 0, game.date, lastGlDate, true);
                   const wmLine = bks.winamax?.[stat]??null; const bcLine = bks.betclic?.[stat]??null;
-                  const base = { type:'player_prop', league:'wnba', home:game.home.name, away:game.away.name, homeShort:game.home.short, awayShort:game.away.short, homeTeam:game.home.name, awayTeam:game.away.name, player:player.name, team:isHome?game.home.short:game.away.short, fixture:`${game.home.short} vs ${game.away.short}`, round:'', fixtureDate:game.date, stat, line:refLine.line, estimate:estVal, pinnacleOdds:null, injury:player.injury||null, savedAt:Date.now() };
-                  if (pOver>=0.80 && hasValidOverOdds(refLine.over??null,wmLine?.over??null,bcLine?.over??null)) newAlerts.push({...base, id:`${game.id}_${player.id}_${stat}_over_${refLine.line}`, direction:'over', probability:Math.round(pOver*100), unibetOdds:capOdds(refLine.over??null), winamaxOdds:capOdds(wmLine?.over??null), betclicOdds:capOdds(bcLine?.over??null)});
-                  if (pUnder>=0.80 && hasValidUnderOdds(refLine.under??null,wmLine?.under??null,bcLine?.under??null)) newAlerts.push({...base, id:`${game.id}_${player.id}_${stat}_under_${refLine.line}`, direction:'under', probability:Math.round(pUnder*100), unibetOdds:capOdds(refLine.under??null), winamaxOdds:capOdds(wmLine?.under??null), betclicOdds:capOdds(bcLine?.under??null)});
+                  // Snapshot : aligne .probs sur les % réellement affichés (disp) — source unique avec l'alerte
+                  if (snap) {
+                    if (!snap.probs) snap.probs = {};
+                    snap.probs[stat] = { pOver: +((disp?.pOver ?? pOver)).toFixed(3), pUnder: +((disp?.pUnder ?? pUnder)).toFixed(3), line: refLine.line, ubOver: refLine.over??null, bcOver: bcLine?.over??null, wmOver: wmLine?.over??null, ubUnder: refLine.under??null, bcUnder: bcLine?.under??null, wmUnder: wmLine?.under??null };
+                  }
+                  const base = { type:'player_prop', league:'wnba', eventId:game.id, home:game.home.name, away:game.away.name, homeShort:game.home.short, awayShort:game.away.short, homeTeam:game.home.name, awayTeam:game.away.name, player:player.name, team:isHome?game.home.short:game.away.short, fixture:`${game.home.short} vs ${game.away.short}`, round:'', fixtureDate:game.date, stat, line:refLine.line, estimate:estVal, pinnacleOdds:null, injury:player.injury||null, ...(teamQNamesWNBA?.length?{teamHasQ:teamQNamesWNBA}:{}), ...(playerIsQWNBA?{playerIsQ:true}:{}), savedAt:Date.now() };
+                  const _wnbaFrozenStarter = myStartersWNBA.has(String(player.id));
+                  const _wnbaFrozenFloor = _wnbaFrozenStarter ? WNBA_ALERT_FLOOR[stat] : WNBA_ALERT_FLOOR_BENCH[stat];
+                  const _wnbaFrozenSeasonAvg = player.stats?.[stat];
+                  const _wnbaFrozenEdge = Math.abs(estVal - refLine.line);
+                  if (!playerIsQWNBA && pOver>=_wnbaFrozenFloor && _wnbaFrozenEdge >= minEdgeFor(stat, 'over', _wnbaFrozenSeasonAvg) && hasValidOverOdds(refLine.over??null,wmLine?.over??null,bcLine?.over??null)) newAlerts.push({...base, id:`${game.id}_${player.id}_${stat}_over_${refLine.line}`, direction:'over', probability:Math.round((disp?.pOver ?? pOver)*100), unibetOdds:capOdds(refLine.over??null), winamaxOdds:capOdds(wmLine?.over??null), betclicOdds:capOdds(bcLine?.over??null)});
+                  else if (!teamQNamesWNBA?.length && pUnder>=_wnbaFrozenFloor && _wnbaFrozenEdge >= minEdgeFor(stat, 'under', _wnbaFrozenSeasonAvg) && hasValidUnderOdds(refLine.under??null,wmLine?.under??null,bcLine?.under??null)) newAlerts.push({...base, id:`${game.id}_${player.id}_${stat}_under_${refLine.line}`, direction:'under', probability:Math.round((disp?.pUnder ?? pUnder)*100), unibetOdds:capOdds(refLine.under??null), winamaxOdds:capOdds(wmLine?.under??null), betclicOdds:capOdds(bcLine?.under??null)});
                 }
               }
               continue;
             }
           }
 
-          const estimate = computeEstimate(player, isHome, oppScaled, myScaled, gamelog, oppAbbr, game.date, '', null, {}, null, true);
+          const estimate = computeEstimate(player, isHome, oppScaled, myScaled, gamelog, oppAbbr, game.date, '', null, oppDefByPosWNBA, null, redistFactorWNBA, true);
           if (!estimate) continue;
 
           if (new Date(game.date) > Date.now()) {
@@ -6043,6 +7597,8 @@ async function generateBackgroundAlerts() {
               pts:  estimate.pts,
               reb:  estimate.reb,
               ast:  estimate.ast,
+              tpm:  estimate.tpm,
+              deviation: estimate.deviation,
               _lastGame: lastGlDate,
             };
             _saveSnapshot();
@@ -6051,17 +7607,18 @@ async function generateBackgroundAlerts() {
           const bks = mergePlayerProps(scrapedPlayers, player.name, nameMatch);
           if (!bks) continue;
 
-          for (const stat of ['pts', 'reb', 'ast']) {
+          for (const stat of ['pts', 'reb', 'ast', 'tpm']) {
             const estVal = estimate[stat];
             if (estVal == null) continue;
             const refLine = bks.unibet?.[stat] ?? bks.winamax?.[stat] ?? null;
             if (!refLine?.line) continue;
 
             const rawStd = calcStd(gamelog, stat);
-            const fallbackStd = !rawStd ? (stat === 'pts' ? 6.0 : stat === 'reb' ? 2.5 : 1.5) : null;
+            const fallbackStd = !rawStd ? (stat === 'pts' ? 6.0 : stat === 'reb' ? 2.5 : stat === 'tpm' ? 1.2 : 1.5) : null;
             const std    = rawStd ?? fallbackStd;
-            const rawPOver  = probAtLeast(estVal, std, Math.ceil(refLine.line));
-            const rawPUnder = 1 - probAtLeast(estVal, std, Math.floor(refLine.line));
+            const deviation = estimate.deviation?.[stat] ?? 0;
+            const rawPOver  = probAtLeast(estVal, std, Math.ceil(refLine.line), stat, deviation, true);
+            const rawPUnder = 1 - probAtLeast(estVal, std, (Math.floor(refLine.line) + 1), stat, deviation, true);
             // Fix 1+6 : minutes très variables → pénalité -8% sur toutes les stats
             const minVarianceAdj = (() => {
               const mins = (gamelog || []).slice(0, 8).map(g => g.min).filter(m => m > 0);
@@ -6073,9 +7630,18 @@ async function generateBackgroundAlerts() {
             const MAX_WNBA_P = 0.92; // plafond props WNBA
             const pOver  = Math.max(0, Math.min(MAX_WNBA_P, rawPOver)  + minVarianceAdj);
             const pUnder = Math.max(0, Math.min(MAX_WNBA_P, rawPUnder) + minVarianceAdj);
+            const disp = displayProb(estVal, rawStd, fallbackStd, gamelog, refLine.line, stat, deviation, game.date, lastGlDate, true);
 
             const wmLine = bks.winamax?.[stat] ?? null;
             const bcLine = bks.betclic?.[stat] ?? null;
+            // Snapshot : aligne .probs sur les % réellement affichés (disp) — source unique avec l'alerte
+            {
+              const _swn = _projectionsSnapshot[game.id]?.[String(player.id)];
+              if (_swn) {
+                if (!_swn.probs) _swn.probs = {};
+                _swn.probs[stat] = { pOver: +((disp?.pOver ?? pOver)).toFixed(3), pUnder: +((disp?.pUnder ?? pUnder)).toFixed(3), line: refLine.line, ubOver: refLine.over??null, bcOver: bcLine?.over??null, wmOver: wmLine?.over??null, ubUnder: refLine.under??null, bcUnder: bcLine?.under??null, wmUnder: wmLine?.under??null };
+              }
+            }
             const baseAlert = {
               player:       player.name,
               team:         isHome ? game.home.short : game.away.short,
@@ -6085,6 +7651,8 @@ async function generateBackgroundAlerts() {
               eventId:      game.id,
               homeTeam:     game.home.name,
               awayTeam:     game.away.name,
+              homeShort:    game.home.short,
+              awayShort:    game.away.short,
               league:       'wnba',
               stat,
               line:         refLine.line,
@@ -6094,18 +7662,117 @@ async function generateBackgroundAlerts() {
               winamaxLine:  wmLine?.line ?? null,
               betclicLine:  bcLine?.line ?? null,
               injury:       player.injury || null,
+              ...(teamQNamesWNBA?.length ? { teamHasQ: teamQNamesWNBA } : {}),
+              ...(playerIsQWNBA ? { playerIsQ: true } : {}),
               savedAt:      Date.now(),
             };
             // Bloquer Under si L2 propres (min≥15) sont toutes > ligne (joueur en feu)
             const l2Clean = (gamelog || []).filter(g => (g.min ?? 0) >= 15 && g[stat] != null).slice(0, 2);
             const l2AboveLine = l2Clean.length >= 2 && l2Clean.every(g => g[stat] > refLine.line);
-            const alertFloor = 0.80;
+            const _wnbaIsStarter = myStartersWNBA.has(String(player.id));
+            const alertFloor = _wnbaIsStarter ? WNBA_ALERT_FLOOR[stat] : WNBA_ALERT_FLOOR_BENCH[stat];
+            const _wnbaSeasonAvg = player.stats?.[stat];
+            const _wnbaEdge = Math.abs(estVal - refLine.line);
             _bgLog.push(`wnba dbg ${player.name} ${stat}: est=${estVal?.toFixed(1)} line=${refLine.line} std=${std?.toFixed(1)} pOver=${Math.round(rawPOver*100)}% pUnder=${Math.round(rawPUnder*100)}% adj=${minVarianceAdj}`);
-            if (pOver  >= alertFloor && hasValidOverOdds(refLine.over??null, wmLine?.over??null, bcLine?.over??null)) newAlerts.push({ ...baseAlert, id: `${game.id}_${player.id}_${stat}_over_${refLine.line}`,  direction: 'over',  probability: Math.round(pOver  * 100), unibetOdds: capOdds(refLine.over  ?? null), winamaxOdds: capOdds(wmLine?.over  ?? null), betclicOdds: capOdds(bcLine?.over  ?? null) });
-            if (pUnder >= alertFloor && !l2AboveLine && hasValidUnderOdds(refLine.under??null, wmLine?.under??null, bcLine?.under??null)) newAlerts.push({ ...baseAlert, id: `${game.id}_${player.id}_${stat}_under_${refLine.line}`, direction: 'under', probability: Math.round(pUnder * 100), unibetOdds: capOdds(refLine.under ?? null), winamaxOdds: capOdds(wmLine?.under ?? null), betclicOdds: capOdds(bcLine?.under ?? null) });
+            if (!playerIsQWNBA && pOver  >= alertFloor && _wnbaEdge >= minEdgeFor(stat, 'over', _wnbaSeasonAvg) && hasValidOverOdds(refLine.over??null, wmLine?.over??null, bcLine?.over??null)) newAlerts.push({ ...baseAlert, id: `${game.id}_${player.id}_${stat}_over_${refLine.line}`,  direction: 'over',  probability: Math.round((disp?.pOver ?? pOver) * 100), unibetOdds: capOdds(refLine.over  ?? null), winamaxOdds: capOdds(wmLine?.over  ?? null), betclicOdds: capOdds(bcLine?.over  ?? null) });
+            if (teamQNamesWNBA?.length > 0) { _bgLog.push(`block Under ${player.name} ${stat}: wnba teammate Q (${teamQNamesWNBA.join(', ')}) → redistrib risk`); }
+            else if (pUnder >= alertFloor && !l2AboveLine && _wnbaEdge >= minEdgeFor(stat, 'under', _wnbaSeasonAvg) && hasValidUnderOdds(refLine.under??null, wmLine?.under??null, bcLine?.under??null)) newAlerts.push({ ...baseAlert, id: `${game.id}_${player.id}_${stat}_under_${refLine.line}`, direction: 'under', probability: Math.round((disp?.pUnder ?? pUnder) * 100), unibetOdds: capOdds(refLine.under ?? null), winamaxOdds: capOdds(wmLine?.under ?? null), betclicOdds: capOdds(bcLine?.under ?? null) });
             else if (pUnder >= alertFloor && l2AboveLine) _bgLog.push(`block Under ${player.name} ${stat}: L2 both above line ${refLine.line}`);
+            else if (pUnder >= alertFloor && _wnbaEdge < minEdgeFor(stat, 'under', _wnbaSeasonAvg)) _bgLog.push(`block Under ${player.name} ${stat}: edge ${_wnbaEdge.toFixed(1)} < ${minEdgeFor(stat, 'under', _wnbaSeasonAvg)}`);
           }
         }
+      }
+    }
+
+    // 4a-bis. NBA + WNBA — Game Total O/U alerts
+    // Étape 1 (filtre rapide) : modèle simple homeExp/awayExp vs ligue, edge ≥ 5% (NBA/WNBA)
+    // Étape 2 (si étape 1 passe) : modèle complet (pace matchup, momentum, repos, densité,
+    // facteur playoffs, ancre historique) → alerte si P(over) ou P(under) ≥ TOTAL_ALERT_PROB (80%)
+    const NBA_TOTAL_LEAGUE_AVG  = 114.5; // pts/équipe saison régulière NBA
+    const WNBA_TOTAL_LEAGUE_AVG = 82.0;                   // ~82 pts/équipe
+    const NBA_TOTAL_GAME_AVG    = 229.0;
+    const WNBA_TOTAL_GAME_AVG   = 174.0;
+    const NBA_TOTAL_EDGE  = 0.05;
+    const WNBA_TOTAL_EDGE = 0.05;
+
+    for (const [games, isWNBA] of [[upcoming, false], [wnbaGamesNext, true]]) {
+      const leagueAvg   = isWNBA ? WNBA_TOTAL_LEAGUE_AVG : NBA_TOTAL_LEAGUE_AVG;
+      const gameAvg     = isWNBA ? WNBA_TOTAL_GAME_AVG : NBA_TOTAL_GAME_AVG;
+      const edgeMin     = isWNBA ? WNBA_TOTAL_EDGE : NBA_TOTAL_EDGE;
+      const leagueKey   = isWNBA ? 'wnba' : 'nba';
+      const mapFn       = isWNBA ? (n => ESPN_WNBA_MAP[n]) : (n => ESPN_NBA_MAP[n]);
+      const schedFn     = isWNBA ? bgFetchWNBASchedule : bgFetchSchedule;
+      const rosterFn    = isWNBA ? bgFetchWNBARoster : bgFetchRoster;
+
+      for (const game of games) {
+        try {
+          const homeId = mapFn(game.home.name);
+          const awayId = mapFn(game.away.name);
+          if (!homeId || !awayId) { _bgLog.push(`${leagueKey} total skip ${game.home.short}v${game.away.short}: no ESPN id`); continue; }
+
+          const [homeSched, awaySched] = await Promise.all([schedFn(homeId), schedFn(awayId)]);
+          if (homeSched.length < 4 || awaySched.length < 4) { _bgLog.push(`${leagueKey} total skip ${game.home.short}v${game.away.short}: sched too short (${homeSched.length}/${awaySched.length})`); continue; }
+
+          const homeOff = calcEWAbg(homeSched, 'ptsScored',  8);
+          const awayOff = calcEWAbg(awaySched, 'ptsScored',  8);
+          const homeDef = calcEWAbg(homeSched, 'ptsAllowed', 8);
+          const awayDef = calcEWAbg(awaySched, 'ptsAllowed', 8);
+          if (!homeOff || !awayOff || !homeDef || !awayDef) { _bgLog.push(`${leagueKey} total skip ${game.home.short}v${game.away.short}: null EWA (off=${homeOff}/${awayOff} def=${homeDef}/${awayDef})`); continue; }
+
+          const quickEstimated = homeOff * (awayDef / leagueAvg) + awayOff * (homeDef / leagueAvg);
+
+          const oddsKey = `bball_odds_${leagueKey}_${game.home.name}_${game.away.name}`;
+          const oddsData = _espnCache[oddsKey]?.data;
+          const bks = oddsData?.markets?.totals?.bookmakers || {};
+          const refBk = ['unibet', 'betclic', 'winamax'].find(b => bks[b]?.line);
+          if (!refBk) { _bgLog.push(`${leagueKey} total skip ${game.home.short}v${game.away.short}: no odds (key=${oddsKey}, cached=${!!_espnCache[oddsKey]})`); continue; }
+          const line = bks[refBk].line;
+
+          const quickPct = Math.abs(quickEstimated - line) / line;
+          if (quickPct < edgeMin) { _bgLog.push(`${leagueKey} total skip ${game.home.short}v${game.away.short}: edge ${(quickPct*100).toFixed(1)}% < ${edgeMin*100}%`); continue; }
+
+          // Étape 2 : modèle complet (pace, momentum, repos, densité, playoffs, ancre historique)
+          // Heuristique playoffs NBA = avril-juin (pas de champ .round sur les jeux ESPN NBA/WNBA).
+          // WNBA : playoffs en sept-oct, hors saison actuelle → toujours 'régulière'.
+          const gameMonth  = new Date(game.date).getMonth() + 1;
+          const inPlayoffs = !isWNBA && gameMonth >= 4 && gameMonth <= 6;
+          const full = computeGameTotalFull({
+            homeGames: homeSched, awayGames: awaySched,
+            avgPtsAllowed: leagueAvg, ouBaseline: gameAvg,
+            gameDate: game.date, round: inPlayoffs ? 'game' : '', refTotal: line, isWNBA,
+          });
+          if (!full) { _bgLog.push(`${leagueKey} total skip ${game.home.short}v${game.away.short}: full model null`); continue; }
+
+          const bestP = Math.max(full.pOver ?? 0, full.pUnder ?? 0);
+          if (bestP < TOTAL_ALERT_PROB) { _bgLog.push(`${leagueKey} total skip ${game.home.short}v${game.away.short}: prob ${(bestP*100).toFixed(1)}% < ${TOTAL_ALERT_PROB*100}% (est=${full.estimated} line=${line})`); continue; }
+
+          // Filtre joueur clé (≥15 pts/match) Q/GTD en playoffs, ≤2h30 du tip-off
+          const hoursToTip = (new Date(game.date).getTime() - Date.now()) / 3600000;
+          if (inPlayoffs && hoursToTip <= 2.5) {
+            const [homePlayers, awayPlayers] = await Promise.all([rosterFn(homeId), rosterFn(awayId)]);
+            const hasKeyQ = [...homePlayers, ...awayPlayers].some(p => (p.stats?.pts ?? 0) >= 15 && Q_STATUSES_TOTAL.includes(p.injury));
+            if (hasKeyQ) { _bgLog.push(`${leagueKey} total skip ${game.home.short}v${game.away.short}: key player Q/GTD ≤2h30`); continue; }
+          }
+
+          const direction = full.direction;
+          const alertId   = `${game.id}_${leagueKey}_total`;
+          if (newAlerts.find(a => a.id === alertId)) continue;
+          newAlerts.push({
+            id: alertId, type: 'game_total', league: leagueKey,
+            eventId: game.id,
+            home: game.home.name, away: game.away.name,
+            homeShort: game.home.short, awayShort: game.away.short,
+            date: game.date,
+            estimated: full.estimated, line, direction,
+            edge: +Math.abs(full.edge).toFixed(1),
+            prob: +(bestP * 100).toFixed(1),
+            unibetOdds:  bks.unibet?.[direction]  ?? null,
+            betclicOdds: bks.betclic?.[direction]  ?? null,
+            winamaxOdds: bks.winamax?.[direction]  ?? null,
+            savedAt: Date.now(),
+          });
+          _bgLog.push(`${leagueKey} total ALERT: ${game.home.short}v${game.away.short} est=${full.estimated} line=${line} → ${direction} (prob ${(bestP*100).toFixed(1)}%)`);
+        } catch { /* skip game */ }
       }
     }
 
@@ -6136,7 +7803,8 @@ async function generateBackgroundAlerts() {
     await runEUPropsAlerts(newAlerts, process.env.PORT || 3001);
 
     // 4b. EU leagues — EarlyWin alerts (bookmaker earlywin odds × probabilité modèle)
-    const EU_ALERT_LEAGUES = { acb: 83, lnb: 79, bbl: 82, legaa: 80 };
+    // LNB exclue (cf. runEUPropsAlerts) — pas de couverture gamelogs fiable, alertes désactivées pour ce championnat
+    const EU_ALERT_LEAGUES = { acb: 83, bbl: 82, legaa: 80 };
     for (const [euLeague] of Object.entries(EU_ALERT_LEAGUES)) {
       try {
         const sbGames = _euroCache[`euro_sb_${euLeague}`]?.data?.games || [];
@@ -6172,6 +7840,9 @@ async function generateBackgroundAlerts() {
     }
 
     // 4c. EU leagues — Game Total O/U alerts
+    // Étape 1 (filtre rapide) : modèle simple homeExp/awayExp vs ligue, edge ≥ 4%
+    // Étape 2 (si étape 1 passe) : modèle complet (pace matchup, momentum, repos, densité,
+    // facteur playoffs, ancre historique) → alerte si P(over) ou P(under) ≥ TOTAL_ALERT_PROB (80%)
     const calcEWA = (arr, key, n, decay = 0.82) => {
       const vals = arr.slice(0, n).map(g => g[key]).filter(v => v != null && !isNaN(v));
       if (!vals.length) return null;
@@ -6179,6 +7850,8 @@ async function generateBackgroundAlerts() {
       vals.forEach((v, i) => { const w = Math.pow(decay, i); sum += w * v; ws += w; });
       return ws ? sum / ws : null;
     };
+    const EU_GAME_TOTAL_AVG = { acb: 166.0, bbl: 164.0, legaa: 160.0 };
+    const euBase = `http://localhost:${process.env.PORT || 3001}`;
     for (const [euLeague, leagueAvg] of Object.entries(EU_ALERT_LEAGUES)) {
       try {
         const ck = `euro_sb_${euLeague}`;
@@ -6198,22 +7871,48 @@ async function generateBackgroundAlerts() {
             const awayDefAllow = calcEWA(awayGames, 'ptsAllowed', 7);
             if (!homeOff || !awayOff || !homeDefAllow || !awayDefAllow) continue;
 
-            const estimated = homeOff * (awayDefAllow / leagueAvg) + awayOff * (homeDefAllow / leagueAvg);
+            const quickEstimated = homeOff * (awayDefAllow / leagueAvg) + awayOff * (homeDefAllow / leagueAvg);
 
             // Récupérer la ligne bookmaker depuis le cache odds
-            const oddsKey = `bball_odds_${euLeague}_${g.home.name}_${g.away.name}`.toLowerCase().replace(/\s+/g, '_');
+            const oddsKey = `bball_odds_${euLeague}_${g.home.name}_${g.away.name}`;
             const oddsData = _espnCache[oddsKey]?.data || null;
             const bks = oddsData?.markets?.totals?.bookmakers || {};
             const refBk = ['betclic', 'winamax', 'unibet'].find(b => bks[b]?.line);
-            if (!refBk) continue;
+            if (!refBk) { _bgLog.push(`${euLeague} total skip ${g.home.short}v${g.away.short}: no odds (key=${oddsKey}, cached=${!!_espnCache[oddsKey]})`); continue; }
             const line = bks[refBk].line;
             if (!line) continue;
 
-            const diff = estimated - line;
-            const pct = Math.abs(diff) / line;
-            if (pct < 0.04) continue; // Edge < 4% → pas d'alerte
+            const quickPct = Math.abs(quickEstimated - line) / line;
+            if (quickPct < 0.04) { _bgLog.push(`${euLeague} total skip ${g.home.short}v${g.away.short}: edge ${(quickPct*100).toFixed(1)}% < 4% (est=${quickEstimated.toFixed(1)} line=${line})`); continue; }
 
-            const direction = diff > 0 ? 'over' : 'under';
+            // Étape 2 : modèle complet (pace, momentum, repos, densité, playoffs, ancre historique)
+            // Heuristique playoffs = avril-juin (le champ g.week ne permet pas de détecter les PO)
+            const gameMonth  = new Date(g.date).getMonth() + 1;
+            const inPlayoffs = gameMonth >= 4 && gameMonth <= 6;
+            const full = computeGameTotalFull({
+              homeGames, awayGames,
+              avgPtsAllowed: leagueAvg, ouBaseline: EU_GAME_TOTAL_AVG[euLeague] ?? leagueAvg * 2,
+              gameDate: g.date, round: inPlayoffs ? 'game' : '', refTotal: line, isWNBA: false,
+            });
+            if (!full) { _bgLog.push(`${euLeague} total skip ${g.home.short}v${g.away.short}: full model null`); continue; }
+
+            const bestP = Math.max(full.pOver ?? 0, full.pUnder ?? 0);
+            if (bestP < TOTAL_ALERT_PROB) { _bgLog.push(`${euLeague} total skip ${g.home.short}v${g.away.short}: prob ${(bestP*100).toFixed(1)}% < ${TOTAL_ALERT_PROB*100}% (est=${full.estimated} line=${line})`); continue; }
+
+            // Filtre joueur clé (≥15 pts/match) Q/GTD en playoffs, ≤2h30 du tip-off
+            const hoursToTip = (new Date(g.date).getTime() - Date.now()) / 3600000;
+            if (inPlayoffs && hoursToTip <= 2.5) {
+              const [homePlayersR, awayPlayersR] = await Promise.all([
+                fetch(`${euBase}/api/euro/${euLeague}/players/${g.home.id}`, { signal: AbortSignal.timeout(10000) }).then(r=>r.ok?r.json():null).catch(()=>null),
+                fetch(`${euBase}/api/euro/${euLeague}/players/${g.away.id}`, { signal: AbortSignal.timeout(10000) }).then(r=>r.ok?r.json():null).catch(()=>null),
+              ]);
+              const homePlayers = homePlayersR?.players || [];
+              const awayPlayers = awayPlayersR?.players || [];
+              const hasKeyQ = [...homePlayers, ...awayPlayers].some(p => (p.stats?.pts ?? 0) >= 15 && Q_STATUSES_TOTAL.includes(p.injury));
+              if (hasKeyQ) { _bgLog.push(`${euLeague} total skip ${g.home.short}v${g.away.short}: key player Q/GTD ≤2h30`); continue; }
+            }
+
+            const direction = full.direction;
             const alertId = `${g.id}_${euLeague}_total`;
             newAlerts.push({
               id: alertId,
@@ -6225,19 +7924,213 @@ async function generateBackgroundAlerts() {
               homeShort: g.home.short,
               awayShort: g.away.short,
               date: g.date,
-              estimated: +estimated.toFixed(1),
+              estimated: full.estimated,
               line,
-              edge: +(pct * 100).toFixed(1),
+              edge: +Math.abs(full.edge).toFixed(1),
               direction,
-              prob: null,
+              prob: +(bestP * 100).toFixed(1),
               savedAt: Date.now(),
-              [`${refBk}Odds`]: bks[refBk][direction] ?? null,
+              unibetOdds: bks.unibet?.[direction] ?? null,
+              betclicOdds: bks.betclic?.[direction] ?? null,
+              winamaxOdds: bks.winamax?.[direction] ?? null,
             });
-            _bgLog.push(`EU O/U alert: ${g.home.short}v${g.away.short} [${euLeague}] est=${estimated.toFixed(1)} line=${line} dir=${direction}`);
+            _bgLog.push(`EU O/U alert: ${g.home.short}v${g.away.short} [${euLeague}] est=${full.estimated} line=${line} dir=${direction} (prob ${(bestP*100).toFixed(1)}%)`);
           } catch { /* skip game */ }
         }
       } catch { /* skip league */ }
     }
+
+    // 4d. Football — BTTS + Over/Under (Poisson), 5 grands championnats + CDM
+    const footballUpcomingIds = new Set();
+    try {
+      const fbFixtures = [];
+      for (const m of (_fdCache?.matches || [])) {
+        const leagueAvg = FB_LEAGUE_AVG_GOALS[m.league];
+        if (!leagueAvg || !m.home || !m.away) continue;
+        fbFixtures.push({
+          fixtureId: `fd_${m.id}`, league: m.league, date: m.date, round: m.round,
+          home: m.home, away: m.away,
+          homeGF: m.home.goalsFor, homeGA: m.home.goalsAgainst, homePlayed: m.home.played,
+          awayGF: m.away.goalsFor, awayGA: m.away.goalsAgainst, awayPlayed: m.away.played,
+          leagueAvgGoals: leagueAvg,
+        });
+      }
+
+      // CDM : la moyenne de référence (avgGF/avgGA) se recalcule à chaque cycle selon le pool
+      // de matchs encore programmés, donc la proba d'un match peut dériver de jour en jour
+      // sans rapport avec ce match lui-même. On limite la génération d'alertes CDM aux
+      // matchs dans les 24h, pour que la proba affichée reste proche de celle au coup d'envoi.
+      const CDM_ALERT_WINDOW_MS = 24 * 3600_000;
+      const cdmScheduled = (_cdmCache?.games || []).filter(g => g.status === 'STATUS_SCHEDULED' && g.home?.name && g.away?.name
+        && (new Date(g.date).getTime() - Date.now()) <= CDM_ALERT_WINDOW_MS);
+      if (cdmScheduled.length) {
+        const fbBase = `http://localhost:${PORT}`;
+        const statsArr = await Promise.all(cdmScheduled.map(async g => {
+          const [hs, as_] = await Promise.all([
+            fetch(`${fbBase}/api/football/cdm/teamstats/${encodeURIComponent(g.home.name)}`, { signal: AbortSignal.timeout(10000) }).then(r => r.ok ? r.json() : null).catch(() => null),
+            fetch(`${fbBase}/api/football/cdm/teamstats/${encodeURIComponent(g.away.name)}`, { signal: AbortSignal.timeout(10000) }).then(r => r.ok ? r.json() : null).catch(() => null),
+          ]);
+          return { g, hs, as_ };
+        }));
+        // avgGF/avgGA calculés dynamiquement sur le pool actuel d'équipes CDM programmées
+        // (plutôt que des constantes figées) — s'auto-recalibre si le pool change
+        // (nouvelles équipes, élimination au fil du tournoi), cf. limite documentée.
+        const validStats = statsArr.flatMap(({ hs, as_ }) => [hs, as_]).filter(s => s && s.games >= 3);
+        const cdmAvgGF = validStats.length ? validStats.reduce((s, x) => s + x.goalsFor, 0) / validStats.length : CDM_AVG_GF;
+        const cdmAvgGA = validStats.length ? validStats.reduce((s, x) => s + x.goalsAgainst, 0) / validStats.length : CDM_AVG_GA;
+        for (const { g, hs, as_ } of statsArr) {
+          if (!hs || !as_ || hs.games < 3 || as_.games < 3) continue;
+          // hs.goalsFor/goalsAgainst sont déjà des moyennes pondérées par match (cf /api/football/cdm/teamstats) —
+          // on les multiplie par `games` pour reconstituer des "totaux" attendus par computeLambdas (qui redivise par homePlayed).
+          fbFixtures.push({
+            fixtureId: `fdcdm_${g.id}`, league: 'cdm', date: g.date, round: g.round,
+            home: g.home, away: g.away,
+            homeGF: hs.goalsFor * hs.games, homeGA: hs.goalsAgainst * hs.games, homePlayed: hs.games,
+            awayGF: as_.goalsFor * as_.games, awayGA: as_.goalsAgainst * as_.games, awayPlayed: as_.games,
+            leagueAvgGoals: CDM_AVG_GOALS, avgGF: cdmAvgGF, avgGA: cdmAvgGA,
+          });
+        }
+      }
+
+      fbFixtures.forEach(f => footballUpcomingIds.add(f.fixtureId));
+      const oddsMatches = _oddsCache?.data?.matches || [];
+      const FB_BOOKS = ['unibet', 'betclic', 'winamax'];
+
+      for (const f of fbFixtures) {
+        try {
+          const lambdas = computeLambdas({
+            homeGF: f.homeGF, homeGA: f.homeGA, homePlayed: f.homePlayed,
+            awayGF: f.awayGF, awayGA: f.awayGA, awayPlayed: f.awayPlayed,
+            leagueAvgGoals: f.leagueAvgGoals, avgGF: f.avgGF, avgGA: f.avgGA,
+          });
+          if (!lambdas) continue;
+          const { lambdaHome, lambdaAway } = lambdas;
+          const { pHome, pDraw, pAway } = compute1X2Probs(lambdaHome, lambdaAway);
+
+          const oddsMatch = oddsMatches.find(m => fuzzy(m.homeTeam, f.home.name) && fuzzy(m.awayTeam, f.away.name));
+          const bttsBk   = oddsMatch?.markets?.btts?.bookmakers || {};
+          const totalsBk = oddsMatch?.markets?.totals?.bookmakers || {};
+
+          // BTTS — id identique à celui généré côté client (MatchDetailPage) → dédup au sync
+          const bttsProb = computeBTTSProb(lambdaHome, lambdaAway);
+          if (bttsProb >= FB_BTTS_ALERT_PROB) {
+            const bestBk = FB_BOOKS.find(bk => (bttsBk[bk]?.yes ?? 0) >= FB_MIN_ODDS);
+            if (bestBk) {
+              const pair = bttsBk[bestBk];
+              let edge = null;
+              if (pair?.yes && pair?.no) {
+                const vig = 1 / pair.yes + 1 / pair.no;
+                const impliedProb = (1 / pair.yes) / vig;
+                edge = +((bttsProb - impliedProb) * 100).toFixed(1);
+              }
+              newAlerts.push({
+                id: `${f.fixtureId}_btts_yes`,
+                type: 'football_btts',
+                fixtureId: f.fixtureId,
+                league: f.league,
+                eventId: f.fixtureId,
+                fixture: `${f.home.name} vs ${f.away.name}`,
+                homeTeam: f.home.name,
+                awayTeam: f.away.name,
+                fixtureDate: f.date,
+                round: f.round || '',
+                direction: 'yes',
+                probability: Math.round(bttsProb * 100),
+                pinnacleOdds: null,
+                unibetOdds: bttsBk.unibet?.yes ?? null,
+                betclicOdds: bttsBk.betclic?.yes ?? null,
+                winamaxOdds: bttsBk.winamax?.yes ?? null,
+                edge,
+                savedAt: Date.now(),
+              });
+              _bgLog.push(`football BTTS alert: ${f.home.name} v ${f.away.name} [${f.league}] prob=${Math.round(bttsProb * 100)}%`);
+            }
+          }
+
+          // Résultat 1X2 — chaque issue (dom./nul/ext.) traitée comme un pari oui/non indépendant,
+          // même seuil/format que BTTS. Une fixture peut générer 0 à 3 alertes "résultat".
+          const h2hBk = oddsMatch?.markets?.h2h?.bookmakers || {};
+          const RESULT_OUTCOMES = [
+            { key: 'home', prob: pHome },
+            { key: 'draw', prob: pDraw },
+            { key: 'away', prob: pAway },
+          ];
+          for (const { key, prob } of RESULT_OUTCOMES) {
+            if (prob < FB_RESULT_ALERT_PROB) continue;
+            const bestBk = FB_BOOKS.find(bk => (h2hBk[bk]?.[key] ?? 0) >= FB_MIN_ODDS);
+            if (!bestBk) continue;
+            const pair = h2hBk[bestBk];
+            let edge = null;
+            if (pair?.home && pair?.draw && pair?.away) {
+              const fair = removeVig(pair, 'h2h');
+              edge = +((prob - fair[key]) * 100).toFixed(1);
+            }
+            newAlerts.push({
+              id: `${f.fixtureId}_result_${key}`,
+              type: 'football_result',
+              fixtureId: f.fixtureId,
+              league: f.league,
+              eventId: f.fixtureId,
+              home: f.home.name,
+              away: f.away.name,
+              homeShort: f.home.short,
+              awayShort: f.away.short,
+              fixtureDate: f.date,
+              round: f.round || '',
+              direction: key,
+              probability: Math.round(prob * 100),
+              unibetOdds: h2hBk.unibet?.[key] ?? null,
+              betclicOdds: h2hBk.betclic?.[key] ?? null,
+              winamaxOdds: h2hBk.winamax?.[key] ?? null,
+              edge,
+              savedAt: Date.now(),
+            });
+            _bgLog.push(`football result alert: ${f.home.name} v ${f.away.name} [${f.league}] ${key} prob=${Math.round(prob * 100)}%`);
+          }
+
+          // Over/Under — ligne 2.5 prioritaire, fallback 1.5
+          for (const line of ['2.5', '1.5']) {
+            const ou = computeOUProb(lambdaHome, lambdaAway, parseFloat(line));
+            const bestP = Math.max(ou.pOver, ou.pUnder);
+            if (bestP < FB_OU_ALERT_PROB) continue;
+            const direction = ou.pOver >= ou.pUnder ? 'over' : 'under';
+            const bestBk = FB_BOOKS.find(bk => (totalsBk[bk]?.[line]?.[direction] ?? 0) >= FB_MIN_ODDS);
+            if (!bestBk) continue;
+            const pair = totalsBk[bestBk][line];
+            let edge = null;
+            if (pair?.over && pair?.under) {
+              const vig = 1 / pair.over + 1 / pair.under;
+              const impliedProb = (direction === 'over' ? 1 / pair.over : 1 / pair.under) / vig;
+              edge = +((bestP - impliedProb) * 100).toFixed(1);
+            }
+            newAlerts.push({
+              id: `${f.fixtureId}_total_${line}`,
+              type: 'football_total',
+              fixtureId: f.fixtureId,
+              league: f.league,
+              eventId: f.fixtureId,
+              home: f.home.name,
+              away: f.away.name,
+              homeShort: f.home.short,
+              awayShort: f.away.short,
+              fixtureDate: f.date,
+              round: f.round || '',
+              line: parseFloat(line),
+              direction,
+              estimated: +(lambdaHome + lambdaAway).toFixed(2),
+              probability: Math.round(bestP * 100),
+              unibetOdds: totalsBk.unibet?.[line]?.[direction] ?? null,
+              betclicOdds: totalsBk.betclic?.[line]?.[direction] ?? null,
+              winamaxOdds: totalsBk.winamax?.[line]?.[direction] ?? null,
+              edge,
+              savedAt: Date.now(),
+            });
+            _bgLog.push(`football O/U alert: ${f.home.name} v ${f.away.name} [${f.league}] ${direction} ${line} prob=${Math.round(bestP * 100)}%`);
+            break; // une seule ligne par match
+          }
+        } catch { /* skip fixture */ }
+      }
+    } catch (err) { _bgLog.push(`football error: ${err.message}`); }
 
     // 5. Merge into backgroundAlerts (preserve accepted/rejected)
     const euUpcomingIds = new Set();
@@ -6246,11 +8139,22 @@ async function generateBackgroundAlerts() {
         .filter(g => g.status === 'STATUS_SCHEDULED')
         .forEach(g => euUpcomingIds.add(g.id));
     }
-    const upcomingIds = new Set([...upcoming, ...wnbaGamesNext].map(g => g.id), ...euUpcomingIds);
+    const upcomingIds = new Set([...upcoming, ...wnbaGamesNext].map(g => g.id), ...euUpcomingIds, ...footballUpcomingIds);
     const byId = {};
     // Purge alerts for games no longer scheduled (completed/cancelled)
     backgroundAlerts.filter(a => upcomingIds.has(a.eventId)).forEach(a => { byId[a.id] = a; });
     newAlerts.forEach(a => {
+      // Une seule alerte pending par (match, joueur, stat) — purge toute version stale (direction
+      // ou ligne qui a bougé depuis le cycle précédent) avant d'ajouter la version à jour
+      if (a.type === 'player_prop' && a.player && a.stat) {
+        const staleKey = Object.keys(byId).find(id => {
+          const x = byId[id];
+          return x?.type === 'player_prop' && x.eventId === a.eventId &&
+                 x.player === a.player && x.stat === a.stat &&
+                 id !== a.id && (!x.status || x.status === 'pending');
+        });
+        if (staleKey) { _bgLog.push(`prop-dedup: drop ${byId[staleKey].direction} ${byId[staleKey].line} ${a.player} ${a.stat} → ${a.direction} ${a.line}`); delete byId[staleKey]; }
+      }
       const prev = byId[a.id];
       if (!prev || (prev.status || 'pending') === 'pending') {
         byId[a.id] = { ...a, status: prev?.status || 'pending' };
@@ -6259,6 +8163,14 @@ async function generateBackgroundAlerts() {
       } else {
         // accepted : on met à jour odds/line mais on garde le statut
         byId[a.id] = { ...prev, unibetOdds: a.unibetOdds ?? prev.unibetOdds, winamaxOdds: a.winamaxOdds ?? prev.winamaxOdds, line: a.line ?? prev.line };
+      }
+    });
+    // Alertes player_prop pending qui ne sont plus régénérées ce cycle (ligne/cote ne qualifie
+    // plus) → marquées obsolètes plutôt que supprimées, l'utilisateur les ferme manuellement
+    const refreshedPropKeys = new Set(newAlerts.filter(a => a.type === 'player_prop').map(a => `${a.eventId}_${a.player}_${a.stat}`));
+    Object.values(byId).forEach(x => {
+      if (x.type === 'player_prop' && (!x.status || x.status === 'pending')) {
+        x.obsolete = !refreshedPropKeys.has(`${x.eventId}_${x.player}_${x.stat}`);
       }
     });
     backgroundAlerts = Object.values(byId);
@@ -6271,6 +8183,28 @@ async function generateBackgroundAlerts() {
 }
 
 app.get('/api/nba/bg-log', (req, res) => res.json(_bgLog));
+
+app.get('/api/system/health', (req, res) => {
+  const BG_INTERVAL_MS = 20 * 60 * 1000;
+  res.json({
+    bgLastRun:          _bgLastRun,
+    bgNextRun:          _bgLastRun ? _bgLastRun + BG_INTERVAL_MS : null,
+    snapshotLastUpdate: _snapshotLastUpdate,
+    alertsActive:       backgroundAlerts.length,
+    alertsPending:      backgroundAlerts.filter(a => !a.status || a.status === 'pending').length,
+    scrapers:           _scraperHealth,
+    blockedUntil: {
+      winamax: _scraperBlockedUntil.winamax || null,
+      betclic: _scraperBlockedUntil.betclic || null,
+      unibet:  _scraperBlockedUntil.unibet || null,
+    },
+    quotas: {
+      footballData:  _fdQuota,
+      footballApi:   _footballApiQuota,
+      basketballApi: _basketballApiQuota,
+    },
+  });
+});
 
 app.get('/api/nba/background-alerts', (req, res) => {
   res.json({ alerts: backgroundAlerts, generatedAt: Date.now() });
@@ -6349,7 +8283,7 @@ app.get('/api/nba/debug-alerts', async (req, res) => {
         if (!player.stats?.pts || player.injury === 'Out') continue;
         const gl = await bgFetchGamelog(player.id);
         const roundStr = 'game';
-        const est = computeEstimate(player, isHome, oppSched, mySched, gl, isHome ? 'OKC' : 'SAS', gameDate, roundStr, null, {});
+        const est = computeEstimate(player, isHome, oppSched, mySched, gl, isHome ? 'OKC' : 'SAS', gameDate, roundStr, null, null);
         if (!est) { log.push({ player: player.name, skip: 'no estimate' }); continue; }
         const propsEntry = Object.entries(scrapedPlayers).find(([n]) => nameMatch(n, player.name));
         if (!propsEntry) { log.push({ player: player.name, skip: 'no props match', searched: Object.keys(scrapedPlayers).slice(0, 5) }); continue; }
@@ -6361,8 +8295,9 @@ app.get('/api/nba/debug-alerts', async (req, res) => {
           const refLine = bks.unibet?.[stat] ?? bks.winamax?.[stat] ?? null;
           if (!refLine?.line) continue;
           const std = calcStd(gl, stat);
-          const pOver = probAtLeast(estVal, std, Math.ceil(refLine.line));
-          const pUnder = 1 - probAtLeast(estVal, std, Math.floor(refLine.line));
+          const deviation = est.deviation?.[stat] ?? 0;
+          const pOver = probAtLeast(estVal, std, Math.ceil(refLine.line), stat, deviation);
+          const pUnder = 1 - probAtLeast(estVal, std, (Math.floor(refLine.line) + 1), stat, deviation);
           playerLog.alerts.push({ stat, line: refLine.line, std: std?.toFixed(2), pOver: Math.round(pOver*100), pUnder: Math.round(pUnder*100), trigger: pOver >= 0.90 ? 'OVER!' : pUnder >= 0.90 ? 'UNDER!' : '' });
         }
         log.push(playerLog);
@@ -6570,10 +8505,11 @@ async function runAutoSettle() {
         const player = players.find(p => p.name === a.player || p.name?.toLowerCase() === a.player?.toLowerCase() || lastName(p.name) === lastName(a.player));
         let status, actualStat = null;
         if (!player || player.dnp) {
-          // Void = supprime silencieusement, sauvegarde immédiatement
+          // Void = notifie le frontend (applySettlements) + supprime côté backend, sauvegarde immédiatement
           if (players.length > 0) {
+            _settlements.push({ id: a.id, status: 'void', settledAt: Date.now() });
             _acceptedAlerts = _acceptedAlerts.filter(x => x.id !== a.id);
-            _saveAccepted();
+            _saveAccepted(); _saveSettlements();
           }
           continue;
         }
@@ -6615,6 +8551,10 @@ app.listen(PORT, () => {
         else console.log(`✓ SANITY [${c.name}]: ${count} games`);
       } catch (e) { console.error(`✗ SANITY [${c.name}]: ${e.message}`); }
     }
+
+    // /status ne consomme pas le quota journalier — sert juste à initialiser le compteur affiché
+    if (FOOTBALL_KEY) footballGet('/status').catch(() => {});
+    if (BBALL_KEY) bballFetch('/status').catch(() => {});
   }, 5000);
 
   // Start background alert job: first run after 15s, then every 20min
@@ -6668,9 +8608,97 @@ app.listen(PORT, () => {
     console.log(`[odds-refresh] Done.`);
   }
 
-  // Premier run 45s après démarrage, puis toutes les 5 min
+  // Premier run 45s après démarrage, puis toutes les 10 min
   setTimeout(() => {
     refreshAllBasketballOdds().catch(() => {});
-    setInterval(() => refreshAllBasketballOdds().catch(() => {}), 5 * 60 * 1000);
+    setInterval(() => refreshAllBasketballOdds().catch(() => {}), 10 * 60 * 1000);
   }, 45_000);
+
+  // ── Health check cotes football — toutes les 10min ───────────────────────────
+  async function refreshFootballOddsHealth() {
+    try {
+      const [ub, bc, wm] = await Promise.all([
+        fetchUnibetFootballOdds().catch(() => []),
+        fetchBetclicOdds().catch(() => []),
+        fetchWinamaxOdds().catch(() => []),
+      ]);
+      _updateScraper('unibet_foot',  Array.isArray(ub) && ub.length > 0);
+      _updateScraper('betclic_foot', Array.isArray(bc) && bc.length > 0);
+      _updateScraper('winamax_foot', Array.isArray(wm) && wm.length > 0);
+    } catch {}
+  }
+  setTimeout(() => {
+    refreshFootballOddsHealth().catch(() => {});
+    setInterval(() => refreshFootballOddsHealth().catch(() => {}), 10 * 60 * 1000);
+  }, 60_000);
+
+  // ── Health check RotoWire — toutes les 15min ─────────────────────────────────
+  // NBA et WNBA sont testés séparément : un jour sans match NBA (off-day playoffs)
+  // ne doit pas faire passer RotoWire au rouge si la WNBA a des lineups.
+  async function refreshRotoWireHealth() {
+    const [nba, wnba] = await Promise.all([
+      fetchRotoWireAllLineups().catch(() => null),
+      fetchRotoWireWNBALineups().catch(() => null),
+    ]);
+    const nbaOk  = nba  != null && Object.keys(nba).length > 0;
+    const wnbaOk = wnba != null && Object.keys(wnba).length > 0;
+    _updateScraper('rotowire', nbaOk || wnbaOk);
+  }
+  setTimeout(() => {
+    refreshRotoWireHealth().catch(() => {});
+    setInterval(() => refreshRotoWireHealth().catch(() => {}), 15 * 60 * 1000);
+  }, 30_000);
+
+  // ── Health check Bzzoiro — toutes les 15min ───────────────────────────────────
+  async function refreshBzzoiroHealth() {
+    try {
+      const today = new Date().toISOString().slice(0, 10);
+      const data = await bzzFetch(`/events/?league=2&date_from=${today}&limit=1`);
+      _updateScraper('bzzoiro', data != null);
+    } catch { _updateScraper('bzzoiro', false); }
+  }
+  setTimeout(() => {
+    refreshBzzoiroHealth().catch(() => {});
+    setInterval(() => refreshBzzoiroHealth().catch(() => {}), 15 * 60 * 1000);
+  }, 20_000);
+
+  // ── Refresh quotidien des rosters (Base de données) ──────────────────────────
+  // Pre-chauffe les caches NBA / WNBA / ACB une fois par jour.
+  async function dailyRosterRefresh() {
+    const base = `http://localhost:${PORT}`;
+    console.log('[roster-refresh] Start daily roster pre-warm…');
+
+    // NBA — 30 équipes (IDs ESPN 1-30, bdlId)
+    const NBA_IDS = [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30];
+    for (const id of NBA_IDS) {
+      try { await fetchWithTimeout(`${base}/api/nba/players/${id}?refresh=1`, 12000).catch(() => {}); } catch {}
+      await new Promise(r => setTimeout(r, 300));
+    }
+
+    // WNBA — 15 équipes
+    const WNBA_IDS = [20, 19, 18, 3, 129689, 5, 17, 6, 8, 9, 11, 132052, 14, 131935, 16];
+    for (const id of WNBA_IDS) {
+      try { await fetchWithTimeout(`${base}/api/wnba/players/${id}?refresh=1`, 12000).catch(() => {}); } catch {}
+      await new Promise(r => setTimeout(r, 300));
+    }
+
+    // ACB — 17 équipes via Bzzoiro
+    const ACB_TEAMS = [
+      'Barcelona','Basket Zaragoza','Baskonia','Basquet Girona','Bilbao','Breogan',
+      'Forca Lleida','Gran Canaria','Joventut Badalona','Manresa','MoraBanc Andorra',
+      'Murcia','Real Madrid','San Pablo Burgos','Tenerife','Unicaja','Valencia',
+    ];
+    for (const name of ACB_TEAMS) {
+      try { await fetchWithTimeout(`${base}/api/euro/acb/roster/byname/${encodeURIComponent(name)}?refresh=1`, 20000).catch(() => {}); } catch {}
+      await new Promise(r => setTimeout(r, 500));
+    }
+
+    console.log('[roster-refresh] Done.');
+  }
+
+  // Premier run 2 min après démarrage, puis toutes les 24h
+  setTimeout(() => {
+    dailyRosterRefresh().catch(() => {});
+    setInterval(() => dailyRosterRefresh().catch(() => {}), 24 * 60 * 60 * 1000);
+  }, 2 * 60 * 1000);
 });

@@ -33,10 +33,10 @@ const NAV_SECTIONS = [
   {
     label: 'Navigation',
     items: [
-      { to: '/dashboard', icon: '◈', label: 'Dashboard',       sub: 'Vue d\'ensemble' },
-      { to: '/placebet',  icon: '◎', label: 'Alertes',         sub: 'Value bets', badge: true },
-      { to: '/backtesting', icon: '◉', label: 'Backtesting',     sub: 'Statistiques' },
-      { to: '/carte',       icon: '⬡', label: 'Sports',           sub: 'Championnats' },
+      { to: '/dashboard',   icon: '◈', label: 'Dashboard',   sub: 'Vue d\'ensemble' },
+      { to: '/carte',       icon: '⬡', label: 'Sports',       sub: 'Championnats' },
+      { to: '/placebet',    icon: '◎', label: 'Alertes',      sub: 'Value bets', badge: true },
+      { to: '/backtesting', icon: '◉', label: 'Backtesting',  sub: 'Statistiques' },
     ],
   },
   {
@@ -55,7 +55,7 @@ function AlertesGroup({ alertCount, isLinkActive }) {
   const [open, setOpen] = useState(false);
 
   useEffect(() => { if (hasLive) setOpen(true); }, [hasLive]);
-  useEffect(() => { if (!isOnAlertes && !hasLive) setOpen(false); }, [location.pathname]);
+  useEffect(() => { if (!isOnAlertes) setOpen(false); }, [location.pathname]);
 
   return (
     <div>
@@ -72,7 +72,7 @@ function AlertesGroup({ alertCount, isLinkActive }) {
           {alertCount > 0 && <span className="topbar-badge">{alertCount}</span>}
         </span>
         <button
-          onClick={e => { e.stopPropagation(); setOpen(o => hasLive ? true : !o); }}
+          onClick={e => { e.stopPropagation(); setOpen(o => !o); }}
           style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '4px 6px', display: 'flex', alignItems: 'center', color: 'inherit' }}
         >
           <svg style={{ transform: open ? 'rotate(180deg)' : 'none', transition: 'transform 0.2s' }} width="9" height="9" viewBox="0 0 12 12" fill="none">

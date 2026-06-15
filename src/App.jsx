@@ -6,6 +6,29 @@ import DashboardPage from './pages/DashboardPage';
 
 const ALERT_KEY = 'nba_prop_alerts';
 
+// Caches par-fixture (proj_/lines_/eu_props_/prob_) qui s'accumulent indéfiniment
+// et finissent par remplir le quota localStorage — l'écriture des nouvelles
+// alertes échoue alors silencieusement (QuotaExceededError avalée par try/catch).
+// Purge automatique au démarrage si le stockage dépasse ~4 Mo : ces caches se
+// régénèrent normalement à la prochaine visite de la page du match concerné.
+function purgeStaleFixtureCaches() {
+  try {
+    let total = 0;
+    const keys = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      keys.push(k);
+      total += (localStorage.getItem(k) || '').length;
+    }
+    if (total < 4_000_000) return;
+    const PREFIXES = ['proj_', 'lines_', 'eu_props_', 'prob_'];
+    keys.forEach(k => {
+      if (PREFIXES.some(p => k.startsWith(p))) localStorage.removeItem(k);
+    });
+  } catch {}
+}
+purgeStaleFixtureCaches();
+
 function purgeAlerts() {
   try {
     const raw = JSON.parse(localStorage.getItem(ALERT_KEY) || '[]');
@@ -75,6 +98,7 @@ const importRunning         = () => import('./pages/RunningPage');
 const importBacktesting     = () => import('./pages/BacktestingPage');
 const importWorldMap        = () => import('./pages/WorldMapPage');
 const importEffectif        = () => import('./pages/EffectifPage');
+const importPlayerLines     = () => import('./pages/PlayerLinesPage');
 
 const MatchDetailPage      = lazy(importMatchDetail);
 const BasketballDetailPage = lazy(importBasketballDetail);
@@ -83,6 +107,7 @@ const RunningPage          = lazy(importRunning);
 const BacktestingPage      = lazy(importBacktesting);
 const WorldMapPage         = lazy(importWorldMap);
 const EffectifPage         = lazy(importEffectif);
+const PlayerLinesPage      = lazy(importPlayerLines);
 const UtilisationPage      = lazy(() => import('./pages/UtilisationPage'));
 const AnalyserPage         = lazy(() => import('./pages/AnalyserPage'));
 const SportsPage           = lazy(() => import('./pages/SportsPage'));
@@ -100,6 +125,11 @@ function BasketballDetailRoute() {
   return <BasketballDetailPage key={id} />;
 }
 
+function PlayerLinesRoute() {
+  const { id, playerName } = useParams();
+  return <PlayerLinesPage key={`${id}_${playerName}`} />;
+}
+
 // Préchargement au survol d'un lien
 export function preloadPage(path) {
   if (path.includes('placebet'))   importPlaceBet();
@@ -107,6 +137,7 @@ export function preloadPage(path) {
   else if (path.includes('backtesting')) importBacktesting();
   else if (path.includes('carte'))      importWorldMap();
   else if (path.includes('effectif'))   importEffectif();
+  else if (path.includes('/player/'))   importPlayerLines();
   else if (path.includes('basketball')) importBasketballDetail();
   else if (path.includes('football'))   importMatchDetail();
 }
@@ -188,10 +219,17 @@ function StatsHolo() {
   );
 }
 
+function ScrollToTop() {
+  const { pathname } = useLocation();
+  useEffect(() => { window.scrollTo(0, 0); }, [pathname]);
+  return null;
+}
+
 export default function App() {
   const alertCount = useAlertCount();
   return (
     <BrowserRouter>
+      <ScrollToTop />
       <div className="app-layout">
         <StarField />
         <StatsHolo />
@@ -205,6 +243,7 @@ export default function App() {
               <Route path="/sports" element={<Navigate to="/carte" replace />} />
               <Route path="/football/:id" element={<MatchDetailPage />} />
               <Route path="/basketball/:id" element={<BasketballDetailRoute />} />
+              <Route path="/basketball/:id/player/:playerName" element={<PlayerLinesRoute />} />
               <Route path="/placebet" element={<PlaceBetPage />} />
               <Route path="/running" element={<RunningPage />} />
               <Route path="/analyser" element={<Navigate to="/backtesting" replace />} />

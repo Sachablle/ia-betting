@@ -1,10 +1,20 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { BBALL_FIXTURES } from '../utils/basketball';
+import { syncBackgroundAlerts, syncSettlements, syncGameTotalAlerts, syncOddsDrift, syncFootballAlerts, resolveCompletedFootballAlerts } from '../utils/syncAlerts';
 
 const ALERT_KEY      = 'nba_prop_alerts';
 const GAME_TOTAL_KEY = 'nba_game_total_alerts';
-const STAT_LABEL     = { pts: 'Pts', reb: 'Reb', ast: 'Ast' };
+const FB_BTTS_KEY    = 'fb_btts_alerts';
+const FB_TOTAL_KEY   = 'fb_total_alerts';
+const FB_RESULT_KEY  = 'fb_result_alerts';
+const STAT_LABEL     = { pts: 'Pts', reb: 'Reb', ast: 'Ast', total: 'Total', btts: 'BTTS', result: 'Résultat' };
+
+// Ligues football — affichées dans les mêmes "MatchGroup" compacts que le basket
+const FB_LEAGUES = new Set(['cdm', 'ligue1', 'pl', 'laliga', 'bundes', 'seriea']);
+const FB_LEAGUE_LABEL = { cdm: 'CDM', ligue1: 'L1', pl: 'PL', laliga: 'Liga', bundes: 'BL', seriea: 'SA' };
+
+const IN_GAME = s => s === 'STATUS_IN_PROGRESS' || s === 'STATUS_END_PERIOD' || s === 'STATUS_HALFTIME' || s === 'STATUS_END_OF_PERIOD';
 
 // ── Groupement alertes ────────────────────────────────────────────────────────
 function groupAlerts(raw) {
@@ -41,6 +51,61 @@ function groupAlerts(raw) {
   return Object.values(map);
 }
 
+// Convertit une alerte total O/U (PlaceBetPage / GAME_TOTAL_KEY) en objet "groupe"
+// compatible avec groupByMatch + AlertCard (même forme que groupAlerts pour les props).
+function totalAlertToGroup(a) {
+  return {
+    key: `total__${a.id}`, type: 'game_total',
+    player: 'Total points', team: null, fixture: `${a.home} vs ${a.away}`,
+    fixtureDate: a.date, homeTeam: a.home || null, awayTeam: a.away || null,
+    homeShort: a.homeShort || null, awayShort: a.awayShort || null,
+    eventId: a.eventId || null, league: a.league || 'nba',
+    stats: [{
+      stat: 'total', direction: a.direction, line: a.line,
+      estimate: a.estimated, probability: a.prob,
+      unibetOdds: a.unibetOdds, betclicOdds: a.betclicOdds, winamaxOdds: a.winamaxOdds,
+      acceptedUnibetOdds: a.acceptedUnibetOdds ?? null,
+      acceptedBetclicOdds: a.acceptedBetclicOdds ?? null,
+      acceptedWinamaxOdds: a.acceptedWinamaxOdds ?? null,
+    }],
+    maxProb: a.prob || 0, ids: [a.id],
+    status: a.status || 'pending', acceptedAt: a.acceptedAt || 0,
+    acceptedBookmaker: a.acceptedBookmaker || null,
+  };
+}
+
+// Convertit une alerte football (fb_btts_alerts / fb_total_alerts / fb_result_alerts) en objet
+// "groupe" compatible avec groupByMatch + AlertCard — même principe que totalAlertToGroup.
+function footballAlertToGroup(a) {
+  const isBtts   = a.type === 'football_btts';
+  const isResult = a.type === 'football_result';
+  return {
+    key: `fb__${a.id}`, type: a.type,
+    player: isBtts ? 'Les deux équipes marquent' : isResult ? 'Résultat 1X2' : 'Total buts',
+    team: null, fixture: isBtts ? a.fixture : `${a.home} vs ${a.away}`,
+    fixtureDate: a.fixtureDate,
+    homeTeam: isBtts ? a.homeTeam : a.home, awayTeam: isBtts ? a.awayTeam : a.away,
+    homeShort: isBtts ? null : (a.homeShort || null),
+    awayShort: isBtts ? null : (a.awayShort || null),
+    eventId: a.fixtureId || a.eventId || null,
+    league: a.league || 'cdm',
+    stats: [{
+      stat: isBtts ? 'btts' : isResult ? 'result' : 'total',
+      direction: isBtts ? 'yes' : a.direction,
+      line: (isBtts || isResult) ? null : a.line,
+      estimate: (isBtts || isResult) ? null : a.estimated,
+      probability: a.probability,
+      unibetOdds: a.unibetOdds, betclicOdds: a.betclicOdds, winamaxOdds: a.winamaxOdds,
+      acceptedUnibetOdds: a.acceptedUnibetOdds ?? null,
+      acceptedBetclicOdds: a.acceptedBetclicOdds ?? null,
+      acceptedWinamaxOdds: a.acceptedWinamaxOdds ?? null,
+    }],
+    maxProb: a.probability || 0, ids: [a.id],
+    status: a.status || 'pending', acceptedAt: a.acceptedAt || 0,
+    acceptedBookmaker: a.acceptedBookmaker || null,
+  };
+}
+
 // Normalise les abréviations ESPN courtes → standard NBA
 const ESPN_NORM = { SA:'SAS', NY:'NYK', GS:'GSW', NO:'NOP', UT:'UTA', LA:'LAC' };
 const normShort = s => { const u = (s||'').toUpperCase(); return ESPN_NORM[u] || u; };
@@ -70,10 +135,11 @@ function groupByMatch(acceptedGroups) {
 // ── Hook scores live ──────────────────────────────────────────────────────────
 function useLiveScores(matchGroups) {
   const [scores, setScores] = useState({});
+  const [loaded, setLoaded] = useState(false);
   const timerRef = useRef(null);
 
   useEffect(() => {
-    if (!matchGroups.length) { setScores({}); return; }
+    if (!matchGroups.length) { setScores({}); setLoaded(true); return; }
 
     const doFetch = async () => {
       const result = {};
@@ -85,6 +151,27 @@ function useLiveScores(matchGroups) {
 
       for (const [league, matches] of Object.entries(byLeague)) {
         try {
+          // CDM : live scores via /api/fd/worldcup, matché par id (fdcdm_${g.id})
+          if (league === 'cdm') {
+            const d = await fetch('/api/fd/worldcup').then(r => r.ok ? r.json() : null).catch(() => null);
+            const games = d?.games || [];
+            for (const m of matches) {
+              const gid = String(m.eventId || '').replace('fdcdm_', '');
+              const g = games.find(g => String(g.id) === gid);
+              if (g) result[m.matchKey] = {
+                homeScore: g.home?.score ?? null,
+                awayScore: g.away?.score ?? null,
+                homeLogo: g.home?.logo || null,
+                awayLogo: g.away?.logo || null,
+                status: g.status,
+                statusDetail: g.round || '',
+              };
+            }
+            continue;
+          }
+          // Les 5 grands championnats n'ont pas encore de source de scores live
+          if (FB_LEAGUES.has(league)) continue;
+
           const EU = ['acb','lnb','bbl','legaa'];
           const url = league === 'wnba' ? '/api/wnba/scoreboard'
             : EU.includes(league) ? `/api/euro/${league}/scoreboard`
@@ -94,8 +181,14 @@ function useLiveScores(matchGroups) {
           for (const m of matches) {
             const g = games.find(g => {
               const norm = s => (s||'').toLowerCase().replace(/[^a-z]/g,'');
-              return (norm(g.home?.short) === norm(m.homeShort) || norm(g.home?.name).includes(norm(m.homeTeam||'').slice(0,4)))
+              const teamMatch = (norm(g.home?.short) === norm(m.homeShort) || norm(g.home?.name).includes(norm(m.homeTeam||'').slice(0,4)))
                   && (norm(g.away?.short) === norm(m.awayShort) || norm(g.away?.name).includes(norm(m.awayTeam||'').slice(0,4)));
+              if (!teamMatch) return false;
+              if (m.fixtureDate && g.date) {
+                const diff = Math.abs(new Date(g.date).getTime() - new Date(m.fixtureDate).getTime());
+                if (diff > 24 * 3600_000) return false;
+              }
+              return true;
             });
             if (g) result[m.matchKey] = {
               homeScore: g.home?.score ?? null,
@@ -109,6 +202,7 @@ function useLiveScores(matchGroups) {
         } catch {}
       }
       setScores(result);
+      setLoaded(true);
     };
 
     doFetch();
@@ -116,7 +210,7 @@ function useLiveScores(matchGroups) {
     return () => clearInterval(timerRef.current);
   }, [matchGroups.map(m => m.matchKey).join(',')]);
 
-  return scores;
+  return { scores, loaded };
 }
 
 // ── Hook stats joueurs live ───────────────────────────────────────────────────
@@ -174,7 +268,7 @@ function useLiveBoxscore(acceptedGroups) {
 function MatchStatusBadge({ scoreData }) {
   if (!scoreData) return null;
   const { status, statusDetail, homeScore, awayScore } = scoreData;
-  const isLive = status === 'STATUS_IN_PROGRESS';
+  const isLive = IN_GAME(status);
   const isDone = status === 'STATUS_FINAL';
 
   const label = isDone ? 'Terminé'
@@ -205,9 +299,6 @@ function LiveStatRow({ group, playerStats }) {
     <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', padding: '0.1rem 0.75rem 0.25rem', fontSize: 10 }}>
       <span style={{ color: 'var(--text-dim)' }}>📊 {STAT_LABEL[s.stat]} :</span>
       <span style={{ fontWeight: 800, color: c }}>{val} / {s.line}</span>
-      <span style={{ marginLeft: 'auto', fontSize: 9, fontWeight: 700, color: c, padding: '1px 5px', borderRadius: 3, background: `${c}15`, border: `1px solid ${c}44` }}>
-        {onTrack ? 'ON TRACK ✓' : 'AT RISK ✗'}
-      </span>
     </div>
   );
 }
@@ -223,12 +314,22 @@ function AlertCard({ group, playerStats, onDismiss }) {
   const bkColor = bk === 'unibet' ? '#1db954' : bk === 'betclic' ? '#e0292e' : '#e5e7eb';
 
   const goToMatch = () => {
+    if (FB_LEAGUES.has(group.league)) {
+      if (group.eventId) navigate(`/football/${group.eventId}`);
+      return;
+    }
     const EU = ['acb','lnb','bbl','legaa'];
-    // Résoudre l'ID statique si eventId ESPN ne correspond à aucun fixture statique
+    const isEuroLg = EU.includes(group.league) || group.league === 'euroleague';
+    // NBA/WNBA : la page de match utilise le scoreboard ESPN live (fixture.id = eventId ESPN),
+    // donc on navigue directement avec cet id — exactement comme BasketballMatchRow/PlaceBetPage.
+    // Le résoudre vers une fixture statique (basketball.js) chargeait une AUTRE fixture (id, date,
+    // short d'équipe différents → "NYK"/"SAS" au lieu de "NY"/"SA"), donc un autre cache de cotes
+    // (`bball_odds_${fixture.id}`) et un autre snapshot de projections → % et lignes différents
+    // de ceux affichés dans "Analyse Props" pour le même match (cf. divergence Dylan Harper, 8 juin).
+    // Seules les ligues EU (fixtures statiques basketball.js / api-sports) ont besoin de résolution.
     const resolveId = () => {
       const staticMatch = BBALL_FIXTURES.find(f => String(f.id) === String(group.eventId));
       if (staticMatch) return staticMatch.id;
-      // Fallback : chercher par noms d'équipes + date la plus proche
       const norm = s => (s||'').toLowerCase().replace(/[^a-z]/g,'');
       const alertTs = group.fixtureDate ? new Date(group.fixtureDate).getTime() : 0;
       const candidates = BBALL_FIXTURES.filter(f =>
@@ -242,7 +343,7 @@ function AlertCard({ group, playerStats, onDismiss }) {
         : candidates[0];
       return best?.id || group.eventId;
     };
-    const id = resolveId();
+    const id = isEuroLg ? resolveId() : group.eventId;
     let path = group.league === 'wnba' ? `/basketball/${id}?league=wnba&props=1`
       : EU.includes(group.league) ? `/basketball/${id}?league=${group.league}&props=1`
       : `/basketball/${id}?props=1`;
@@ -258,7 +359,13 @@ function AlertCard({ group, playerStats, onDismiss }) {
     >
       <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.4rem 0.75rem' }}>
         <span style={{ fontSize: 12, fontWeight: 700, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{group.player}</span>
-        {s && (
+        {s && s.stat === 'btts' ? (
+          <span style={{ fontSize: 11, fontWeight: 700, color: '#4ade80', flexShrink: 0 }}>✓ BTTS</span>
+        ) : s && s.stat === 'result' ? (
+          <span style={{ fontSize: 11, fontWeight: 700, color: '#fbbf24', flexShrink: 0 }}>
+            🏆 {s.direction === 'draw' ? 'Nul' : s.direction === 'home' ? (group.homeShort || group.homeTeam) : (group.awayShort || group.awayTeam)}
+          </span>
+        ) : s && (
           <span style={{ fontSize: 11, fontWeight: 700, color: s.direction === 'over' ? '#4ade80' : '#f87171', flexShrink: 0 }}>
             {s.direction === 'over' ? '▲' : '▼'} {s.line} {STAT_LABEL[s.stat] ?? s.stat}
           </span>
@@ -268,11 +375,10 @@ function AlertCard({ group, playerStats, onDismiss }) {
         )}
         <span style={{ fontSize: 10, fontWeight: 800, color: '#60a5fa', minWidth: 28, textAlign: 'right' }}>{group.maxProb}%</span>
         <button
-          onClick={e => { e.stopPropagation(); onDismiss(group.ids); }}
+          onClick={e => { e.stopPropagation(); onDismiss(group.ids, group); }}
           style={{ background: 'none', border: 'none', color: 'var(--text-dim)', cursor: 'pointer', fontSize: 14, padding: '0 0 0 4px', lineHeight: 1 }}
         >×</button>
       </div>
-      {playerStats && <LiveStatRow group={group} playerStats={playerStats} />}
     </div>
   );
 }
@@ -280,10 +386,11 @@ function AlertCard({ group, playerStats, onDismiss }) {
 // Logo équipe avec fallback initiales
 function TeamLogo({ logo, short, name, size = 40, league = 'nba' }) {
   const [err, setErr] = useState(false);
-  const fallback = short ? (
-    ['acb','lnb','bbl','legaa','euroleague'].includes(league)
+  const normS = normShort(short).toLowerCase();
+  const fallback = normS ? (
+    ['acb','lnb','bbl','legaa','euroleague'].includes(league) || FB_LEAGUES.has(league)
       ? null
-      : `https://a.espncdn.com/i/teamlogos/${league === 'wnba' ? 'wnba' : 'nba'}/500/scoreboard/${short.toLowerCase()}.png`
+      : `https://a.espncdn.com/i/teamlogos/${league === 'wnba' ? 'wnba' : 'nba'}/500/scoreboard/${normS}.png`
   ) : null;
   const src = logo || fallback;
   const initials = (short || name || '?').slice(0, 3).toUpperCase();
@@ -305,7 +412,7 @@ function TeamLogo({ logo, short, name, size = 40, league = 'nba' }) {
 function MatchGroup({ match, scoreData, liveStats, onDismiss }) {
   const { homeShort, awayShort, homeTeam, awayTeam, alerts, league, fixtureDate } = match;
   const hasScores = (scoreData?.homeScore > 0 || scoreData?.awayScore > 0);
-  const isLive = scoreData?.status === 'STATUS_IN_PROGRESS'
+  const isLive = IN_GAME(scoreData?.status)
     || (scoreData?.status === 'STATUS_SCHEDULED' && hasScores);
   const isDone = scoreData?.status === 'STATUS_FINAL';
   const isScheduled = !isLive && !isDone;
@@ -313,7 +420,7 @@ function MatchGroup({ match, scoreData, liveStats, onDismiss }) {
   useEffect(() => { if (isLive) setOpen(true); }, [isLive]);
 
   const hasScore = scoreData?.homeScore != null && scoreData?.awayScore != null;
-  const leagueLabel = { nba: 'NBA', wnba: 'WNBA', acb: 'ACB', lnb: 'LNB', bbl: 'BBL', legaa: 'Lega A', euroleague: 'EL' }[league] || league?.toUpperCase();
+  const leagueLabel = { nba: 'NBA', wnba: 'WNBA', acb: 'ACB', lnb: 'LNB', bbl: 'BBL', legaa: 'Lega A', euroleague: 'EL', ...FB_LEAGUE_LABEL }[league] || league?.toUpperCase();
   const matchTime = fixtureDate ? new Date(fixtureDate).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }) : '';
 
   // ── Version liste compacte (pas encore live) ──
@@ -324,14 +431,14 @@ function MatchGroup({ match, scoreData, liveStats, onDismiss }) {
           onClick={() => setOpen(o => !o)}
           style={{ width: '100%', display: 'flex', alignItems: 'center', gap: '0.6rem', padding: '0.5rem 0.75rem', background: 'none', border: 'none', cursor: 'pointer' }}
         >
-          <TeamLogo logo={scoreData?.homeLogo} short={homeShort} name={homeTeam} size={28} league={league} />
+          <TeamLogo logo={scoreData?.homeLogo} short={normShort(homeShort)} name={homeTeam} size={28} league={league} />
           <span style={{ fontSize: 11, fontWeight: 700, color: '#fff' }}>{homeShort || homeTeam}</span>
           <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
             <span style={{ fontSize: 9, fontWeight: 700, color: '#60a5fa', background: 'rgba(96,165,250,0.12)', borderRadius: 3, padding: '1px 5px' }}>{leagueLabel}</span>
             <span style={{ fontSize: 10, color: 'var(--text-dim)' }}>{matchTime}</span>
           </div>
           <span style={{ fontSize: 11, fontWeight: 700, color: '#fff' }}>{awayShort || awayTeam}</span>
-          <TeamLogo logo={scoreData?.awayLogo} short={awayShort} name={awayTeam} size={28} league={league} />
+          <TeamLogo logo={scoreData?.awayLogo} short={normShort(awayShort)} name={awayTeam} size={28} league={league} />
           <span style={{ fontSize: 9, color: 'var(--text-dim)', marginLeft: 4, flexShrink: 0 }}>{alerts.length}</span>
           <svg style={{ transform: open ? 'rotate(180deg)' : 'none', transition: 'transform 0.2s', color: 'var(--text-dim)', flexShrink: 0 }} width="10" height="10" viewBox="0 0 12 12" fill="none">
             <path d="M2.5 4.5L6 8L9.5 4.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
@@ -353,7 +460,7 @@ function MatchGroup({ match, scoreData, liveStats, onDismiss }) {
     <div style={{ borderRadius: 12, border: `1px solid ${accent}`, overflow: 'hidden', background: accentBg }}>
       <div style={{ position: 'relative', display: 'flex', alignItems: 'center', padding: '1rem', borderBottom: '1px solid rgba(255,255,255,0.06)', minHeight: 110 }}>
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.3rem', flex: 1 }}>
-          <TeamLogo logo={scoreData?.homeLogo} short={homeShort} name={homeTeam} size={44} />
+          <TeamLogo logo={scoreData?.homeLogo} short={normShort(homeShort)} name={homeTeam} size={44} />
           <span style={{ fontSize: 10, fontWeight: 700 }}>{homeShort || homeTeam}</span>
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.3rem', minWidth: 90, flexShrink: 0 }}>
@@ -368,7 +475,7 @@ function MatchGroup({ match, scoreData, liveStats, onDismiss }) {
           <MatchStatusBadge scoreData={scoreData} />
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.3rem', flex: 1 }}>
-          <TeamLogo logo={scoreData?.awayLogo} short={awayShort} name={awayTeam} size={44} />
+          <TeamLogo logo={scoreData?.awayLogo} short={normShort(awayShort)} name={awayTeam} size={44} />
           <span style={{ fontSize: 10, fontWeight: 700 }}>{awayShort || awayTeam}</span>
         </div>
         <span style={{ position: 'absolute', right: 10, top: 8, fontSize: 9, color: 'var(--text-dim)' }}>{alerts.length} pari{alerts.length > 1 ? 's' : ''}</span>
@@ -385,44 +492,141 @@ export default function RunningPage() {
   const [rawAlerts, setRawAlerts] = useState(() => {
     try { return JSON.parse(localStorage.getItem(ALERT_KEY) || '[]'); } catch { return []; }
   });
+  const [rawTotalAlerts, setRawTotalAlerts] = useState(() => {
+    try { return JSON.parse(localStorage.getItem(GAME_TOTAL_KEY) || '[]'); } catch { return []; }
+  });
+  const [bttsAlerts, setBttsAlerts] = useState(() => {
+    try { return JSON.parse(localStorage.getItem(FB_BTTS_KEY) || '[]'); } catch { return []; }
+  });
+  const [fbTotalAlerts, setFbTotalAlerts] = useState(() => {
+    try { return JSON.parse(localStorage.getItem(FB_TOTAL_KEY) || '[]'); } catch { return []; }
+  });
+  const [fbResultAlerts, setFbResultAlerts] = useState(() => {
+    try { return JSON.parse(localStorage.getItem(FB_RESULT_KEY) || '[]'); } catch { return []; }
+  });
 
   useEffect(() => {
-    fetch('/api/settlements').then(r => r.json()).then(settlements => {
-      if (!settlements?.length) return;
-      const raw = JSON.parse(localStorage.getItem(ALERT_KEY) || '[]');
-      let changed = false;
-      const updated = raw.map(a => {
-        const s = settlements.find(x => x.id === a.id);
-        if (!s || a.status === s.status) return a;
-        changed = true;
-        return { ...a, status: s.status, actualStat: s.actualStat ?? null };
-      });
-      if (changed) { localStorage.setItem(ALERT_KEY, JSON.stringify(updated)); setRawAlerts(updated); }
-    }).catch(() => {});
+    // Resynchronise % et projections sur le modèle live + dédoublonne les entrées
+    // legacy (cf. syncAlerts.js) — sans ça, "Running" affichait des % figés au clic
+    // au lieu de ceux du modèle en direct visible sur Analyse Props.
+    const reloadFromStorage = () => {
+      try { setRawAlerts(JSON.parse(localStorage.getItem(ALERT_KEY) || '[]')); } catch {}
+      try { setRawTotalAlerts(JSON.parse(localStorage.getItem(GAME_TOTAL_KEY) || '[]')); } catch {}
+    };
+    const reloadFootball = () => {
+      try { setBttsAlerts(JSON.parse(localStorage.getItem(FB_BTTS_KEY) || '[]')); } catch {}
+      try { setFbTotalAlerts(JSON.parse(localStorage.getItem(FB_TOTAL_KEY) || '[]')); } catch {}
+      try { setFbResultAlerts(JSON.parse(localStorage.getItem(FB_RESULT_KEY) || '[]')); } catch {}
+    };
+    window.addEventListener('nba_alerts_updated', reloadFromStorage);
+    window.addEventListener('fb_btts_alerts_updated', reloadFootball);
+    window.addEventListener('fb_total_alerts_updated', reloadFootball);
+    window.addEventListener('fb_result_alerts_updated', reloadFootball);
+    syncBackgroundAlerts().then(reloadFromStorage);
+    syncGameTotalAlerts().then(reloadFromStorage);
+    syncOddsDrift().then(reloadFromStorage);
+    syncFootballAlerts().then(reloadFootball);
+    const syncTimer = setInterval(() => {
+      syncBackgroundAlerts().then(reloadFromStorage);
+      syncGameTotalAlerts().then(reloadFromStorage);
+      syncOddsDrift().then(reloadFromStorage);
+      syncFootballAlerts().then(reloadFootball);
+    }, 2 * 60 * 1000);
+
+    // Filet de rattrapage : renvoie au backend les alertes accepted qui n'auraient pas
+    // été synchronisées (POST raté à l'acceptation) — sinon elles ne sont jamais settle.
+    try {
+      const existing = JSON.parse(localStorage.getItem(ALERT_KEY) || '[]');
+      existing.filter(a => a.status === 'accepted').forEach(a =>
+        fetch('/api/accepted-alerts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(a) }).catch(() => {})
+      );
+    } catch {}
+    syncSettlements().then(reloadFromStorage);
+
+    // Règlement BTTS/O-U football (CDM uniquement, cf. resolveCompletedFootballAlerts)
+    try {
+      const btts = JSON.parse(localStorage.getItem(FB_BTTS_KEY) || '[]');
+      resolveCompletedFootballAlerts(btts, alerts => { localStorage.setItem(FB_BTTS_KEY, JSON.stringify(alerts)); setBttsAlerts(alerts); });
+      const fbTotal = JSON.parse(localStorage.getItem(FB_TOTAL_KEY) || '[]');
+      resolveCompletedFootballAlerts(fbTotal, alerts => { localStorage.setItem(FB_TOTAL_KEY, JSON.stringify(alerts)); setFbTotalAlerts(alerts); });
+      const fbResult = JSON.parse(localStorage.getItem(FB_RESULT_KEY) || '[]');
+      resolveCompletedFootballAlerts(fbResult, alerts => { localStorage.setItem(FB_RESULT_KEY, JSON.stringify(alerts)); setFbResultAlerts(alerts); });
+    } catch {}
+
+    return () => {
+      window.removeEventListener('nba_alerts_updated', reloadFromStorage);
+      window.removeEventListener('fb_btts_alerts_updated', reloadFootball);
+      window.removeEventListener('fb_total_alerts_updated', reloadFootball);
+      window.removeEventListener('fb_result_alerts_updated', reloadFootball);
+      clearInterval(syncTimer);
+    };
   }, []);
 
   const groups = groupAlerts(rawAlerts);
   const acceptedGroups = groups.filter(g => g.status === 'accepted');
-  const matchGroups = groupByMatch(acceptedGroups);
+  const acceptedTotalGroups = rawTotalAlerts.filter(a => a.status === 'accepted').map(totalAlertToGroup);
+  const acceptedBtts = bttsAlerts.filter(a => a.status === 'accepted');
+  const acceptedFbTotal = fbTotalAlerts.filter(a => a.status === 'accepted');
+  const acceptedFbResult = fbResultAlerts.filter(a => a.status === 'accepted');
+  const footballGroups = [...acceptedBtts.map(footballAlertToGroup), ...acceptedFbTotal.map(footballAlertToGroup), ...acceptedFbResult.map(footballAlertToGroup)];
+  const allAcceptedGroups = [...acceptedGroups, ...acceptedTotalGroups, ...footballGroups];
+  const matchGroups = groupByMatch(allAcceptedGroups);
   const liveStats = useLiveBoxscore(acceptedGroups);
-  const scoreData = useLiveScores(matchGroups);
+  const { scores: scoreData, loaded: scoresLoaded } = useLiveScores(matchGroups);
 
   // Indique à LeftNav si un match est vraiment en cours (pas juste terminé)
   useEffect(() => {
-    const isInProgress = (s, sd) => s === 'STATUS_IN_PROGRESS'
+    const isInProgress = (s, sd) => IN_GAME(s)
       || (s === 'STATUS_SCHEDULED' && (sd?.homeScore > 0 || sd?.awayScore > 0));
     const hasInProgress = matchGroups.some(m => isInProgress(scoreData[m.matchKey]?.status, scoreData[m.matchKey]));
     localStorage.setItem('running_has_live', hasInProgress ? '1' : '0');
   }, [matchGroups, scoreData]);
 
-  const dismiss = (ids) => {
+  const dismiss = (ids, group) => {
+    if (group?.type === 'game_total') {
+      const idSet = new Set(ids);
+      const updated = rawTotalAlerts.map(a => idSet.has(a.id) ? { ...a, status: 'void' } : a);
+      try { localStorage.setItem(GAME_TOTAL_KEY, JSON.stringify(updated)); } catch {}
+      setRawTotalAlerts(updated);
+      return;
+    }
+    if (group?.type === 'football_btts') { dismissBtts(group.ids[0]); return; }
+    if (group?.type === 'football_total') { dismissFbTotal(group.ids[0]); return; }
+    if (group?.type === 'football_result') { dismissFbResult(group.ids[0]); return; }
     const idSet = new Set(ids);
-    const updated = rawAlerts.map(a => idSet.has(a.id) ? { ...a, status: 'void' } : a);
+    const gTime = group?.fixtureDate ? new Date(group.fixtureDate).getTime() : null;
+    const gStat = group?.stats?.[0]?.stat;
+    const gDir  = group?.stats?.[0]?.direction;
+    const updated = rawAlerts.map(a => {
+      if (idSet.has(a.id)) return { ...a, status: 'void' };
+      // Void les copies avec un ID différent mais même empreinte (date UTC à cheval sur minuit)
+      if (group && a.status === 'accepted' && gStat && gDir &&
+          a.player === group.player && a.stat === gStat && a.direction === gDir &&
+          gTime && Math.abs(new Date(a.fixtureDate).getTime() - gTime) < 48 * 3600_000)
+        return { ...a, status: 'void' };
+      return a;
+    });
     try { localStorage.setItem(ALERT_KEY, JSON.stringify(updated)); } catch {}
     setRawAlerts(updated);
   };
 
-  const total = acceptedGroups.length;
+  const dismissBtts = (id) => {
+    const updated = bttsAlerts.filter(a => a.id !== id);
+    try { localStorage.setItem(FB_BTTS_KEY, JSON.stringify(updated)); } catch {}
+    setBttsAlerts(updated);
+  };
+  const dismissFbTotal = (id) => {
+    const updated = fbTotalAlerts.filter(a => a.id !== id);
+    try { localStorage.setItem(FB_TOTAL_KEY, JSON.stringify(updated)); } catch {}
+    setFbTotalAlerts(updated);
+  };
+  const dismissFbResult = (id) => {
+    const updated = fbResultAlerts.filter(a => a.id !== id);
+    try { localStorage.setItem(FB_RESULT_KEY, JSON.stringify(updated)); } catch {}
+    setFbResultAlerts(updated);
+  };
+
+  const total = allAcceptedGroups.length;
 
   return (
     <div className="page placebet-page">
@@ -443,15 +647,22 @@ export default function RunningPage() {
           Aucun pari accepté en cours.
         </div>
       ) : (() => {
-        const isActive = (s, sd) => s === 'STATUS_IN_PROGRESS' || s === 'STATUS_FINAL'
+        const isActive = (s, sd) => IN_GAME(s) || s === 'STATUS_FINAL'
           || (s === 'STATUS_SCHEDULED' && (sd?.homeScore > 0 || sd?.awayScore > 0));
-        const liveGroups = matchGroups.filter(m => isActive(scoreData[m.matchKey]?.status, scoreData[m.matchKey]));
-        const scheduledGroups = matchGroups.filter(m => !isActive(scoreData[m.matchKey]?.status, scoreData[m.matchKey]));
+        // Avant que les scores chargent, tout s'affiche dans la zone principale (pas de saut)
+        const liveGroups    = scoresLoaded ? matchGroups.filter(m =>  isActive(scoreData[m.matchKey]?.status, scoreData[m.matchKey])) : matchGroups;
+        const scheduledGroups = scoresLoaded ? matchGroups.filter(m => !isActive(scoreData[m.matchKey]?.status, scoreData[m.matchKey])) : [];
         return (
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: '0.75rem' }}>
-            {liveGroups.map(m => (
-              <MatchGroup key={m.matchKey} match={m} scoreData={scoreData[m.matchKey] || null} liveStats={liveStats} onDismiss={dismiss} />
-            ))}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+            {liveGroups.length > 0 && (
+              <div style={{ display: 'flex', flexDirection: 'row', flexWrap: 'wrap', gap: '0.75rem', alignItems: 'flex-start' }}>
+                {liveGroups.map(m => (
+                  <div key={m.matchKey} style={{ width: 300, flexShrink: 0 }}>
+                    <MatchGroup match={m} scoreData={scoreData[m.matchKey] || null} liveStats={liveStats} onDismiss={dismiss} />
+                  </div>
+                ))}
+              </div>
+            )}
             {scheduledGroups.length > 0 && (
               <div style={{ position: 'fixed', bottom: 24, left: 236, zIndex: 200, display: 'flex', flexDirection: 'row', flexWrap: 'wrap', gap: '0.4rem', maxWidth: '70vw' }}>
                 {scheduledGroups.map(m => (

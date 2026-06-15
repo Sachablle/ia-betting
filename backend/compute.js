@@ -11,7 +11,6 @@ function calcAvg(games, key, n) {
   return slice.length ? slice.reduce((s, v) => s + v, 0) / slice.length : null;
 }
 
-// EWA avec decay=0.82 — identique au frontend
 function calcEWA(games, key, n, decay = 0.82) {
   const slice = games.slice(0, n).map(g => g[key]).filter(v => v != null && !isNaN(v));
   if (!slice.length) return null;
@@ -24,26 +23,77 @@ function calcEWA(games, key, n, decay = 0.82) {
   return total / wSum;
 }
 
-function normalCDF(z) {
-  const t = 1 / (1 + 0.2316419 * Math.abs(z));
-  const d = 0.3989423 * Math.exp(-z * z / 2);
-  const p = d * t * (0.3193815 + t * (-0.3565638 + t * (1.7814779 + t * (-1.8212560 + t * 1.3302744))));
-  return z > 0 ? 1 - p : p;
+// CDF exacte de la loi de Student df=4
+// Formule dérivée : F(t) = 0.5 + t*(6+t²) / (2*(4+t²)^1.5)
+// Vérifiée sur quantiles connus (t=2.132 → 94.99%, t=1.0 → 81.3%)
+function tCDF4(t) {
+  const t2 = t * t;
+  const p  = (t * (6 + t2)) / (2 * Math.pow(4 + t2, 1.5));
+  return 0.5 + Math.max(-0.4999, Math.min(0.4999, p));
 }
 
-function probAtLeast(estimate, std, threshold) {
-  if (!std || std <= 0) return threshold <= estimate ? 0.70 : 0.30;
-  const z = (threshold - 0.5 - estimate) / std;
-  return Math.max(0.01, Math.min(0.99, 1 - normalCDF(z)));
-}
-
+// Écart-type empirique — sample std (n-1) + plancher par stat
 function calcStd(games, key) {
   const vals = (games || [])
     .filter(g => g.min > 10 && g[key] != null && !(key === 'pts' && g.pts === 0 && g.min >= 12))
     .map(g => g[key]);
   if (vals.length < 3) return null;
   const mean = vals.reduce((s, v) => s + v, 0) / vals.length;
-  return Math.sqrt(vals.reduce((s, v) => s + (v - mean) ** 2, 0) / vals.length);
+  // Bessel correction (n-1) pour meilleure estimation sur petits échantillons
+  return Math.sqrt(vals.reduce((s, v) => s + (v - mean) ** 2, 0) / (vals.length - 1));
+}
+
+// Plafonne les n matchs les plus récents (poids EWA les plus forts, decay=0.82 → ~52-60%
+// du poids total sur les 3 derniers) à [moyenne saison ± cap×écart-type].
+// Un seul match exceptionnel (ex: 8 rebonds pour une joueuse à 3.27 de moyenne, std=2.28)
+// ne doit pas dicter toute la projection EWA — cf. cas Pauline Astier (14/06/2026, reb).
+function winsorizeRecent(games, key, seasonAvg, std, n = 3, cap = 1.5) {
+  if (!std || seasonAvg == null) return games;
+  const lo = Math.max(0, seasonAvg - cap * std);
+  const hi = seasonAvg + cap * std;
+  return (games || []).map((g, i) => {
+    if (i >= n || g[key] == null) return g;
+    if (g[key] > hi) return { ...g, [key]: hi };
+    if (g[key] < lo) return { ...g, [key]: lo };
+    return g;
+  });
+}
+
+// P(joueur ≥ threshold) — loi de Student df=4 + shrinkage vers la ligne + std calibré ×1.5
+// stat: 'pts' | 'reb' | 'ast' | null
+// deviation: |adjMult - 1| — mesure à quel point la projection s'écarte de la moyenne saison
+//            (empilement de facteurs). Plus l'écart est grand, plus on élargit le std :
+//            une projection "extrême" repose sur l'accumulation de petits ajustements
+//            individuellement incertains, donc moins fiable que son écart à la ligne ne le suggère.
+// Ratio moyenne WNBA / moyenne NBA (= WNBA_SCALE inversé, server.js) — sert à
+// redimensionner le plancher de std pour les stats à plus petite échelle WNBA.
+const WNBA_STD_FLOOR_SCALE = 87.0 / 114.5;
+
+function probAtLeast(estimate, std, threshold, stat = null, deviation = 0, isWNBA = false) {
+  // Shrinkage : tire l'estimation vers la ligne du bookmaker
+  // pts surestimé systématiquement → plus fort shrinkage
+  // ast : la ligne du bookmaker intègre des infos indisponibles au modèle (chimie
+  // avec les coéquipiers du soir) → shrinkage renforcé (0.14 → 0.20)
+  // tpm : stat à faible volume / forte variance relative (CV élevé) → aussi sensible
+  // que ast aux pics isolés de l'EWA (15 juin 2026, cf. cas Astier reb)
+  // reb reste à 0.12 : bilan 17W-7L (70.8%) déjà proche de l'objectif, ne pas
+  // sur-corriger sur la base d'une seule perte — winsorizeRecent suffit comme garde-fou structurel
+  const shrinkA = stat === 'pts' ? 0.35 : stat === 'reb' ? 0.12 : stat === 'ast' ? 0.20 : stat === 'tpm' ? 0.25 : 0.20;
+  const shrunk  = estimate + shrinkA * (threshold - estimate);
+
+  // Std calibré : ×1.5 pour corriger la sous-estimation de la variance + plancher minimum
+  // + boost proportionnel à l'écart de la projection par rapport à la moyenne saison
+  // Plancher calibré sur l'échelle NBA (pts~20+) ; en WNBA (stats plus basses) ce
+  // plancher absolu représente une variance relative ~50% plus grande et écrase
+  // toutes les probas vers 50-65% → on le redimensionne au ratio WNBA/NBA.
+  const stdFloorBase = stat === 'pts' ? 4.0 : stat === 'reb' ? 2.0 : stat === 'ast' ? 1.5 : stat === 'tpm' ? 1.0 : 3.0;
+  const stdFloor   = isWNBA ? stdFloorBase * WNBA_STD_FLOOR_SCALE : stdFloorBase;
+  const devBoost   = 1 + Math.min(1.0, deviation * 2.5);
+  const adjStd     = Math.max(stdFloor, (std || stdFloor) * 1.5 * devBoost);
+
+  // Correction de continuité -0.5 (stats discrètes) + t-distribution df=4
+  const z = (threshold - 0.5 - shrunk) / adjStd;
+  return Math.max(0.01, Math.min(0.99, 1 - tCDF4(z)));
 }
 
 function getStreakFactor(games, seasonAvg) {
@@ -75,15 +125,13 @@ function getSeriesGameFactor(round, usg, isHome = false) {
   if (!round) return { val: 1.0 };
   const m = round.match(/game\s*(\d)/i);
   if (!m) return { val: 1.0 };
-  const gn     = parseInt(m[1]);
+  const gn    = parseInt(m[1]);
   const isStar = (usg ?? 0) > 24;
   if (!isStar) return { val: 1.0 };
-  // À domicile : les stars s'élèvent dans les matchs à enjeu (protection du parquet, crowd energy)
   if (isHome) {
     const homeMap = { 1: 1.0, 2: 1.0, 3: 1.0, 4: 1.01, 5: 1.02, 6: 1.02, 7: 1.03 };
     return { val: homeMap[gn] ?? 1.01 };
   }
-  // À l'extérieur : pression + hostilité de la salle → pénalité maintenue
   const awayMap = { 1: 1.0, 2: 0.97, 3: 0.95, 4: 0.94, 5: 0.94, 6: 0.95, 7: 0.96 };
   return { val: awayMap[gn] ?? 0.94 };
 }
@@ -118,20 +166,31 @@ function getDefFactor(oppGames, isPlayoff = false) {
   return { val: Math.min(1.2, Math.max(0.8, avgAllowed / avg)) };
 }
 
+function toDefCat(pos) {
+  if (!pos) return 'F';
+  const p = String(pos).toUpperCase();
+  if (p === 'PG' || p === 'SG' || p === 'G' || p.startsWith('G')) return 'G';
+  if (p === 'C'  || p.startsWith('C')) return 'C';
+  return 'F';
+}
+
 function getDefByPosFactor(teamDef, position) {
   if (!teamDef || !position) return { val: 1.0 };
-  const posKey    = String(position)[0].toUpperCase();
+  const posKey    = toDefCat(position);
   const allowed   = teamDef[posKey];
-  const leagueAvg = LEAGUE_AVG_BY_POS[posKey];
+  // _leagueAvg permet de fournir une moyenne ligue alternative (ex: WNBA, calculée
+  // dynamiquement côté server.js) — sinon on retombe sur la constante NBA
+  const leagueAvg = (teamDef._leagueAvg || LEAGUE_AVG_BY_POS)[posKey];
   if (!allowed || !leagueAvg) return { val: 1.0 };
   return { val: Math.min(1.25, Math.max(0.75, allowed / leagueAvg)) };
 }
 
-function getH2HFactor(games, oppAbbr, seasonAvg) {
+// H2H étendu à toutes les stats (pts, reb, ast)
+function getH2HFactor(games, oppAbbr, seasonAvg, stat = 'pts') {
   if (!games?.length || !oppAbbr || !seasonAvg) return { val: 1.0 };
   const h2h = games.filter(g => g.opponentAbbr === oppAbbr);
   if (!h2h.length) return { val: 1.0 };
-  const a = calcAvg(h2h, 'pts', h2h.length);
+  const a = calcAvg(h2h, stat, h2h.length);
   if (!a) return { val: 1.0 };
   return { val: Math.min(1.3, Math.max(0.7, a / seasonAvg)) };
 }
@@ -146,7 +205,6 @@ function getRestFactor(myGames, gameDate) {
   return { val: 1.03 };
 }
 
-// Fenêtre 5 jours — identique au frontend
 function getScheduleDensityFactor(myGames, gameDate) {
   if (!myGames?.length) return { val: 1.0 };
   const gd     = new Date(gameDate);
@@ -162,12 +220,28 @@ function getScheduleDensityFactor(myGames, gameDate) {
   return { val: 1.0 };
 }
 
-function getLocationFactor(isHome, isPlayoff = false) {
-  if (isPlayoff) return { val: isHome ? 1.04 : 0.96 };
-  return { val: isHome ? 1.025 : 0.975 };
+// Split domicile/extérieur basé sur les vrais gamelogs du joueur
+// Remplace le flat ±2.5% par le comportement réel observé
+function getHomeAwaySplitFactor(gamelogs, isHome, isPlayoff = false) {
+  const g = (gamelogs || []).filter(gl => gl.min > 10 && gl.pts != null && gl.isHome != null);
+  const homeG = g.filter(gl => gl.isHome === true);
+  const awayG = g.filter(gl => gl.isHome === false);
+
+  // Fallback générique si pas assez de données (< 4 matchs par contexte)
+  if (homeG.length < 4 || awayG.length < 4) {
+    return { val: isPlayoff ? (isHome ? 1.04 : 0.96) : (isHome ? 1.025 : 0.975) };
+  }
+
+  const homeAvg  = homeG.reduce((s, gl) => s + gl.pts, 0) / homeG.length;
+  const awayAvg  = awayG.reduce((s, gl) => s + gl.pts, 0) / awayG.length;
+  const totalAvg = (homeAvg + awayAvg) / 2;
+  if (!totalAvg) return { val: isHome ? 1.025 : 0.975 };
+
+  const raw      = isHome ? homeAvg / totalAvg : awayAvg / totalAvg;
+  const maxSplit = isPlayoff ? 0.12 : 0.10;
+  return { val: Math.min(1 + maxSplit, Math.max(1 - maxSplit, raw)) };
 }
 
-// Blowout / garbage time — identique au frontend
 function getBlowoutFactor(homeImpliedProb) {
   if (homeImpliedProb == null) return { val: 1.0 };
   const dominant = Math.max(homeImpliedProb, 1 - homeImpliedProb);
@@ -230,6 +304,25 @@ function getFTRateFactor(games) {
   return { val: Math.min(1.06, Math.max(0.94, 0.5 + 0.5 * (recentFTR / histFTR))) };
 }
 
+// Ancre pts sur le volume de tirs récent (rôle, stable) × efficacité saison (pts par possession-tir,
+// stable car moyennée sur tout l'échantillon) — indépendant des séries chaudes/froides au tir.
+// N'est PAS injecté dans rawMult : appliqué uniquement à projPts (15 juin 2026, cf. project_pts_shot_data_upgrade).
+function getShotVolumeAnchor(games, ptsKey = 'pts', minKey = 'min') {
+  const valid = (games || []).filter(g => g.fga != null && (g[minKey] ?? 0) > 10);
+  if (valid.length < 6) return null;
+
+  const recent = valid.slice(0, 3);
+  if (recent.length < 2) return null;
+  const recentPoss = recent.reduce((s, g) => s + g.fga + 0.44 * (g.fta ?? 0), 0) / recent.length;
+
+  const totalPts  = valid.reduce((s, g) => s + (g[ptsKey] ?? 0), 0);
+  const totalPoss = valid.reduce((s, g) => s + g.fga + 0.44 * (g.fta ?? 0), 0);
+  if (totalPoss <= 0) return null;
+  const seasonEff = totalPts / totalPoss;
+
+  return +(recentPoss * seasonEff).toFixed(1);
+}
+
 function getORebFactor(games) {
   const valid = (games || []).filter(g => g.oreb != null && g.min > 10);
   if (valid.length < 4) return { val: 1.0 };
@@ -259,53 +352,77 @@ function isPlayoffRound(round) {
   return r.includes('final') || r.includes('semi') || r.includes('game') || r.includes('playoff');
 }
 
-// homeImpliedProb : probabilité implicite Pinnacle (null si indispo)
-function computeEstimate(player, isHome, oppGames, myGames, gamelogs, oppAbbr, gameDate, round, gameTotal, extra = {}, homeImpliedProb = null, isWNBA = false) {
+function computeEstimate(player, isHome, oppGames, myGames, gamelogs, oppAbbr, gameDate, round, gameTotal, oppDefByPos = null, homeImpliedProb = null, redistributionFactor = 1.0, isWNBA = false) {
   const s = player.stats;
   if (!s?.pts) return null;
 
-  const inPO    = isPlayoffRound(round);
-  const poStart = inPO ? new Date(`${new Date(gameDate).getFullYear()}-04-01`) : null;
-  const rawG    = gamelogs || [];
-  const g = (poStart && rawG.filter(gl => new Date(gl.date) >= poStart).length >= 3)
-    ? rawG.filter(gl => new Date(gl.date) >= poStart)
-    : rawG;
+  // Le gamelog passé est déjà fusionné : boxscores PO de la série + gamelog ESPN saison régulière
+  // (alignement avec mergedGamelog du frontend — plus de filtre date sur g, l'EWA pèse les PO en tête naturellement)
+  const inPO = isPlayoffRound(round);
+  const g    = gamelogs || [];
 
   const injRet = getInjuryReturnFactor(player, g, gameDate);
   if (injRet.isOut) return null;
 
-  const poCount  = poStart ? rawG.filter(gl => new Date(gl.date) >= poStart).length : 0;
+  const poStart   = inPO ? new Date(`${new Date(gameDate).getFullYear()}-04-01`) : null;
+  const poCount   = poStart ? g.filter(gl => new Date(gl.date) >= poStart).length : 0;
   const hasPOData = poCount > 0;
-  // Identique au frontend : exclut uniquement les 0 pts avec min >= 12
+
   const gClean = g.filter(gl => !(gl.pts === 0 && (gl.min ?? 0) >= 12));
-  const poEWAPts = gClean.length >= 4 ? calcEWA(gClean, 'pts', 10) : null;
-  const poEWAReb = s.reb && g.length >= 4 ? calcEWA(g, 'reb', 10) : null;
-  const poEWAAst = s.ast && g.length >= 4 ? calcEWA(g, 'ast', 10) : null;
-  const ewaW = isWNBA ? 0.70 : (inPO && hasPOData && poCount >= 3) ? 0.65 : 0.60;
+
+  // Plafonne les pics isolés des matchs récents avant l'EWA (cf. winsorizeRecent)
+  const gPtsW = winsorizeRecent(gClean, 'pts', s.pts, calcStd(g, 'pts'));
+  const gRebW = winsorizeRecent(g, 'reb', s.reb, calcStd(g, 'reb'));
+  const gAstW = winsorizeRecent(g, 'ast', s.ast, calcStd(g, 'ast'));
+  const gTpmW = winsorizeRecent(g, 'tpm', s.tpm, calcStd(g, 'tpm'));
+
+  const ewaBase = gPtsW.length >= 4 ? calcEWA(gPtsW, 'pts', 10) : null;
+  const ewaReb  = s.reb && gRebW.length >= 4 ? calcEWA(gRebW, 'reb', 10) : null;
+  const ewaAst  = s.ast && gAstW.length >= 4 ? calcEWA(gAstW, 'ast', 10) : null;
+  const ewaTpm  = s.tpm && gTpmW.length >= 4 ? calcEWA(gTpmW, 'tpm', 10) : null;
+
+  // Rôle réduit (ex: H. Barnes — saison ~18min, dernier matchs ~8min) : la moyenne saison
+  // ne reflète plus le rôle actuel du joueur → on bascule (presque) tout le poids sur l'EWA récente
+  const recent3Min = g.slice(0, 3).filter(gl => gl.min != null);
+  const recentMin  = recent3Min.length >= 2 ? recent3Min.reduce((sum, gl) => sum + gl.min, 0) / recent3Min.length : null;
+  const seasonMin  = s.min;
+  const roleShrunk = recentMin != null && seasonMin > 5 && (recentMin / seasonMin) < 0.6;
+
+  const ewaWBase = isWNBA ? 0.70 : (inPO && hasPOData && poCount >= 3) ? 0.65 : 0.60;
+  const ewaW = roleShrunk ? Math.max(ewaWBase, 0.92) : ewaWBase;
   const rsW  = 1 - ewaW;
 
-  // L3 crosscheck (3 matchs) — identique au frontend, évite la surpondération des hot streaks
   const l3Clean = gClean.slice(0, 3).filter(gl => (gl.min ?? 0) >= 12 && gl.pts != null);
   const l3Avg   = l3Clean.length >= 2 ? l3Clean.reduce((sum, gl) => sum + gl.pts, 0) / l3Clean.length : null;
-  const useL3   = l3Avg != null && poEWAPts != null && Math.abs(l3Avg - poEWAPts) / poEWAPts > 0.25;
-  const effEWA  = useL3 ? l3Avg : poEWAPts;
+  const useL3   = l3Avg != null && ewaBase != null && Math.abs(l3Avg - ewaBase) / ewaBase > 0.25;
+  const effEWA  = useL3 ? l3Avg : ewaBase;
 
-  const basePts = effEWA != null ? +(ewaW * effEWA + rsW * s.pts).toFixed(1) : s.pts;
-  const baseReb = s.reb ? (poEWAReb != null ? +(ewaW * poEWAReb + rsW * s.reb).toFixed(1) : s.reb) : null;
-  const baseAst = s.ast ? (poEWAAst != null ? +(ewaW * poEWAAst + rsW * s.ast).toFixed(1) : s.ast) : null;
+  // redistributionFactor > 1 quand un coéquipier à fort USG est OUT → boost proportionnel
+  const basePts = (effEWA != null ? +(ewaW * effEWA + rsW * s.pts).toFixed(1) : s.pts) * redistributionFactor;
+  const baseReb = s.reb ? ((ewaReb != null ? +(ewaW * ewaReb + rsW * s.reb).toFixed(1) : s.reb) * redistributionFactor) : null;
+  const baseAst = s.ast ? ((ewaAst != null ? +(ewaW * ewaAst + rsW * s.ast).toFixed(1) : s.ast) * redistributionFactor) : null;
+  const baseTpm = s.tpm ? ((ewaTpm != null ? +(ewaW * ewaTpm + rsW * s.tpm).toFixed(1) : s.tpm) * redistributionFactor) : null;
 
-  // Fix 4 — atténuer facteurs défensifs si < 15 matchs (données peu fiables)
   const sampleDamp = n => n >= 15 ? 1.0 : n < 5 ? 0.0 : (n - 5) / 10;
   const dampen = sampleDamp(Math.min(oppGames?.length || 0, myGames?.length || 0));
 
   const rawPaceF = getPaceFactor(oppGames);
-  const rawDefF  = extra.defByPos ? getDefByPosFactor(extra.defByPos, player.position) : getDefFactor(oppGames, inPO);
+  const rawDefF  = oppDefByPos ? getDefByPosFactor(oppDefByPos, player.position) : getDefFactor(oppGames, inPO);
   const pace     = { ...rawPaceF, val: 1 + (rawPaceF.val - 1) * dampen };
   const def      = { ...rawDefF,  val: 1 + (rawDefF.val  - 1) * dampen };
-  const h2h     = getH2HFactor(g, oppAbbr, s.pts);
+
+  // H2H par stat — prend en compte l'historique joueur vs cet adversaire spécifique
+  const h2hPts = getH2HFactor(g, oppAbbr, s.pts, 'pts');
+  const h2hReb = s.reb ? getH2HFactor(g, oppAbbr, s.reb, 'reb') : { val: 1.0 };
+  const h2hAst = s.ast ? getH2HFactor(g, oppAbbr, s.ast, 'ast') : { val: 1.0 };
+  const h2hTpm = s.tpm ? getH2HFactor(g, oppAbbr, s.tpm, 'tpm') : { val: 1.0 };
+
   const rest    = getRestFactor(myGames, gameDate);
   const density = getScheduleDensityFactor(myGames, gameDate);
-  const loc     = getLocationFactor(isHome, inPO);
+
+  // Split domicile/extérieur basé sur les vrais gamelogs du joueur (remplace le flat ±2.5%)
+  const loc     = getHomeAwaySplitFactor(g, isHome, inPO);
+
   const vegas   = getVegasTotalFactor(gameTotal, inPO);
   const blowout = getBlowoutFactor(homeImpliedProb);
   const tsF     = getTSFactor(g, inPO);
@@ -313,70 +430,75 @@ function computeEstimate(player, isHome, oppGames, myGames, gamelogs, oppAbbr, g
   const ftRate  = getFTRateFactor(g);
   const orebF   = getORebFactor(g);
   const toaF    = getTOARatioFactor(g);
-  const streak  = getStreakFactor(rawG, basePts);
+  const streak  = getStreakFactor(g, s.pts);
 
-  let adjMult, adjMultReb, adjMultAst;
+  let adjMult, adjMultReb, adjMultAst, adjMultTpm, h2hCapped, h2hRebCapped, h2hAstCapped, h2hTpmCapped;
 
   if (inPO) {
+    // Base EWA déjà alimentée par les matchs PO de la série → H2H double-compte ; cap resserré
+    h2hCapped    = Math.min(1.08, Math.max(0.92, h2hPts.val));
+    h2hRebCapped = Math.min(1.08, Math.max(0.92, h2hReb.val));
+    h2hAstCapped = Math.min(1.08, Math.max(0.92, h2hAst.val));
+    h2hTpmCapped = Math.min(1.08, Math.max(0.92, h2hTpm.val));
     const playoff    = getPlayoffFactor(round);
     const series     = getSeriesGameFactor(round, player.usg, isHome);
-    const h2hCapped  = Math.min(1.08, Math.max(0.92, h2h.val));
     const paceDamped = 1 + (pace.val - 1) * 0.5;
     const roleNormPO = (() => {
       const seasonMin = player.stats?.min;
       if (!seasonMin || seasonMin < 5 || g.length < 2) return 1.0;
-      const recent2  = g.slice(0, 2).filter(gl => gl.min > 0);
-      if (recent2.length < 2) return 1.0;
-      const recentMin = recent2.reduce((s, gl) => s + gl.min, 0) / recent2.length;
-      const ratio = recentMin / seasonMin;
-      if (ratio >= 0.75 && ratio <= 1.15) return 1.0;
-      return Math.min(1.10, Math.max(0.72, ratio));
+      const recent3   = g.slice(0, 3).filter(gl => gl.min > 0);
+      if (recent3.length < 2) return 1.0;
+      const recentMin = recent3.reduce((s, gl) => s + gl.min, 0) / recent3.length;
+      if (recentMin >= seasonMin * 0.75) return 1.0;
+      return Math.max(0.72, recentMin / seasonMin);
     })();
-    const tsAttn     = 1 + (tsF.val    - 1) * 0.5;
-    const volAttn    = 1 + (shotVol.val - 1) * 0.5;
-    const ftAttn     = 1 + (ftRate.val  - 1) * 0.5;
-    const streakAttn = 1 + (streak.val  - 1) * 0.5; // streak atténué ×0.5 en PO
-    const playoffAdj = poEWAPts != null ? 1.0 : playoff.val;
+    const tsAttn  = 1 + (tsF.val    - 1) * 0.5;
+    const volAttn = 1 + (shotVol.val - 1) * 0.5;
+    const ftAttn  = 1 + (ftRate.val  - 1) * 0.5;
+    // Si le gamelog contient déjà des matchs PO, l'EWA reflète l'intensité playoffs → neutralise playoff.val
+    const playoffAdj = hasPOData ? 1.0 : playoff.val;
     const rawMult = def.val * paceDamped * rest.val * density.val * loc.val * vegas.val
                   * blowout.val * injRet.val * roleNormPO * h2hCapped
-                  * tsAttn * volAttn * ftAttn * streakAttn * playoffAdj * series.val;
+                  * tsAttn * volAttn * ftAttn * playoffAdj * series.val;
     adjMult    = Math.min(1.30, Math.max(0.74, rawMult));
-    adjMultReb = Math.min(1.30, Math.max(0.74, rawMult * (1 + (orebF.val - 1) * 0.6)));
-    adjMultAst = Math.min(1.30, Math.max(0.74, rawMult * toaF.val));
+    adjMultReb = Math.min(1.30, Math.max(0.74, rawMult * (1 + (orebF.val - 1) * 0.6) * h2hRebCapped));
+    adjMultAst = Math.min(1.30, Math.max(0.74, rawMult * toaF.val * h2hAstCapped));
+    adjMultTpm = Math.min(1.30, Math.max(0.74, rawMult * h2hTpmCapped));
   } else {
-    const h2hCapped    = Math.min(1.08, Math.max(0.92, h2h.val));
+    h2hCapped    = Math.min(1.08, Math.max(0.92, h2hPts.val));
+    h2hRebCapped = Math.min(1.08, Math.max(0.92, h2hReb.val));
+    h2hAstCapped = Math.min(1.08, Math.max(0.92, h2hAst.val));
+    h2hTpmCapped = Math.min(1.08, Math.max(0.92, h2hTpm.val));
     const streakCapped = Math.min(1.06, Math.max(0.94, streak.val));
-    // Normalisation minutes RS — même logique que PO
-    const roleNormRS = (() => {
-      const seasonMin = player.stats?.min;
-      if (!seasonMin || seasonMin < 5 || g.length < 2) return 1.0;
-      const recent2 = g.slice(0, 2).filter(gl => gl.min > 0);
-      if (recent2.length < 2) return 1.0;
-      const recentMin = recent2.reduce((s, gl) => s + gl.min, 0) / recent2.length;
-      const ratio = recentMin / seasonMin;
-      if (ratio >= 0.75 && ratio <= 1.15) return 1.0;
-      return Math.min(1.10, Math.max(0.72, ratio));
-    })();
-    const rawMult      = def.val * pace.val * rest.val * density.val * loc.val * vegas.val
-                       * blowout.val * injRet.val * streakCapped * h2hCapped * roleNormRS
-                       * tsF.val * shotVol.val * ftRate.val;
+    const rawMult = def.val * pace.val * rest.val * density.val * loc.val * vegas.val
+                  * blowout.val * injRet.val * streakCapped * h2hCapped
+                  * tsF.val * shotVol.val * ftRate.val;
     adjMult    = Math.min(1.24, Math.max(0.78, rawMult));
-    adjMultReb = Math.min(1.24, Math.max(0.78, rawMult * orebF.val));
-    adjMultAst = Math.min(1.24, Math.max(0.78, rawMult * toaF.val));
+    adjMultReb = Math.min(1.24, Math.max(0.78, rawMult * orebF.val * h2hRebCapped));
+    adjMultAst = Math.min(1.24, Math.max(0.78, rawMult * toaF.val * h2hAstCapped));
+    adjMultTpm = Math.min(1.24, Math.max(0.78, rawMult * h2hTpmCapped));
   }
 
-  // Plancher : la projection ne peut jamais tomber sous 72% de la moyenne saison
-  // Évite les projections aberrantes quand les facteurs s'accumulent négativement
-  const floorPts = s.pts * 0.72;
-  const projPts  = Math.max(floorPts, +(basePts * adjMult).toFixed(1));
+  // Rôle réduit : la moyenne saison n'est plus un plancher pertinent (cf. ewaW ci-dessus)
+  const floorPts  = roleShrunk ? basePts * 0.7 : s.pts * 0.72;
+  const projPtsRaw = Math.max(floorPts, +(basePts * adjMult).toFixed(1));
+
+  // Ancrage volume × efficacité saison — n'affecte que pts (reb/ast/tpm inchangés)
+  const volAnchor = getShotVolumeAnchor(g, 'pts', 'min');
+  const projPts   = volAnchor != null
+    ? Math.max(floorPts, +(projPtsRaw * 0.85 + volAnchor * 0.15).toFixed(1))
+    : projPtsRaw;
 
   return {
     pts:       +projPts.toFixed(1),
     reb:       baseReb ? +(baseReb * adjMultReb).toFixed(1) : null,
     ast:       baseAst ? +(baseAst * adjMultAst).toFixed(1) : null,
+    tpm:       baseTpm ? +(baseTpm * adjMultTpm).toFixed(1) : null,
+    // Écart de la projection par rapport à la moyenne saison — sert à élargir le std dans probAtLeast
+    deviation: { pts: Math.abs(adjMult - 1), reb: Math.abs(adjMultReb - 1), ast: Math.abs(adjMultAst - 1), tpm: Math.abs(adjMultTpm - 1) },
     streak,
     isInjured: injRet.isInjured,
   };
 }
 
-export { computeEstimate, calcStd, probAtLeast };
+export { computeEstimate, calcStd, winsorizeRecent, getShotVolumeAnchor, probAtLeast, tCDF4, getRestFactor, getScheduleDensityFactor, isPlayoffRound, toDefCat };

@@ -1,7 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { ComposableMap, Geographies, Geography, Graticule } from 'react-simple-maps';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { FIXTURES } from '../utils/fixtures';
 
 import GEO_DATA from 'world-atlas/countries-110m.json';
 const GEO_URL = GEO_DATA;
@@ -24,36 +23,23 @@ const LEAGUE_META = {
 
 const FOOTBALL_LEAGUES = new Set(['ligue1','laliga','bundes','seriea','pl','cdm']);
 
-// FIFA 3-letter → ISO 2-letter pour drapeaux flagcdn.com
-const FIFA_TO_ISO = {
-  FRA:'fr',SEN:'sn',MEX:'mx',RSA:'za',KOR:'kr',CZE:'cz',CAN:'ca',BIH:'ba',
-  NOR:'no',IRQ:'iq',USA:'us',PAN:'pa',MAR:'ma',TUN:'tn',COL:'co',ECU:'ec',
-  ARG:'ar',BRA:'br',ENG:'gb-eng',ESP:'es',GER:'de',ITA:'it',POR:'pt',
-  NED:'nl',BEL:'be',HRV:'hr',SRB:'rs',POL:'pl',AUS:'au',JPN:'jp',
-  URU:'uy',CHI:'cl',PER:'pe',BOL:'bo',VEN:'ve',PAR:'py',ALB:'al',
-  TUR:'tr',AUT:'at',SUI:'ch',SVK:'sk',SLO:'si',HUN:'hu',SCO:'gb-sct',
-  WAL:'gb-wls',IRL:'ie',DEN:'dk',SWE:'se',FIN:'fi',GRE:'gr',ROU:'ro',
-  UKR:'ua',CRO:'hr',SLV:'sv',GUA:'gt',HON:'hn',CRC:'cr',JAM:'jm',
-};
-const flagUrl = (short) => {
-  const iso = FIFA_TO_ISO[short?.toUpperCase()];
-  return iso ? `https://flagcdn.com/w40/${iso}.png` : null;
-};
-
 const MONDE = { name: 'Monde', flag: '🌍', leagues: ['euroleague','cdm'], isMonde: true };
 
 function Panel({ country, onClose }) {
   const navigate = useNavigate();
   const [matches, setMatches] = useState({});
   const [loading, setLoading] = useState(true);
+  const [view, setView] = useState({}); // { [league]: 'upcoming' | 'done' } — bouton À venir / Terminés par championnat
 
   useEffect(() => {
     if (!country) return;
     setLoading(true);
     const fetchLeague = l => {
       const KEEP_MS = 48*3600_000;
+      const UPCOMING_MS = 30*3600_000; // page principale = matchs imminents (<30h) ; onglet "À venir" = matchs programmés à 30h ou plus
       const splitGames = games => ({
-        upcoming: games.filter(g=>g.status!=='STATUS_FINAL'),
+        soon:     games.filter(g=>g.status!=='STATUS_FINAL' && new Date(g.date).getTime()-Date.now() < UPCOMING_MS),
+        upcoming: games.filter(g=>g.status!=='STATUS_FINAL' && new Date(g.date).getTime()-Date.now() >= UPCOMING_MS),
         done:     games.filter(g=>g.status==='STATUS_FINAL'&&Date.now()-new Date(g.date).getTime()<KEEP_MS).slice(0,3),
       });
       if (l === 'nba')  return fetch('/api/nba/scoreboard').then(r=>r.json()).then(d=>{const s=splitGames(d.games||[]);return{l,...s};});
@@ -67,17 +53,10 @@ function Panel({ country, onClose }) {
         }));
         return{l,...splitGames(all)};
       });
-      if (l === 'cdm') {
-        const now = Date.now();
-        const games = FIXTURES.filter(f => f.league === 'cdm' && new Date(f.date).getTime() > now)
-          .slice(0, 12)
-          .map(f => ({
-            id: f.id, date: f.date, status: 'STATUS_SCHEDULED', round: f.round,
-            home: { name: f.home.name, short: f.home.short, logo: flagUrl(f.home.short), score: null },
-            away: { name: f.away.name, short: f.away.short, logo: flagUrl(f.away.short), score: null },
-          }));
-        return Promise.resolve({ l, upcoming: games, done: [] });
-      }
+      if (l === 'cdm') return fetch('/api/fd/worldcup').then(r=>r.json()).then(d => {
+        const games = (d.games || []).map(g => ({ ...g, id: `fdcdm_${g.id}` }));
+        return {l, ...splitGames(games)};
+      });
       if (l === 'euroleague') return fetch('/api/euroleague/scoreboard').then(r=>r.json()).then(d=>({l,games:(d.games||[]).filter(g=>g.status!=='STATUS_FINAL').slice(0,5)}));
       if (FOOTBALL_LEAGUES.has(l)) return fetch('/api/football/matches').then(r=>r.json()).then(d=>{
         const today = new Date(); today.setHours(0,0,0,0);
@@ -91,12 +70,17 @@ function Panel({ country, onClose }) {
       });
       return fetch(`/api/euro/${l}/scoreboard`).then(r=>r.json()).then(d=>{const s=splitGames(d.games||[]);return{l,...s};});
     };
-    Promise.all(country.leagues.map(l => fetchLeague(l).catch(()=>({l,upcoming:[],done:[]})))).then(res => {
+    const load = () => Promise.all(country.leagues.map(l => fetchLeague(l).catch(()=>({l,soon:[],upcoming:[],done:[]})))).then(res => {
       const m={};
-      res.forEach(({l,upcoming=[],done=[]})=>{m[l]={upcoming,done};});
+      res.forEach(({l,soon=[],upcoming=[],done=[]})=>{m[l]={soon,upcoming,done};});
       setMatches(m);
       setLoading(false);
     });
+    load();
+    // Rafraîchit régulièrement pour faire passer un match terminé de "À venir" à "Terminés"
+    // sans devoir fermer/réouvrir le panneau (settlement plus rapide pour la CDM).
+    const t = setInterval(load, 60_000);
+    return () => clearInterval(t);
   }, [country?.name]);
 
   return (
@@ -133,12 +117,12 @@ function Panel({ country, onClose }) {
         {loading ? (
           <div style={{display:'flex',alignItems:'center',justifyContent:'center',height:'100%',color:'rgba(251,146,60,0.25)',fontFamily:'monospace',fontSize:11,letterSpacing:'0.1em'}}>CHARGEMENT...</div>
         ) : country.leagues.map(league => {
-          // games déjà défini via upcoming ci-dessus — garder pour compatibilité
-          const _unused = matches[league];
           const isFootball = FOOTBALL_LEAGUES.has(league);
           const lp = league==='wnba'?'?league=wnba':['nba'].includes(league)?'':`?league=${league}`;
-          const { upcoming=[], done=[] } = matches[league] || {};
-          const games = upcoming;
+          const { soon=[], upcoming=[], done=[] } = matches[league] || {};
+          // Page principale = matchs imminents (<30h) ; "À venir" = matchs à 30h+ ; "Terminés" = résultats récents
+          const mode = view[league] || 'soon';
+          const games = mode === 'upcoming' ? upcoming : soon;
           return (
             <div key={league} style={{marginBottom:'1.5rem'}}>
               <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:10}}>
@@ -150,106 +134,119 @@ function Panel({ country, onClose }) {
                     <div style={{width:5,height:5,borderRadius:'50%',background:col,boxShadow:`0 0 8px ${col}`}}/>
                     <span style={{fontSize:10,fontWeight:700,color:col,fontFamily:'monospace',textTransform:'uppercase',letterSpacing:'0.1em'}}>{LEAGUE_META[league]}</span>
                     <div style={{flex:1,height:1,background:`${col}18`}}/>
+                    {(soon.length > 0 || upcoming.length > 0 || done.length > 0) && (
+                      <div style={{display:'flex',gap:4}}>
+                        {[['upcoming','À venir','#60a5fa'],['done','Terminés','#4ade80']].map(([v,label,vcol]) => {
+                          const active = mode === v;
+                          return (
+                            <button key={v} onClick={()=>setView(s=>({...s,[league]: active ? 'soon' : v}))}
+                              style={{
+                                fontSize:8,fontWeight:700,fontFamily:'monospace',textTransform:'uppercase',letterSpacing:'0.06em',
+                                padding:'3px 7px',borderRadius:4,cursor:'pointer',transition:'all .15s',
+                                background: active ? `${vcol}1f` : 'none',
+                                border: `1px solid ${active ? vcol : `${vcol}55`}`,
+                                color: active ? vcol : `${vcol}99`,
+                              }}>
+                              {label}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
                   </>;
                 })()}
               </div>
-              {games.length===0 ? (
-                <p style={{fontSize:11,color:'rgba(251,146,60,0.18)',fontFamily:'monospace',margin:0,paddingLeft:13}}>Aucun match à venir</p>
-              ) : (() => {
-                // Grouper par date
-                const byDate = {};
-                games.forEach(g => {
-                  const dk = new Date(g.date).toLocaleDateString('fr-FR',{weekday:'short',day:'numeric',month:'long'});
-                  if (!byDate[dk]) byDate[dk] = [];
-                  byDate[dk].push(g);
-                });
-                return Object.entries(byDate).map(([dateLabel, dayGames]) => (
-                  <div key={dateLabel}>
-                    {/* Séparateur date */}
-                    <div style={{display:'flex',alignItems:'center',gap:8,padding:'6px 4px',margin:'4px 0'}}>
-                      <div style={{flex:1,height:'1px',background:'rgba(255,255,255,0.08)'}}/>
-                      <span style={{fontSize:9,fontWeight:700,color:'rgba(255,255,255,0.35)',textTransform:'capitalize',letterSpacing:'0.06em',whiteSpace:'nowrap'}}>{dateLabel}</span>
-                      <div style={{flex:1,height:'1px',background:'rgba(255,255,255,0.08)'}}/>
-                    </div>
-                    {dayGames.map((g,i) => {
-                      const live = g.status==='STATUS_IN_PROGRESS' || (g.home?.score > 0 && g.status!=='STATUS_FINAL');
-                      return (
-                        <button key={i} onClick={()=>{
-                          // Met à jour le state de /carte AVANT de naviguer → navigate(-1) restaurera returnCountry
-                          navigate(location.pathname+location.search, { replace:true, state:{ returnCountry: country } });
-                          setTimeout(()=>navigate(isFootball?`/football/${g.id}`:`/basketball/${g.id}${lp}`), 0);
-                        }}
-                          style={{width:'100%',background:'none',border:'none',borderTop:i>0?'1px solid rgba(255,255,255,0.04)':'none',padding:'0.65rem 0.5rem',cursor:'pointer',textAlign:'center',transition:'background .15s'}}
-                          onMouseEnter={e=>e.currentTarget.style.background='rgba(255,255,255,0.04)'}
-                          onMouseLeave={e=>e.currentTarget.style.background='none'}>
-                          <div style={{display:'flex',alignItems:'center',justifyContent:'center',gap:8,marginBottom:3}}>
-                            {g.home?.logo&&<img src={g.home.logo} alt="" width={20} height={20} style={{objectFit:'contain'}} onError={e=>e.target.style.display='none'}/>}
-                            <span style={{fontSize:12,fontWeight:700,color:'#fff'}}>{g.home?.name||g.home?.short}</span>
-                            {live&&g.home?.score!=null
-                              ? <span style={{fontSize:13,fontWeight:800,color:'#ef4444',fontFamily:'monospace',margin:'0 4px'}}>{g.home.score} – {g.away.score}</span>
-                              : <span style={{fontSize:10,color:'rgba(255,255,255,0.25)',margin:'0 5px'}}>vs</span>
-                            }
-                            <span style={{fontSize:12,fontWeight:700,color:'#fff'}}>{g.away?.name||g.away?.short}</span>
-                            {g.away?.logo&&<img src={g.away.logo} alt="" width={20} height={20} style={{objectFit:'contain'}} onError={e=>e.target.style.display='none'}/>}
-                          </div>
-                          <div style={{display:'flex',alignItems:'center',justifyContent:'center',gap:6}}>
-                            {live
-                              ? <span style={{fontSize:8,color:'#ef4444',fontFamily:'monospace',fontWeight:800}}>● EN COURS</span>
-                              : <>
-                                  {g.round&&<span style={{fontSize:9,color:'rgba(255,255,255,0.3)',fontStyle:'italic'}}>{g.round}</span>}
-                                  <span style={{fontSize:9,color:'rgba(255,255,255,0.4)'}}>{new Date(g.date).toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'})}</span>
-                                </>
-                            }
-                          </div>
-                        </button>
-                      );
-                    })}
-                  </div>
-                ));
-              })()}
-
-              {/* Terminés récents */}
-              {done.length > 0 && (
-                <div style={{marginTop:8}}>
-                  <div style={{display:'flex',alignItems:'center',gap:8,padding:'4px 0',marginBottom:4}}>
-                    <div style={{flex:1,height:'1px',background:'rgba(255,255,255,0.05)'}}/>
-                    <span style={{fontSize:9,color:'rgba(255,255,255,0.25)',letterSpacing:'0.06em'}}>TERMINÉS</span>
-                    <div style={{flex:1,height:'1px',background:'rgba(255,255,255,0.05)'}}/>
-                  </div>
-                  {done.map((g,i)=>{
-                    const lp2=league==='wnba'?'?league=wnba':['nba'].includes(league)?'':`?league=${league}`;
-                    return(
-                      <button key={i} onClick={()=>{
-                        navigate(location.pathname+location.search, { replace:true, state:{ returnCountry: country } });
-                        setTimeout(()=>navigate(isFootball?`/football/${g.id}`:`/basketball/${g.id}${lp2}`), 0);
-                      }}
-                        style={{width:'100%',background:'none',border:'none',borderTop:i>0?'1px solid rgba(255,255,255,0.04)':'none',padding:'0.55rem 0.5rem',cursor:'pointer',textAlign:'center',transition:'background .15s',opacity:0.6}}
-                        onMouseEnter={e=>{e.currentTarget.style.background='rgba(255,255,255,0.04)';e.currentTarget.style.opacity='1';}}
-                        onMouseLeave={e=>{e.currentTarget.style.background='none';e.currentTarget.style.opacity='0.6';}}>
-                        {(() => {
-                          const hs = g.home?.score, as = g.away?.score;
-                          const homeWon = hs != null && as != null && hs > as;
-                          const awayWon = hs != null && as != null && as > hs;
-                          const WIN = '#2d8a2d', DIM = 'rgba(255,255,255,0.35)';
-                          return (
-                            <div style={{display:'flex',alignItems:'center',justifyContent:'center',gap:7,marginBottom:2}}>
-                              {g.home?.logo&&<img src={g.home.logo} alt="" width={16} height={16} style={{objectFit:'contain'}} onError={e=>e.target.style.display='none'}/>}
-                              <span style={{fontSize:11,fontWeight:homeWon?700:500,color:homeWon?'#fff':'rgba(255,255,255,0.55)'}}>{g.home?.name||g.home?.short}</span>
-                              {hs!=null&&<>
-                                <span style={{fontSize:13,fontWeight:800,color:homeWon?WIN:DIM,fontFamily:'monospace'}}>{hs}</span>
-                                <span style={{fontSize:10,color:'rgba(255,255,255,0.2)'}}>–</span>
-                                <span style={{fontSize:13,fontWeight:800,color:awayWon?WIN:DIM,fontFamily:'monospace'}}>{as}</span>
-                              </>}
-                              <span style={{fontSize:11,fontWeight:awayWon?700:500,color:awayWon?'#fff':'rgba(255,255,255,0.55)'}}>{g.away?.name||g.away?.short}</span>
-                              {g.away?.logo&&<img src={g.away.logo} alt="" width={16} height={16} style={{objectFit:'contain'}} onError={e=>e.target.style.display='none'}/>}
+              {mode !== 'done' ? (
+                games.length===0 ? (
+                  <p style={{fontSize:11,color:'rgba(251,146,60,0.18)',fontFamily:'monospace',margin:0,paddingLeft:13}}>{mode === 'upcoming' ? 'Aucun match à venir' : 'Aucun match dans les prochaines 30h'}</p>
+                ) : (() => {
+                  // Grouper par date
+                  const byDate = {};
+                  games.forEach(g => {
+                    const dk = new Date(g.date).toLocaleDateString('fr-FR',{weekday:'short',day:'numeric',month:'long'});
+                    if (!byDate[dk]) byDate[dk] = [];
+                    byDate[dk].push(g);
+                  });
+                  return Object.entries(byDate).map(([dateLabel, dayGames]) => (
+                    <div key={dateLabel}>
+                      {/* Séparateur date */}
+                      <div style={{display:'flex',alignItems:'center',gap:8,padding:'6px 4px',margin:'4px 0'}}>
+                        <div style={{flex:1,height:'1px',background:'rgba(255,255,255,0.08)'}}/>
+                        <span style={{fontSize:9,fontWeight:700,color:'rgba(255,255,255,0.35)',textTransform:'capitalize',letterSpacing:'0.06em',whiteSpace:'nowrap'}}>{dateLabel}</span>
+                        <div style={{flex:1,height:'1px',background:'rgba(255,255,255,0.08)'}}/>
+                      </div>
+                      {dayGames.map((g,i) => {
+                        const live = g.status==='STATUS_IN_PROGRESS' || (g.home?.score > 0 && g.status!=='STATUS_FINAL');
+                        return (
+                          <button key={i} onClick={()=>{
+                            // Met à jour le state de /carte AVANT de naviguer → navigate(-1) restaurera returnCountry
+                            navigate(location.pathname+location.search, { replace:true, state:{ returnCountry: country } });
+                            setTimeout(()=>navigate(isFootball?`/football/${g.id}`:`/basketball/${g.id}${lp}`), 0);
+                          }}
+                            style={{width:'100%',background:'none',border:'none',borderTop:i>0?'1px solid rgba(255,255,255,0.04)':'none',padding:'0.65rem 0.5rem',cursor:'pointer',textAlign:'center',transition:'background .15s'}}
+                            onMouseEnter={e=>e.currentTarget.style.background='rgba(255,255,255,0.04)'}
+                            onMouseLeave={e=>e.currentTarget.style.background='none'}>
+                            <div style={{display:'flex',alignItems:'center',justifyContent:'center',gap:8,marginBottom:3}}>
+                              {g.home?.logo&&<img src={g.home.logo} alt="" width={20} height={20} style={{objectFit:'contain'}} onError={e=>e.target.style.display='none'}/>}
+                              <span style={{fontSize:12,fontWeight:700,color:'#fff'}}>{g.home?.name||g.home?.short}</span>
+                              {live&&g.home?.score!=null
+                                ? <span style={{fontSize:13,fontWeight:800,color:'#ef4444',fontFamily:'monospace',margin:'0 4px'}}>{g.home.score} – {g.away.score}</span>
+                                : <span style={{fontSize:10,color:'rgba(255,255,255,0.25)',margin:'0 5px'}}>vs</span>
+                              }
+                              <span style={{fontSize:12,fontWeight:700,color:'#fff'}}>{g.away?.name||g.away?.short}</span>
+                              {g.away?.logo&&<img src={g.away.logo} alt="" width={20} height={20} style={{objectFit:'contain'}} onError={e=>e.target.style.display='none'}/>}
                             </div>
-                          );
-                        })()}
-                        {g.round&&<div style={{fontSize:9,color:'rgba(255,255,255,0.25)',textAlign:'center'}}>{g.round}</div>}
-                      </button>
-                    );
-                  })}
-                </div>
+                            <div style={{display:'flex',alignItems:'center',justifyContent:'center',gap:6}}>
+                              {live
+                                ? <span style={{fontSize:8,color:'#ef4444',fontFamily:'monospace',fontWeight:800}}>● EN COURS</span>
+                                : <>
+                                    {g.round&&<span style={{fontSize:9,color:'rgba(255,255,255,0.3)',fontStyle:'italic'}}>{g.round}</span>}
+                                    <span style={{fontSize:9,color:'rgba(255,255,255,0.4)'}}>{new Date(g.date).toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'})}</span>
+                                  </>
+                              }
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ));
+                })()
+              ) : (
+                done.length === 0 ? (
+                  <p style={{fontSize:11,color:'rgba(251,146,60,0.18)',fontFamily:'monospace',margin:0,paddingLeft:13}}>Aucun match terminé récemment</p>
+                ) : done.map((g,i)=>{
+                  const lp2=league==='wnba'?'?league=wnba':['nba'].includes(league)?'':`?league=${league}`;
+                  return(
+                    <button key={i} onClick={()=>{
+                      navigate(location.pathname+location.search, { replace:true, state:{ returnCountry: country } });
+                      setTimeout(()=>navigate(isFootball?`/football/${g.id}`:`/basketball/${g.id}${lp2}`), 0);
+                    }}
+                      style={{width:'100%',background:'none',border:'none',borderTop:i>0?'1px solid rgba(255,255,255,0.04)':'none',padding:'0.55rem 0.5rem',cursor:'pointer',textAlign:'center',transition:'background .15s',opacity:0.6}}
+                      onMouseEnter={e=>{e.currentTarget.style.background='rgba(255,255,255,0.04)';e.currentTarget.style.opacity='1';}}
+                      onMouseLeave={e=>{e.currentTarget.style.background='none';e.currentTarget.style.opacity='0.6';}}>
+                      {(() => {
+                        const hs = g.home?.score, as = g.away?.score;
+                        const homeWon = hs != null && as != null && hs > as;
+                        const awayWon = hs != null && as != null && as > hs;
+                        const WIN = '#2d8a2d', DIM = 'rgba(255,255,255,0.35)';
+                        return (
+                          <div style={{display:'flex',alignItems:'center',justifyContent:'center',gap:7,marginBottom:2}}>
+                            {g.home?.logo&&<img src={g.home.logo} alt="" width={16} height={16} style={{objectFit:'contain'}} onError={e=>e.target.style.display='none'}/>}
+                            <span style={{fontSize:11,fontWeight:homeWon?700:500,color:homeWon?'#fff':'rgba(255,255,255,0.55)'}}>{g.home?.name||g.home?.short}</span>
+                            {hs!=null&&<>
+                              <span style={{fontSize:13,fontWeight:800,color:homeWon?WIN:DIM,fontFamily:'monospace'}}>{hs}</span>
+                              <span style={{fontSize:10,color:'rgba(255,255,255,0.2)'}}>–</span>
+                              <span style={{fontSize:13,fontWeight:800,color:awayWon?WIN:DIM,fontFamily:'monospace'}}>{as}</span>
+                            </>}
+                            <span style={{fontSize:11,fontWeight:awayWon?700:500,color:awayWon?'#fff':'rgba(255,255,255,0.55)'}}>{g.away?.name||g.away?.short}</span>
+                            {g.away?.logo&&<img src={g.away.logo} alt="" width={16} height={16} style={{objectFit:'contain'}} onError={e=>e.target.style.display='none'}/>}
+                          </div>
+                        );
+                      })()}
+                      {g.round&&<div style={{fontSize:9,color:'rgba(255,255,255,0.25)',textAlign:'center'}}>{g.round}</div>}
+                    </button>
+                  );
+                })
               )}
             </div>
           );
@@ -337,9 +334,8 @@ export default function WorldMapPage() {
         @keyframes scanLine{0%{top:-2px;opacity:1}90%{opacity:0.8}100%{top:100%;opacity:0;visibility:hidden}}
         @keyframes dotBlink{0%,100%{opacity:1;box-shadow:0 0 6px #ef4444}50%{opacity:0.2;box-shadow:none}}
         @keyframes mapReveal{
-          0%   { clip-path: circle(0% at 50% 50%); opacity: 0; }
-          12%  { opacity: 1; }
-          100% { clip-path: circle(150% at 50% 50%); opacity: 1; }
+          0%   { opacity: 0; transform: scale(0.96); }
+          100% { opacity: 1; transform: scale(1); }
         }
         @keyframes uiReveal{
           from { opacity: 0; transform: translateY(6px); }
@@ -402,8 +398,8 @@ export default function WorldMapPage() {
         transformOrigin: selectedGeoId && ZOOM_ORIGIN[selectedGeoId] ? ZOOM_ORIGIN[selectedGeoId] : '50% 50%',
       }}>
         <ComposableMap
-          projectionConfig={{scale:175, center:[10,8]}}
-          style={{width:'95%', height:'90%', animation:'mapReveal 5s ease-out both'}}
+          projectionConfig={{scale:195, center:[10,8]}}
+          style={{width:'95%', height:'90%', animation:'mapReveal 0.8s ease-out both'}}
         >
           <Geographies geography={GEO_URL}>
             {({geographies})=>geographies.filter(g=>g.id!=='010').map(geo=>{
