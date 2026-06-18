@@ -1587,7 +1587,7 @@ body {
   transition: width 0.5s ease;
 }
 .stat-bar-fill.home         { background: var(--text-dim); margin-left: auto; border-radius: 2px 0 0 2px; }
-.stat-bar-fill.home.leading { background: var(--green); }
+.stat-bar-fill.home.leading { background: var(--blue); }
 .stat-bar-fill.away         { background: var(--text-dim); border-radius: 0 2px 2px 0; }
 .stat-bar-fill.away.leading { background: var(--blue); }
 

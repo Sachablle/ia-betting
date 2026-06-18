@@ -20,7 +20,7 @@ function purgeStaleFixtureCaches() {
       keys.push(k);
       total += (localStorage.getItem(k) || '').length;
     }
-    if (total < 4_000_000) return;
+    if (total < 1_500_000) return;
     const PREFIXES = ['proj_', 'lines_', 'eu_props_', 'prob_'];
     keys.forEach(k => {
       if (PREFIXES.some(p => k.startsWith(p))) localStorage.removeItem(k);
@@ -49,9 +49,13 @@ function purgeAlerts() {
   return false;
 }
 
+const FB_ALERT_KEYS = ['fb_btts_alerts', 'fb_total_alerts', 'fb_result_alerts'];
+const FB_ALERT_EVENTS = ['fb_btts_alerts_updated', 'fb_total_alerts_updated', 'fb_result_alerts_updated'];
+
 function useAlertCount() {
-  const [count, setCount] = useState(0);
+  const [counts, setCounts] = useState({ total: 0, basket: 0, foot: 0 });
   const refresh = () => {
+    let basket = 0;
     try {
       purgeAlerts();
       const raw = JSON.parse(localStorage.getItem(ALERT_KEY) || '[]');
@@ -70,25 +74,44 @@ function useAlertCount() {
         const rank = s => STATUS_RANK[s ?? 'pending'] ?? 0;
         if (!cur || rank(a.status) > rank(cur.status)) byKey[key] = a;
       }
-      let n = Object.values(byKey).filter(a => (a.status || 'pending') === 'pending').length;
+      basket = Object.values(byKey).filter(a => (a.status || 'pending') === 'pending').length;
       try {
         const totals = JSON.parse(localStorage.getItem('nba_game_total_alerts') || '[]');
-        n += totals.filter(a => {
+        basket += totals.filter(a => {
           if ((a.status || 'pending') !== 'pending') return false;
           const t = new Date(a.date).getTime();
           return isNaN(t) || t > now;
         }).length;
       } catch {}
-      setCount(n);
-    } catch { setCount(0); }
+    } catch { basket = 0; }
+
+    let foot = 0;
+    try {
+      const now = Date.now();
+      FB_ALERT_KEYS.forEach(key => {
+        const raw = JSON.parse(localStorage.getItem(key) || '[]');
+        foot += raw.filter(a => {
+          if ((a.status || 'pending') !== 'pending') return false;
+          const t = new Date(a.fixtureDate).getTime();
+          return isNaN(t) || t > now;
+        }).length;
+      });
+    } catch {}
+
+    setCounts({ total: basket + foot, basket, foot });
   };
   useEffect(() => {
     refresh();
     window.addEventListener('nba_alerts_updated', refresh);
+    FB_ALERT_EVENTS.forEach(e => window.addEventListener(e, refresh));
     const tick = setInterval(refresh, 60_000);
-    return () => { window.removeEventListener('nba_alerts_updated', refresh); clearInterval(tick); };
+    return () => {
+      window.removeEventListener('nba_alerts_updated', refresh);
+      FB_ALERT_EVENTS.forEach(e => window.removeEventListener(e, refresh));
+      clearInterval(tick);
+    };
   }, []);
-  return count;
+  return counts;
 }
 
 const importMatchDetail     = () => import('./pages/MatchDetailPage');
@@ -226,7 +249,7 @@ function ScrollToTop() {
 }
 
 export default function App() {
-  const alertCount = useAlertCount();
+  const alertCounts = useAlertCount();
   return (
     <BrowserRouter>
       <ScrollToTop />
@@ -234,7 +257,7 @@ export default function App() {
         <StarField />
         <StatsHolo />
         <div className="app-body">
-        <LeftNav alertCount={alertCount} />
+        <LeftNav alertCounts={alertCounts} />
         <main className="app-main" style={{ paddingTop: '4.5rem' }}>
           <Suspense fallback={<PageLoader />}>
             <Routes>

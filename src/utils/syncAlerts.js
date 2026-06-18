@@ -303,7 +303,7 @@ export async function syncBackgroundAlerts() {
       localStorage.setItem(ALERT_KEY, JSON.stringify(merged));
       window.dispatchEvent(new Event('nba_alerts_updated'));
     }
-  } catch {}
+  } catch (e) { console.error('[syncBackgroundAlerts] error:', e); }
 }
 
 // Pont alertes "totaux" backend (game_total, NBA/WNBA/EU) → localStorage nba_game_total_alerts.
@@ -588,7 +588,11 @@ export async function resolveCompletedFootballAlerts(alerts, save) {
       a.actualHomeScore = game.home.score;
       a.actualAwayScore = game.away.score;
       a.status = result;
+      a.settledAt = Date.now();
       changed = true;
+      // Trace serveur du résultat — sans ça aucun bilan foot n'est possible côté backend
+      // (contrairement aux props basket, réglées automatiquement par runAutoSettle()).
+      fetch('/api/settlements', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: a.id, status: result, settledAt: a.settledAt }) }).catch(() => {});
     }
     if (changed) save([...alerts]);
   } catch {}

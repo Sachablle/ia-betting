@@ -8,6 +8,8 @@ import FormStrip from '../components/FormStrip';
 import StatBar from '../components/StatBar';
 import TeamLogo from '../components/TeamLogo';
 
+const FINAL_STATUSES = new Set(['STATUS_FULL_TIME', 'STATUS_FINAL', 'STATUS_FT', 'STATUS_AFTER_EXTRA_TIME', 'STATUS_AFTER_PENALTIES']);
+
 // ── ESPN team lookup (name → { league, id }) ──────────────────────────────────
 const ESPN_FOOTBALL = {
   'Paris Saint-Germain':    { league: 'fra.1', id: 160   },
@@ -164,37 +166,33 @@ function computeStaticBTTS(fixture) {
   };
 }
 
-// CDM : λ basés sur la moyenne pondérée buts marqués/encaissés des sélections
-// (qualifs > amicaux, decay temporel — calculé côté backend, /api/football/cdm/teamstats),
-// ajustés par le repos (fatigue) et les attaquants blessés. Pas de h2h (toujours vide pour la CDM).
-function computeCdmBTTS(homeStats, awayStats, fixtureDate, homeInjuredFwd = 0, awayInjuredFwd = 0) {
+// CDM : même formule attaque/défense normalisée que le backend (computeLambdas).
+// avgGF/avgGA = moyennes du pool CDM actuel, fetchées via /api/football/cdm/poolavg.
+const CDM_LEAGUE_AVG = 1.30;
+const CDM_HOME_ADV   = 1.10;
+function computeCdmBTTS(homeStats, awayStats, poolAvg = null) {
   if (homeStats?.goalsFor == null || awayStats?.goalsFor == null) return null;
 
-  // Repos : <1j → -7% attaque / +7% buts encaissés par l'adversaire (fatigue), neutre dès 5j
-  const restFactor = lastMatchDate => {
-    if (!lastMatchDate || !fixtureDate) return 1;
-    const days = (new Date(fixtureDate) - new Date(lastMatchDate)) / 86400000;
-    if (days >= 5) return 1;
-    if (days <= 1) return 0.93;
-    return 0.93 + (days - 1) * 0.0175;
-  };
-  const fHome = restFactor(homeStats.lastMatchDate);
-  const fAway = restFactor(awayStats.lastMatchDate);
+  const avgGF = poolAvg?.avgGF || 2.15;
+  const avgGA = poolAvg?.avgGA || 0.78;
 
-  // Attaquants blessés : -5% de force d'attaque par joueur absent, plafonné à -15%
-  const injuryFactor = n => Math.max(0.85, 1 - 0.05 * n);
-  const iHome = injuryFactor(homeInjuredFwd);
-  const iAway = injuryFactor(awayInjuredFwd);
+  // Facteurs attaque/défense normalisés — identique au backend (computeLambdas), aucun
+  // facteur en plus (repos/blessures) : sinon ce % diverge de celui qui déclenche les alertes.
+  const homeAttack  = homeStats.goalsFor  / avgGF;
+  const homeDefense = homeStats.goalsAgainst / avgGA;
+  const awayAttack  = awayStats.goalsFor   / avgGF;
+  const awayDefense = awayStats.goalsAgainst / avgGA;
 
-  const lambda_home = (homeStats.goalsFor * iHome * fHome + awayStats.goalsAgainst * (2 - fAway)) / 2;
-  const lambda_away = (awayStats.goalsFor * iAway * fAway + homeStats.goalsAgainst * (2 - fHome)) / 2;
+  const lambda_home = homeAttack * awayDefense * CDM_LEAGUE_AVG * CDM_HOME_ADV;
+  const lambda_away = awayAttack * homeDefense * CDM_LEAGUE_AVG / CDM_HOME_ADV;
+
   const p_home = 1 - Math.exp(-lambda_home);
   const p_away = 1 - Math.exp(-lambda_away);
   const btts_poisson = p_home * p_away;
 
   return {
     prob: Math.round(btts_poisson * 100),
-    components: [{ label: 'Modèle Poisson (forme pondérée + repos/blessures)', value: btts_poisson, pct: Math.round(btts_poisson * 100), normalizedW: 1 }],
+    components: [{ label: 'Modèle Poisson (attaque/défense normalisé pool CDM)', value: btts_poisson, pct: Math.round(btts_poisson * 100), normalizedW: 1 }],
     lambda_home: +lambda_home.toFixed(2),
     lambda_away: +lambda_away.toFixed(2),
     p_home: Math.round(p_home * 100),
@@ -328,7 +326,7 @@ const FB_BK_LABELS = { unibet: 'Unibet', betclic: 'Betclic', winamax: 'Winamax' 
 const FB_BK_COLORS = { unibet: '#1db954', betclic: '#e0292e', winamax: '#ffffff' };
 const FB_BK_ORDER  = ['unibet', 'betclic', 'winamax'];
 
-function FootballOddsBox({ markets, bttsResult, home, away }) {
+function FootballOddsBox({ markets, bttsResult, home, away, frozen }) {
   const [tab, setTab] = useState('result');
   const [totalsLine, setTotalsLine] = useState('1.5');
   const [showLegend, setShowLegend] = useState(false);
@@ -424,13 +422,18 @@ function FootballOddsBox({ markets, bttsResult, home, away }) {
 
   const calcEdge = (bkOdds, fair) => (bkOdds != null && fair != null) ? +((bkOdds * fair - 1) * 100).toFixed(1) : null;
 
-  const Cell = ({ val, edgeVal, isPinnacle, color, fairPct }) => {
+  const Cell = ({ val, edgeVal, isPinnacle, color, fairPct, trend }) => {
     if (val == null) return <div style={{ textAlign: 'center', color: 'var(--text-dim)' }}>—</div>;
     return (
       <div style={{ textAlign: 'center' }}>
         <span style={{ fontWeight: isPinnacle ? 700 : 500, fontVariantNumeric: 'tabular-nums', fontSize: 13, color: (!isPinnacle && color) ? color : undefined }}>
           {val.toFixed(2)}
         </span>
+        {trend && (
+          <span style={{ fontSize: 8, marginLeft: 5, color: trend === 'up' ? '#4ade80' : '#f87171' }} title={trend === 'up' ? 'Cote en hausse' : 'Cote en baisse'}>
+            {trend === 'up' ? '▲' : '▼'}
+          </span>
+        )}
         {isPinnacle && fairPct != null && (
           <span style={{ display: 'block', fontSize: 9, color: 'var(--text-dim)', marginTop: 1 }}>{fairPct.toFixed(1)}%</span>
         )}
@@ -449,6 +452,14 @@ function FootballOddsBox({ markets, bttsResult, home, away }) {
 
   return (
     <div ref={cardRef}>
+      {frozen && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginBottom: '0.5rem', fontSize: 10, fontWeight: 700, color: '#facc15' }}>
+          <span style={{ padding: '1px 6px', borderRadius: 4, background: 'rgba(250,204,21,0.12)', border: '1px solid rgba(250,204,21,0.3)' }}>
+            Cotes pré-match (figées)
+          </span>
+          <span style={{ fontWeight: 400, color: 'var(--text-dim)' }}>Dernières cotes connues avant le coup d'envoi</span>
+        </div>
+      )}
       <div style={{ display: 'flex', gap: '0.6rem', marginBottom: '0.75rem', alignItems: 'center', position: 'relative' }}>
         {TABS.map(t => <button key={t.id} style={tabStyle(t.id)} onClick={() => setTab(t.id)}>{t.label}</button>)}
         {tab === 'buts' && (
@@ -540,20 +551,20 @@ function FootballOddsBox({ markets, bttsResult, home, away }) {
               {isPinnacle && <span style={{ fontSize: 8, color: 'var(--accent)', marginLeft: 3, fontWeight: 700 }}>REF</span>}
             </span>
             {tab === 'result' && <>
-              <Cell val={h?.home}  edgeVal={fairH2H ? calcEdge(h?.home,  fairH2H.home)  : null} isPinnacle={isPinnacle} color={color} fairPct={fairH2H ? fairH2H.home * 100  : null} />
-              <Cell val={h?.draw}  edgeVal={fairH2H ? calcEdge(h?.draw,  fairH2H.draw)  : null} isPinnacle={isPinnacle} color={color} fairPct={fairH2H ? (fairH2H.draw ?? 0) * 100 : null} />
-              <Cell val={h?.away}  edgeVal={fairH2H ? calcEdge(h?.away,  fairH2H.away)  : null} isPinnacle={isPinnacle} color={color} fairPct={fairH2H ? fairH2H.away * 100  : null} />
+              <Cell val={h?.home}  edgeVal={fairH2H ? calcEdge(h?.home,  fairH2H.home)  : null} isPinnacle={isPinnacle} color={color} fairPct={fairH2H ? fairH2H.home * 100  : null} trend={h2h?.trends?.[bk]?.home} />
+              <Cell val={h?.draw}  edgeVal={fairH2H ? calcEdge(h?.draw,  fairH2H.draw)  : null} isPinnacle={isPinnacle} color={color} fairPct={fairH2H ? (fairH2H.draw ?? 0) * 100 : null} trend={h2h?.trends?.[bk]?.draw} />
+              <Cell val={h?.away}  edgeVal={fairH2H ? calcEdge(h?.away,  fairH2H.away)  : null} isPinnacle={isPinnacle} color={color} fairPct={fairH2H ? fairH2H.away * 100  : null} trend={h2h?.trends?.[bk]?.away} />
             </>}
             {tab === 'buts' && <>
               <div style={{ textAlign: 'center', fontSize: 11, fontVariantNumeric: 'tabular-nums', fontWeight: isPinnacle ? 700 : 400, color: isPinnacle ? 'var(--text)' : color ?? 'var(--text-dim)' }}>
                 {(t?.over != null || t?.under != null) ? totalsLine : '—'}
               </div>
-              <Cell val={t?.over}  edgeVal={fairTots ? calcEdge(t?.over,  fairTots.over)  : null} isPinnacle={isPinnacle} color={color} fairPct={fairTots ? fairTots.over * 100  : null} />
-              <Cell val={t?.under} edgeVal={fairTots ? calcEdge(t?.under, fairTots.under) : null} isPinnacle={isPinnacle} color={color} fairPct={fairTots ? fairTots.under * 100 : null} />
+              <Cell val={t?.over}  edgeVal={fairTots ? calcEdge(t?.over,  fairTots.over)  : null} isPinnacle={isPinnacle} color={color} fairPct={fairTots ? fairTots.over * 100  : null} trend={tots?.trends?.[bk]?.[totalsLine]?.over} />
+              <Cell val={t?.under} edgeVal={fairTots ? calcEdge(t?.under, fairTots.under) : null} isPinnacle={isPinnacle} color={color} fairPct={fairTots ? fairTots.under * 100 : null} trend={tots?.trends?.[bk]?.[totalsLine]?.under} />
             </>}
             {tab === 'btts' && <>
-              <Cell val={b?.yes} edgeVal={fairBtts ? calcEdge(b?.yes, fairBtts.yes) : null} isPinnacle={isPinnacle} color={color} fairPct={fairBtts ? fairBtts.yes * 100 : null} />
-              <Cell val={b?.no}  edgeVal={fairBtts ? calcEdge(b?.no,  fairBtts.no)  : null} isPinnacle={isPinnacle} color={color} fairPct={fairBtts ? fairBtts.no * 100  : null} />
+              <Cell val={b?.yes} edgeVal={fairBtts ? calcEdge(b?.yes, fairBtts.yes) : null} isPinnacle={isPinnacle} color={color} fairPct={fairBtts ? fairBtts.yes * 100 : null} trend={btts?.trends?.[bk]?.yes} />
+              <Cell val={b?.no}  edgeVal={fairBtts ? calcEdge(b?.no,  fairBtts.no)  : null} isPinnacle={isPinnacle} color={color} fairPct={fairBtts ? fairBtts.no * 100  : null} trend={btts?.trends?.[bk]?.no} />
             </>}
           </div>
         );
@@ -577,7 +588,9 @@ function FootballOddsBox({ markets, bttsResult, home, away }) {
               Modèle O/U {totalsLine}<span style={{ fontSize: 9, color: 'var(--text-dim)', marginLeft: 4, fontWeight: 400 }}>λ={lambda_total}</span>
             </span>
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-              <span style={{ fontSize: 12, fontWeight: 700, color: probColor }}>+{over}%</span>
+              <span style={{ fontSize: 10, color: 'var(--text-dim)', fontWeight: 500 }}>Over <span style={{ color: probColor, fontWeight: 700 }}>{over}%</span></span>
+              <span style={{ fontSize: 9, color: 'rgba(255,255,255,0.15)' }}>·</span>
+              <span style={{ fontSize: 10, fontWeight: 700, color: under >= 65 ? '#10b981' : under >= 52 ? '#f59e0b' : 'var(--text-dim)' }}>Under {under}%</span>
               {pinnOver != null && (
                 <>
                   <span style={{ fontSize: 10, color: 'var(--text-dim)' }}>vs Pinnacle {pinnOver}%</span>
@@ -638,7 +651,9 @@ function FootballOddsBox({ markets, bttsResult, home, away }) {
               Modèle BTTS{isStatic ? <span style={{ fontSize: 9, color: 'var(--text-dim)', marginLeft: 4, fontWeight: 400 }}>stats saison</span> : ''}
             </span>
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-              <span style={{ fontSize: 12, fontWeight: 700, color: probColor }}>{prob}%</span>
+              <span style={{ fontSize: 10, color: 'var(--text-dim)', fontWeight: 500 }}>Oui <span style={{ color: probColor, fontWeight: 700 }}>{prob}%</span></span>
+              <span style={{ fontSize: 9, color: 'rgba(255,255,255,0.15)' }}>·</span>
+              <span style={{ fontSize: 10, fontWeight: 700, color: (100 - prob) >= 65 ? '#10b981' : (100 - prob) >= 52 ? '#f59e0b' : 'var(--text-dim)' }}>Non {100 - prob}%</span>
               {pinnFair != null && (
                 <>
                   <span style={{ fontSize: 10, color: 'var(--text-dim)' }}>vs Pinnacle {pinnFair}%</span>
@@ -1009,11 +1024,11 @@ export default function MatchDetailPage() {
   const [awayPlayers, setAwayPlayers] = useState(null);
   const [rosterLoading, setRosterLoading] = useState(false);
   const [matchOdds, setMatchOdds] = useState(null);
+  const [matchOddsFrozen, setMatchOddsFrozen] = useState(false);
   const [showOddsDropdown, setShowOddsDropdown] = useState(false);
   const [liveHomeStats, setLiveHomeStats] = useState(null);
   const [liveAwayStats, setLiveAwayStats] = useState(null);
-  const [homeInjuredFwd, setHomeInjuredFwd] = useState(0);
-  const [awayInjuredFwd, setAwayInjuredFwd] = useState(0);
+  const [cdmPoolAvg,   setCdmPoolAvg]    = useState(null);
   const [homeMatches, setHomeMatches] = useState([]);
   const [awayMatches, setAwayMatches] = useState([]);
 
@@ -1022,7 +1037,7 @@ export default function MatchDetailPage() {
     const norm = s => {
       const base = (s || '').toLowerCase()
         .normalize('NFD').replace(/[̀-ͯ]/g, '')
-        .replace(/\b(as|fc|sc|rc|ogc|afc|ac|stade|club)\b/g, '')
+        .replace(/\b(as|fc|sc|rc|ogc|afc|ac|stade|club|island|islands)\b/g, '')
         .replace(/\bst\b/g, 'saint')
         .replace(/[^a-z]/g, '');
       return CDM_NAME_ALIASES[base] || base;
@@ -1036,6 +1051,7 @@ export default function MatchDetailPage() {
           fuzzy(m.awayTeam, fixture.away.name)
         );
         setMatchOdds(match?.markets ?? false);
+        setMatchOddsFrozen(!!match?.frozen);
       })
       .catch(() => setMatchOdds(false));
   }, [fixture?.id]);
@@ -1054,16 +1070,9 @@ export default function MatchDetailPage() {
           })
           .catch(() => {});
       };
-      const fetchInjuredFwd = (name, setter) => {
-        fetch(`/api/football/cdm/squad/${encodeURIComponent(name)}`)
-          .then(r => r.json())
-          .then(d => setter((d.players || []).filter(p => p.position === 'F' && p.injury).length))
-          .catch(() => {});
-      };
       fetchTeam(fixture.home.name, setLiveHomeStats);
       fetchTeam(fixture.away.name, setLiveAwayStats);
-      fetchInjuredFwd(fixture.home.name, setHomeInjuredFwd);
-      fetchInjuredFwd(fixture.away.name, setAwayInjuredFwd);
+      fetch('/api/football/cdm/poolavg').then(r => r.json()).then(d => setCdmPoolAvg(d)).catch(() => {});
       return;
     }
     fetch(`/api/football/standings/${fixture.league}`)
@@ -1107,6 +1116,11 @@ export default function MatchDetailPage() {
   const league = fixture ? getLeagueById(fixture.league) : null;
   const { home, away, venue, weather, h2h, round } = fixture || {};
 
+  const isLive  = fixture?.status === 'STATUS_IN_PROGRESS';
+  const isFinal = FINAL_STATUSES.has(fixture?.status);
+  const homeWon = isFinal && home?.score != null && away?.score != null && home.score > away.score;
+  const awayWon = isFinal && home?.score != null && away?.score != null && away.score > home.score;
+
   const effHome = liveHomeStats
     ? { ...home, ...liveHomeStats, form: liveHomeStats.form?.length ? liveHomeStats.form : home?.form }
     : home;
@@ -1115,7 +1129,7 @@ export default function MatchDetailPage() {
     : away;
 
   const bttsResult = fixture?.league === 'cdm'
-    ? computeCdmBTTS(liveHomeStats, liveAwayStats, fixture.date, homeInjuredFwd, awayInjuredFwd)
+    ? computeCdmBTTS(liveHomeStats, liveAwayStats, cdmPoolAvg)
     : (homeMatches.length && awayMatches.length && liveHomeStats?.id && liveAwayStats?.id)
       ? computeBTTS(homeMatches, awayMatches, liveHomeStats.id, liveAwayStats.id)
       : computeStaticBTTS(fixture);
@@ -1186,9 +1200,23 @@ export default function MatchDetailPage() {
         </div>
 
         <div className="detail-center">
-          <div className="detail-vs">vs</div>
-          <div className="detail-datetime">{formatFullDate(fixture.date)}</div>
-          <div className="detail-time-big">{formatMatchTime(fixture.date)}</div>
+          {isLive || isFinal ? (
+            <>
+              {isLive && <span className="mrd-live">● LIVE</span>}
+              <div className="detail-time-big" style={{ fontVariantNumeric: 'tabular-nums' }}>
+                <span style={{ color: isLive ? '#c62828' : (homeWon ? '#2e7d32' : 'var(--text)') }}>{home.score ?? '–'}</span>
+                <span style={{ margin: '0 0.3em', color: 'var(--text-dim)' }}>–</span>
+                <span style={{ color: isLive ? '#c62828' : (awayWon ? '#2e7d32' : 'var(--text)') }}>{away.score ?? '–'}</span>
+              </div>
+              {isFinal && <div className="detail-datetime">Terminé</div>}
+            </>
+          ) : (
+            <>
+              <div className="detail-vs">vs</div>
+              <div className="detail-datetime">{formatFullDate(fixture.date)}</div>
+              <div className="detail-time-big">{formatMatchTime(fixture.date)}</div>
+            </>
+          )}
         </div>
 
         <div className="detail-team away-team">
@@ -1246,7 +1274,7 @@ export default function MatchDetailPage() {
           onClick={() => { if (!matchOdds || !Object.keys(matchOdds).length) return; setShowOddsDropdown(v => !v); setShowLineup(false); }}
           style={{ cursor: matchOdds && Object.keys(matchOdds).length ? 'pointer' : 'default', userSelect: 'none', opacity: matchOdds === null ? 0.5 : 1 }}
         >
-          {matchOdds === null ? 'Odds…' : matchOdds && Object.keys(matchOdds).length ? 'Odds' : 'Odds N/D'}
+          {matchOdds === null ? 'Odds…' : matchOdds && Object.keys(matchOdds).length ? (matchOddsFrozen ? 'Odds (pré-match)' : 'Odds') : 'Odds N/D'}
         </div>
 
         <button
@@ -1267,7 +1295,7 @@ export default function MatchDetailPage() {
 
       {showOddsDropdown && matchOdds && Object.keys(matchOdds).length > 0 && (
         <section className="detail-card compact-card" style={{ marginBottom: '0.5rem' }}>
-          <FootballOddsBox markets={matchOdds} bttsResult={bttsResult} home={home} away={away} />
+          <FootballOddsBox markets={matchOdds} bttsResult={bttsResult} home={home} away={away} frozen={matchOddsFrozen} />
         </section>
       )}
 

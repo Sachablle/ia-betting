@@ -648,9 +648,6 @@ function EarlyWinCard({ alert, onAccept, onReject, onDismiss }) {
       {!isPending && (
         <button onClick={e => { e.stopPropagation(); onDismiss(id); }} style={{ position: 'absolute', top: 8, right: 10, background: 'none', border: 'none', color: 'var(--text-dim)', cursor: 'pointer', fontSize: 16, lineHeight: 1, padding: 0 }}>×</button>
       )}
-      {prob != null && (
-        <span className={`bc-edge-badge ${prob >= 80 ? 'high' : 'mid'}`} style={{ position: 'absolute', top: 34, right: 10 }}>{prob}%</span>
-      )}
       <div className="bc-header">
         <span className="bc-flag">⏱</span>
         <span className="bc-league">{leagueLabel}</span>
@@ -1075,12 +1072,19 @@ export default function PlaceBetPage() {
   };
 
   const updateBttsStatus = (id, status, bk = null, odds = null) => {
+    if (status === 'rejected') {
+      // rejectedAt obligatoire : syncFootballAlerts() ne fait réapparaître un rejet que si
+      // rejectedAt est absent (cf. commentaire CDM dans syncAlerts.js) — sans lui, le backend
+      // régénère la même alerte au cycle suivant et on perd la trace du refus.
+      saveBttsAlerts(bttsAlerts.map(a => a.id === id ? { ...a, status: 'rejected', rejectedAt: Date.now() } : a));
+      return;
+    }
     const now = Date.now();
     const updated = bttsAlerts.map(a => a.id === id ? {
       ...a, status,
-      ...(status === 'rejected' ? { rejectedAt: now } : {}),
       ...(status === 'accepted' && !a.acceptedAt ? {
         acceptedAt: now,
+        acceptedProbability:  a.probability,
         acceptedBookmaker:    bk ?? null,
         acceptedPinnacleOdds: bk === 'pinnacle' ? (odds ?? a.pinnacleOdds) : null,
         acceptedUnibetOdds:   bk === 'unibet'   ? (odds ?? a.unibetOdds)   : null,
@@ -1089,6 +1093,10 @@ export default function PlaceBetPage() {
       } : {})
     } : a);
     saveBttsAlerts(updated);
+    if (status === 'accepted') {
+      const a = updated.find(x => x.id === id);
+      if (a) fetch('/api/accepted-alerts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(a) }).catch(() => {});
+    }
   };
 
   const dismissBtts = (id) => {
@@ -1119,12 +1127,16 @@ export default function PlaceBetPage() {
   };
 
   const updateFbTotalStatus = (id, status, bk = null, odds = null) => {
+    if (status === 'rejected') {
+      saveFbTotalAlerts(fbTotalAlerts.map(a => a.id === id ? { ...a, status: 'rejected', rejectedAt: Date.now() } : a));
+      return;
+    }
     const now = Date.now();
     const updated = fbTotalAlerts.map(a => a.id === id ? {
       ...a, status,
-      ...(status === 'rejected' ? { rejectedAt: now } : {}),
       ...(status === 'accepted' && !a.acceptedAt ? {
         acceptedAt: now,
+        acceptedProbability: a.probability,
         acceptedBookmaker:   bk ?? null,
         acceptedUnibetOdds:  bk === 'unibet'  ? (odds ?? a.unibetOdds)  : null,
         acceptedBetclicOdds: bk === 'betclic' ? (odds ?? a.betclicOdds) : null,
@@ -1132,6 +1144,10 @@ export default function PlaceBetPage() {
       } : {})
     } : a);
     saveFbTotalAlerts(updated);
+    if (status === 'accepted') {
+      const a = updated.find(x => x.id === id);
+      if (a) fetch('/api/accepted-alerts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(a) }).catch(() => {});
+    }
   };
 
   const dismissFbTotal = (id) => {
@@ -1162,12 +1178,16 @@ export default function PlaceBetPage() {
   };
 
   const updateFbResultStatus = (id, status, bk = null, odds = null) => {
+    if (status === 'rejected') {
+      saveFbResultAlerts(fbResultAlerts.map(a => a.id === id ? { ...a, status: 'rejected', rejectedAt: Date.now() } : a));
+      return;
+    }
     const now = Date.now();
     const updated = fbResultAlerts.map(a => a.id === id ? {
       ...a, status,
-      ...(status === 'rejected' ? { rejectedAt: now } : {}),
       ...(status === 'accepted' && !a.acceptedAt ? {
         acceptedAt: now,
+        acceptedProbability: a.probability,
         acceptedBookmaker:   bk ?? null,
         acceptedUnibetOdds:  bk === 'unibet'  ? (odds ?? a.unibetOdds)  : null,
         acceptedBetclicOdds: bk === 'betclic' ? (odds ?? a.betclicOdds) : null,
@@ -1175,6 +1195,10 @@ export default function PlaceBetPage() {
       } : {})
     } : a);
     saveFbResultAlerts(updated);
+    if (status === 'accepted') {
+      const a = updated.find(x => x.id === id);
+      if (a) fetch('/api/accepted-alerts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(a) }).catch(() => {});
+    }
   };
 
   const dismissFbResult = (id) => {
@@ -1245,6 +1269,7 @@ export default function PlaceBetPage() {
       let reverted = false;
       const validated = valid.map(a => {
         if ((a.status === 'won' || a.status === 'lost' || a.status === 'void') &&
+            !a.userDismissed &&
             new Date(a.fixtureDate).getTime() + 30 * 60_000 > now) {
           reverted = true;
           const { actualStat: _, resolvedAt: __, ...rest } = a;
@@ -1446,6 +1471,7 @@ export default function PlaceBetPage() {
       ...a, status,
       ...(status === 'accepted' && !a.acceptedAt ? {
         acceptedAt: now,
+        acceptedProbability: a.prob,
         acceptedBookmaker:   bk ?? null,
         acceptedOdds:        odds ?? null,
         acceptedUnibetOdds:  bk === 'unibet'  ? (odds ?? a.unibetOdds)  : null,
@@ -1528,6 +1554,15 @@ export default function PlaceBetPage() {
       existing.filter(a => a.status === 'accepted').forEach(a =>
         fetch('/api/accepted-alerts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(a) }).catch(() => {})
       );
+      [FB_BTTS_KEY, FB_TOTAL_KEY, FB_RESULT_KEY].forEach(key => {
+        const fbExisting = JSON.parse(localStorage.getItem(key) || '[]');
+        fbExisting.filter(a => ['accepted', 'won', 'lost'].includes(a.status)).forEach(a =>
+          fetch('/api/accepted-alerts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(a) }).catch(() => {})
+        );
+        fbExisting.filter(a => ['won', 'lost'].includes(a.status)).forEach(a =>
+          fetch('/api/settlements', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: a.id, status: a.status, settledAt: a.settledAt || Date.now() }) }).catch(() => {})
+        );
+      });
     } catch {}
     window.addEventListener('nba_alerts_updated', loadAlerts);
     window.addEventListener('nba_alerts_updated', loadTotalAlerts);
@@ -1605,9 +1640,12 @@ export default function PlaceBetPage() {
     const updated = rawAlerts.filter(a => !idSet.has(a.id));
     try {
       localStorage.setItem(ALERT_KEY, JSON.stringify(updated));
-      // Archive les alertes terminées dans l'historique (bloque la re-génération par le background)
+      // Archive toutes les alertes dismissées en history — les pending passent en void+userDismissed
+      // pour bloquer leur re-génération par syncBackgroundAlerts (findByFingerprint 'void')
       const TERMINAL = ['accepted', 'won', 'lost', 'void', 'rejected'];
-      const toArchive = dismissed.filter(a => TERMINAL.includes(a.status));
+      const toArchive = dismissed.map(a =>
+        TERMINAL.includes(a.status) ? a : { ...a, status: 'void', userDismissed: true, resolvedAt: Date.now() }
+      );
       if (toArchive.length) {
         const history = JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]');
         const histById = {};
@@ -1645,6 +1683,15 @@ export default function PlaceBetPage() {
   const pendingEarlywinAlerts = rawEarlywinAlerts.filter(a => a.status === 'pending');
   const acceptedEarlywinAlerts = rawEarlywinAlerts.filter(a => a.status === 'accepted');
   const totalGroups           = groups.filter(g => g.status !== 'rejected').length + rawTotalAlerts.filter(a => a.status !== 'rejected').length + rawEarlywinAlerts.filter(a => a.status !== 'rejected').length;
+  // Liste unifiée triée par date (foot + basket mélangés)
+  const allPendingItems = [
+    ...pendingGroups.map(g => ({ type: 'prop',     key: g.key,  date: g.fixtureDate,  data: g })),
+    ...pendingTotalAlerts.map(a => ({ type: 'total',    key: a.id,   date: a.fixtureDate,  data: a })),
+    ...pendingEarlywinAlerts.map(a => ({ type: 'earlywin', key: a.id, date: a.date,        data: a })),
+    ...bttsAlerts.filter(a => a.status === 'pending').map(a => ({ type: 'btts',     key: a.id,   date: a.fixtureDate,  data: a })),
+    ...fbTotalAlerts.filter(a => a.status === 'pending').map(a => ({ type: 'fbtotal',  key: a.id,   date: a.fixtureDate,  data: a })),
+    ...fbResultAlerts.filter(a => a.status === 'pending').map(a => ({ type: 'fbresult', key: a.id,   date: a.fixtureDate,  data: a })),
+  ].sort((a, b) => new Date(a.date || 0) - new Date(b.date || 0));
   const totalAccepted       = acceptedGroups.length + acceptedTotalAlerts.length;
   const kpiAcceptRate       = totalGroups > 0 ? Math.round(totalAccepted / totalGroups * 100) : null;
   const kpiAvgProb          = acceptedGroups.length > 0
@@ -1743,83 +1790,26 @@ export default function PlaceBetPage() {
         ))}
       </div>
 
-      {/* ── BTTS FOOT ── */}
-      {bttsAlerts.filter(a => a.status === 'pending').length > 0 && (
-        <div style={{ marginBottom: '1.5rem' }}>
-          <div style={{ fontSize: 11, fontWeight: 700, color: '#10b981', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '0.6rem' }}>
-            ⚽ Football · BTTS
-          </div>
-          <div className="bet-grid">
-            {bttsAlerts.filter(a => a.status === 'pending').map(a => (
-              <BTTSAlertCard key={a.id} alert={a} onAccept={(id, bk, odds) => updateBttsStatus(id, 'accepted', bk, odds)} onReject={id => updateBttsStatus(id, 'rejected')} onDismiss={dismissBtts} />
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* ── O/U FOOT ── */}
-      {fbTotalAlerts.filter(a => a.status === 'pending').length > 0 && (
-        <div style={{ marginBottom: '1.5rem' }}>
-          <div style={{ fontSize: 11, fontWeight: 700, color: '#10b981', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '0.6rem' }}>
-            ⚽ Football · Over/Under
-          </div>
-          <div className="bet-grid">
-            {fbTotalAlerts.filter(a => a.status === 'pending').map(a => (
-              <FootballTotalCard key={a.id} alert={a} onAccept={(id, bk, odds) => updateFbTotalStatus(id, 'accepted', bk, odds)} onReject={id => updateFbTotalStatus(id, 'rejected')} onDismiss={dismissFbTotal} />
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* ── RÉSULTAT 1X2 FOOT ── */}
-      {fbResultAlerts.filter(a => a.status === 'pending').length > 0 && (
-        <div style={{ marginBottom: '1.5rem' }}>
-          <div style={{ fontSize: 11, fontWeight: 700, color: '#10b981', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '0.6rem' }}>
-            ⚽ Football · Résultat
-          </div>
-          <div className="bet-grid">
-            {fbResultAlerts.filter(a => a.status === 'pending').map(a => (
-              <FootballResultCard key={a.id} alert={a} onAccept={(id, bk, odds) => updateFbResultStatus(id, 'accepted', bk, odds)} onReject={id => updateFbResultStatus(id, 'rejected')} onDismiss={dismissFbResult} />
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* ── EN ATTENTE ── */}
-      {pendingGroups.length === 0 && pendingTotalAlerts.length === 0 && !hasHistory && (
+      {/* ── ALERTES UNIFIÉES (foot + basket, triées par date) ── */}
+      {allPendingItems.length === 0 && !hasHistory && (
         <p style={{ color: 'var(--text-dim)', fontSize: 12, marginTop: 'calc(0.5rem - 1.5cm)', marginLeft: 'calc(-2.5rem + 0.5cm)' }}>
           Les alertes Props apparaissent ici dès qu'un joueur dépasse le seuil de confiance de sa catégorie dans l'Analyse Props.
         </p>
       )}
-      {pendingGroups.length === 0 && pendingTotalAlerts.length === 0 && hasHistory && (
+      {allPendingItems.length === 0 && hasHistory && (
         <p style={{ color: 'var(--text-dim)', fontSize: 12, marginTop: '0.5rem' }}>Aucune alerte en attente.</p>
       )}
-      {(pendingGroups.length > 0 || pendingTotalAlerts.length > 0 || pendingEarlywinAlerts.length > 0) && (
+      {allPendingItems.length > 0 && (
         <div className="bet-grid">
-          {pendingGroups.map(g => (
-            <PropAlertCard
-              key={g.key} group={g}
-              onDismiss={dismiss}
-              onAccept={(ids, bk, odds) => updateStatus(ids, 'accepted', bk, odds)}
-              onReject={ids => updateStatus(ids, 'rejected')}
-            />
-          ))}
-          {pendingTotalAlerts.map(a => (
-            <GameTotalCard
-              key={a.id} alert={a}
-              onAccept={(id, bk, odds) => updateTotalStatus(id, 'accepted', bk, odds)}
-              onReject={id => updateTotalStatus(id, 'rejected')}
-              onDismiss={dismissTotal}
-            />
-          ))}
-          {pendingEarlywinAlerts.map(a => (
-            <EarlyWinCard
-              key={a.id} alert={a}
-              onAccept={id => updateEarlywinStatus(id, 'accepted')}
-              onReject={id => updateEarlywinStatus(id, 'rejected')}
-              onDismiss={dismissEarlywin}
-            />
-          ))}
+          {allPendingItems.map(item => {
+            if (item.type === 'prop')     return <PropAlertCard key={item.key} group={item.data} onDismiss={dismiss} onAccept={(ids, bk, odds) => updateStatus(ids, 'accepted', bk, odds)} onReject={ids => updateStatus(ids, 'rejected')} />;
+            if (item.type === 'total')    return <GameTotalCard key={item.key} alert={item.data} onAccept={(id, bk, odds) => updateTotalStatus(id, 'accepted', bk, odds)} onReject={id => updateTotalStatus(id, 'rejected')} onDismiss={dismissTotal} />;
+            if (item.type === 'earlywin') return <EarlyWinCard key={item.key} alert={item.data} onAccept={id => updateEarlywinStatus(id, 'accepted')} onReject={id => updateEarlywinStatus(id, 'rejected')} onDismiss={dismissEarlywin} />;
+            if (item.type === 'btts')     return <BTTSAlertCard key={item.key} alert={item.data} onAccept={(id, bk, odds) => updateBttsStatus(id, 'accepted', bk, odds)} onReject={id => updateBttsStatus(id, 'rejected')} onDismiss={dismissBtts} />;
+            if (item.type === 'fbtotal')  return <FootballTotalCard key={item.key} alert={item.data} onAccept={(id, bk, odds) => updateFbTotalStatus(id, 'accepted', bk, odds)} onReject={id => updateFbTotalStatus(id, 'rejected')} onDismiss={dismissFbTotal} />;
+            if (item.type === 'fbresult') return <FootballResultCard key={item.key} alert={item.data} onAccept={(id, bk, odds) => updateFbResultStatus(id, 'accepted', bk, odds)} onReject={id => updateFbResultStatus(id, 'rejected')} onDismiss={dismissFbResult} />;
+            return null;
+          })}
         </div>
       )}
 

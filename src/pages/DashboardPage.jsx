@@ -286,6 +286,7 @@ function SystemHealthSection() {
             <div style={{ fontSize: 8, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-dim)' }}>Données</div>
             <div style={{ display: 'flex', gap: '0.9rem', alignItems: 'flex-end' }}>
               <SignalIcon label="ESPN"     ts={sc.espn?.ts}     ok={sc.espn?.ok}     lastOk={sc.espn?.lastOk}     />
+              <SignalIcon label="ACB"      ts={sc.acb?.ts}      ok={sc.acb?.ok}      lastOk={sc.acb?.lastOk}      />
               <SignalIcon label="Bzzoiro"  ts={sc.bzzoiro?.ts}  ok={sc.bzzoiro?.ok}  lastOk={sc.bzzoiro?.lastOk}  />
               <SignalIcon label="RotoWire" ts={sc.rotowire?.ts} ok={sc.rotowire?.ok} lastOk={sc.rotowire?.lastOk} />
             </div>
@@ -412,7 +413,7 @@ function ScrapingRatePanel({ sc }) {
 
   const GROUPS = [
     { label: 'Basket — Cotes',   items: [{ key: 'unibet', name: 'Unibet' }, { key: 'betclic', name: 'Betclic' }] },
-    { label: 'Basket — Données', items: [{ key: 'espn', name: 'ESPN' }, { key: 'bzzoiro', name: 'Bzzoiro' }, { key: 'rotowire', name: 'RotoWire' }] },
+    { label: 'Basket — Données', items: [{ key: 'espn', name: 'ESPN' }, { key: 'acb', name: 'ACB' }, { key: 'bzzoiro', name: 'Bzzoiro' }, { key: 'rotowire', name: 'RotoWire' }] },
     { label: 'Foot — Cotes',     items: [{ key: 'unibet_foot', name: 'Unibet' }, { key: 'betclic_foot', name: 'Betclic' }] },
     { label: 'Foot — Données',   items: [{ key: 'bzzoiro', name: 'Bzzoiro' }] },
   ];

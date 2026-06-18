@@ -397,14 +397,14 @@ function TeamLogo({ logo, short, name, size = 40, league = 'nba' }) {
 
   if (!src || err) {
     return (
-      <div style={{ width: size, height: size, borderRadius: 8, background: 'rgba(255,255,255,0.07)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: size * 0.28, fontWeight: 800, color: 'var(--text-dim)', flexShrink: 0 }}>
+      <div style={{ width: size, height: size, borderRadius: '50%', background: 'rgba(255,255,255,0.07)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: size * 0.28, fontWeight: 800, color: 'var(--text-dim)', flexShrink: 0 }}>
         {initials}
       </div>
     );
   }
   return (
     <img src={src} alt={short} onError={() => setErr(true)}
-      style={{ width: size, height: size, objectFit: 'contain', borderRadius: 8, flexShrink: 0 }} />
+      style={{ width: size, height: size, objectFit: 'contain', borderRadius: '50%', flexShrink: 0 }} />
   );
 }
 
@@ -598,12 +598,12 @@ export default function RunningPage() {
     const gStat = group?.stats?.[0]?.stat;
     const gDir  = group?.stats?.[0]?.direction;
     const updated = rawAlerts.map(a => {
-      if (idSet.has(a.id)) return { ...a, status: 'void' };
+      if (idSet.has(a.id)) return { ...a, status: 'void', userDismissed: true };
       // Void les copies avec un ID différent mais même empreinte (date UTC à cheval sur minuit)
       if (group && a.status === 'accepted' && gStat && gDir &&
           a.player === group.player && a.stat === gStat && a.direction === gDir &&
           gTime && Math.abs(new Date(a.fixtureDate).getTime() - gTime) < 48 * 3600_000)
-        return { ...a, status: 'void' };
+        return { ...a, status: 'void', userDismissed: true };
       return a;
     });
     try { localStorage.setItem(ALERT_KEY, JSON.stringify(updated)); } catch {}

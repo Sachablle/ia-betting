@@ -65,29 +65,30 @@ function winsorizeRecent(games, key, seasonAvg, std, n = 3, cap = 1.5) {
 //            (empilement de facteurs). Plus l'écart est grand, plus on élargit le std :
 //            une projection "extrême" repose sur l'accumulation de petits ajustements
 //            individuellement incertains, donc moins fiable que son écart à la ligne ne le suggère.
-// Ratio moyenne WNBA / moyenne NBA (= WNBA_SCALE inversé, server.js) — sert à
-// redimensionner le plancher de std pour les stats à plus petite échelle WNBA.
-const WNBA_STD_FLOOR_SCALE = 87.0 / 114.5;
+// Facteurs de prudence basés sur la taille de l'échantillon (gamelogs disponibles).
+// Moins de matchs = moins fiable = on élargit le std et on shrink plus vers la ligne bookmaker.
+// S'applique à toutes les ligues : WNBA (8-12 matchs), début de saison NBA (5-8 matchs), etc.
+function getSampleScale(n) {
+  if (n < 6)  return { stdScale: 1.40, shrinkExtra: 0.15 };
+  if (n < 10) return { stdScale: 1.20, shrinkExtra: 0.10 };
+  if (n < 15) return { stdScale: 1.05, shrinkExtra: 0.05 };
+  return { stdScale: 1.0, shrinkExtra: 0.0 };
+}
 
-function probAtLeast(estimate, std, threshold, stat = null, deviation = 0, isWNBA = false) {
-  // Shrinkage : tire l'estimation vers la ligne du bookmaker
-  // pts surestimé systématiquement → plus fort shrinkage
-  // ast : la ligne du bookmaker intègre des infos indisponibles au modèle (chimie
-  // avec les coéquipiers du soir) → shrinkage renforcé (0.14 → 0.20)
-  // tpm : stat à faible volume / forte variance relative (CV élevé) → aussi sensible
-  // que ast aux pics isolés de l'EWA (15 juin 2026, cf. cas Astier reb)
-  // reb reste à 0.12 : bilan 17W-7L (70.8%) déjà proche de l'objectif, ne pas
-  // sur-corriger sur la base d'une seule perte — winsorizeRecent suffit comme garde-fou structurel
-  const shrinkA = stat === 'pts' ? 0.35 : stat === 'reb' ? 0.12 : stat === 'ast' ? 0.20 : stat === 'tpm' ? 0.25 : 0.20;
-  const shrunk  = estimate + shrinkA * (threshold - estimate);
+function probAtLeast(estimate, std, threshold, stat = null, deviation = 0, isWNBA = false, sampleSize = 20) {
+  const { stdScale, shrinkExtra } = getSampleScale(sampleSize);
 
-  // Std calibré : ×1.5 pour corriger la sous-estimation de la variance + plancher minimum
-  // + boost proportionnel à l'écart de la projection par rapport à la moyenne saison
-  // Plancher calibré sur l'échelle NBA (pts~20+) ; en WNBA (stats plus basses) ce
-  // plancher absolu représente une variance relative ~50% plus grande et écrase
-  // toutes les probas vers 50-65% → on le redimensionne au ratio WNBA/NBA.
+  // Shrinkage : tire l'estimation vers la ligne du bookmaker.
+  // Plus l'échantillon est petit, plus on fait confiance au bookmaker (shrinkExtra).
+  const shrinkBase = stat === 'pts' ? 0.35 : stat === 'reb' ? 0.12 : stat === 'ast' ? 0.20 : stat === 'tpm' ? 0.25 : 0.20;
+  const shrinkA    = Math.min(0.55, shrinkBase + shrinkExtra);
+  const shrunk     = estimate + shrinkA * (threshold - estimate);
+
+  // Std calibré : plancher ×stdScale selon taille d'échantillon + ×1.5 correction variance
+  // + boost proportionnel à l'écart de la projection par rapport à la moyenne saison.
   const stdFloorBase = stat === 'pts' ? 4.0 : stat === 'reb' ? 2.0 : stat === 'ast' ? 1.5 : stat === 'tpm' ? 1.0 : 3.0;
-  const stdFloor   = isWNBA ? stdFloorBase * WNBA_STD_FLOOR_SCALE : stdFloorBase;
+  const statSizeScale = isWNBA ? 0.80 : 1.0;
+  const stdFloor   = stdFloorBase * statSizeScale * stdScale;
   const devBoost   = 1 + Math.min(1.0, deviation * 2.5);
   const adjStd     = Math.max(stdFloor, (std || stdFloor) * 1.5 * devBoost);
 
@@ -388,7 +389,8 @@ function computeEstimate(player, isHome, oppGames, myGames, gamelogs, oppAbbr, g
   const seasonMin  = s.min;
   const roleShrunk = recentMin != null && seasonMin > 5 && (recentMin / seasonMin) < 0.6;
 
-  const ewaWBase = isWNBA ? 0.70 : (inPO && hasPOData && poCount >= 3) ? 0.65 : 0.60;
+  // Poids EWA selon taille d'échantillon : petit échantillon = moins de confiance dans les récents
+  const ewaWBase = g.length < 8 ? 0.55 : g.length < 12 ? 0.58 : (inPO && hasPOData && poCount >= 3) ? 0.65 : 0.60;
   const ewaW = roleShrunk ? Math.max(ewaWBase, 0.92) : ewaWBase;
   const rsW  = 1 - ewaW;
 

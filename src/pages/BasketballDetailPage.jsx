@@ -376,8 +376,8 @@ const PROP_CONF_BANDS = {
   nba_short: {
     pts: { high: 70, mid: 62 },
     reb: { high: 62, mid: 55 },
-    ast: { high: 58, mid: 52 },
-    tpm: { high: 62, mid: 55 },
+    ast: { high: 65, mid: 58 },
+    tpm: { high: 65, mid: 58 },
   },
   eu: {
     pts: { high: 75, mid: 67 },
@@ -391,7 +391,7 @@ const EU_PROP_LEAGUES = new Set(['acb', 'lnb', 'bbl', 'legaa', 'euroleague']);
 function propConfColor(stat, league, pct) {
   const bands = (EU_PROP_LEAGUES.has(league) ? PROP_CONF_BANDS.eu : PROP_CONF_BANDS.nba_short)[stat];
   if (!bands) return pct >= 80 ? '#00ff80' : pct >= 65 ? '#00d4ff' : '#ffb400';
-  if (pct >= bands.high) return '#00ff80';
+  if (pct >= bands.high) return '#4a9b6f';
   if (pct >= bands.mid) return '#00d4ff';
   return '#ffb400';
 }
@@ -403,26 +403,36 @@ function PropLegendCard({ league }) {
   const Dot = ({ color }) => <span style={{ display: 'inline-block', width: 6, height: 6, borderRadius: '50%', background: color, marginRight: 4, flexShrink: 0 }} />;
   return (
     <div>
-      <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text)', marginBottom: '0.4rem' }}>
+      <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text)', marginBottom: '1rem' }}>
         Code couleur — confiance
       </div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem', marginBottom: '0.5rem' }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.3rem', marginBottom: '0.5rem' }}>
         {STATS.map(([key, label]) => {
           const b = bands[key];
           return (
-            <div key={key}>
-              <div style={{ fontSize: 9, fontWeight: 700, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 1 }}>{label}</div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.1rem' }}>
-                <span style={{ display: 'flex', alignItems: 'center', fontSize: 9.5 }}><Dot color="#00ff80" />≥{b.high}% <b style={{ color: '#00ff80', marginLeft: 3 }}>alerte</b></span>
-                <span style={{ display: 'flex', alignItems: 'center', fontSize: 9.5, color: 'var(--text-dim)' }}><Dot color="#00d4ff" />{b.mid}–{b.high - 1}% moyen</span>
-                <span style={{ display: 'flex', alignItems: 'center', fontSize: 9.5, color: 'var(--text-dim)' }}><Dot color="#ffb400" />&lt;{b.mid}% faible</span>
-              </div>
+            <div key={key} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <div style={{ fontSize: 9, fontWeight: 700, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.04em', width: 42, flexShrink: 0 }}>{label}</div>
+              <span style={{ display: 'flex', alignItems: 'center', fontSize: 9.5, whiteSpace: 'nowrap' }}>
+                <Dot color="#4a9b6f" />≥{b.high}% <span style={{ color: '#4a9b6f', fontWeight: 700, marginLeft: 3 }}>Seuil de déclenchement</span>
+              </span>
             </div>
           );
         })}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.15rem', marginTop: '0.3rem' }}>
+          {(() => {
+            const allMid  = STATS.map(([k]) => bands[k]?.mid).filter(Boolean);
+            const allHigh = STATS.map(([k]) => bands[k]?.high).filter(Boolean);
+            const minMid  = Math.min(...allMid);
+            const maxHigh = Math.max(...allHigh) - 1;
+            return <>
+              <span style={{ display: 'flex', alignItems: 'center', fontSize: 9.5, color: 'var(--text-dim)', whiteSpace: 'nowrap' }}><Dot color="#00d4ff" />{minMid}–{maxHigh}% moyen</span>
+              <span style={{ display: 'flex', alignItems: 'center', fontSize: 9.5, color: 'var(--text-dim)', whiteSpace: 'nowrap' }}><Dot color="#ffb400" />&lt;{minMid}% faible</span>
+            </>;
+          })()}
+        </div>
       </div>
       <div style={{ fontSize: 9, lineHeight: 1.45, color: 'var(--text-dim)', borderTop: '1px solid var(--border)', paddingTop: '0.4rem' }}>
-        Alerte envoyée si <b style={{ color: '#00ff80' }}>seuil vert</b> + cotes (Unibet/Betclic ≥ 1,55) + minutes joueur (≥ 10/match). Détail sur la page Utilisation.
+        Alerte envoyée si <b style={{ color: '#4a9b6f' }}>seuil vert</b> + cotes Unibet/Betclic ≥ 1,70 + minutes ≥ 10/match. WNBA : AST Over bloqué si ligne ≥ 4,5 · 3pts Over réservé aux shooteuses (moy ≥ 1,5/match).
       </div>
     </div>
   );
@@ -1218,18 +1228,18 @@ function GameTotalWidget({ estimate, fixture }) {
   const edgeBg    = isOver ? 'rgba(74,222,128,0.12)' : 'rgba(248,113,113,0.12)';
 
   return (
-    <div style={{ borderTop: '1px solid var(--border)', marginTop: '0.5rem', paddingTop: '0.5rem' }}>
+    <div style={{ borderTop: '1px solid var(--border)', marginTop: '0.3rem', paddingTop: 'calc(0.3rem + 0.1cm)' }}>
       <div
         onClick={() => setExpanded(v => !v)}
         style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem' }}
       >
-        <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-dim)' }}>Modèle O/U</span>
+        <span style={{ fontSize: 10, fontWeight: 400, color: 'var(--text-dim)' }}>Modèle O/U</span>
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-          <span style={{ fontSize: 12, fontWeight: 700 }}>{estimated}</span>
+          <span style={{ fontSize: 10, fontWeight: 600 }}>{estimated}</span>
           {refTotal ? (
             <>
-              <span style={{ fontSize: 10, color: 'var(--text-dim)' }}>vs {refTotal} {refBk ? `(${BK_LABELS[refBk] ?? refBk})` : ''}</span>
-              <span style={{ fontSize: 11, fontWeight: 800, padding: '1px 6px', borderRadius: 4, background: edgeBg, color: edgeColor, border: `1px solid ${isOver ? 'rgba(74,222,128,0.3)' : 'rgba(248,113,113,0.3)'}` }}>
+              <span style={{ fontSize: 8, color: 'var(--text-dim)' }}>vs {refTotal} {refBk ? `(${BK_LABELS[refBk] ?? refBk})` : ''}</span>
+              <span style={{ fontSize: 9, fontWeight: 800, padding: '1px 5px', borderRadius: 4, background: edgeBg, color: edgeColor, border: `1px solid ${isOver ? 'rgba(74,222,128,0.3)' : 'rgba(248,113,113,0.3)'}` }}>
                 {isOver ? '▲' : '▼'} {Math.abs(edge)}%
               </span>
               {bestP != null && (
@@ -1238,15 +1248,15 @@ function GameTotalWidget({ estimate, fixture }) {
                 </span>
               )}
               {isAlert && (
-                <span style={{ fontSize: 9, fontWeight: 800, padding: '1px 5px', borderRadius: 3, background: edgeBg, color: edgeColor, letterSpacing: '0.05em', border: `1px solid ${isOver ? 'rgba(74,222,128,0.4)' : 'rgba(248,113,113,0.4)'}` }}>
+                <span style={{ fontSize: 8, fontWeight: 800, padding: '1px 5px', borderRadius: 3, background: edgeBg, color: edgeColor, letterSpacing: '0.05em', border: `1px solid ${isOver ? 'rgba(74,222,128,0.4)' : 'rgba(248,113,113,0.4)'}` }}>
                   {isOver ? 'OVER' : 'UNDER'}
                 </span>
               )}
             </>
           ) : (
-            <span style={{ fontSize: 10, color: 'var(--text-dim)' }}>ligne N/D</span>
+            <span style={{ fontSize: 8, color: 'var(--text-dim)' }}>ligne N/D</span>
           )}
-          <span style={{ fontSize: 10, color: 'var(--text-dim)' }}>{expanded ? '▴' : '▾'}</span>
+          <span style={{ fontSize: 9, color: 'var(--text-dim)' }}>{expanded ? '▴' : '▾'}</span>
         </div>
       </div>
 
@@ -1341,9 +1351,10 @@ function PropsSection({ fixture, homePlayers, awayPlayers, rosterLoading, isComp
   const [showLegend, setShowLegend]      = useState(false);
   const [legendBox, setLegendBox]         = useState(null); // { top, left }
   const propsCardRef = useRef(null);
+  const propsHeaderRef = useRef(null);
   const legendRef = useRef(null);
   const legendBtnRef = useRef(null);
-  const LEGEND_W = 218;
+  const LEGEND_W = 252;
   // Ferme la légende au clic en dehors — sans bloquer le scroll/hover du reste de la page
   useEffect(() => {
     if (!showLegend) return;
@@ -1360,8 +1371,11 @@ function PropsSection({ fixture, homePlayers, awayPlayers, rosterLoading, isComp
     const update = () => {
       if (!propsCardRef.current) return;
       const r = propsCardRef.current.getBoundingClientRect();
+      const hr = propsHeaderRef.current ? propsHeaderRef.current.getBoundingClientRect() : null;
+      const top    = hr ? hr.bottom : r.top;
+      const height = hr ? r.bottom - hr.bottom : undefined;
       const gutterCenter = r.right + (window.innerWidth - r.right) / 2;
-      setLegendBox({ top: r.top, left: gutterCenter - LEGEND_W / 2 });
+      setLegendBox({ top, left: gutterCenter - LEGEND_W / 2, height });
     };
     update();
     window.addEventListener('scroll', update, true);
@@ -1666,12 +1680,16 @@ function PropsSection({ fixture, homePlayers, awayPlayers, rosterLoading, isComp
       if (projFrozen.current && !hasNewOut && allActiveHave) continue;
 
       // Redistribution USG : si un joueur clé est OUT, boost proportionnel des actifs
+      // Exclut les OUT sans aucun match joué cette saison (absence déjà reflétée dans la baseline
+      // des coéquipiers via gamelogs/EWA — redistribuer en plus double-compterait l'usage, cf. cas Collier)
       let outWeightSum = 0, activeWeightSum = 0;
       for (const p of players) {
         const inj = injuryData[p.name]?.status || p.injury;
         const w = getWeight(p);
-        if (inj === 'Out') outWeightSum += w;
-        else if (w > 0)   activeWeightSum += w;
+        const pidW = String(p.id);
+        const hasPlayedThisSeason = (gamelogs[pidW]?.length > 0) || (seriesGamelogs[pidW]?.length > 0);
+        if (inj === 'Out' && hasPlayedThisSeason) outWeightSum += w;
+        else if (inj !== 'Out' && w > 0) activeWeightSum += w;
       }
       const totalWeight = outWeightSum + activeWeightSum;
       const redistributionFactor = (totalWeight > 0 && outWeightSum / totalWeight > 0.10)
@@ -1683,7 +1701,9 @@ function PropsSection({ fixture, homePlayers, awayPlayers, rosterLoading, isComp
       const rawOpp   = isHome ? fixture.away.short : fixture.home.short;
       const oppAbbr  = (isEL || isEuroProps) ? rawOpp : (ESPN_ABBR_NORM[rawOpp] || rawOpp);
       const BZZ_LEAGUE_NAME_FE = { acb: 'Liga ACB', bbl: 'Germany BBL', legaa: 'Lega A Basket', lnb: 'Pro A' };
+      const BZZ_EXTRA_LEAGUES  = { legaa: 'Euroleague' }; // EL teams (Venezia, Olimpia) have only EL logs in recent 20
       const leagueFilter = isEuroProps ? BZZ_LEAGUE_NAME_FE[fixture.league] : null;
+      const leagueExtra  = isEuroProps ? BZZ_EXTRA_LEAGUES[fixture.league] : null;
       players.forEach((p, idx) => {
         if (!p.stats?.pts) return;
         const pidCheck = String(p.id);
@@ -1697,7 +1717,7 @@ function PropsSection({ fixture, homePlayers, awayPlayers, rosterLoading, isComp
         const pid = String(p.id);
         const rawLog = [...(seriesGamelogs[pid] || []), ...(gamelogs[pid] || [])];
         const mergedGamelog = leagueFilter
-          ? rawLog.filter(g => !g.league || g.league === leagueFilter)
+          ? rawLog.filter(g => !g.league || g.league === leagueFilter || (leagueExtra && g.league === leagueExtra))
           : rawLog;
         const result = computeEstimate(ep, isHome, oppGames, myGames, mergedGamelog, oppAbbr, fixture.date, fixture.round, gameTotal ?? null, null, homeImpliedProb, redistributionFactor, isWNBA);
         if (result) next[pid] = result;
@@ -2022,6 +2042,7 @@ function PropsSection({ fixture, homePlayers, awayPlayers, rosterLoading, isComp
           <div ref={legendRef} onClick={e => e.stopPropagation()} style={{
             position: 'fixed', top: legendBox.top, left: legendBox.left, zIndex: 200,
             width: LEGEND_W, maxWidth: 'calc(100vw - 2rem)',
+            ...(legendBox.height ? { height: legendBox.height, overflowY: 'auto' } : {}),
             background: 'var(--bg-card, #11141c)', border: '1px solid var(--border)', borderRadius: 8,
             padding: '0.6rem 0.65rem', boxShadow: '0 8px 24px rgba(0,0,0,0.4)',
           }}>
@@ -2043,7 +2064,7 @@ function PropsSection({ fixture, homePlayers, awayPlayers, rosterLoading, isComp
         <div />
         <div style={{ gridColumn: 'span 3', fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em', color: isCompleted ? '#22c55e' : 'var(--text-dim)', textAlign: 'center' }}>Réalisées</div>
       </div>
-      <div style={{ display: 'grid', gridTemplateColumns: COL, gap: '0 0.25rem', padding: '0 0.5rem 0.35rem', borderBottom: '1px solid var(--border)' }}>
+      <div ref={propsHeaderRef} style={{ display: 'grid', gridTemplateColumns: COL, gap: '0 0.25rem', padding: '0 0.5rem 0.35rem', borderBottom: '1px solid var(--border)' }}>
         <div /><div />
         <div style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', color: 'var(--text-dim)', textAlign: 'right' }}>Pts</div>
         <div style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', color: 'var(--text-dim)', textAlign: 'right' }}>Rebs</div>
@@ -2224,7 +2245,7 @@ function OddsCell({ value, edge, isPinnacle, isHome, fairProb, color }) {
   if (value == null) return <div style={{ textAlign: 'center', color: 'var(--text-dim)' }}>—</div>;
   return (
     <div style={{ textAlign: 'center' }}>
-      <span style={{ fontWeight: isPinnacle ? 700 : 500, fontVariantNumeric: 'tabular-nums', fontSize: 13, color: color ?? undefined }}>
+      <span style={{ fontWeight: isPinnacle ? 700 : 500, fontVariantNumeric: 'tabular-nums', fontSize: 11, color: color ?? undefined }}>
         {value.toFixed(2)}
       </span>
       {isPinnacle && fairProb != null && (
@@ -2413,8 +2434,8 @@ function OddsCard({ odds, home, away, league, homePlayers, awayPlayers, onRefres
       {tab === 'all' && (
         <div style={{ display: 'grid', gridTemplateColumns: COLS_H2H, gap: '0 0.25rem', paddingBottom: '0.35rem', borderBottom: '1px solid var(--border)', marginBottom: '0.2rem' }}>
           <div />
-          <div style={ch}>{home.short} <span style={{ fontWeight: 400 }}>dom.</span></div>
-          <div style={ch}>{away.short} <span style={{ fontWeight: 400 }}>ext.</span></div>
+          <div style={{ ...ch, paddingLeft: '0.7cm' }}><span style={{ color: 'var(--text)' }}>{home.short}</span> <span style={{ fontWeight: 400, marginLeft: '0.2cm' }}>dom.</span></div>
+          <div style={{ ...ch, paddingLeft: '0.7cm' }}><span style={{ color: 'var(--text)' }}>{away.short}</span> <span style={{ fontWeight: 400, marginLeft: '0.2cm' }}>ext.</span></div>
         </div>
       )}
       {tab === 'points' && (
@@ -2592,14 +2613,14 @@ function OddsCard({ odds, home, away, league, homePlayers, awayPlayers, onRefres
             {tab === 'all' ? <>
               <div style={{ position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                 <OddsCell value={h?.home} edge={h?.edgeHome} isPinnacle={isPinnacle} fairProb={h2h?.fairProb?.home} color={isPinnacle ? undefined : BK_COLORS[bk]} />
-                {ew?.bookmakers?.[bk]?.home && <span style={{ position: 'absolute', left: '50%', marginLeft: '1.3rem', fontSize: 9, color: 'var(--text-dim)', whiteSpace: 'nowrap', pointerEvents: 'none' }}>EW {ew.bookmakers[bk].home.toFixed(2)}</span>}
+                {ew?.bookmakers?.[bk]?.home && <span style={{ position: 'absolute', left: '50%', marginLeft: '1.3rem', fontSize: 9, color: 'var(--text-dim)', whiteSpace: 'nowrap', pointerEvents: 'none' }}>({ew.bookmakers[bk].home.toFixed(2)})</span>}
               </div>
               <div style={{ position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                 <OddsCell value={h?.away} edge={h?.edgeAway} isPinnacle={isPinnacle} fairProb={h2h?.fairProb?.away} color={isPinnacle ? undefined : BK_COLORS[bk]} />
-                {ew?.bookmakers?.[bk]?.away && <span style={{ position: 'absolute', left: '50%', marginLeft: '1.3rem', fontSize: 9, color: 'var(--text-dim)', whiteSpace: 'nowrap', pointerEvents: 'none' }}>EW {ew.bookmakers[bk].away.toFixed(2)}</span>}
+                {ew?.bookmakers?.[bk]?.away && <span style={{ position: 'absolute', left: '50%', marginLeft: '1.3rem', fontSize: 9, color: 'var(--text-dim)', whiteSpace: 'nowrap', pointerEvents: 'none' }}>({ew.bookmakers[bk].away.toFixed(2)})</span>}
               </div>
             </> : <>
-              <div style={{ textAlign: 'center', fontSize: 11, fontVariantNumeric: 'tabular-nums', fontWeight: isPinnacle ? 700 : 400, color: isPinnacle ? 'var(--text)' : BK_COLORS[bk] ?? 'var(--text-dim)' }}>
+              <div style={{ textAlign: 'center', fontSize: 10, fontVariantNumeric: 'tabular-nums', fontWeight: isPinnacle ? 700 : 400, color: isPinnacle ? 'var(--text)' : BK_COLORS[bk] ?? 'var(--text-dim)' }}>
                 {t?.line ?? '—'}
               </div>
               <OddsCell value={t?.over}  edge={t?.edgeOver}  isPinnacle={isPinnacle} fairProb={tot?.fairProb?.over}  color={isPinnacle ? undefined : BK_COLORS[bk]} />
@@ -2609,10 +2630,41 @@ function OddsCard({ odds, home, away, league, homePlayers, awayPlayers, onRefres
         );
       })}
 
+      {tab === 'all' && gameTotalEstimate && (() => {
+        const { homeExpected, awayExpected, std } = gameTotalEstimate;
+        if (!homeExpected || !awayExpected || !std) return null;
+        const margin = homeExpected - awayExpected;
+        const pHome = Math.min(0.99, Math.max(0.01, 1 / (1 + Math.exp(-margin * Math.PI / (std * Math.sqrt(3))))));
+        const pAway = 1 - pHome;
+        const ewThreshold = Object.values(ew?.bookmakers ?? {})[0]?.threshold ?? (league === 'wnba' ? 18 : 20);
+        const pEWHome = Math.min(0.99, Math.max(0.01, computeEarlyWinProb(homeExpected, awayExpected, std, ewThreshold, true)));
+        const pEWAway = Math.min(0.99, Math.max(0.01, computeEarlyWinProb(homeExpected, awayExpected, std, ewThreshold, false)));
+        const bestEW = Math.max(pEWHome, pEWAway);
+        const ewDir = pEWHome >= pEWAway ? 'HOME' : 'AWAY';
+        const isEWAlert = bestEW >= EARLYWIN_ALERT_PROB;
+        return (
+          <div style={{ position: 'relative', display: 'grid', gridTemplateColumns: COLS_H2H, gap: '0 0.25rem', alignItems: 'center', padding: '0.5rem 0 0', borderTop: '1px solid var(--border)', marginTop: '0.5rem' }}>
+            <span style={{ fontSize: 10, color: 'var(--text-dim)' }}>Modèle 1X2</span>
+            <div style={{ position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <span style={{ fontSize: 10, fontWeight: 600, color: pHome > pAway ? 'rgba(96,165,250,0.75)' : 'var(--text-dim)' }}>{Math.round(pHome * 100)}%</span>
+              <span style={{ position: 'absolute', left: '50%', marginLeft: '1.15rem', top: '50%', transform: 'translateY(calc(-50% + 0.02cm))', fontSize: 8, color: 'var(--text-dim)', whiteSpace: 'nowrap', pointerEvents: 'none' }}>(EW {Math.round(pEWHome * 100)}%)</span>
+            </div>
+            <div style={{ position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <span style={{ fontSize: 10, fontWeight: 600, color: pAway > pHome ? 'rgba(96,165,250,0.75)' : 'var(--text-dim)' }}>{Math.round(pAway * 100)}%</span>
+              <span style={{ position: 'absolute', left: '50%', marginLeft: '1.15rem', top: '50%', transform: 'translateY(calc(-50% + 0.02cm))', fontSize: 8, color: 'var(--text-dim)', whiteSpace: 'nowrap', pointerEvents: 'none' }}>(EW {Math.round(pEWAway * 100)}%)</span>
+            </div>
+            <div style={{ position: 'absolute', right: 0, top: '50%', transform: 'translateY(calc(-50% + 0.3cm))', display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+              <span style={{ fontSize: 10, fontWeight: 700, color: isEWAlert ? '#4ade80' : 'var(--text-dim)' }}>{Math.round(bestEW * 100)}%</span>
+              {isEWAlert && (
+                <span style={{ fontSize: 9, fontWeight: 800, padding: '1px 5px', borderRadius: 3, background: 'rgba(96,165,250,0.12)', color: 'rgba(96,165,250,0.9)', border: '1px solid rgba(96,165,250,0.3)', letterSpacing: '0.05em' }}>{ewDir}</span>
+              )}
+            </div>
+          </div>
+        );
+      })()}
+
       {tab === 'points' && gameTotalEstimate && fixture && (
-        <div style={{ marginTop: '0.75rem', borderTop: '1px solid var(--border)', paddingTop: '0.75rem' }}>
-          <GameTotalWidget estimate={gameTotalEstimate} fixture={fixture} />
-        </div>
+        <GameTotalWidget estimate={gameTotalEstimate} fixture={fixture} />
       )}
     </div>
   );

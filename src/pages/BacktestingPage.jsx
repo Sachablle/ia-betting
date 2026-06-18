@@ -78,7 +78,7 @@ function loadAllResolved(periodDays, model = 'new') {
       label: a.player,
       sub: `${a.direction === 'over' ? '▲ Over' : '▼ Under'} ${a.line} ${(a.stat || '').toUpperCase()}`,
       date: a.fixtureDate, status: a.status, odds: getOdds(a),
-      probability: a.probability, actual: a.actualStat, stat: a.stat,
+      probability: a.acceptedProbability ?? a.probability, actual: a.actualStat, stat: a.stat,
       direction: a.direction, line: a.line, bookmaker: a.acceptedBookmaker, league: a.league || 'nba',
     }));
 
@@ -91,7 +91,7 @@ function loadAllResolved(periodDays, model = 'new') {
       date: a.date, status: a.status,
       odds: a.acceptedUnibetOdds ?? a.acceptedBetclicOdds ?? a.acceptedWinamaxOdds ??
             a.unibetOdds ?? a.betclicOdds ?? a.winamaxOdds ?? null,
-      probability: a.prob, actual: a.actualTotal, line: a.line,
+      probability: a.acceptedProbability ?? a.prob, actual: a.actualTotal, line: a.line,
       direction: a.direction, bookmaker: a.acceptedBookmaker, league: a.league || 'nba',
     }));
 
@@ -102,7 +102,7 @@ function loadAllResolved(periodDays, model = 'new') {
       sub: '✓ Les deux équipes marquent', date: a.fixtureDate, status: a.status,
       odds: a.acceptedUnibetOdds ?? a.acceptedBetclicOdds ?? a.acceptedWinamaxOdds ?? a.acceptedPinnacleOdds ??
             a.unibetOdds ?? a.betclicOdds ?? a.winamaxOdds ?? a.pinnacleOdds ?? null,
-      probability: a.probability,
+      probability: a.acceptedProbability ?? a.probability,
       actual: (a.actualHomeScore != null && a.actualAwayScore != null) ? `${a.actualHomeScore}-${a.actualAwayScore}` : null,
       league: a.league || 'football', bookmaker: a.acceptedBookmaker,
     }));
@@ -116,7 +116,7 @@ function loadAllResolved(periodDays, model = 'new') {
       date: a.fixtureDate, status: a.status,
       odds: a.acceptedUnibetOdds ?? a.acceptedBetclicOdds ?? a.acceptedWinamaxOdds ??
             a.unibetOdds ?? a.betclicOdds ?? a.winamaxOdds ?? null,
-      probability: a.probability,
+      probability: a.acceptedProbability ?? a.probability,
       actual: (a.actualHomeScore != null && a.actualAwayScore != null) ? a.actualHomeScore + a.actualAwayScore : null,
       line: a.line, direction: a.direction, league: a.league || 'football',
       bookmaker: a.acceptedBookmaker,
@@ -131,7 +131,7 @@ function loadAllResolved(periodDays, model = 'new') {
       date: a.fixtureDate, status: a.status,
       odds: a.acceptedUnibetOdds ?? a.acceptedBetclicOdds ?? a.acceptedWinamaxOdds ??
             a.unibetOdds ?? a.betclicOdds ?? a.winamaxOdds ?? null,
-      probability: a.probability,
+      probability: a.acceptedProbability ?? a.probability,
       actual: (a.actualHomeScore != null && a.actualAwayScore != null) ? `${a.actualHomeScore}-${a.actualAwayScore}` : null,
       direction: a.direction, league: a.league || 'football',
       bookmaker: a.acceptedBookmaker,
@@ -250,6 +250,47 @@ function calibrationBands(bets) {
     const won = b.filter(x => x.status === 'won').length;
     return { ...band, total: b.length, won, rate: b.length > 0 ? (won / b.length * 100) : null };
   });
+}
+
+// ── Calibration par catégorie ──────────────────────────────────────────────
+// Pour chaque catégorie (stat × groupe de ligue, ou type de pari foot), calcule
+// le win rate réel cumulatif "probabilité affichée >= seuil" — permet de voir à
+// partir de quel % affiché les alertes deviennent vraiment fiables.
+
+const EU_BASKET_LEAGUES = new Set(['acb', 'lnb', 'bbl', 'legaa', 'euroleague']);
+const CALIB_THRESHOLDS = [55, 60, 65, 70, 75, 80, 85, 90];
+
+function categoryKey(b) {
+  if (b.type === 'prop') {
+    const grp = EU_BASKET_LEAGUES.has(b.sport) ? 'EU' : b.sport === 'wnba' ? 'WNBA' : 'NBA';
+    return `${grp} · ${(b.stat || '?').toUpperCase()}`;
+  }
+  if (b.type === 'total')  return b.sport === 'football' ? 'Foot · O/U' : `${(b.sport || '?').toUpperCase()} · O/U`;
+  if (b.type === 'btts')   return 'Foot · BTTS';
+  if (b.type === 'result') return 'Foot · Résultat';
+  return 'Autre';
+}
+
+function calibrationByCategory(bets) {
+  const groups = {};
+  for (const b of bets) {
+    if (b.status === 'void' || b.probability == null) continue;
+    const key = categoryKey(b);
+    (groups[key] ||= []).push(b);
+  }
+  return Object.entries(groups)
+    .map(([key, arr]) => {
+      const rows = CALIB_THRESHOLDS.map(t => {
+        const subset = arr.filter(a => a.probability >= t);
+        if (subset.length === 0) return null;
+        const won = subset.filter(a => a.status === 'won').length;
+        const sorted = [...subset].sort((a, b) => new Date(b.date) - new Date(a.date));
+        return { threshold: t, n: subset.length, won, rate: won / subset.length * 100, bets: sorted };
+      }).filter(Boolean);
+      return { key, total: arr.length, rows };
+    })
+    .filter(g => g.total >= 1)
+    .sort((a, b) => b.total - a.total);
 }
 
 function exportCSV(bets) {
@@ -425,6 +466,45 @@ function CalibrationRow({ band }) {
   );
 }
 
+function CalibCategoryCard({ group }) {
+  const [openThreshold, setOpenThreshold] = useState(null);
+  return (
+    <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 10, padding: '0.75rem 0.9rem' }}>
+      <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)', marginBottom: '0.5rem' }}>
+        {group.key} <span style={{ fontWeight: 400, color: 'var(--text-dim)', fontSize: 10 }}>(n={group.total})</span>
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
+        {group.rows.map(r => {
+          const isOpen = openThreshold === r.threshold;
+          const color = r.rate >= 85 ? '#4ade80' : r.rate >= 50 ? '#f59e0b' : '#f87171';
+          return (
+            <div key={r.threshold}>
+              <div
+                onClick={() => setOpenThreshold(isOpen ? null : r.threshold)}
+                style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', cursor: 'pointer', padding: '2px 4px', borderRadius: 5, background: isOpen ? 'rgba(255,255,255,0.04)' : 'transparent' }}
+              >
+                <span style={{ width: 42, fontSize: 11, color: 'var(--text-dim)', flexShrink: 0 }}>≥{r.threshold}%</span>
+                <div style={{ flex: 1, height: 5, borderRadius: 3, background: 'rgba(255,255,255,0.08)', position: 'relative', overflow: 'hidden' }}>
+                  <div style={{ position: 'absolute', left: 0, top: 0, height: '100%', width: `${r.rate}%`, background: color, borderRadius: 3, transition: 'width 0.4s' }} />
+                </div>
+                <span style={{ fontSize: 12, fontWeight: 700, minWidth: 36, textAlign: 'right', fontVariantNumeric: 'tabular-nums', color }}>
+                  {r.rate.toFixed(0)}%
+                </span>
+                <span style={{ fontSize: 10, color: 'var(--text-dim)', minWidth: 36, textAlign: 'right' }}>{r.won}/{r.n}</span>
+              </div>
+              {isOpen && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', margin: '0.35rem 0 0.35rem 0', paddingLeft: '0.25rem', borderLeft: '2px solid rgba(255,255,255,0.08)' }}>
+                  {r.bets.map((bet, i) => <BetRow key={bet.id ?? i} bet={bet} rank={r.bets.length - i} compact />)}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function DonutResults({ metrics, accepted = 0 }) {
   const segments = [
     { key: 'won',      label: 'Gagné',   color: '#4ade80', count: metrics.won },
@@ -536,21 +616,51 @@ function BookmakerRow({ g }) {
   );
 }
 
-function BetRow({ bet, rank, stake = 100 }) {
+function BetRow({ bet, rank, stake = 10, compact = false }) {
   const isWon  = bet.status === 'won';
   const isVoid = bet.status === 'void';
   const statusColor = isVoid ? '#94a3b8' : isWon ? '#4ade80' : '#f87171';
   const o = bet.odds ?? 1.9;
   const pl = isVoid ? null : isWon ? (o - 1) * stake : -stake;
+  const plColor = pl == null ? '#94a3b8' : pl >= 0 ? '#4ade80' : '#f87171';
+  const plStr = pl == null ? '—' : `${pl >= 0 ? '+' : ''}${pl.toFixed(0)}€`;
+  const dateStr = new Date(bet.date).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' });
+
+  if (compact) {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 2, padding: '0.3rem 0.5rem', borderRadius: 6, background: 'rgba(255,255,255,0.02)', borderLeft: `3px solid ${statusColor}44`, fontSize: 11 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+          <span style={{ fontSize: 9, color: 'var(--text-dim)', flexShrink: 0 }}>#{rank}</span>
+          <span style={{ fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1, minWidth: 0 }}>{bet.label}</span>
+          <span style={{ fontSize: 10, fontWeight: 800, color: statusColor, flexShrink: 0 }}>{isVoid ? 'V' : isWon ? '✓' : '✗'}</span>
+          <span style={{ fontSize: 11, fontWeight: 800, color: plColor, flexShrink: 0, fontVariantNumeric: 'tabular-nums' }}>{plStr}</span>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', paddingLeft: 14 }}>
+          <span style={{ fontSize: 10, color: 'var(--text-dim)', flex: 1 }}>{bet.sub}</span>
+          <span style={{ fontSize: 9, color: 'var(--text-dim)', flexShrink: 0 }}>{dateStr}</span>
+          <span style={{ fontSize: 10, fontWeight: 700, color: '#a78bfa', flexShrink: 0, fontVariantNumeric: 'tabular-nums' }}>
+            {bet.probability != null ? `${bet.probability.toFixed(0)}%` : '—'}
+          </span>
+          <span style={{ fontSize: 10, fontWeight: 700, color: '#60a5fa', flexShrink: 0, fontVariantNumeric: 'tabular-nums' }}>
+            {bet.odds != null ? bet.odds.toFixed(2) : '—'}
+          </span>
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: '24px 1fr auto auto auto auto', alignItems: 'center', gap: '0 0.75rem', padding: '0.35rem 0.75rem', borderRadius: 7, background: 'rgba(255,255,255,0.02)', borderLeft: `3px solid ${statusColor}44`, fontSize: 12 }}>
+    <div style={{ display: 'grid', gridTemplateColumns: '24px 1fr auto auto auto auto auto', alignItems: 'center', gap: '0 0.75rem', padding: '0.35rem 0.75rem', borderRadius: 7, background: 'rgba(255,255,255,0.02)', borderLeft: `3px solid ${statusColor}44`, fontSize: 12 }}>
       <span style={{ fontSize: 10, color: 'var(--text-dim)', textAlign: 'center' }}>#{rank}</span>
       <div style={{ minWidth: 0 }}>
         <div style={{ fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{bet.label}</div>
         <div style={{ fontSize: 10, color: 'var(--text-dim)' }}>{bet.sub}</div>
       </div>
       <span style={{ fontSize: 10, color: 'var(--text-dim)', whiteSpace: 'nowrap' }}>
-        {new Date(bet.date).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' })}
+        {dateStr}
+      </span>
+      <span style={{ fontSize: 11, fontWeight: 700, color: '#a78bfa', minWidth: 32, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
+        {bet.probability != null ? `${bet.probability.toFixed(0)}%` : '—'}
       </span>
       <span style={{ fontSize: 11, fontWeight: 700, color: '#60a5fa', minWidth: 28, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
         {bet.odds != null ? bet.odds.toFixed(2) : '—'}
@@ -558,14 +668,21 @@ function BetRow({ bet, rank, stake = 100 }) {
       <span style={{ fontSize: 12, fontWeight: 800, color: statusColor, minWidth: 20, textAlign: 'center' }}>
         {isVoid ? 'V' : isWon ? '✓' : '✗'}
       </span>
-      <span style={{ fontSize: 12, fontWeight: 800, color: pl == null ? '#94a3b8' : pl >= 0 ? '#4ade80' : '#f87171', minWidth: 52, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
-        {pl == null ? '—' : `${pl >= 0 ? '+' : ''}${pl.toFixed(0)}€`}
+      <span style={{ fontSize: 12, fontWeight: 800, color: plColor, minWidth: 52, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
+        {plStr}
       </span>
     </div>
   );
 }
 
-const PERIODS      = [{ label: '1j', days: 1 }, { label: '3j', days: 3 }, { label: '5j', days: 5 }, { label: '10j', days: 10 }, { label: '20j', days: 20 }, { label: '30j', days: 30 }];
+const TIMELINE = [
+  { key: 'Tous',    label: 'Tous',    days: 1        },
+  { key: '1j',     label: '1j',      days: 1        },
+  { key: '3j',     label: '3j',      days: 3        },
+  { key: '5j',     label: '5j',      days: 5        },
+  { key: '10j',    label: '10j',     days: 10       },
+  { key: 'Overall',label: 'Overall', days: Infinity },
+];
 const SPORT_FILTERS = [{ key: 'all', label: 'Tous' }, { key: 'basket', label: 'Basket' }, { key: 'foot', label: 'Foot' }];
 const BASKET_LEAGUES = new Set(['nba','wnba','euroleague','acb','lnb','bbl','legaa']);
 const COMP_FILTERS  = [
@@ -649,15 +766,16 @@ function Section({ title, children, mb = true, defaultOpen = true }) {
 // ── Page principale ────────────────────────────────────────────────────────
 
 export default function BacktestingPage() {
-  const [model,       setModel]       = useState('new');
-  const [period,      setPeriod]      = useState(Infinity);
+  const [model,         setModel]         = useState('new');
+  const [timelineLabel, setTimelineLabel] = useState('Tous');
+  const period = TIMELINE.find(t => t.label === timelineLabel)?.days ?? 1;
   const [sportFilter, setSportFilter] = useState('all');
   const [compFilter,  setCompFilter]  = useState('all');
   const [typeFilter,  setTypeFilter]  = useState('all');
   const [allBets,     setAllBets]     = useState([]);
-  const [stake,       setStake]       = useState(100);
+  const [stake,       setStake]       = useState(10);
 
-  const handleModelChange = (m) => { setModel(m); setPeriod(Infinity); setSportFilter('all'); setCompFilter('all'); setTypeFilter('all'); };
+  const handleModelChange = (m) => { setModel(m); setTimelineLabel('Tous'); setSportFilter('all'); setCompFilter('all'); setTypeFilter('all'); };
   const handleSportChange = (v) => { setSportFilter(v); setCompFilter('all'); setTypeFilter('all'); };
 
   // Options dynamiques selon sport sélectionné
@@ -700,6 +818,7 @@ export default function BacktestingPage() {
   const rollingWR  = useMemo(() => buildRollingWR(filtered),    [filtered]);
   const bkStats    = useMemo(() => byBookmaker(filtered),       [filtered]);
   const calib      = useMemo(() => calibrationBands(filtered),  [filtered]);
+  const calibCats  = useMemo(() => calibrationByCategory(filtered), [filtered]);
   const typeStats  = useMemo(() => byTypeStats(filtered),       [filtered]);
 
   const rolling        = useMemo(() => filtered.filter(b => b.status !== 'void').slice(-ROLLING_N), [filtered]);
@@ -744,13 +863,13 @@ export default function BacktestingPage() {
 
       {/* Filtres */}
       <div style={{ display: 'flex', alignItems: 'flex-end', gap: '0.75rem', marginBottom: '1.25rem', flexWrap: 'wrap' }}>
-        <DropdownFilter label="Période"     options={PERIODS}      value={period}      onChange={setPeriod} />
+        <DropdownFilter label="Période" options={TIMELINE} value={timelineLabel} onChange={setTimelineLabel} />
         <DropdownFilter label="Sport"       options={SPORT_FILTERS} value={sportFilter} onChange={handleSportChange} />
         <DropdownFilter label="Compétition" options={compOptions}   value={compFilter}  onChange={setCompFilter} />
         <DropdownFilter label="Type"        options={typeOptions}   value={typeFilter}  onChange={setTypeFilter} />
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
           <span style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.09em', color: 'var(--text-dim)' }}>Mise (€)</span>
-          <input type="number" min="1" value={stake} onChange={e => setStake(Math.max(1, +e.target.value || 100))}
+          <input type="number" min="1" value={stake} onChange={e => setStake(Math.max(1, +e.target.value || 10))}
             style={{ width: 72, background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 8, color: 'var(--text)', fontSize: 12, fontWeight: 600, padding: '5px 10px', outline: 'none' }} />
         </div>
       </div>
@@ -821,6 +940,18 @@ export default function BacktestingPage() {
             </div>
           </Section>
         </div>
+
+        {/* Ligne 2b : Calibration par catégorie */}
+        {calibCats.length > 0 && (
+          <Section title="Calibration par catégorie" mb={true}>
+            <div style={{ fontSize: 10, color: 'var(--text-dim)', marginBottom: '0.75rem' }}>
+              Win rate réel des paris dont la probabilité affichée est ≥ seuil · permet de trouver le seuil de déclenchement par catégorie
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '0.75rem' }}>
+              {calibCats.map(g => <CalibCategoryCard key={g.key} group={g} />)}
+            </div>
+          </Section>
+        )}
 
         {/* Ligne 3 : Répartition + Performance par type */}
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', marginBottom: '1.25rem' }}>

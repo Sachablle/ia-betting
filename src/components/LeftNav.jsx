@@ -35,7 +35,7 @@ const NAV_SECTIONS = [
     items: [
       { to: '/dashboard',   icon: '◈', label: 'Dashboard',   sub: 'Vue d\'ensemble' },
       { to: '/carte',       icon: '⬡', label: 'Sports',       sub: 'Championnats' },
-      { to: '/placebet',    icon: '◎', label: 'Alertes',      sub: 'Value bets', badge: true },
+      { to: '/placebet',    icon: '◎', label: 'Alertes',      sub: 'Value bets' },
       { to: '/backtesting', icon: '◉', label: 'Backtesting',  sub: 'Statistiques' },
     ],
   },
@@ -47,7 +47,7 @@ const NAV_SECTIONS = [
   },
 ];
 
-function AlertesGroup({ alertCount, isLinkActive }) {
+function AlertesGroup({ alertCounts, isLinkActive }) {
   const location = useLocation();
   const navigate = useNavigate();
   const hasLive = useHasLiveAlerts();
@@ -56,6 +56,14 @@ function AlertesGroup({ alertCount, isLinkActive }) {
 
   useEffect(() => { if (hasLive) setOpen(true); }, [hasLive]);
   useEffect(() => { if (!isOnAlertes) setOpen(false); }, [location.pathname]);
+
+  const { total, basket, foot } = alertCounts;
+  // Orange = basket (défaut .topbar-badge), vert = foot, dégradé = les deux en attente
+  const badgeStyle = basket > 0 && foot > 0
+    ? { background: 'linear-gradient(90deg, #f59e0b 50%, #22c55e 50%)' }
+    : foot > 0
+      ? { background: '#22c55e' }
+      : undefined;
 
   return (
     <div>
@@ -69,7 +77,7 @@ function AlertesGroup({ alertCount, isLinkActive }) {
           onClick={() => navigate('/placebet')}
         >
           Alertes
-          {alertCount > 0 && <span className="topbar-badge">{alertCount}</span>}
+          {total > 0 && <span className="topbar-badge" style={badgeStyle}>{total}</span>}
         </span>
         <button
           onClick={e => { e.stopPropagation(); setOpen(o => !o); }}
@@ -165,7 +173,7 @@ function AnalyserCards() {
   );
 }
 
-export default function LeftNav({ alertCount = 0 }) {
+export default function LeftNav({ alertCounts = { total: 0, basket: 0, foot: 0 } }) {
   const location = useLocation();
   const isLinkActive = (to) => {
     const [path, query] = to.split('?');
@@ -209,9 +217,9 @@ export default function LeftNav({ alertCount = 0 }) {
           }}>
             {section.label}
           </div>
-          {section.items.map(({ to, icon, label, sub, badge }) => {
+          {section.items.map(({ to, icon, label, sub }) => {
             if (to === '/sports') return <SportsGroup key={to} isLinkActive={isLinkActive} />;
-            if (to === '/placebet') return <AlertesGroup key={to} alertCount={alertCount} isLinkActive={isLinkActive} />;
+            if (to === '/placebet') return <AlertesGroup key={to} alertCounts={alertCounts} isLinkActive={isLinkActive} />;
             return (
               <NavLink
                 key={to}
@@ -222,9 +230,6 @@ export default function LeftNav({ alertCount = 0 }) {
               >
                 <span className="left-nav-name" style={{ display: 'flex', alignItems: 'center', gap: 6, flex: 1 }}>
                   {label}
-                  {badge && alertCount > 0 && (
-                    <span className="topbar-badge">{alertCount}</span>
-                  )}
                 </span>
               </NavLink>
             );

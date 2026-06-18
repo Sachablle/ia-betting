@@ -23,13 +23,136 @@ const LEAGUE_META = {
 
 const FOOTBALL_LEAGUES = new Set(['ligue1','laliga','bundes','seriea','pl','cdm']);
 
-const MONDE = { name: 'Monde', flag: '🌍', leagues: ['euroleague','cdm'], isMonde: true };
 
-function Panel({ country, onClose }) {
+const MONDE = { name: 'Monde', flag: '🌍', leagues: ['cdm','euroleague'], isMonde: true };
+
+const STAT_CATS = [
+  { key: 'pts', label: 'PTS', sub: 'Points / match',    color: '#60a5fa' },
+  { key: 'reb', label: 'REB', sub: 'Rebonds / match',   color: '#4ade80' },
+  { key: 'ast', label: 'AST', sub: 'Assists / match',   color: '#fb923c' },
+  { key: 'tpm', label: '3PM', sub: '3 pts / match',     color: '#c084fc' },
+];
+
+function StatsOverlay({ league, onClose, standData, cats }) {
+  const [standView, setStandView] = useState('ligue');
+
+  if (league !== 'wnba' && league !== 'nba' && league !== 'acb') return null;
+
+  const card = {
+    background:'rgba(0,6,20,0.97)', border:'1px solid rgba(96,165,250,0.15)',
+    borderRadius:10, boxShadow:'0 8px 32px rgba(0,0,0,0.8)', overflow:'hidden',
+  };
+  const btnToggle = (active) => ({
+    fontSize:8, fontWeight:700, fontFamily:'monospace', letterSpacing:'0.06em',
+    padding:'2px 6px', borderRadius:4, cursor:'pointer', border:'none',
+    background: active ? 'rgba(96,165,250,0.2)' : 'transparent',
+    color: active ? '#60a5fa' : 'rgba(255,255,255,0.3)',
+    textTransform:'uppercase',
+  });
+
+  const StandTable = ({ teams }) => (
+    <table style={{ width:'100%', borderCollapse:'collapse' }}>
+      <thead>
+        <tr style={{ borderBottom:'1px solid rgba(255,255,255,0.06)', position:'sticky', top:0, background:'rgba(0,6,20,0.98)' }}>
+          {['#','ÉQUIPE','V','D','.PCT','GB'].map(h => (
+            <th key={h} style={{ fontSize:8, fontWeight:700, color:'rgba(255,255,255,0.3)', fontFamily:'monospace', padding:'4px 6px', textAlign: h==='ÉQUIPE'?'left':'center', letterSpacing:'0.08em' }}>{h}</th>
+          ))}
+        </tr>
+      </thead>
+      <tbody>
+        {teams.map((t, i) => (
+          <tr key={t.abbr} style={{ borderBottom:'1px solid rgba(255,255,255,0.04)', background: i%2===0?'rgba(255,255,255,0.01)':'none' }}>
+            <td style={{ fontSize:9, color:'rgba(255,255,255,0.35)', padding:'4px 6px', textAlign:'center', fontFamily:'monospace' }}>{t.rank}</td>
+            <td style={{ padding:'4px 6px' }}>
+              <div style={{ display:'flex', alignItems:'center', gap:5 }}>
+                {t.logo && <img src={t.logo} alt="" width={14} height={14} style={{ objectFit:'contain' }} onError={e=>e.target.style.display='none'}/>}
+                <span style={{ fontSize:10, fontWeight:700, color:'#fff' }}>{t.abbr}</span>
+              </div>
+            </td>
+            <td style={{ fontSize:10, color:'#4ade80', fontWeight:700, textAlign:'center', padding:'4px 4px', fontFamily:'monospace' }}>{t.wins}</td>
+            <td style={{ fontSize:10, color:'rgba(255,255,255,0.5)', textAlign:'center', padding:'4px 4px', fontFamily:'monospace' }}>{t.losses}</td>
+            <td style={{ fontSize:10, color:'rgba(255,255,255,0.7)', textAlign:'center', padding:'4px 4px', fontFamily:'monospace' }}>{t.pct != null ? t.pct.toFixed(3) : '—'}</td>
+            <td style={{ fontSize:10, color:'rgba(255,255,255,0.4)', textAlign:'center', padding:'4px 4px', fontFamily:'monospace' }}>{t.gb != null && t.gb > 0 ? t.gb : '—'}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+
+  const LEFT    = 208;
+  const PANEL_W = 480;
+  const GAP     = 10; // marge droite avant le panel
+
+  return (
+    <div style={{ position:'fixed', top:110, bottom:70, left:LEFT, right: PANEL_W + GAP, zIndex:30, display:'flex', flexDirection:'column', gap:24, pointerEvents:'none' }}>
+      {/* Classement — largeur fixe */}
+      <div key={`stand-${league}`} onClick={(e) => e.stopPropagation()} style={{ ...card, width:380, flexShrink:0, animation:'mapReveal 1.4s ease-out both', animationDelay:'0.1s', pointerEvents:'auto' }}>
+        <div style={{ padding:'8px 12px 6px', borderBottom:'1px solid rgba(96,165,250,0.1)', display:'flex', alignItems:'center', gap:6 }}>
+          <span style={{ fontSize:10, fontWeight:800, color:'#60a5fa', fontFamily:'monospace', textTransform:'uppercase', letterSpacing:'0.1em', flex:1 }}>Classement {league?.toUpperCase()}</span>
+          <button style={btnToggle(standView==='ligue')} onClick={()=>setStandView('ligue')}>Ligue</button>
+          {league !== 'acb' && <button style={btnToggle(standView==='conf')} onClick={()=>setStandView('conf')}>Conf.</button>}
+          <button onClick={onClose} style={{ background:'none', border:'none', color:'rgba(255,255,255,0.3)', cursor:'pointer', fontSize:14, lineHeight:1, padding:0, marginLeft:4 }}>×</button>
+        </div>
+        <div style={{ maxHeight:'calc(50vh - 60px)', overflowY:'auto' }}>
+          {!standData ? (
+            <div style={{ padding:'1.2rem', textAlign:'center', fontSize:10, color:'rgba(255,255,255,0.2)', fontFamily:'monospace' }}>CHARGEMENT...</div>
+          ) : standView === 'ligue' ? (
+            <StandTable teams={standData.standings || []} />
+          ) : (
+            (standData.conferences || []).map(conf => (
+              <div key={conf.name}>
+                <div style={{ padding:'5px 12px', fontSize:8, fontWeight:800, color:'rgba(96,165,250,0.5)', fontFamily:'monospace', textTransform:'uppercase', letterSpacing:'0.1em', borderBottom:'1px solid rgba(255,255,255,0.04)', background:'rgba(96,165,250,0.04)' }}>{conf.short}</div>
+                <StandTable teams={conf.teams || []} />
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+
+      {/* 4 fenêtres stats — s'étendent jusqu'à la légende */}
+      <div style={{ display:'grid', gridTemplateColumns:'repeat(4, 1fr)', gap:6, flex:1, minHeight:0 }}>
+        {STAT_CATS.map(({ key, label, sub, color }, ci) => (
+          <div key={`${league}-${key}`} onClick={(e) => e.stopPropagation()} style={{ ...card, display:'flex', flexDirection:'column', minHeight:0, animation:'mapReveal 1.4s ease-out both', animationDelay:`${0.25 + ci * 0.18}s`, pointerEvents:'auto' }}>
+            <div style={{ padding:'6px 10px 4px', borderBottom:`1px solid ${color}22`, flexShrink:0 }}>
+              <span style={{ fontSize:11, fontWeight:800, color, fontFamily:'monospace' }}>{label}</span>
+              <span style={{ fontSize:8, color:'rgba(255,255,255,0.3)', marginLeft:5, textTransform:'uppercase', letterSpacing:'0.06em' }}>{sub.split('/')[1]?.trim()}</span>
+            </div>
+            <div style={{ flex:1, overflowY:'auto', display:'flex', flexDirection:'column', justifyContent:'space-evenly' }}>
+              {!cats?.[key] ? (
+                <div style={{ padding:'1rem', textAlign:'center', fontSize:9, color:'rgba(255,255,255,0.2)', fontFamily:'monospace' }}>…</div>
+              ) : cats[key].map((l, i) => (
+                <div key={l.id} style={{
+                  display:'flex', alignItems:'center', gap:6, padding:'6px 10px',
+                  borderBottom: i < 4 ? '1px solid rgba(255,255,255,0.04)' : 'none',
+                  background: i === 0 ? `${color}0a` : 'none',
+                }}>
+                  <span style={{ fontSize:9, color:'rgba(255,255,255,0.3)', fontFamily:'monospace', width:12, flexShrink:0, textAlign:'right' }}>{l.rank}</span>
+                  <img src={l.photo} alt="" width={24} height={24} style={{ borderRadius:'50%', objectFit:'cover', border: i===0?`1px solid ${color}55`:'1px solid rgba(255,255,255,0.08)', flexShrink:0 }} onError={e=>e.target.style.display='none'}/>
+                  <div style={{ flex:1, minWidth:0 }}>
+                    <div style={{ fontSize:10, fontWeight: i===0?800:600, color: i===0?'#fff':'rgba(255,255,255,0.75)', whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>{(n=>{const p=n.split(' ');return p.length>1?p[0][0]+'. '+p.slice(1).join(' '):n;})(l.name)}</div>
+                    <div style={{ fontSize:8, color:'rgba(255,255,255,0.3)' }}>{l.team}</div>
+                  </div>
+                  <div style={{ fontSize: i===0?14:11, fontWeight:800, color: i===0?color:'rgba(255,255,255,0.6)', fontFamily:'monospace', flexShrink:0 }}>{l.displayValue}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function Panel({ country, onClose, statsLeague, setStatsLeague }) {
   const navigate = useNavigate();
   const [matches, setMatches] = useState({});
   const [loading, setLoading] = useState(true);
   const [view, setView] = useState({}); // { [league]: 'upcoming' | 'done' } — bouton À venir / Terminés par championnat
+  const _hasFootball = country.leagues.some(l => FOOTBALL_LEAGUES.has(l));
+  const _hasBasket   = country.leagues.some(l => !FOOTBALL_LEAGUES.has(l));
+  // Par défaut : sport de la première ligue du pays (acb avant laliga → basket ; cdm avant euroleague → football)
+  const _firstSport = FOOTBALL_LEAGUES.has(country.leagues[0]) ? 'football' : 'basket';
+  const [sportFilter, setSportFilter] = useState(_hasBasket && _hasFootball ? _firstSport : _hasBasket ? 'basket' : _hasFootball ? 'football' : null);
 
   useEffect(() => {
     if (!country) return;
@@ -83,24 +206,30 @@ function Panel({ country, onClose }) {
     return () => clearInterval(t);
   }, [country?.name]);
 
+  const hasFootball   = country.leagues.some(l => FOOTBALL_LEAGUES.has(l));
+  const hasBasket     = country.leagues.some(l => !FOOTBALL_LEAGUES.has(l));
+  const visibleLeagues = sportFilter
+    ? country.leagues.filter(l => sportFilter === 'football' ? FOOTBALL_LEAGUES.has(l) : !FOOTBALL_LEAGUES.has(l))
+    : country.leagues;
+
   return (
-    <div style={{
+    <div onClick={(e) => e.stopPropagation()} style={{  // empêche le clic panel de remonter au root
       position:'fixed', top:0, right:0, bottom:0, width:480,
       background:'linear-gradient(160deg,rgba(0,6,20,0.98),rgba(0,12,35,0.99))',
       borderLeft:'1px solid rgba(251,146,60,0.15)',
       boxShadow:'-20px 0 60px rgba(0,0,0,0.8)',
       display:'flex', flexDirection:'column',
-      animation:'panelIn .35s cubic-bezier(.25,.46,.45,.94)',
-      zIndex:10,
+      animation:'mapReveal 1s ease-out both',
+      zIndex:20,
     }}>
       {/* Header */}
       <div style={{padding:'2rem 1.75rem 1.25rem', borderBottom:'1px solid rgba(251,146,60,0.08)'}}>
-        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:'0.5rem'}}>
+        <div style={{display:'flex',alignItems:'flex-start',justifyContent:'space-between',marginBottom:'0.5rem'}}>
           <div style={{display:'flex',alignItems:'center',gap:12}}>
             <span style={{fontSize:32}}>{country.flag}</span>
             <div>
               <div style={{fontSize:20,fontWeight:800,color:'#fff',letterSpacing:'-0.02em'}}>{country.name}</div>
-              <div style={{fontSize:9,color:'rgba(251,146,60,0.5)',fontFamily:'monospace',textTransform:'uppercase',letterSpacing:'0.12em',marginTop:2}}>
+              <div style={{fontSize:9,color:'rgba(251,146,60,0.5)',fontFamily:'monospace',textTransform:'uppercase',letterSpacing:'0.12em',marginTop:4}}>
                 {country.leagues.map(l=>LEAGUE_META[l]).join(' · ')}
               </div>
             </div>
@@ -109,50 +238,75 @@ function Panel({ country, onClose }) {
             onMouseEnter={e=>{e.currentTarget.style.borderColor='rgba(251,146,60,0.4)';e.currentTarget.style.color='rgba(251,146,60,0.8)';}}
             onMouseLeave={e=>{e.currentTarget.style.borderColor='rgba(251,146,60,0.15)';e.currentTarget.style.color='rgba(251,146,60,0.5)';}}>×</button>
         </div>
-        <div style={{height:1,background:'linear-gradient(90deg,rgba(251,146,60,0.4),transparent)',marginTop:'1rem'}}/>
+        <div style={{display:'flex',alignItems:'center',gap:6,marginTop:'1rem'}}>
+          <div style={{flex:1,height:1,background:'linear-gradient(90deg,rgba(251,146,60,0.4),transparent)'}}/>
+          {[['basket','🏀','#fb923c','rgba(251,146,60,',_hasBasket],['football','⚽','#2d8a2d','rgba(45,138,45,',_hasFootball]].map(([sport, icon, col, rgba, has]) => {
+            const active = sportFilter === sport;
+            return (
+              <button key={sport} onClick={() => has && setSportFilter(f => f === sport ? null : sport)}
+                title={sport === 'football' ? 'Football uniquement' : 'Basket uniquement'}
+                style={{
+                  background: active ? `${rgba}0.15)` : 'none',
+                  border: `1px solid ${active ? col : has ? `${rgba}0.2)` : 'rgba(255,255,255,0.06)'}`,
+                  borderRadius:5, cursor: has ? 'pointer' : 'default',
+                  width:22, height:22, fontSize:11,
+                  display:'flex', alignItems:'center', justifyContent:'center', transition:'all .15s',
+                  boxShadow: active ? `0 0 6px ${rgba}0.3)` : 'none',
+                  opacity: has ? 1 : 0.25,
+                }}
+                onMouseEnter={e=>{ if(has){e.currentTarget.style.borderColor=col;e.currentTarget.style.background=`${rgba}0.1)`;} }}
+                onMouseLeave={e=>{ if(has){e.currentTarget.style.borderColor=active?col:`${rgba}0.2)`;e.currentTarget.style.background=active?`${rgba}0.15)`:'none';} }}>
+                {icon}
+              </button>
+            );
+          })}
+        </div>
       </div>
 
       {/* Matchs */}
       <div style={{flex:1,overflowY:'auto',padding:'1.25rem 1.75rem'}}>
         {loading ? (
           <div style={{display:'flex',alignItems:'center',justifyContent:'center',height:'100%',color:'rgba(251,146,60,0.25)',fontFamily:'monospace',fontSize:11,letterSpacing:'0.1em'}}>CHARGEMENT...</div>
-        ) : country.leagues.map(league => {
+        ) : visibleLeagues.map(league => {
           const isFootball = FOOTBALL_LEAGUES.has(league);
           const lp = league==='wnba'?'?league=wnba':['nba'].includes(league)?'':`?league=${league}`;
           const { soon=[], upcoming=[], done=[] } = matches[league] || {};
-          // Page principale = matchs imminents (<30h) ; "À venir" = matchs à 30h+ ; "Terminés" = résultats récents
           const mode = view[league] || 'soon';
-          const games = mode === 'upcoming' ? upcoming : soon;
+          const games = mode === 'upcoming' ? [...soon, ...upcoming] : soon;
           return (
             <div key={league} style={{marginBottom:'1.5rem'}}>
-              <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:10}}>
+              <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:10,position:'sticky',top:0,zIndex:1,background:'linear-gradient(180deg,rgba(0,8,25,0.99) 85%,transparent)',paddingTop:4,paddingBottom:4,marginTop:-4}}>
                 {(() => {
                   const isFoot = FOOTBALL_LEAGUES.has(league);
                   const col = isFoot ? '#2d8a2d' : '#fb923c';
                   const colFade = isFoot ? 'rgba(45,138,45,0.7)' : 'rgba(251,146,60,0.7)';
                   return <>
                     <div style={{width:5,height:5,borderRadius:'50%',background:col,boxShadow:`0 0 8px ${col}`}}/>
-                    <span style={{fontSize:10,fontWeight:700,color:col,fontFamily:'monospace',textTransform:'uppercase',letterSpacing:'0.1em'}}>{LEAGUE_META[league]}</span>
+                    <span style={{fontSize:10,fontWeight:700,color:col,fontFamily:'monospace',textTransform:'uppercase',letterSpacing:'0.1em',whiteSpace:'nowrap'}}>{LEAGUE_META[league]}</span>
+                    {!FOOTBALL_LEAGUES.has(league) && <button onClick={()=>setStatsLeague(sl=>sl===league?null:league)}
+                      title="Stats du championnat"
+                      style={{flexShrink:0,width:11,height:11,borderRadius:2,
+                        border:`1px solid ${statsLeague===league?'rgba(96,165,250,0.8)':'rgba(96,165,250,0.5)'}`,
+                        background: statsLeague===league?'rgba(96,165,250,0.15)':'transparent',
+                        display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer',padding:0,transition:'all .15s'}}>
+                      <svg width="7" height="6" viewBox="0 0 9 9" fill="none">
+                        <rect x="1" y="6" width="1.5" height="2.5" fill="#ef4444"/>
+                        <rect x="3.75" y="3.5" width="1.5" height="5" fill="#4ade80"/>
+                        <rect x="6.5" y="1" width="1.5" height="7.5" fill="#60a5fa"/>
+                      </svg>
+                    </button>}
                     <div style={{flex:1,height:1,background:`${col}18`}}/>
-                    {(soon.length > 0 || upcoming.length > 0 || done.length > 0) && (
-                      <div style={{display:'flex',gap:4}}>
-                        {[['upcoming','À venir','#60a5fa'],['done','Terminés','#4ade80']].map(([v,label,vcol]) => {
-                          const active = mode === v;
-                          return (
-                            <button key={v} onClick={()=>setView(s=>({...s,[league]: active ? 'soon' : v}))}
-                              style={{
-                                fontSize:8,fontWeight:700,fontFamily:'monospace',textTransform:'uppercase',letterSpacing:'0.06em',
-                                padding:'3px 7px',borderRadius:4,cursor:'pointer',transition:'all .15s',
-                                background: active ? `${vcol}1f` : 'none',
-                                border: `1px solid ${active ? vcol : `${vcol}55`}`,
-                                color: active ? vcol : `${vcol}99`,
-                              }}>
-                              {label}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    )}
+                    <div style={{ flexShrink:0, display:'flex', alignItems:'center', border:'1px solid rgba(255,255,255,0.25)', borderRadius:4, overflow:'hidden', visibility: (soon.length > 0 || upcoming.length > 0 || done.length > 0) ? 'visible' : 'hidden' }}>
+                      <span onClick={() => setView(s => ({...s, [league]: 'upcoming'}))}
+                        style={{ fontSize:8, fontWeight:700, fontFamily:'monospace', textTransform:'uppercase', letterSpacing:'0.06em', padding:'3px 7px', cursor:'pointer', color:'#60a5fa', background: mode==='upcoming' ? 'rgba(96,165,250,0.12)' : 'transparent', transition:'background .15s' }}>
+                        À venir
+                      </span>
+                      <span style={{ fontSize:8, color:'rgba(255,255,255,0.2)', userSelect:'none' }}>/</span>
+                      <span onClick={() => setView(s => ({...s, [league]: 'done'}))}
+                        style={{ fontSize:8, fontWeight:700, fontFamily:'monospace', textTransform:'uppercase', letterSpacing:'0.06em', padding:'3px 7px', cursor:'pointer', color:'#4ade80', background: mode==='done' ? 'rgba(74,222,128,0.12)' : 'transparent', transition:'background .15s' }}>
+                        Terminés
+                      </span>
+                    </div>
                   </>;
                 })()}
               </div>
@@ -187,14 +341,14 @@ function Panel({ country, onClose }) {
                             onMouseEnter={e=>e.currentTarget.style.background='rgba(255,255,255,0.04)'}
                             onMouseLeave={e=>e.currentTarget.style.background='none'}>
                             <div style={{display:'flex',alignItems:'center',justifyContent:'center',gap:8,marginBottom:3}}>
-                              {g.home?.logo&&<img src={g.home.logo} alt="" width={20} height={20} style={{objectFit:'contain'}} onError={e=>e.target.style.display='none'}/>}
+                              {g.home?.logo&&<img src={g.home.logo} alt="" width={20} height={20} style={{objectFit:'contain',borderRadius:'50%'}} onError={e=>e.target.style.display='none'}/>}
                               <span style={{fontSize:12,fontWeight:700,color:'#fff'}}>{g.home?.name||g.home?.short}</span>
                               {live&&g.home?.score!=null
                                 ? <span style={{fontSize:13,fontWeight:800,color:'#ef4444',fontFamily:'monospace',margin:'0 4px'}}>{g.home.score} – {g.away.score}</span>
                                 : <span style={{fontSize:10,color:'rgba(255,255,255,0.25)',margin:'0 5px'}}>vs</span>
                               }
                               <span style={{fontSize:12,fontWeight:700,color:'#fff'}}>{g.away?.name||g.away?.short}</span>
-                              {g.away?.logo&&<img src={g.away.logo} alt="" width={20} height={20} style={{objectFit:'contain'}} onError={e=>e.target.style.display='none'}/>}
+                              {g.away?.logo&&<img src={g.away.logo} alt="" width={20} height={20} style={{objectFit:'contain',borderRadius:'50%'}} onError={e=>e.target.style.display='none'}/>}
                             </div>
                             <div style={{display:'flex',alignItems:'center',justifyContent:'center',gap:6}}>
                               {live
@@ -231,7 +385,7 @@ function Panel({ country, onClose }) {
                         const WIN = '#2d8a2d', DIM = 'rgba(255,255,255,0.35)';
                         return (
                           <div style={{display:'flex',alignItems:'center',justifyContent:'center',gap:7,marginBottom:2}}>
-                            {g.home?.logo&&<img src={g.home.logo} alt="" width={16} height={16} style={{objectFit:'contain'}} onError={e=>e.target.style.display='none'}/>}
+                            {g.home?.logo&&<img src={g.home.logo} alt="" width={16} height={16} style={{objectFit:'contain',borderRadius:'50%'}} onError={e=>e.target.style.display='none'}/>}
                             <span style={{fontSize:11,fontWeight:homeWon?700:500,color:homeWon?'#fff':'rgba(255,255,255,0.55)'}}>{g.home?.name||g.home?.short}</span>
                             {hs!=null&&<>
                               <span style={{fontSize:13,fontWeight:800,color:homeWon?WIN:DIM,fontFamily:'monospace'}}>{hs}</span>
@@ -239,7 +393,7 @@ function Panel({ country, onClose }) {
                               <span style={{fontSize:13,fontWeight:800,color:awayWon?WIN:DIM,fontFamily:'monospace'}}>{as}</span>
                             </>}
                             <span style={{fontSize:11,fontWeight:awayWon?700:500,color:awayWon?'#fff':'rgba(255,255,255,0.55)'}}>{g.away?.name||g.away?.short}</span>
-                            {g.away?.logo&&<img src={g.away.logo} alt="" width={16} height={16} style={{objectFit:'contain'}} onError={e=>e.target.style.display='none'}/>}
+                            {g.away?.logo&&<img src={g.away.logo} alt="" width={16} height={16} style={{objectFit:'contain',borderRadius:'50%'}} onError={e=>e.target.style.display='none'}/>}
                           </div>
                         );
                       })()}
@@ -285,6 +439,52 @@ export default function WorldMapPage() {
   const [selectedGeoId, setSelectedGeoId] = useState(null);
   const [hovered,  setHovered]  = useState(null);
   const [tooltip,  setTooltip]  = useState(null);
+  const [statsLeague, setStatsLeague] = useState(null);
+  const [prefetch,    setPrefetch]    = useState({}); // { nba: {standData, cats}, wnba: {standData, cats} }
+
+  const STATS_LEAGUES = new Set(['nba', 'wnba', 'acb']);
+  const statsBase = l => l === 'nba' ? '/api/nba' : l === 'wnba' ? '/api/wnba' : '/api/acb';
+  const scoreboardUrl = l => l === 'wnba' ? '/api/wnba/scoreboard' : l === 'acb' ? '/api/euro/acb/scoreboard' : '/api/nba/scoreboard';
+
+  // Pré-fetch standings + leaders dès qu'un pays avec basket est sélectionné
+  useEffect(() => {
+    if (!selected) return;
+    const leagues = selected.leagues.filter(l => STATS_LEAGUES.has(l));
+    leagues.forEach(l => {
+      const base = statsBase(l);
+      Promise.all([
+        fetch(`${base}/standings`).then(r => r.json()),
+        fetch(`${base}/leaders`).then(r => r.json()),
+      ]).then(([standData, cats]) => {
+        setPrefetch(p => ({ ...p, [l]: { standData, cats } }));
+      }).catch(() => {});
+    });
+  }, [selected]);
+
+  // Auto-ouvre la ligue basket la plus active au moment du clic
+  useEffect(() => {
+    if (!selected) { setStatsLeague(null); setPrefetch({}); return; }
+    const leagues = selected.leagues.filter(l => STATS_LEAGUES.has(l));
+    if (!leagues.length) { setStatsLeague(null); return; }
+    if (leagues.length === 1) { setStatsLeague(leagues[0]); return; }
+
+    const NOW = Date.now();
+    let cancelled = false;
+    Promise.all(leagues.map(async l => {
+      try {
+        const d = await fetch(scoreboardUrl(l)).then(r => r.json());
+        const hasActive = (d.games || []).some(g =>
+          g.status !== 'STATUS_FINAL' || NOW - new Date(g.date).getTime() < 48 * 3600_000
+        );
+        return { l, hasActive };
+      } catch { return { l, hasActive: false }; }
+    })).then(results => {
+      if (cancelled) return;
+      const active = results.find(r => r.hasActive);
+      setStatsLeague(active ? active.l : leagues[0]);
+    });
+    return () => { cancelled = true; };
+  }, [selected]);
 
   // Position approximative de chaque pays sur la map (transform-origin pour le zoom)
   const ZOOM_ORIGIN = {
@@ -325,8 +525,13 @@ export default function WorldMapPage() {
     if (!returnCountry) returnHandled.current = false;
   }, [returnCountry]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  const closeAll = () => { setSelected(null); setSelectedGeoId(null); setStatsLeague(null); };
+
   return (
-    <div style={{position:'fixed',top:0,left:180,right:0,bottom:0,overflow:'hidden',background:'transparent'}}>
+    <div
+      onClick={() => { if (statsLeague && !ignoreClicks.current) closeAll(); }}
+      style={{position:'fixed',top:0,left:180,right:0,bottom:0,overflow:'hidden',background:'transparent'}}
+    >
       <style>{`
         @keyframes panelIn{from{transform:translateX(100%);opacity:0}to{transform:translateX(0);opacity:1}}
         @keyframes mapGlide{from{transform:translateX(0)}to{transform:translateX(-180px)}}
@@ -350,7 +555,7 @@ export default function WorldMapPage() {
 
       {/* Bouton matchs à venir — haut droite */}
       {todayCount !== null && (
-        <div style={{ position:'absolute', top:'calc(20px + 2.2cm)', right:20, zIndex:10, animation:'uiReveal 0.6s ease-out 1.4s both' }}>
+        <div style={{ position:'absolute', top:'calc(20px + 2.2cm)', right:20, zIndex:10, animation:'mapReveal 0.8s ease-out 0.2s both' }}>
           <button onClick={()=>setMatchOpen(o=>!o)} style={{ display:'flex', alignItems:'center', gap:7, background:'rgba(0,5,18,0.8)', border:'1px solid rgba(255,255,255,0.1)', borderRadius:8, padding:'7px 14px', cursor:'pointer', transition:'border-color .15s' }}
             onMouseEnter={e=>e.currentTarget.style.borderColor='rgba(255,255,255,0.22)'}
             onMouseLeave={e=>e.currentTarget.style.borderColor='rgba(255,255,255,0.1)'}
@@ -389,12 +594,13 @@ export default function WorldMapPage() {
 
       {/* Map */}
       <div
-        onClick={() => { if (selected && !ignoreClicks.current) { setSelected(null); setSelectedGeoId(null); } }}
+        onClick={() => { if (selected && !ignoreClicks.current) { setSelected(null); setSelectedGeoId(null); setStatsLeague(null); } }}
         style={{
         position:'absolute', inset:0,
         display:'flex', alignItems:'center', justifyContent:'center', paddingTop:'4vh',
-        transition:'transform .55s cubic-bezier(.25,.46,.45,.94), transform-origin .55s',
+        transition:'transform .55s cubic-bezier(.25,.46,.45,.94), transform-origin .55s, filter .8s ease',
         transform: selected ? `translateX(-180px) scale(1.55)` : 'translateX(0) scale(1)',
+        filter: statsLeague ? 'blur(4px) brightness(0.5)' : 'none',
         transformOrigin: selectedGeoId && ZOOM_ORIGIN[selectedGeoId] ? ZOOM_ORIGIN[selectedGeoId] : '50% 50%',
       }}>
         <ComposableMap
@@ -456,10 +662,10 @@ export default function WorldMapPage() {
       )}
 
       {/* Légende bas gauche */}
-      <div style={{ position:'absolute', bottom:24, left:24, display:'flex', alignItems:'center', gap:8, zIndex:8, pointerEvents:'none', animation:'uiReveal 0.6s ease-out 1.4s both' }}>
+      <div style={{ position:'absolute', bottom:24, left:24, display:'flex', alignItems:'center', gap:8, zIndex:8, pointerEvents:'none', animation:'mapReveal 0.8s ease-out 0.2s both' }}>
         <div style={{ display:'flex', alignItems:'center', gap:4, pointerEvents:'auto' }}>
           {[...Object.values(COVERED), MONDE].map((c, i) => (
-            <button key={i} onClick={() => setSelected(c === selected ? null : c)} title={c.leagues.map(l => LEAGUE_META[l]).join(' · ')}
+            <button key={i} onClick={() => { const desel=c===selected; setSelected(desel?null:c); if(desel) setStatsLeague(null); }} title={c.leagues.map(l => LEAGUE_META[l]).join(' · ')}
               style={{ display:'flex', alignItems:'center', gap:4, background:'none', border:'none', borderRadius:6, padding:'2px 6px', cursor:'pointer', transition:'opacity .15s', opacity: selected===c ? 1 : 0.55 }}
               onMouseEnter={e => e.currentTarget.style.opacity='1'}
               onMouseLeave={e => e.currentTarget.style.opacity = selected===c ? '1' : '0.55'}
@@ -471,8 +677,12 @@ export default function WorldMapPage() {
         </div>
       </div>
 
+
       {/* Panel */}
-      {selected && <Panel country={selected} onClose={()=>{setSelected(null);setSelectedGeoId(null);}}/>}
+      {selected && <Panel country={selected} onClose={()=>{setSelected(null);setSelectedGeoId(null);setStatsLeague(null);}} statsLeague={statsLeague} setStatsLeague={setStatsLeague}/>}
+
+      {/* StatsOverlay — rendu ici (hors Panel) pour que position:fixed soit relatif au viewport */}
+      {statsLeague && <StatsOverlay league={statsLeague} onClose={() => setStatsLeague(null)} standData={prefetch[statsLeague]?.standData || null} cats={prefetch[statsLeague]?.cats || null} />}
     </div>
   );
 }
