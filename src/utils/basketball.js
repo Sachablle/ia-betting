@@ -293,13 +293,13 @@ export const BBALL_FIXTURES = [
   // ── NBA FINALS 2026 — SAS vs NYK ──────────────────────────────────────────
   // SAS (62-20) a l'avantage du terrain. 20h30 ET → lendemain T00:30:00Z
 
-  // FINALES NBA — G1 (3 juin, SAS home)
+  // FINALES NBA — G1 (3 juin, SAS home) — Terminée, NYK 105-95 (NYK 1-0)
   {
-    id: 'b022', league: 'nba', round: 'Finales NBA – Game 1',
+    id: 'b022', league: 'nba', round: 'Finales NBA – Terminée G1 (NYK 1-0)',
     date: '2026-06-04T00:30:00Z',
     venue: { name: 'Frost Bank Center', city: 'San Antonio', capacity: 18418 },
-    home: team('San Antonio Spurs', 'SAS', 'sas', 2, 62, 20, 119.8, 109.4, 47.0, 28.1, 47.8, ['W','W','L','W','W']),
-    away: team('New York Knicks',   'NYK', 'nyk', 3, 53, 29, 116.5, 112.6, 45.6, 27.4, 47.1, ['W','W','W','W','W']),
+    home: { ...team('San Antonio Spurs', 'SAS', 'sas', 2, 62, 20, 119.8, 109.4, 47.0, 28.1, 47.8, ['W','W','L','W','W']), score: 95 },
+    away: { ...team('New York Knicks',   'NYK', 'nyk', 3, 53, 29, 116.5, 112.6, 45.6, 27.4, 47.1, ['W','W','W','W','W']), score: 105 },
     h2h: [
       { date: '2025-11-14', home: 'SAS', away: 'NYK', scoreHome: 121, scoreAway: 118 },
       { date: '2026-01-22', home: 'NYK', away: 'SAS', scoreHome: 112, scoreAway: 108 },
@@ -308,47 +308,72 @@ export const BBALL_FIXTURES = [
     markets: {},
   },
 
-  // FINALES NBA — G2 (5 juin, SAS home)
+  // FINALES NBA — G2 (5 juin, SAS home) — Terminée, NYK 105-104 (NYK 2-0)
   {
-    id: 'b023', league: 'nba', round: 'Finales NBA – Game 2',
+    id: 'b023', league: 'nba', round: 'Finales NBA – Terminée G2 (NYK 2-0)',
     date: '2026-06-06T00:30:00Z',
     venue: { name: 'Frost Bank Center', city: 'San Antonio', capacity: 18418 },
-    home: team('San Antonio Spurs', 'SAS', 'sas', 2, 62, 20, 119.8, 109.4, 47.0, 28.1, 47.8, ['W','W','L','W','W']),
-    away: team('New York Knicks',   'NYK', 'nyk', 3, 53, 29, 116.5, 112.6, 45.6, 27.4, 47.1, ['W','W','W','W','W']),
+    home: { ...team('San Antonio Spurs', 'SAS', 'sas', 2, 62, 20, 119.8, 109.4, 47.0, 28.1, 47.8, ['W','W','L','W','W']), score: 104 },
+    away: { ...team('New York Knicks',   'NYK', 'nyk', 3, 53, 29, 116.5, 112.6, 45.6, 27.4, 47.1, ['W','W','W','W','W']), score: 105 },
     h2h: [
       { date: '2025-11-14', home: 'SAS', away: 'NYK', scoreHome: 121, scoreAway: 118 },
       { date: '2026-01-22', home: 'NYK', away: 'SAS', scoreHome: 112, scoreAway: 108 },
       { date: '2026-03-01', home: 'SAS', away: 'NYK', scoreHome: 119, scoreAway: 115 },
+      { date: '2026-06-03', home: 'SAS', away: 'NYK', scoreHome:  95, scoreAway: 105 },
     ],
     markets: {},
   },
 
-  // FINALES NBA — G3 (8 juin, NYK home)
+  // FINALES NBA — G3 (8 juin, NYK home) — Terminée, SAS 115-111 (NYK 2-1)
   {
-    id: 'b024', league: 'nba', round: 'Finales NBA – Game 3',
+    id: 'b024', league: 'nba', round: 'Finales NBA – Terminée G3 (SAS 2-1)',
     date: '2026-06-09T00:30:00Z',
     venue: { name: 'Madison Square Garden', city: 'New York', capacity: 19812 },
-    home: team('New York Knicks',   'NYK', 'nyk', 3, 53, 29, 116.5, 112.6, 45.6, 27.4, 47.1, ['W','W','W','W','W']),
-    away: team('San Antonio Spurs', 'SAS', 'sas', 2, 62, 20, 119.8, 109.4, 47.0, 28.1, 47.8, ['W','W','L','W','W']),
+    home: { ...team('New York Knicks',   'NYK', 'nyk', 3, 53, 29, 116.5, 112.6, 45.6, 27.4, 47.1, ['W','W','W','W','W']), score: 111 },
+    away: { ...team('San Antonio Spurs', 'SAS', 'sas', 2, 62, 20, 119.8, 109.4, 47.0, 28.1, 47.8, ['W','W','L','W','W']), score: 115 },
     h2h: [
       { date: '2025-11-14', home: 'SAS', away: 'NYK', scoreHome: 121, scoreAway: 118 },
       { date: '2026-01-22', home: 'NYK', away: 'SAS', scoreHome: 112, scoreAway: 108 },
       { date: '2026-03-01', home: 'SAS', away: 'NYK', scoreHome: 119, scoreAway: 115 },
+      { date: '2026-06-03', home: 'SAS', away: 'NYK', scoreHome:  95, scoreAway: 105 },
+      { date: '2026-06-05', home: 'SAS', away: 'NYK', scoreHome: 104, scoreAway: 105 },
     ],
     markets: {},
   },
 
-  // FINALES NBA — G4 (10 juin, NYK home)
+  // FINALES NBA — G4 (10 juin, NYK home) — Terminée, NYK 107-106 (NYK 3-1)
   {
-    id: 'b025', league: 'nba', round: 'Finales NBA – Game 4',
+    id: 'b025', league: 'nba', round: 'Finales NBA – Terminée G4 (NYK 3-1)',
     date: '2026-06-11T00:30:00Z',
     venue: { name: 'Madison Square Garden', city: 'New York', capacity: 19812 },
-    home: team('New York Knicks',   'NYK', 'nyk', 3, 53, 29, 116.5, 112.6, 45.6, 27.4, 47.1, ['W','W','W','W','W']),
-    away: team('San Antonio Spurs', 'SAS', 'sas', 2, 62, 20, 119.8, 109.4, 47.0, 28.1, 47.8, ['W','W','L','W','W']),
+    home: { ...team('New York Knicks',   'NYK', 'nyk', 3, 53, 29, 116.5, 112.6, 45.6, 27.4, 47.1, ['W','W','W','W','W']), score: 107 },
+    away: { ...team('San Antonio Spurs', 'SAS', 'sas', 2, 62, 20, 119.8, 109.4, 47.0, 28.1, 47.8, ['W','W','L','W','W']), score: 106 },
     h2h: [
       { date: '2025-11-14', home: 'SAS', away: 'NYK', scoreHome: 121, scoreAway: 118 },
       { date: '2026-01-22', home: 'NYK', away: 'SAS', scoreHome: 112, scoreAway: 108 },
       { date: '2026-03-01', home: 'SAS', away: 'NYK', scoreHome: 119, scoreAway: 115 },
+      { date: '2026-06-03', home: 'SAS', away: 'NYK', scoreHome:  95, scoreAway: 105 },
+      { date: '2026-06-05', home: 'SAS', away: 'NYK', scoreHome: 104, scoreAway: 105 },
+      { date: '2026-06-08', home: 'NYK', away: 'SAS', scoreHome: 111, scoreAway: 115 },
+    ],
+    markets: {},
+  },
+
+  // FINALES NBA — G5 (13 juin, SAS home) — Terminée, NYK 94-90 — NYK CHAMPION 2026 (4-1)
+  {
+    id: 'b026', league: 'nba', round: 'Finales NBA – Terminée G5 (NYK Champion 4-1)',
+    date: '2026-06-14T00:30:00Z',
+    venue: { name: 'Frost Bank Center', city: 'San Antonio', capacity: 18418 },
+    home: { ...team('San Antonio Spurs', 'SAS', 'sas', 2, 62, 20, 119.8, 109.4, 47.0, 28.1, 47.8, ['W','W','L','W','W']), score: 90 },
+    away: { ...team('New York Knicks',   'NYK', 'nyk', 3, 53, 29, 116.5, 112.6, 45.6, 27.4, 47.1, ['W','W','W','W','W']), score: 94 },
+    h2h: [
+      { date: '2025-11-14', home: 'SAS', away: 'NYK', scoreHome: 121, scoreAway: 118 },
+      { date: '2026-01-22', home: 'NYK', away: 'SAS', scoreHome: 112, scoreAway: 108 },
+      { date: '2026-03-01', home: 'SAS', away: 'NYK', scoreHome: 119, scoreAway: 115 },
+      { date: '2026-06-03', home: 'SAS', away: 'NYK', scoreHome:  95, scoreAway: 105 },
+      { date: '2026-06-05', home: 'SAS', away: 'NYK', scoreHome: 104, scoreAway: 105 },
+      { date: '2026-06-08', home: 'NYK', away: 'SAS', scoreHome: 111, scoreAway: 115 },
+      { date: '2026-06-10', home: 'NYK', away: 'SAS', scoreHome: 107, scoreAway: 106 },
     ],
     markets: {},
   },

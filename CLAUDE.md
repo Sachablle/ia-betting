@@ -66,6 +66,9 @@ fair_prob = (1/pinnacle_odds) / overround   // overround = sum of 1/odds for all
 edge = bookmaker_odds * fair_prob - 1
 ```
 
+**Player props alerts — ladder de lignes alternatives (18 juin 2026, `findLadderAlternative()` in `server.js`):**
+For NBA/WNBA/EU basket player props (pts/reb/ast/tpm), each player normally gets evaluated on a single "reference" bookmaker line (`bks.unibet[stat] ?? bks.winamax[stat]`). When that line's probability+edge already clear the floor but its odds don't reach the `1.60` minimum on Unibet/Betclic, `findLadderAlternative()` searches the full line ladder already scraped for `PlayerLinesPage.jsx` (`bks.unibetAllLines[stat]` / `bks.betclicAllLines[stat]`) for a neighboring line in the direction that *raises* the odds on the favored side (higher line for Over, lower for Under). The probability is recalculated from scratch at each candidate line (never reused from the reference line) via the same `probAtLeast`/`displayProb` calibration; all the existing gates (floor, edge, WNBA reb-margin/ast-cap/tpm-min-avg, NBA L2-above-line) are re-checked against the candidate line too. Among candidates that pass both the odds and probability gates, the one with the **highest probability** wins. Resulting alerts carry `lineSource: 'ladder'` and use the alternate `line`/odds instead of the reference one — same one-alert-per-player-per-stat rule, just possibly on a different line than the one shown by default elsewhere in the UI. Applied at all 5 emission sites: NBA live + frozen, WNBA live + frozen, EU (acb/bbl/legaa).
+
 **Football BTTS / Over-Under alerts (`backend/computeFootball.js` + `generateBackgroundAlerts()` section 4d):**
 Poisson model, generated every 20min alongside NBA/EU basket alerts — no need to visit `MatchDetailPage` for an alert to be created.
 - `computeLambdas({homeGF, homeGA, homePlayed, awayGF, awayGA, awayPlayed, leagueAvgGoals, avgGF, avgGA, homeAdv=1.10})` — attack/defense factors normalized by `avgGF`/`avgGA` (falling back to `leagueAvgGoals` if omitted), λ rescaled by `leagueAvgGoals` × home advantage. Returns `null` if sample too small.
@@ -167,7 +170,7 @@ realized.find(r =>
 
 ## Basketball — basketball.js
 
-### NBA Playoffs 2026 — état au 22 mai 2026
+### NBA Playoffs 2026 — état au 18 juin 2026 (saison terminée, NYK Champion)
 
 | ID | Match | Statut |
 |---|---|---|
@@ -191,10 +194,11 @@ realized.find(r =>
 | b020 | SAS (home) vs OKC | Finales Conf. Ouest – **Terminée G6** (SAS 118-91, Série 3-3) |
 | b021 | OKC (home) vs SAS | Finales Conf. Ouest – **Terminée G7** (SAS 111-103, SAS 4-3) |
 | b018 | CLE (home) vs NYK | Finales Conf. Est – **Terminée G4** (NYK 130-93, NYK 4-0) |
-| b022 | SAS (home) vs NYK | Finales NBA – **Game 1** (3 juin, 20h30 ET, Frost Bank Center) |
-| b023 | SAS (home) vs NYK | Finales NBA – **Game 2** (5 juin, 20h30 ET, Frost Bank Center) |
-| b024 | NYK (home) vs SAS | Finales NBA – **Game 3** (8 juin, 20h30 ET, Madison Square Garden) |
-| b025 | NYK (home) vs SAS | Finales NBA – **Game 4** (10 juin, 20h30 ET, Madison Square Garden) |
+| b022 | SAS (home) vs NYK | Finales NBA – **Terminée G1** (NYK 105-95, NYK 1-0) |
+| b023 | SAS (home) vs NYK | Finales NBA – **Terminée G2** (NYK 105-104, NYK 2-0) |
+| b024 | NYK (home) vs SAS | Finales NBA – **Terminée G3** (SAS 115-111, NYK 2-1) |
+| b025 | NYK (home) vs SAS | Finales NBA – **Terminée G4** (NYK 107-106, NYK 3-1) |
+| b026 | SAS (home) vs NYK | Finales NBA – **Terminée G5** (NYK 94-90, **NYK CHAMPION 2026**, série 4-1) |
 
 **Note EL :** Venue Final Four 2026 = TELEKOM CENTER ATHENS, Marousi (18 500 places). Scores patchés automatiquement via `/api/euroleague/scoreboard` + `useFixtures.js`. b006/b007 supprimés — PAO éliminé par VBC (3-2).
 

@@ -1124,11 +1124,18 @@ export default function UtilisationPage() {
               <tr><td><strong>Confiance minimum</strong></td><td>Seuil « haute confiance » (badge vert), différencié par stat × groupe de ligue — voir le tableau « Seuils d'alertes » de la section Modèle Props ci-dessus (ex. NBA pts 70%, NBA reb 62%, EU ast 70%, NBA/EU tpm 62%/68%…)</td></tr>
               <tr><td><strong>Edge minimum</strong></td><td>Écart |projection − ligne| ≥ 1.0 (pts/reb/ast/tpm). En dessous, le pari est jugé "pile ou face" — backtest 17 paris : edge &lt; 1.0 → 0% de réussite, edge ≥ 1.0 → 62%.</td></tr>
               <tr><td><strong>Edge renforcé "Under" — franchise players</strong></td><td>Si la moyenne saison du joueur sur cette stat est élevée (pts ≥ 18, reb ≥ 9, ast ≥ 6, tpm ≥ 3 — joueur majeur de son équipe), l'edge minimum passe à 2.0 pour un Under. Ces joueurs peuvent exploser leur ligne n'importe quel soir (ex. A. Reese 9.5 proj. → 17 réel).</td></tr>
-              <tr><td><strong>Cote minimum</strong></td><td>Unibet OU Betclic ≥ 1.55 (Winamax ignoré pour le déclenchement)</td></tr>
+              <tr><td><strong>Cote minimum</strong></td><td>Unibet OU Betclic ≥ 1.60 (Winamax ignoré pour le déclenchement)</td></tr>
               <tr><td><strong>Cote plancher</strong></td><td>Cotes &lt; 1.40 nullifiées sur la carte (non affichées)</td></tr>
               <tr><td><strong>Gamelogs minimum</strong></td><td>≥ 3 matchs joués pour calculer un écart-type fiable</td></tr>
             </tbody>
           </table>
+        </div>
+
+        <div className="util-subsection">
+          <h3 className="util-subsection-title">Ligne alternative (18 juin 2026)</h3>
+          <p className="util-intro">
+            Si la ligne principale d'un joueur a une bonne probabilité mais une cote trop juste (&lt; 1.60 partout), le serveur regarde automatiquement les autres lignes disponibles pour ce joueur (visibles sur la page « Toutes les lignes ») — uniquement dans le sens qui fait monter la cote du côté favorisé (ligne plus haute pour un Over, plus basse pour un Under). La probabilité est recalculée entièrement pour chaque ligne testée (jamais réutilisée). Parmi les lignes qui repassent à la fois le seuil de cote et le seuil de confiance, la plus sûre (probabilité la plus haute) est retenue. L'alerte générée affiche alors cette ligne ajustée plutôt que la ligne « par défaut ».
+          </p>
         </div>
 
         <div className="util-subsection">
@@ -1339,6 +1346,7 @@ export default function UtilisationPage() {
             {[
               ['/loop [interval] [cmd]', 'Répète une commande à intervalle régulier. Ex : /loop 5m /MAJ pour vérifier la MAJ toutes les 5 minutes.'],
               ['/schedule', 'Planifie l\'exécution d\'un agent à un horaire précis (cron). Utile pour des tâches récurrentes autonomes.'],
+              ['Auto-commit (cron local, 6h)', 'Tâche cron sur le Mac (crontab -l pour la voir) qui exécute ~/.claude/scripts/valuebet-auto-commit.sh toutes les 6h : si des fichiers suivis ont changé, Claude Code génère un message descriptif et crée le commit, sans push ni intervention manuelle. Log dans ~/.claude/logs/valuebet-auto-commit.log.'],
             ].map(([cmd, def]) => (
               <div key={cmd} className="util-lex-row">
                 <span className="util-lex-term" style={{ fontFamily: 'monospace', color: 'var(--accent)', fontSize: 11 }}>{cmd}</span>
