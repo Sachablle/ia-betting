@@ -593,6 +593,39 @@ body {
 .ef-fb-age     { color: var(--text-dim); font-size: 11px; text-align: right; }
 .ef-fb-injury  { font-size: 11px; text-align: center; cursor: default; }
 
+/* ══ ICON REFRESH BUTTON ═══════════════════════════════════════════════════ */
+/* Bouton ↻ partagé par Dashboard (santé système), Outrights, BasketballDetailPage
+   et MatchDetailPage (cotes foot) — avant le 25 juin 2026 chacun avait sa propre
+   copie inline, tailles/styles divergents et aucun retour visuel au clic. */
+
+@keyframes iconRefreshSpin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+
+.icon-refresh-btn {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: transform 0.12s ease, background 0.15s ease, border-color 0.15s ease, color 0.15s ease, opacity 0.15s ease;
+}
+.icon-refresh-btn:hover:not(:disabled) {
+  border-color: var(--border-light);
+  background: rgba(59,130,246,0.1);
+  color: var(--text-sub);
+}
+.icon-refresh-btn:active:not(:disabled) { transform: scale(0.8); }
+.icon-refresh-btn:disabled { opacity: 0.4; cursor: default; }
+.icon-refresh-btn.spinning { animation: iconRefreshSpin 0.7s linear infinite; }
+
 /* ══ LINEUP BUILDER ════════════════════════════════════════════════════════ */
 
 .info-chip--btn {
@@ -1440,6 +1473,7 @@ body {
   gap: 1.5rem;
   background: var(--bg-card);
   border: 1px solid var(--border);
+  box-shadow: 0 0 0 1px rgba(255,255,255,0.12);
   border-radius: var(--radius);
   padding: 1.75rem 1.5rem;
   margin-bottom: 1rem;
@@ -1492,6 +1526,7 @@ body {
   gap: 0.5rem;
   background: var(--bg-card);
   border: 1px solid var(--border);
+  box-shadow: 0 0 0 1px rgba(255,255,255,0.12);
   border-radius: var(--radius-sm);
   padding: 0.6rem 1rem;
   font-size: 13px;
@@ -1517,6 +1552,7 @@ body {
 .detail-card {
   background: var(--bg-card);
   border: 1px solid var(--border);
+  box-shadow: 0 0 0 1px rgba(255,255,255,0.12);
   border-radius: var(--radius);
   padding: 0.9rem 1rem;
 }

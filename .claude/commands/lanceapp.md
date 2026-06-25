@@ -14,8 +14,15 @@ IMPORTANT : Le répertoire du projet contient un espace final dans son nom. Util
    cd ~/Desktop/"Claude projets"/"Projets betting " && npm run dev
    ```
 
-3. Attends 4 secondes, puis vérifie les ports utilisés dans les outputs des commandes.
+3. Attends 5 secondes, puis vérifie les ports utilisés dans les outputs des commandes.
 
-4. Affiche uniquement :
+4. Vérifie que le backend est up via `curl -s http://localhost:3001/api/health`
+
+5. Si backend OK, déclenche immédiatement le chargement des cotes :
+   ```
+   curl -s -X POST http://localhost:3001/api/system/warmup
+   ```
+
+6. Affiche uniquement :
    - Le lien de l'app (ex: http://localhost:5173 ou le port effectif si 5173 était pris)
-   - "Backend OK" ou "Backend KO" selon le health check `curl -s http://localhost:3001/api/health`
+   - "Backend OK — cotes en cours de chargement (~2 min)" ou "Backend KO"

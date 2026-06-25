@@ -4,8 +4,12 @@ import { syncSettlements, resolveCompletedFootballAlerts } from '../utils/syncAl
 const ROLLING_N = 20;
 const DEFAULT_ODDS = 1.9;
 
-// Séparation ancien / nouveau modèle — alertes à partir du match Toronto Tempo @ Connecticut Sun (10 juin 2026, 23h UTC)
-const MODEL_SPLIT_MS = new Date('2026-06-10T23:00:00Z').getTime();
+// Séparation ancien / nouveau modèle — déplacée le 22 juin 2026 (12h51 UTC) : plancher de confiance
+// unifié à 80%/75% (spécialiste), marge moyenne saison↔ligne + minimum volume 3pts étendus à
+// NBA/WNBA/EU, win rate réel audité à 50.5% sur l'historique pré-22 juin (cf. audit calibration).
+// Remplace l'ancien point de bascule du 10 juin 2026 (match Toronto Tempo @ Connecticut Sun),
+// désormais regroupé dans "ancien modèle" — ce changement-ci est jugé plus significatif.
+const MODEL_SPLIT_MS = new Date('2026-06-22T12:51:00Z').getTime();
 
 // ── Chargement & normalisation ─────────────────────────────────────────────
 
@@ -142,6 +146,48 @@ function loadAllResolved(periodDays, model = 'new') {
     .sort((a, b) => new Date(a.date) - new Date(b.date));
 }
 
+function loadPinnacleBets(periodDays) {
+  const now = Date.now();
+  const cutoff = periodDays === Infinity ? 0 : now - periodDays * 24 * 3600_000;
+
+  const fbPin = JSON.parse(localStorage.getItem('fb_pinnacle_alerts') || '[]')
+    .filter(a => ['won', 'lost'].includes(a.status))
+    .map(a => ({
+      type: 'pinnacle', sport: 'football',
+      label: `${a.homeShort || a.home} vs ${a.awayShort || a.away}`,
+      sub: a.market === 'totals'
+        ? `${a.direction === 'over' ? '▲ Plus' : '▼ Moins'} de ${a.line} buts`
+        : a.direction === 'draw' ? 'Match nul' : `Victoire ${a.direction === 'home' ? (a.homeShort || a.home) : (a.awayShort || a.away)}`,
+      date: a.fixtureDate, status: a.status,
+      odds: a.acceptedUnibetOdds ?? a.acceptedBetclicOdds ?? a.acceptedWinamaxOdds ??
+            a.unibetOdds ?? a.betclicOdds ?? a.winamaxOdds ?? null,
+      edge: a.edge ?? null,
+      actual: (a.actualHomeScore != null && a.actualAwayScore != null) ? `${a.actualHomeScore}-${a.actualAwayScore}` : null,
+      direction: a.direction, league: a.league || 'football', sport2: 'foot',
+      bookmaker: a.acceptedBookmaker,
+    }));
+
+  const bballPin = JSON.parse(localStorage.getItem('bball_pinnacle_alerts') || '[]')
+    .filter(a => ['won', 'lost'].includes(a.status))
+    .map(a => ({
+      type: 'pinnacle', sport: a.league || 'wnba',
+      label: `${a.homeShort || a.home} vs ${a.awayShort || a.away}`,
+      sub: a.market === 'h2h'
+        ? `Victoire ${a.direction === 'home' ? (a.homeShort || a.home) : (a.awayShort || a.away)}`
+        : `${a.direction === 'over' ? '▲ Plus' : '▼ Moins'} de ${a.line} pts`,
+      date: a.date, status: a.status,
+      odds: a.acceptedUnibetOdds ?? a.acceptedBetclicOdds ?? a.unibetOdds ?? a.betclicOdds ?? null,
+      edge: a.edge ?? null,
+      actual: a.actualTotal ?? a.actualStat ?? null,
+      direction: a.direction, line: a.line, league: a.league || 'wnba', sport2: 'basket',
+      bookmaker: a.acceptedBookmaker,
+    }));
+
+  return [...fbPin, ...bballPin]
+    .filter(a => { const t = new Date(a.date).getTime(); return !isNaN(t) && t >= cutoff; })
+    .sort((a, b) => new Date(a.date) - new Date(b.date));
+}
+
 // ── Calculs ────────────────────────────────────────────────────────────────
 
 function calcMetrics(bets) {
@@ -271,6 +317,19 @@ function categoryKey(b) {
   return 'Autre';
 }
 
+// Ordre d'affichage demandé : Foot (Résultat, O/U, BTTS) sur une ligne, basket
+// (Pts, Reb, Ast, 3pm, puis O/U match) sur la ligne suivante.
+const FOOT_CAT_ORDER = { 'Foot · Résultat': 0, 'Foot · O/U': 1, 'Foot · BTTS': 2 };
+const BASKET_STAT_ORDER = { PTS: 0, REB: 1, AST: 2, TPM: 3 };
+
+function categorySortKey(key) {
+  if (key in FOOT_CAT_ORDER) return [0, FOOT_CAT_ORDER[key]];
+  const stat = key.match(/· (PTS|REB|AST|TPM)$/)?.[1];
+  if (stat) return [1, BASKET_STAT_ORDER[stat]];
+  if (key.endsWith('· O/U')) return [1, 4];
+  return [2, 0];
+}
+
 function calibrationByCategory(bets) {
   const groups = {};
   for (const b of bets) {
@@ -287,10 +346,24 @@ function calibrationByCategory(bets) {
         const sorted = [...subset].sort((a, b) => new Date(b.date) - new Date(a.date));
         return { threshold: t, n: subset.length, won, rate: won / subset.length * 100, bets: sorted };
       }).filter(Boolean);
-      return { key, total: arr.length, rows };
+      // Fusionne les seuils consécutifs qui donnent exactement le même échantillon
+      // (même n) en une seule ligne "minThreshold–maxThreshold" — évite de répéter
+      // la même barre 100%/1-1 sur 6 lignes quand l'échantillon est trop petit pour
+      // qu'un seuil plus élevé exclue réellement un pari.
+      const collapsed = [];
+      for (const r of rows) {
+        const last = collapsed[collapsed.length - 1];
+        if (last && last.n === r.n) last.maxThreshold = r.threshold;
+        else collapsed.push({ ...r, minThreshold: r.threshold, maxThreshold: r.threshold });
+      }
+      return { key, total: arr.length, rows: collapsed };
     })
     .filter(g => g.total >= 1)
-    .sort((a, b) => b.total - a.total);
+    .sort((a, b) => {
+      const [ga, sa] = categorySortKey(a.key);
+      const [gb, sb] = categorySortKey(b.key);
+      return ga !== gb ? ga - gb : sa !== sb ? sa - sb : b.total - a.total;
+    });
 }
 
 function exportCSV(bets) {
@@ -475,15 +548,16 @@ function CalibCategoryCard({ group }) {
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
         {group.rows.map(r => {
-          const isOpen = openThreshold === r.threshold;
+          const isOpen = openThreshold === r.minThreshold;
           const color = r.rate >= 85 ? '#4ade80' : r.rate >= 50 ? '#f59e0b' : '#f87171';
+          const label = r.minThreshold === r.maxThreshold ? `≥${r.minThreshold}%` : `${r.minThreshold}–${r.maxThreshold}%`;
           return (
-            <div key={r.threshold}>
+            <div key={r.minThreshold}>
               <div
-                onClick={() => setOpenThreshold(isOpen ? null : r.threshold)}
+                onClick={() => setOpenThreshold(isOpen ? null : r.minThreshold)}
                 style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', cursor: 'pointer', padding: '2px 4px', borderRadius: 5, background: isOpen ? 'rgba(255,255,255,0.04)' : 'transparent' }}
               >
-                <span style={{ width: 42, fontSize: 11, color: 'var(--text-dim)', flexShrink: 0 }}>≥{r.threshold}%</span>
+                <span style={{ width: 56, fontSize: 11, color: 'var(--text-dim)', flexShrink: 0 }}>{label}</span>
                 <div style={{ flex: 1, height: 5, borderRadius: 3, background: 'rgba(255,255,255,0.08)', position: 'relative', overflow: 'hidden' }}>
                   <div style={{ position: 'absolute', left: 0, top: 0, height: '100%', width: `${r.rate}%`, background: color, borderRadius: 3, transition: 'width 0.4s' }} />
                 </div>
@@ -514,7 +588,7 @@ function DonutResults({ metrics, accepted = 0 }) {
   const total = metrics.won + metrics.lost + accepted;
   if (total === 0) return <div style={{ textAlign: 'center', color: 'var(--text-dim)', fontSize: 13, padding: '2rem 0' }}>Aucun résultat</div>;
 
-  const R = 80, r = 52, cx = 120, cy = 120;
+  const R = 53, r = 35, cx = 80, cy = 80;
   const toXY = (pct, rad) => {
     const a = pct * 2 * Math.PI - Math.PI / 2;
     return { x: cx + rad * Math.cos(a), y: cy + rad * Math.sin(a) };
@@ -535,15 +609,15 @@ function DonutResults({ metrics, accepted = 0 }) {
   });
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '1.25rem', padding: '0.5rem 0' }}>
-      <svg width={240} height={240} viewBox="0 0 240 240">
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '1.75rem', padding: '0.5rem 0' }}>
+      <svg width={160} height={160} viewBox="0 0 160 160" style={{ flexShrink: 0 }}>
         {arcs.map(a => (
           <path key={a.key} d={arc(a.offset, a.pct)} fill={a.color} opacity={0.85} />
         ))}
-        <text x={cx} y={cy - 8}  textAnchor="middle" fontSize="28" fontWeight="800" fill="var(--text)" fontFamily="inherit">{total}</text>
-        <text x={cx} y={cy + 14} textAnchor="middle" fontSize="12" fill="rgba(255,255,255,0.45)" fontFamily="inherit">résultats</text>
+        <text x={cx} y={cy - 6}  textAnchor="middle" fontSize="19" fontWeight="800" fill="var(--text)" fontFamily="inherit">{total}</text>
+        <text x={cx} y={cy + 10} textAnchor="middle" fontSize="9" fill="rgba(255,255,255,0.45)" fontFamily="inherit">résultats</text>
       </svg>
-      <div style={{ display: 'flex', gap: '1.5rem', justifyContent: 'center', flexWrap: 'wrap' }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem' }}>
         {arcs.map(a => (
           <div key={a.key} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <div style={{ width: 28, height: 12, borderRadius: 6, background: a.color }} />
@@ -676,12 +750,11 @@ function BetRow({ bet, rank, stake = 10, compact = false }) {
 }
 
 const TIMELINE = [
-  { key: 'Tous',    label: 'Tous',    days: 1        },
-  { key: '1j',     label: '1j',      days: 1        },
-  { key: '3j',     label: '3j',      days: 3        },
-  { key: '5j',     label: '5j',      days: 5        },
-  { key: '10j',    label: '10j',     days: 10       },
-  { key: 'Overall',label: 'Overall', days: Infinity },
+  { key: 'Tous', label: 'Tous', days: Infinity },
+  { key: '1j',   label: '1j',   days: 1        },
+  { key: '3j',   label: '3j',   days: 3        },
+  { key: '5j',   label: '5j',   days: 5        },
+  { key: '10j',  label: '10j',  days: 10       },
 ];
 const SPORT_FILTERS = [{ key: 'all', label: 'Tous' }, { key: 'basket', label: 'Basket' }, { key: 'foot', label: 'Foot' }];
 const BASKET_LEAGUES = new Set(['nba','wnba','euroleague','acb','lnb','bbl','legaa']);
@@ -772,8 +845,9 @@ export default function BacktestingPage() {
   const [sportFilter, setSportFilter] = useState('all');
   const [compFilter,  setCompFilter]  = useState('all');
   const [typeFilter,  setTypeFilter]  = useState('all');
-  const [allBets,     setAllBets]     = useState([]);
-  const [stake,       setStake]       = useState(10);
+  const [allBets,        setAllBets]        = useState([]);
+  const [pinnacleAllBets, setPinnacleAllBets] = useState([]);
+  const [stake,          setStake]          = useState(10);
 
   const handleModelChange = (m) => { setModel(m); setTimelineLabel('Tous'); setSportFilter('all'); setCompFilter('all'); setTypeFilter('all'); };
   const handleSportChange = (v) => { setSportFilter(v); setCompFilter('all'); setTypeFilter('all'); };
@@ -794,10 +868,15 @@ export default function BacktestingPage() {
       syncSettlements(),
       resolveFootball('fb_btts_alerts'),
       resolveFootball('fb_total_alerts'),
-    ]).then(() => setAllBets(loadAllResolved(period, model)));
+      resolveFootball('fb_pinnacle_alerts'),
+    ]).then(() => {
+      setAllBets(loadAllResolved(period, model));
+      setPinnacleAllBets(loadPinnacleBets(period));
+    });
   }, []);
 
   useEffect(() => { setAllBets(loadAllResolved(period, model)); }, [period, model]);
+  useEffect(() => { setPinnacleAllBets(loadPinnacleBets(period)); }, [period]);
 
   const filtered = useMemo(() => allBets.filter(b => {
     if (sportFilter === 'basket' && !BASKET_LEAGUES.has(b.sport)) return false;
@@ -824,6 +903,14 @@ export default function BacktestingPage() {
   const rolling        = useMemo(() => filtered.filter(b => b.status !== 'void').slice(-ROLLING_N), [filtered]);
   const rollingMetrics = useMemo(() => calcMetrics(rolling), [rolling]);
 
+  // ── Pinnacle diff — métriques isolées (hors bilan global) ─────────────────
+  const pinnacleFiltered = useMemo(() => pinnacleAllBets.filter(b => {
+    if (sportFilter === 'basket' && b.sport2 !== 'basket') return false;
+    if (sportFilter === 'foot'   && b.sport2 !== 'foot')   return false;
+    return true;
+  }), [pinnacleAllBets, sportFilter]);
+  const pinMetrics = useMemo(() => calcMetrics(pinnacleFiltered), [pinnacleFiltered]);
+
   const roiColor = metrics.roi == null ? 'var(--text-dim)' : metrics.roi >= 0 ? '#4ade80' : '#f87171';
   const plColor  = metrics.pl === 0    ? 'var(--text-dim)' : metrics.pl >= 0  ? '#4ade80' : '#f87171';
   const wrColor  = metrics.winRate == null ? 'var(--text-dim)' : metrics.winRate >= 50 ? '#4ade80' : '#f87171';
@@ -837,7 +924,7 @@ export default function BacktestingPage() {
           <p style={{ fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.12em', color: '#3b82f6', marginBottom: '0.6rem' }}>
             Performance
           </p>
-          <h1 style={{ fontSize: '2.2rem', fontWeight: 800, letterSpacing: '-0.04em', color: 'var(--text)', lineHeight: 1.1 }}>
+          <h1 style={{ fontSize: '1.7rem', fontWeight: 800, letterSpacing: '-0.04em', color: 'var(--text)', lineHeight: 1.1 }}>
             Backtesting
           </h1>
           <p style={{ color: 'var(--text-sub)', marginTop: '0.6rem', fontSize: 14, maxWidth: 420, lineHeight: 1.6 }}>
@@ -846,7 +933,7 @@ export default function BacktestingPage() {
         </div>
         {/* Toggle modèle */}
         <div style={{ display: 'flex', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 12, padding: 3, gap: 2, alignSelf: 'flex-start', marginTop: '0.5rem' }}>
-          {[{ key: 'new', label: 'Nouveau modèle', sub: 'depuis le 9 juin' }, { key: 'old', label: 'Ancien modèle', sub: 'avant le 9 juin' }].map(m => (
+          {[{ key: 'new', label: 'Nouveau modèle', sub: 'depuis le 22 juin' }, { key: 'old', label: 'Ancien modèle', sub: 'avant le 22 juin' }].map(m => (
             <button key={m.key} onClick={() => handleModelChange(m.key)} style={{
               background: model === m.key ? (m.key === 'new' ? 'rgba(96,165,250,0.18)' : 'rgba(148,163,184,0.12)') : 'transparent',
               border: model === m.key ? `1px solid ${m.key === 'new' ? 'rgba(96,165,250,0.4)' : 'rgba(148,163,184,0.2)'}` : '1px solid transparent',
@@ -941,20 +1028,31 @@ export default function BacktestingPage() {
           </Section>
         </div>
 
-        {/* Ligne 2b : Calibration par catégorie */}
-        {calibCats.length > 0 && (
-          <Section title="Calibration par catégorie" mb={true}>
-            <div style={{ fontSize: 10, color: 'var(--text-dim)', marginBottom: '0.75rem' }}>
-              Win rate réel des paris dont la probabilité affichée est ≥ seuil · permet de trouver le seuil de déclenchement par catégorie
-            </div>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '0.75rem' }}>
-              {calibCats.map(g => <CalibCategoryCard key={g.key} group={g} />)}
-            </div>
-          </Section>
-        )}
+        {/* Ligne 2b : Calibration par catégorie — foot sur une ligne, basket sur la suivante */}
+        {calibCats.length > 0 && (() => {
+          const footCats   = calibCats.filter(g => g.key.startsWith('Foot ·'));
+          const basketCats = calibCats.filter(g => !g.key.startsWith('Foot ·'));
+          return (
+            <Section title="Calibration par catégorie" mb={true}>
+              <div style={{ fontSize: 10, color: 'var(--text-dim)', marginBottom: '0.75rem' }}>
+                Win rate réel des paris dont la probabilité affichée est ≥ seuil · permet de trouver le seuil de déclenchement par catégorie
+              </div>
+              {footCats.length > 0 && (
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '0.75rem', marginBottom: basketCats.length > 0 ? '0.75rem' : 0 }}>
+                  {footCats.map(g => <CalibCategoryCard key={g.key} group={g} />)}
+                </div>
+              )}
+              {basketCats.length > 0 && (
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '0.75rem' }}>
+                  {basketCats.map(g => <CalibCategoryCard key={g.key} group={g} />)}
+                </div>
+              )}
+            </Section>
+          );
+        })()}
 
         {/* Ligne 3 : Répartition + Performance par type */}
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', marginBottom: '1.25rem' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', marginBottom: '1.25rem', alignItems: 'start' }}>
           <Section title="Répartition des résultats" mb={false}>
             <DonutResults metrics={metrics} accepted={acceptedCount} />
           </Section>
@@ -992,6 +1090,64 @@ export default function BacktestingPage() {
         </Section>
 
       </>)}
+
+      {/* ── Encadré Alertes vs Pinnacle (hors bilan global) ────────────────── */}
+      <div style={{
+        marginTop: '2rem',
+        border: '1px solid rgba(139,92,246,0.35)',
+        borderRadius: 16,
+        overflow: 'hidden',
+        background: 'rgba(139,92,246,0.04)',
+      }}>
+        {/* Header */}
+        <div style={{ padding: '1rem 1.25rem', borderBottom: '1px solid rgba(139,92,246,0.2)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.5rem' }}>
+          <div>
+            <span style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.09em', color: '#a78bfa' }}>
+              💎 Alertes vs Pinnacle
+            </span>
+            <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 3 }}>
+              Alertes issues du différentiel bookmaker / cotes Pinnacle — bilan indépendant, non inclus dans les stats ci-dessus.
+            </div>
+          </div>
+        </div>
+
+        <div style={{ padding: '1.25rem' }}>
+          {pinMetrics.total === 0 ? (
+            <div style={{ textAlign: 'center', padding: '1.5rem 0', color: 'var(--text-dim)', fontSize: 12 }}>
+              Aucune alerte vs Pinnacle résolue sur cette période.
+            </div>
+          ) : (<>
+            {/* KPIs */}
+            <div style={{ display: 'flex', gap: '0.6rem', flexWrap: 'wrap', marginBottom: '1.25rem' }}>
+              {[
+                { label: 'Paris résolus', value: pinMetrics.total,   sub: `${pinMetrics.won}W · ${pinMetrics.lost}L`, color: 'var(--text)' },
+                { label: 'Win Rate',  value: pinMetrics.winRate != null ? `${pinMetrics.winRate.toFixed(1)}%` : '—', sub: `${pinMetrics.won + pinMetrics.lost} non-void`, color: pinMetrics.winRate == null ? 'var(--text-dim)' : pinMetrics.winRate >= 50 ? '#4ade80' : '#f87171' },
+                { label: 'ROI',       value: pinMetrics.roi != null ? `${pinMetrics.roi >= 0 ? '+' : ''}${pinMetrics.roi.toFixed(1)}%` : '—', sub: `flat ${stake}€/pari`, color: pinMetrics.roi == null ? 'var(--text-dim)' : pinMetrics.roi >= 0 ? '#4ade80' : '#f87171' },
+                { label: 'P&L',       value: `${pinMetrics.pl >= 0 ? '+' : ''}${(pinMetrics.pl * stake).toFixed(0)}€`, sub: `mise ${stake}€/alerte`, color: pinMetrics.pl >= 0 ? '#4ade80' : '#f87171' },
+              ].map(({ label, value, sub, color }) => (
+                <div key={label} style={{ flex: '1 1 100px', background: 'rgba(139,92,246,0.07)', border: '1px solid rgba(139,92,246,0.18)', borderRadius: 12, padding: '0.75rem 1rem' }}>
+                  <div style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.09em', color: '#a78bfa', marginBottom: 4 }}>{label}</div>
+                  <div style={{ fontSize: 22, fontWeight: 800, color, fontVariantNumeric: 'tabular-nums', lineHeight: 1.1 }}>{value}</div>
+                  <div style={{ fontSize: 10, color: 'var(--text-dim)', marginTop: 2 }}>{sub}</div>
+                </div>
+              ))}
+            </div>
+
+            {/* Liste paris */}
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
+              <span style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.07em', color: 'var(--text-dim)' }}>
+                Historique ({pinnacleFiltered.length} paris)
+              </span>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', maxHeight: 360, overflowY: 'auto' }}>
+              {[...pinnacleFiltered].reverse().map((bet, i) => (
+                <BetRow key={i} bet={bet} rank={pinnacleFiltered.length - i} stake={stake} />
+              ))}
+            </div>
+          </>)}
+        </div>
+      </div>
+
     </div>
   );
 }

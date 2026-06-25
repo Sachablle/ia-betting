@@ -1,14 +1,16 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { BBALL_FIXTURES } from '../utils/basketball';
-import { syncBackgroundAlerts, syncSettlements, syncGameTotalAlerts, syncOddsDrift, syncFootballAlerts, resolveCompletedFootballAlerts } from '../utils/syncAlerts';
+import { syncBackgroundAlerts, syncSettlements, syncGameTotalAlerts, syncBballPinnacleAlerts, syncOddsDrift, syncFootballAlerts, resolveCompletedFootballAlerts, postAcceptedAlertReliably } from '../utils/syncAlerts';
 
 const ALERT_KEY      = 'nba_prop_alerts';
 const GAME_TOTAL_KEY = 'nba_game_total_alerts';
+const BBALL_PINNACLE_KEY = 'bball_pinnacle_alerts';
 const FB_BTTS_KEY    = 'fb_btts_alerts';
 const FB_TOTAL_KEY   = 'fb_total_alerts';
 const FB_RESULT_KEY  = 'fb_result_alerts';
-const STAT_LABEL     = { pts: 'Pts', reb: 'Reb', ast: 'Ast', total: 'Total', btts: 'BTTS', result: 'Résultat' };
+const FB_PINNACLE_KEY = 'fb_pinnacle_alerts';
+const STAT_LABEL     = { pts: 'Pts', reb: 'Reb', ast: 'Ast', total: 'Total', btts: 'BTTS', result: 'Résultat', pinnacle_edge: 'Pinnacle' };
 
 // Ligues football — affichées dans les mêmes "MatchGroup" compacts que le basket
 const FB_LEAGUES = new Set(['cdm', 'ligue1', 'pl', 'laliga', 'bundes', 'seriea']);
@@ -74,14 +76,42 @@ function totalAlertToGroup(a) {
   };
 }
 
+// Convertit une alerte "Value Bet vs Pinnacle" basket (bball_pinnacle_alerts, WNBA Total
+// uniquement) en objet "groupe" — même structure que totalAlertToGroup, mais stat: 'pinnacle_edge'
+// + market: 'totals' pour réutiliser le badge cyan partagé avec le foot (cf AlertCard ci-dessous).
+function bballPinnacleAlertToGroup(a) {
+  return {
+    key: `bpin__${a.id}`, type: 'basketball_pinnacle_edge',
+    player: 'Value Bet vs Pinnacle', team: null, fixture: `${a.home} vs ${a.away}`,
+    fixtureDate: a.date, homeTeam: a.home || null, awayTeam: a.away || null,
+    homeShort: a.homeShort || null, awayShort: a.awayShort || null,
+    eventId: a.eventId || null, league: a.league || 'wnba',
+    stats: [{
+      stat: 'pinnacle_edge', market: 'totals', direction: a.direction, line: a.line,
+      estimate: null, probability: a.prob,
+      unibetOdds: a.unibetOdds, betclicOdds: a.betclicOdds, winamaxOdds: null,
+      pinnacleOdds: a.pinnacleOdds,
+      acceptedUnibetOdds: a.acceptedUnibetOdds ?? null,
+      acceptedBetclicOdds: a.acceptedBetclicOdds ?? null,
+      acceptedWinamaxOdds: null,
+    }],
+    maxProb: a.prob || 0, ids: [a.id],
+    status: a.status || 'pending', acceptedAt: a.acceptedAt || 0,
+    acceptedBookmaker: a.acceptedBookmaker || null,
+  };
+}
+
 // Convertit une alerte football (fb_btts_alerts / fb_total_alerts / fb_result_alerts) en objet
 // "groupe" compatible avec groupByMatch + AlertCard — même principe que totalAlertToGroup.
 function footballAlertToGroup(a) {
-  const isBtts   = a.type === 'football_btts';
-  const isResult = a.type === 'football_result';
+  const isBtts          = a.type === 'football_btts';
+  const isResult        = a.type === 'football_result';
+  const isPinnacle      = a.type === 'football_pinnacle_edge';
+  const isPinnacleTotal = isPinnacle && a.market === 'totals';
+  const isLineless = isBtts || isResult || (isPinnacle && !isPinnacleTotal);
   return {
     key: `fb__${a.id}`, type: a.type,
-    player: isBtts ? 'Les deux équipes marquent' : isResult ? 'Résultat 1X2' : 'Total buts',
+    player: isBtts ? 'Les deux équipes marquent' : isResult ? 'Résultat 1X2' : isPinnacle ? 'Value Bet vs Pinnacle' : 'Total buts',
     team: null, fixture: isBtts ? a.fixture : `${a.home} vs ${a.away}`,
     fixtureDate: a.fixtureDate,
     homeTeam: isBtts ? a.homeTeam : a.home, awayTeam: isBtts ? a.awayTeam : a.away,
@@ -90,12 +120,14 @@ function footballAlertToGroup(a) {
     eventId: a.fixtureId || a.eventId || null,
     league: a.league || 'cdm',
     stats: [{
-      stat: isBtts ? 'btts' : isResult ? 'result' : 'total',
+      stat: isBtts ? 'btts' : isResult ? 'result' : isPinnacle ? 'pinnacle_edge' : 'total',
+      market: isPinnacle ? (a.market || 'h2h') : null,
       direction: isBtts ? 'yes' : a.direction,
-      line: (isBtts || isResult) ? null : a.line,
-      estimate: (isBtts || isResult) ? null : a.estimated,
+      line: isLineless ? null : a.line,
+      estimate: isLineless ? null : a.estimated,
       probability: a.probability,
       unibetOdds: a.unibetOdds, betclicOdds: a.betclicOdds, winamaxOdds: a.winamaxOdds,
+      pinnacleOdds: isPinnacle ? a.pinnacleOdds : null,
       acceptedUnibetOdds: a.acceptedUnibetOdds ?? null,
       acceptedBetclicOdds: a.acceptedBetclicOdds ?? null,
       acceptedWinamaxOdds: a.acceptedWinamaxOdds ?? null,
@@ -124,12 +156,25 @@ function groupByMatch(acceptedGroups) {
       homeShort: normShort(g.homeShort), awayShort: normShort(g.awayShort),
       homeTeam: g.homeTeam, awayTeam: g.awayTeam,
       fixtureDate: g.fixtureDate, eventId: g.eventId, alerts: [],
+      pairKey: [homeKey, awayKey].sort().join('__'),
     };
     map[mk].alerts.push(g);
     // Garder l'eventId le plus récent/valide
     if (g.eventId && !map[mk].eventId) map[mk].eventId = g.eventId;
   }
-  return Object.values(map).sort((a, b) => new Date(a.fixtureDate) - new Date(b.fixtureDate));
+  const groups = Object.values(map);
+  // Même paire d'équipes plusieurs fois (série best-of) → afficher la date en plus de l'heure,
+  // sinon deux matchs différents (ex. Game 2 / Game 3 d'une finale) sont indiscernables.
+  const pairCounts = {};
+  for (const grp of groups) pairCounts[grp.pairKey] = (pairCounts[grp.pairKey] || 0) + 1;
+  for (const grp of groups) grp.showDate = pairCounts[grp.pairKey] > 1;
+  // Trie par sport (foot d'abord, basket ensuite), puis par date dans chaque groupe.
+  return groups.sort((a, b) => {
+    const aFoot = FB_LEAGUES.has(a.league) ? 0 : 1;
+    const bFoot = FB_LEAGUES.has(b.league) ? 0 : 1;
+    if (aFoot !== bFoot) return aFoot - bFoot;
+    return new Date(a.fixtureDate) - new Date(b.fixtureDate);
+  });
 }
 
 // ── Hook scores live ──────────────────────────────────────────────────────────
@@ -275,8 +320,8 @@ function MatchStatusBadge({ scoreData }) {
     : isLive ? (statusDetail || 'Live')
     : 'À venir';
 
-  const color = isDone ? '#4ade80' : isLive ? '#f97316' : 'var(--text-dim)';
-  const bg    = isDone ? 'rgba(74,222,128,0.1)' : isLive ? 'rgba(249,115,22,0.1)' : 'rgba(255,255,255,0.05)';
+  const color = isDone ? '#4ade80' : isLive ? '#ffffff' : 'var(--text-dim)';
+  const bg    = isDone ? 'rgba(74,222,128,0.1)' : isLive ? 'rgba(255,255,255,0.08)' : 'rgba(255,255,255,0.05)';
 
   return (
     <span style={{ fontSize: 9, fontWeight: 700, color, background: bg, border: `1px solid ${color}44`, borderRadius: 4, padding: '1px 6px', display: 'flex', alignItems: 'center', gap: 4 }}>
@@ -365,6 +410,14 @@ function AlertCard({ group, playerStats, onDismiss }) {
           <span style={{ fontSize: 11, fontWeight: 700, color: '#fbbf24', flexShrink: 0 }}>
             🏆 {s.direction === 'draw' ? 'Nul' : s.direction === 'home' ? (group.homeShort || group.homeTeam) : (group.awayShort || group.awayTeam)}
           </span>
+        ) : s && s.stat === 'pinnacle_edge' && s.market === 'totals' ? (
+          <span style={{ fontSize: 11, fontWeight: 700, color: '#22d3ee', flexShrink: 0 }}>
+            💎 {s.direction === 'over' ? '▲' : '▼'} {s.line}
+          </span>
+        ) : s && s.stat === 'pinnacle_edge' ? (
+          <span style={{ fontSize: 11, fontWeight: 700, color: '#22d3ee', flexShrink: 0 }}>
+            💎 {s.direction === 'draw' ? 'Nul' : s.direction === 'home' ? (group.homeShort || group.homeTeam) : (group.awayShort || group.awayTeam)}
+          </span>
         ) : s && (
           <span style={{ fontSize: 11, fontWeight: 700, color: s.direction === 'over' ? '#4ade80' : '#f87171', flexShrink: 0 }}>
             {s.direction === 'over' ? '▲' : '▼'} {s.line} {STAT_LABEL[s.stat] ?? s.stat}
@@ -410,7 +463,7 @@ function TeamLogo({ logo, short, name, size = 40, league = 'nba' }) {
 
 // ── Groupe par match ──────────────────────────────────────────────────────────
 function MatchGroup({ match, scoreData, liveStats, onDismiss }) {
-  const { homeShort, awayShort, homeTeam, awayTeam, alerts, league, fixtureDate } = match;
+  const { homeShort, awayShort, homeTeam, awayTeam, alerts, league, fixtureDate, showDate } = match;
   const hasScores = (scoreData?.homeScore > 0 || scoreData?.awayScore > 0);
   const isLive = IN_GAME(scoreData?.status)
     || (scoreData?.status === 'STATUS_SCHEDULED' && hasScores);
@@ -422,11 +475,17 @@ function MatchGroup({ match, scoreData, liveStats, onDismiss }) {
   const hasScore = scoreData?.homeScore != null && scoreData?.awayScore != null;
   const leagueLabel = { nba: 'NBA', wnba: 'WNBA', acb: 'ACB', lnb: 'LNB', bbl: 'BBL', legaa: 'Lega A', euroleague: 'EL', ...FB_LEAGUE_LABEL }[league] || league?.toUpperCase();
   const matchTime = fixtureDate ? new Date(fixtureDate).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }) : '';
+  // Même paire d'équipes plusieurs fois (série best-of) → date en plus de l'heure pour les distinguer
+  const matchDatePrefix = showDate && fixtureDate ? `${new Date(fixtureDate).toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit' })} ` : '';
+  // Liseret par sport : vert foot, orange basket — distingue les deux d'un coup d'œil dans la liste
+  const isFootball = FB_LEAGUES.has(league);
+  const sportBorder = isFootball ? 'rgba(74,222,128,0.3)' : 'rgba(251,146,60,0.3)';
+  const sportBg = isFootball ? 'rgba(74,222,128,0.03)' : 'rgba(251,146,60,0.03)';
 
   // ── Version liste compacte (pas encore live) ──
   if (isScheduled) {
     return (
-      <div style={{ borderRadius: 10, border: '1px solid rgba(96,165,250,0.15)', overflow: 'hidden', background: 'rgba(96,165,250,0.02)' }}>
+      <div style={{ borderRadius: 10, border: `1px solid ${sportBorder}`, overflow: 'hidden', background: sportBg }}>
         <button
           onClick={() => setOpen(o => !o)}
           style={{ width: '100%', display: 'flex', alignItems: 'center', gap: '0.6rem', padding: '0.5rem 0.75rem', background: 'none', border: 'none', cursor: 'pointer' }}
@@ -435,7 +494,7 @@ function MatchGroup({ match, scoreData, liveStats, onDismiss }) {
           <span style={{ fontSize: 11, fontWeight: 700, color: '#fff' }}>{homeShort || homeTeam}</span>
           <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
             <span style={{ fontSize: 9, fontWeight: 700, color: '#60a5fa', background: 'rgba(96,165,250,0.12)', borderRadius: 3, padding: '1px 5px' }}>{leagueLabel}</span>
-            <span style={{ fontSize: 10, color: 'var(--text-dim)' }}>{matchTime}</span>
+            <span style={{ fontSize: 10, color: 'var(--text-dim)' }}>{matchDatePrefix}{matchTime}</span>
           </div>
           <span style={{ fontSize: 11, fontWeight: 700, color: '#fff' }}>{awayShort || awayTeam}</span>
           <TeamLogo logo={scoreData?.awayLogo} short={normShort(awayShort)} name={awayTeam} size={28} league={league} />
@@ -453,20 +512,18 @@ function MatchGroup({ match, scoreData, liveStats, onDismiss }) {
     );
   }
 
-  // ── Version carré (live ou terminé) ──
-  const accent = isLive ? 'rgba(249,115,22,0.3)' : 'rgba(74,222,128,0.2)';
-  const accentBg = isLive ? 'rgba(249,115,22,0.04)' : 'rgba(74,222,128,0.02)';
+  // ── Version carré (live ou terminé) — liseret par sport, le score/badge garde le code couleur live/terminé ──
   return (
-    <div style={{ borderRadius: 12, border: `1px solid ${accent}`, overflow: 'hidden', background: accentBg }}>
+    <div style={{ borderRadius: 12, border: `1px solid ${sportBorder}`, overflow: 'hidden', background: sportBg }}>
       <div style={{ position: 'relative', display: 'flex', alignItems: 'center', padding: '1rem', borderBottom: '1px solid rgba(255,255,255,0.06)', minHeight: 110 }}>
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.3rem', flex: 1 }}>
           <TeamLogo logo={scoreData?.homeLogo} short={normShort(homeShort)} name={homeTeam} size={44} />
           <span style={{ fontSize: 10, fontWeight: 700 }}>{homeShort || homeTeam}</span>
         </div>
-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.3rem', minWidth: 90, flexShrink: 0 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '1.1rem', minWidth: 90, flexShrink: 0 }}>
           <span style={{ fontSize: 9, fontWeight: 700, color: '#60a5fa', background: 'rgba(96,165,250,0.12)', borderRadius: 3, padding: '1px 6px' }}>{leagueLabel}</span>
           {hasScore ? (
-            <span style={{ fontSize: 20, fontWeight: 900, color: isLive ? '#f97316' : '#4ade80', fontVariantNumeric: 'tabular-nums', letterSpacing: '0.05em', lineHeight: 1 }}>
+            <span style={{ fontSize: 16, fontWeight: 900, color: isLive ? '#ffffff' : '#4ade80', fontVariantNumeric: 'tabular-nums', letterSpacing: '0.05em', lineHeight: 1 }}>
               {scoreData.homeScore} – {scoreData.awayScore}
             </span>
           ) : (
@@ -504,6 +561,12 @@ export default function RunningPage() {
   const [fbResultAlerts, setFbResultAlerts] = useState(() => {
     try { return JSON.parse(localStorage.getItem(FB_RESULT_KEY) || '[]'); } catch { return []; }
   });
+  const [fbPinnacleAlerts, setFbPinnacleAlerts] = useState(() => {
+    try { return JSON.parse(localStorage.getItem(FB_PINNACLE_KEY) || '[]'); } catch { return []; }
+  });
+  const [bballPinnacleAlerts, setBballPinnacleAlerts] = useState(() => {
+    try { return JSON.parse(localStorage.getItem(BBALL_PINNACLE_KEY) || '[]'); } catch { return []; }
+  });
 
   useEffect(() => {
     // Resynchronise % et projections sur le modèle live + dédoublonne les entrées
@@ -512,23 +575,29 @@ export default function RunningPage() {
     const reloadFromStorage = () => {
       try { setRawAlerts(JSON.parse(localStorage.getItem(ALERT_KEY) || '[]')); } catch {}
       try { setRawTotalAlerts(JSON.parse(localStorage.getItem(GAME_TOTAL_KEY) || '[]')); } catch {}
+      try { setBballPinnacleAlerts(JSON.parse(localStorage.getItem(BBALL_PINNACLE_KEY) || '[]')); } catch {}
     };
     const reloadFootball = () => {
       try { setBttsAlerts(JSON.parse(localStorage.getItem(FB_BTTS_KEY) || '[]')); } catch {}
       try { setFbTotalAlerts(JSON.parse(localStorage.getItem(FB_TOTAL_KEY) || '[]')); } catch {}
       try { setFbResultAlerts(JSON.parse(localStorage.getItem(FB_RESULT_KEY) || '[]')); } catch {}
+      try { setFbPinnacleAlerts(JSON.parse(localStorage.getItem(FB_PINNACLE_KEY) || '[]')); } catch {}
     };
     window.addEventListener('nba_alerts_updated', reloadFromStorage);
     window.addEventListener('fb_btts_alerts_updated', reloadFootball);
     window.addEventListener('fb_total_alerts_updated', reloadFootball);
     window.addEventListener('fb_result_alerts_updated', reloadFootball);
+    window.addEventListener('fb_pinnacle_alerts_updated', reloadFootball);
+    window.addEventListener('bball_pinnacle_alerts_updated', reloadFromStorage);
     syncBackgroundAlerts().then(reloadFromStorage);
     syncGameTotalAlerts().then(reloadFromStorage);
+    syncBballPinnacleAlerts().then(reloadFromStorage);
     syncOddsDrift().then(reloadFromStorage);
     syncFootballAlerts().then(reloadFootball);
     const syncTimer = setInterval(() => {
       syncBackgroundAlerts().then(reloadFromStorage);
       syncGameTotalAlerts().then(reloadFromStorage);
+      syncBballPinnacleAlerts().then(reloadFromStorage);
       syncOddsDrift().then(reloadFromStorage);
       syncFootballAlerts().then(reloadFootball);
     }, 2 * 60 * 1000);
@@ -537,9 +606,7 @@ export default function RunningPage() {
     // été synchronisées (POST raté à l'acceptation) — sinon elles ne sont jamais settle.
     try {
       const existing = JSON.parse(localStorage.getItem(ALERT_KEY) || '[]');
-      existing.filter(a => a.status === 'accepted').forEach(a =>
-        fetch('/api/accepted-alerts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(a) }).catch(() => {})
-      );
+      existing.filter(a => a.status === 'accepted').forEach(a => postAcceptedAlertReliably(a));
     } catch {}
     syncSettlements().then(reloadFromStorage);
 
@@ -551,13 +618,20 @@ export default function RunningPage() {
       resolveCompletedFootballAlerts(fbTotal, alerts => { localStorage.setItem(FB_TOTAL_KEY, JSON.stringify(alerts)); setFbTotalAlerts(alerts); });
       const fbResult = JSON.parse(localStorage.getItem(FB_RESULT_KEY) || '[]');
       resolveCompletedFootballAlerts(fbResult, alerts => { localStorage.setItem(FB_RESULT_KEY, JSON.stringify(alerts)); setFbResultAlerts(alerts); });
+      const fbPinnacle = JSON.parse(localStorage.getItem(FB_PINNACLE_KEY) || '[]');
+      resolveCompletedFootballAlerts(fbPinnacle, alerts => { localStorage.setItem(FB_PINNACLE_KEY, JSON.stringify(alerts)); setFbPinnacleAlerts(alerts); });
     } catch {}
+    // basketball_pinnacle_edge (WNBA) se règle côté serveur (runAutoSettle, totalsToCheck) — pas
+    // de résolution client séparée nécessaire, syncSettlements() ci-dessus suffit (BBALL_PINNACLE_KEY
+    // est dans SETTLEABLE_KEYS).
 
     return () => {
       window.removeEventListener('nba_alerts_updated', reloadFromStorage);
       window.removeEventListener('fb_btts_alerts_updated', reloadFootball);
       window.removeEventListener('fb_total_alerts_updated', reloadFootball);
       window.removeEventListener('fb_result_alerts_updated', reloadFootball);
+      window.removeEventListener('fb_pinnacle_alerts_updated', reloadFootball);
+      window.removeEventListener('bball_pinnacle_alerts_updated', reloadFromStorage);
       clearInterval(syncTimer);
     };
   }, []);
@@ -565,11 +639,13 @@ export default function RunningPage() {
   const groups = groupAlerts(rawAlerts);
   const acceptedGroups = groups.filter(g => g.status === 'accepted');
   const acceptedTotalGroups = rawTotalAlerts.filter(a => a.status === 'accepted').map(totalAlertToGroup);
+  const acceptedBballPinnacle = bballPinnacleAlerts.filter(a => a.status === 'accepted').map(bballPinnacleAlertToGroup);
   const acceptedBtts = bttsAlerts.filter(a => a.status === 'accepted');
   const acceptedFbTotal = fbTotalAlerts.filter(a => a.status === 'accepted');
   const acceptedFbResult = fbResultAlerts.filter(a => a.status === 'accepted');
-  const footballGroups = [...acceptedBtts.map(footballAlertToGroup), ...acceptedFbTotal.map(footballAlertToGroup), ...acceptedFbResult.map(footballAlertToGroup)];
-  const allAcceptedGroups = [...acceptedGroups, ...acceptedTotalGroups, ...footballGroups];
+  const acceptedFbPinnacle = fbPinnacleAlerts.filter(a => a.status === 'accepted');
+  const footballGroups = [...acceptedBtts.map(footballAlertToGroup), ...acceptedFbTotal.map(footballAlertToGroup), ...acceptedFbResult.map(footballAlertToGroup), ...acceptedFbPinnacle.map(footballAlertToGroup)];
+  const allAcceptedGroups = [...acceptedGroups, ...acceptedTotalGroups, ...acceptedBballPinnacle, ...footballGroups];
   const matchGroups = groupByMatch(allAcceptedGroups);
   const liveStats = useLiveBoxscore(acceptedGroups);
   const { scores: scoreData, loaded: scoresLoaded } = useLiveScores(matchGroups);
@@ -593,6 +669,8 @@ export default function RunningPage() {
     if (group?.type === 'football_btts') { dismissBtts(group.ids[0]); return; }
     if (group?.type === 'football_total') { dismissFbTotal(group.ids[0]); return; }
     if (group?.type === 'football_result') { dismissFbResult(group.ids[0]); return; }
+    if (group?.type === 'football_pinnacle_edge') { dismissFbPinnacle(group.ids[0]); return; }
+    if (group?.type === 'basketball_pinnacle_edge') { dismissBballPinnacle(group.ids[0]); return; }
     const idSet = new Set(ids);
     const gTime = group?.fixtureDate ? new Date(group.fixtureDate).getTime() : null;
     const gStat = group?.stats?.[0]?.stat;
@@ -624,6 +702,16 @@ export default function RunningPage() {
     const updated = fbResultAlerts.filter(a => a.id !== id);
     try { localStorage.setItem(FB_RESULT_KEY, JSON.stringify(updated)); } catch {}
     setFbResultAlerts(updated);
+  };
+  const dismissFbPinnacle = (id) => {
+    const updated = fbPinnacleAlerts.filter(a => a.id !== id);
+    try { localStorage.setItem(FB_PINNACLE_KEY, JSON.stringify(updated)); } catch {}
+    setFbPinnacleAlerts(updated);
+  };
+  const dismissBballPinnacle = (id) => {
+    const updated = bballPinnacleAlerts.filter(a => a.id !== id);
+    try { localStorage.setItem(BBALL_PINNACLE_KEY, JSON.stringify(updated)); } catch {}
+    setBballPinnacleAlerts(updated);
   };
 
   const total = allAcceptedGroups.length;

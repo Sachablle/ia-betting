@@ -43,6 +43,28 @@ function calcStd(games, key) {
   return Math.sqrt(vals.reduce((s, v) => s + (v - mean) ** 2, 0) / (vals.length - 1));
 }
 
+// Détecte si une joueuse est "spécialiste" d'une stat (régulière match après match) plutôt
+// que de se fier uniquement au % de probabilité calculé. Coefficient de variation (std/moyenne)
+// sur ses derniers vrais matchs réels, comparé à un seuil par stat calibré le 22 juin 2026 sur
+// la distribution réelle de ~1750 combos joueur×stat (toutes ligues actives, ACB/LNB/BBL/LegaA
+// + NBA/WNBA) — seuil = 25e percentile (le quart le plus régulier) de chaque stat. Les stats sont
+// naturellement plus ou moins volatiles entre elles (points très stables, passes/3pts beaucoup
+// plus, même chez les joueuses les plus régulières) — d'où un seuil différent par stat, mais
+// identique entre groupes de ligues (la distribution s'est révélée quasi identique NBA/WNBA vs EU,
+// contrairement aux anciens seuils de probabilité absolue).
+const CONSISTENCY_CV_CUTOFF = { pts: 0.42, reb: 0.46, ast: 0.58, tpm: 0.76 };
+const CONSISTENCY_MIN_SAMPLE = 10;
+function isConsistentStat(games, key) {
+  const vals = (games || [])
+    .filter(g => g.min > 10 && g[key] != null && !(key === 'pts' && g.pts === 0 && g.min >= 12))
+    .map(g => g[key]);
+  if (vals.length < CONSISTENCY_MIN_SAMPLE) return false;
+  const mean = vals.reduce((s, v) => s + v, 0) / vals.length;
+  if (mean <= 0 || (key === 'tpm' && mean < 0.5)) return false;
+  const std = Math.sqrt(vals.reduce((s, v) => s + (v - mean) ** 2, 0) / (vals.length - 1));
+  return (std / mean) <= CONSISTENCY_CV_CUTOFF[key];
+}
+
 // Plafonne les n matchs les plus récents (poids EWA les plus forts, decay=0.82 → ~52-60%
 // du poids total sur les 3 derniers) à [moyenne saison ± cap×écart-type].
 // Un seul match exceptionnel (ex: 8 rebonds pour une joueuse à 3.27 de moyenne, std=2.28)
@@ -503,4 +525,4 @@ function computeEstimate(player, isHome, oppGames, myGames, gamelogs, oppAbbr, g
   };
 }
 
-export { computeEstimate, calcStd, winsorizeRecent, getShotVolumeAnchor, probAtLeast, tCDF4, getRestFactor, getScheduleDensityFactor, isPlayoffRound, toDefCat };
+export { computeEstimate, calcStd, isConsistentStat, winsorizeRecent, getShotVolumeAnchor, probAtLeast, tCDF4, getRestFactor, getScheduleDensityFactor, isPlayoffRound, toDefCat };

@@ -7,6 +7,7 @@ import { formatFullDate, formatMatchTime, formatCapacity } from '../utils/format
 import FormStrip from '../components/FormStrip';
 import StatBar from '../components/StatBar';
 import TeamLogo from '../components/TeamLogo';
+import { OddsCell } from '../components/OddsCell';
 
 const FINAL_STATUSES = new Set(['STATUS_FULL_TIME', 'STATUS_FINAL', 'STATUS_FT', 'STATUS_AFTER_EXTRA_TIME', 'STATUS_AFTER_PENALTIES']);
 
@@ -170,34 +171,49 @@ function computeStaticBTTS(fixture) {
 // avgGF/avgGA = moyennes du pool CDM actuel, fetchées via /api/football/cdm/poolavg.
 const CDM_LEAGUE_AVG = 1.30;
 const CDM_HOME_ADV   = 1.10;
-function computeCdmBTTS(homeStats, awayStats, poolAvg = null) {
+// Hôtes Mondial 2026 — seules ces 3 sélections ont un vrai avantage du terrain en phase de poules,
+// même logique que CDM_HOST_NATIONS côté backend (server.js, 25 juin 2026).
+const CDM_HOST_NATIONS = new Set(['United States', 'Canada', 'Mexico']);
+// Shrinkage petit échantillon — même formule que shrinkFactor backend (computeFootball.js).
+const SHRINK_K = 5;
+function shrinkFactor(rawFactor, games, k = SHRINK_K) {
+  const confidence = games / (games + k);
+  return 1 + (rawFactor - 1) * confidence;
+}
+function computeCdmBTTS(homeStats, awayStats, poolAvg = null, homeName = null) {
   if (homeStats?.goalsFor == null || awayStats?.goalsFor == null) return null;
 
   const avgGF = poolAvg?.avgGF || 2.15;
   const avgGA = poolAvg?.avgGA || 0.78;
+  const homeAdv = CDM_HOST_NATIONS.has(homeName) ? CDM_HOME_ADV : 1.0;
 
   // Facteurs attaque/défense normalisés — identique au backend (computeLambdas), aucun
   // facteur en plus (repos/blessures) : sinon ce % diverge de celui qui déclenche les alertes.
-  const homeAttack  = homeStats.goalsFor  / avgGF;
-  const homeDefense = homeStats.goalsAgainst / avgGA;
-  const awayAttack  = awayStats.goalsFor   / avgGF;
-  const awayDefense = awayStats.goalsAgainst / avgGA;
+  const homeAttack  = shrinkFactor(homeStats.goalsFor  / avgGF, homeStats.games  || 0);
+  const homeDefense = shrinkFactor(homeStats.goalsAgainst / avgGA, homeStats.games || 0);
+  const awayAttack  = shrinkFactor(awayStats.goalsFor   / avgGF, awayStats.games  || 0);
+  const awayDefense = shrinkFactor(awayStats.goalsAgainst / avgGA, awayStats.games || 0);
 
-  const lambda_home = homeAttack * awayDefense * CDM_LEAGUE_AVG * CDM_HOME_ADV;
-  const lambda_away = awayAttack * homeDefense * CDM_LEAGUE_AVG / CDM_HOME_ADV;
+  const lambda_home = homeAttack * awayDefense * CDM_LEAGUE_AVG * homeAdv;
+  const lambda_away = awayAttack * homeDefense * CDM_LEAGUE_AVG / homeAdv;
 
   const p_home = 1 - Math.exp(-lambda_home);
   const p_away = 1 - Math.exp(-lambda_away);
-  const btts_poisson = p_home * p_away;
+  // BTTS via la grille Dixon-Coles (même calcul que computeBTTSProb backend) plutôt que le produit
+  // indépendant p_home*p_away — sinon ce % diverge de celui qui a déclenché l'alerte.
+  const grid = computeScoreGrid(lambda_home, lambda_away, DIXON_COLES_RHO);
+  let btts_poisson = 0;
+  for (let i = 1; i < grid.length; i++) for (let j = 1; j < grid.length; j++) btts_poisson += grid[i][j];
 
   return {
     prob: Math.round(btts_poisson * 100),
-    components: [{ label: 'Modèle Poisson (attaque/défense normalisé pool CDM)', value: btts_poisson, pct: Math.round(btts_poisson * 100), normalizedW: 1 }],
+    components: [{ label: 'Modèle Poisson (attaque/défense normalisé pool CDM, corrélation Dixon-Coles)', value: btts_poisson, pct: Math.round(btts_poisson * 100), normalizedW: 1 }],
     lambda_home: +lambda_home.toFixed(2),
     lambda_away: +lambda_away.toFixed(2),
     p_home: Math.round(p_home * 100),
     p_away: Math.round(p_away * 100),
     isStatic: true,
+    isCdm: true,
   };
 }
 
@@ -208,25 +224,59 @@ function poissonPmf(lambda, k) {
   return Math.exp(-lambda) * Math.pow(lambda, k) / f;
 }
 
+// Correction Dixon-Coles — même grille que backend/computeFootball.js (dixonColesTau/computeScoreGrid),
+// dupliquée ici faute de pouvoir importer un module backend côté client. rho=0 (défaut de computeOU/
+// compute1X2 ci-dessous) retombe exactement sur l'indépendance pure — comportement inchangé pour les
+// modèles 5-ligues/statique (computeBTTS/computeStaticBTTS), qui n'ont jamais prétendu être identiques
+// au backend (λ dérivé différemment). Seul le chemin CDM (computeCdmBTTS, λ identique au backend) active
+// rho=DIXON_COLES_RHO, pour rester cohérent avec la probabilité qui a généré l'alerte.
+const DIXON_COLES_RHO = 0.10;
+function dixonColesTau(x, y, lambdaHome, lambdaAway, rho) {
+  if (!rho) return 1;
+  if (x === 0 && y === 0) return 1 - lambdaHome * lambdaAway * rho;
+  if (x === 0 && y === 1) return 1 + lambdaHome * rho;
+  if (x === 1 && y === 0) return 1 + lambdaAway * rho;
+  if (x === 1 && y === 1) return 1 - rho;
+  return 1;
+}
+function computeScoreGrid(lambdaHome, lambdaAway, rho, kMax = 10) {
+  const grid = [];
+  let total = 0;
+  for (let i = 0; i <= kMax; i++) {
+    const pi = poissonPmf(lambdaHome, i);
+    const row = [];
+    for (let j = 0; j <= kMax; j++) {
+      const p = pi * poissonPmf(lambdaAway, j) * dixonColesTau(i, j, lambdaHome, lambdaAway, rho);
+      row.push(p);
+      total += p;
+    }
+    grid.push(row);
+  }
+  if (total > 0) for (let i = 0; i <= kMax; i++) for (let j = 0; j <= kMax; j++) grid[i][j] /= total;
+  return grid;
+}
+
 // P(Over/Under "line" buts) — réutilise λ_home/λ_away du modèle BTTS (même base Poisson)
-function computeOU(lambda_home, lambda_away, line) {
+function computeOU(lambda_home, lambda_away, line, rho = 0) {
   if (lambda_home == null || lambda_away == null) return null;
   const lambda_total = lambda_home + lambda_away;
-  const kMax = Math.floor(line); // 1.5 → 1, 2.5 → 2
+  const kMax = 10;
+  const grid = computeScoreGrid(lambda_home, lambda_away, rho, kMax);
+  const threshold = Math.floor(line); // 1.5 → 1, 2.5 → 2
   let pUnder = 0;
-  for (let k = 0; k <= kMax; k++) pUnder += poissonPmf(lambda_total, k);
+  for (let i = 0; i <= kMax; i++) for (let j = 0; j <= kMax; j++) if (i + j <= threshold) pUnder += grid[i][j];
   const pOver = 1 - pUnder;
   return { lambda_total: +lambda_total.toFixed(2), over: Math.round(pOver * 100), under: Math.round(pUnder * 100) };
 }
 
-// P(victoire dom. / nul / victoire ext.) — grille Poisson indépendante (même base que compute1X2Probs backend)
-function compute1X2(lambda_home, lambda_away, kMax = 10) {
+// P(victoire dom. / nul / victoire ext.) — grille Poisson (Dixon-Coles si rho>0, même base que compute1X2Probs backend)
+function compute1X2(lambda_home, lambda_away, kMax = 10, rho = 0) {
   if (lambda_home == null || lambda_away == null) return null;
+  const grid = computeScoreGrid(lambda_home, lambda_away, rho, kMax);
   let pHome = 0, pDraw = 0, pAway = 0;
   for (let i = 0; i <= kMax; i++) {
-    const pi = poissonPmf(lambda_home, i);
     for (let j = 0; j <= kMax; j++) {
-      const p = pi * poissonPmf(lambda_away, j);
+      const p = grid[i][j];
       if (i > j) pHome += p;
       else if (i === j) pDraw += p;
       else pAway += p;
@@ -322,19 +372,24 @@ function BTTSSection({ result, home, away, marketOdds }) {
 }
 
 // ── Football Odds Box ─────────────────────────────────────────────────────────
-const FB_BK_LABELS = { unibet: 'Unibet', betclic: 'Betclic', winamax: 'Winamax' };
+const FB_BK_LABELS = { pinnacle: 'Pinnacle', unibet: 'Unibet', betclic: 'Betclic', winamax: 'Winamax' };
 const FB_BK_COLORS = { unibet: '#1db954', betclic: '#e0292e', winamax: '#ffffff' };
-const FB_BK_ORDER  = ['unibet', 'betclic', 'winamax'];
+// Pinnacle en tête — réactivé en scraping le 25 juin 2026 (CDM uniquement, H2H seulement),
+// affiché avec le style "REF" déjà prévu dans le rendu ci-dessous (isPinnacle).
+const FB_BK_ORDER  = ['pinnacle', 'unibet', 'betclic', 'winamax'];
 
-function FootballOddsBox({ markets, bttsResult, home, away, frozen }) {
+function FootballOddsBox({ markets, bttsResult, home, away, frozen, onRefresh, refreshing }) {
   const [tab, setTab] = useState('result');
-  const [totalsLine, setTotalsLine] = useState('1.5');
+  const [totalsLine, setTotalsLine] = useState('2.5');
   const [showLegend, setShowLegend] = useState(false);
   const [legendBox, setLegendBox] = useState(null); // { top, left }
   const cardRef = useRef(null);
   const legendRef = useRef(null);
   const legendBtnRef = useRef(null);
   const LEGEND_W = 250;
+  // Mini popup "Vs Pinnacle" au clic sur une issue du widget Modèle 1X2 (25 juin 2026)
+  const [edgePopupKey, setEdgePopupKey] = useState(null);
+  const edgePopupRef = useRef(null);
 
   // Ferme la légende au clic en dehors
   useEffect(() => {
@@ -346,6 +401,17 @@ function FootballOddsBox({ markets, bttsResult, home, away, frozen }) {
     document.addEventListener('mousedown', onDocClick, true);
     return () => document.removeEventListener('mousedown', onDocClick, true);
   }, [showLegend]);
+
+  // Ferme le popup Vs Pinnacle au clic en dehors, ou si on change d'onglet — écoute 'click' en
+  // phase bubble (pas 'mousedown'/capture comme la légende) : chaque libellé d'issue fait son
+  // propre stopPropagation, donc le clic qui OUVRE/BASCULE un popup ne remonte jamais jusqu'ici.
+  useEffect(() => {
+    if (!edgePopupKey) return;
+    const onDocClick = (e) => { if (!edgePopupRef.current?.contains(e.target)) setEdgePopupKey(null); };
+    document.addEventListener('click', onDocClick);
+    return () => document.removeEventListener('click', onDocClick);
+  }, [edgePopupKey]);
+  useEffect(() => { setEdgePopupKey(null); }, [tab]);
 
   // Positionne la légende dans la marge à droite de la carte, suit le scroll/resize
   useEffect(() => {
@@ -370,6 +436,17 @@ function FootballOddsBox({ markets, bttsResult, home, away, frozen }) {
     h2h?.bookmakers?.[bk] || tots?.bookmakers?.[bk] || btts?.bookmakers?.[bk]
   );
 
+  // Lignes O/U disponibles : union des clés de tous les bookmakers (Pinnacle peut avoir 2.75 etc.)
+  const availTotalsLines = (() => {
+    const lines = new Set(['1.5', '2.5']);
+    if (tots?.bookmakers) {
+      for (const bk of Object.values(tots.bookmakers)) {
+        for (const key of Object.keys(bk)) lines.add(key);
+      }
+    }
+    return [...lines].sort((a, b) => parseFloat(a) - parseFloat(b));
+  })();
+
   const TABS = [
     { id: 'result', label: 'Résultat' },
     { id: 'buts',   label: 'Buts'     },
@@ -382,6 +459,7 @@ function FootballOddsBox({ markets, bttsResult, home, away, frozen }) {
     background: tab === id ? 'rgba(251,146,60,0.25)' : 'rgba(251,146,60,0.08)',
     color: '#ffffff',
     borderColor: tab === id ? 'rgba(251,146,60,0.55)' : 'rgba(251,146,60,0.22)',
+    boxShadow: '0 0 0 1px rgba(255,255,255,0.22)',
     transition: 'background 0.15s, border-color 0.15s',
   });
 
@@ -399,16 +477,23 @@ function FootballOddsBox({ markets, bttsResult, home, away, frozen }) {
     return { yes: (1/p.yes)/s, no: (1/p.no)/s };
   })() : null;
 
-  const fairTots = tots?.bookmakers?.pinnacle?.[totalsLine] ? (() => {
-    const p = tots.bookmakers.pinnacle[totalsLine];
+  // Pinnacle peut avoir une ligne différente du toggle (ex: 3.0 vs 2.5) — on utilise sa ligne
+  // réelle comme référence, pas celle du toggle.
+  const pinTotsBk = tots?.bookmakers?.pinnacle;
+  const pinTotLine = pinTotsBk ? Object.keys(pinTotsBk)[0] : null;
+  const fairTots = pinTotLine ? (() => {
+    const p = pinTotsBk[pinTotLine];
     const s = 1/p.over + 1/p.under;
     return { over: (1/p.over)/s, under: (1/p.under)/s };
   })() : null;
 
-  const ouResult = bttsResult ? computeOU(bttsResult.lambda_home, bttsResult.lambda_away, parseFloat(totalsLine)) : null;
-  const result1X2 = bttsResult ? compute1X2(bttsResult.lambda_home, bttsResult.lambda_away) : null;
+  const cdmRho = bttsResult?.isCdm ? DIXON_COLES_RHO : 0;
+  const ouResult = bttsResult ? computeOU(bttsResult.lambda_home, bttsResult.lambda_away, parseFloat(totalsLine), cdmRho) : null;
+  const result1X2 = bttsResult ? compute1X2(bttsResult.lambda_home, bttsResult.lambda_away, 10, cdmRho) : null;
 
-  // Fair 1X2 marché — pas de Pinnacle en foot, on prend le 1er bookmaker scrappé avec les 3 cotes h2h
+  // Fair 1X2 marché — parcourt availBks dans l'ordre (Pinnacle en tête depuis le 25 juin 2026,
+  // CDM uniquement) et prend le 1er bookmaker avec les 3 cotes h2h complètes ; repli naturel sur
+  // Unibet/Betclic/Winamax si Pinnacle absent (5 championnats, ou échec ponctuel du scraping).
   const fairMarket1X2 = (() => {
     for (const bk of availBks) {
       const h = h2h?.bookmakers?.[bk];
@@ -422,29 +507,12 @@ function FootballOddsBox({ markets, bttsResult, home, away, frozen }) {
 
   const calcEdge = (bkOdds, fair) => (bkOdds != null && fair != null) ? +((bkOdds * fair - 1) * 100).toFixed(1) : null;
 
-  const Cell = ({ val, edgeVal, isPinnacle, color, fairPct, trend }) => {
-    if (val == null) return <div style={{ textAlign: 'center', color: 'var(--text-dim)' }}>—</div>;
-    return (
-      <div style={{ textAlign: 'center' }}>
-        <span style={{ fontWeight: isPinnacle ? 700 : 500, fontVariantNumeric: 'tabular-nums', fontSize: 13, color: (!isPinnacle && color) ? color : undefined }}>
-          {val.toFixed(2)}
-        </span>
-        {trend && (
-          <span style={{ fontSize: 8, marginLeft: 5, color: trend === 'up' ? '#4ade80' : '#f87171' }} title={trend === 'up' ? 'Cote en hausse' : 'Cote en baisse'}>
-            {trend === 'up' ? '▲' : '▼'}
-          </span>
-        )}
-        {isPinnacle && fairPct != null && (
-          <span style={{ display: 'block', fontSize: 9, color: 'var(--text-dim)', marginTop: 1 }}>{fairPct.toFixed(1)}%</span>
-        )}
-        {!isPinnacle && edgeVal != null && (
-          <span style={{ fontSize: 10, fontWeight: 700, marginLeft: 4, color: edgeVal > 0.5 ? '#22c55e' : edgeVal < -0.5 ? '#ef4444' : 'var(--text-dim)' }}>
-            {edgeVal > 0 ? '+' : ''}{edgeVal}%
-          </span>
-        )}
-      </div>
-    );
-  };
+  // Cell : importé de ../components/OddsCell (source unique avec BasketballDetailPage depuis le
+  // 22 juin 2026 — avant ça, taille/écriture différaient des cotes basket). fairProb attend une
+  // fraction 0-1 (le composant partagé multiplie par 100 lui-même), donc plus de ×100 ici.
+  const Cell = ({ val, edgeVal, isPinnacle, color, fairPct, trend }) => (
+    <OddsCell value={val} edge={edgeVal} isPinnacle={isPinnacle} color={color} fairProb={fairPct != null ? fairPct / 100 : null} trend={trend} />
+  );
 
   const gridCols = tab === 'result' ? '80px 1fr 1fr 1fr'
                  : tab === 'buts'   ? '80px 44px 1fr 1fr'
@@ -464,7 +532,7 @@ function FootballOddsBox({ markets, bttsResult, home, away, frozen }) {
         {TABS.map(t => <button key={t.id} style={tabStyle(t.id)} onClick={() => setTab(t.id)}>{t.label}</button>)}
         {tab === 'buts' && (
           <div style={{ display: 'flex', gap: '0.3rem', marginLeft: 'auto' }}>
-            {['1.5', '2.5'].map(line => (
+            {availTotalsLines.map(line => (
               <button
                 key={line}
                 onClick={() => setTotalsLine(line)}
@@ -481,6 +549,13 @@ function FootballOddsBox({ markets, bttsResult, home, away, frozen }) {
             ))}
           </div>
         )}
+        <button
+          className={`icon-refresh-btn${refreshing ? ' spinning' : ''}`}
+          onClick={onRefresh}
+          disabled={refreshing}
+          title="Rafraîchir les cotes"
+          style={{ marginLeft: tab === 'buts' ? '0.3rem' : 'auto' }}
+        >↻</button>
         <span
           ref={legendBtnRef}
           onClick={() => setShowLegend(v => !v)}
@@ -489,7 +564,7 @@ function FootballOddsBox({ markets, bttsResult, home, away, frozen }) {
             display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
             color: showLegend ? '#fb923c' : 'var(--text-dim)', border: `1px solid ${showLegend ? 'rgba(251,146,60,0.5)' : 'var(--border)'}`,
             cursor: 'pointer', flexShrink: 0,
-            marginLeft: tab === 'buts' ? '0.3rem' : 'auto',
+            marginLeft: '0.3rem',
           }}
         >?</span>
         {showLegend && legendBox && createPortal(
@@ -508,10 +583,14 @@ function FootballOddsBox({ markets, bttsResult, home, away, frozen }) {
               <b style={{ color: '#00ff80' }}>BTTS Oui</b> : alerte si probabilité ≥ 68%.
               <br />
               <b style={{ color: '#00ff80' }}>Total Over/Under</b> : alerte si probabilité ≥ 65% (ligne 2,5, sinon 1,5).
+              <br />
+              <b style={{ color: '#00ff80' }}>Résultat 1X2</b> : alerte si probabilité ≥ 65% sur une issue (domicile/nul/extérieur), chacune traitée indépendamment — au plus une alerte par match.
               <br /><br />
-              Dans les deux cas, il faut aussi une cote ≥ 1,45 chez Unibet, Betclic ou Winamax sur l'issue concernée.
+              Dans les trois cas, il faut aussi une cote ≥ 1,45 chez Unibet, Betclic ou Winamax sur l'issue concernée.
               <br /><br />
-              Une seule alerte par match et par type (BTTS / Total), générée automatiquement toutes les 20 min — pas besoin d'ouvrir cette page.
+              Une seule alerte par match et par type (BTTS / Total / Résultat), générée automatiquement toutes les 20 min — pas besoin d'ouvrir cette page.
+              <br /><br />
+              Dans le widget <b>Modèle 1X2</b>, le <span style={{ color: '#4ade80', fontWeight: 700 }}>+Xpt</span>/<span style={{ color: '#f87171', fontWeight: 700 }}>−Xpt</span> indique l'écart entre la probabilité du modèle et celle du marché (cotes bookmaker, marge retirée) pour cette issue — rien à voir avec les flèches ▲▼ de tendance de cote vues ailleurs sur cette page.
             </div>
           </div>,
           document.body
@@ -538,7 +617,11 @@ function FootballOddsBox({ markets, bttsResult, home, away, frozen }) {
         const isPinnacle = bk === 'pinnacle';
         const color = isPinnacle ? undefined : FB_BK_COLORS[bk];
         const h = h2h?.bookmakers?.[bk];
-        const t = tots?.bookmakers?.[bk]?.[totalsLine];
+        // Pinnacle : affiche sa propre ligne disponible (indépendamment du toggle)
+        const t = isPinnacle
+          ? (pinTotLine ? pinTotsBk[pinTotLine] : undefined)
+          : tots?.bookmakers?.[bk]?.[totalsLine];
+        const tLine = isPinnacle ? (pinTotLine ?? totalsLine) : totalsLine;
         const b = btts?.bookmakers?.[bk];
         return (
           <div key={bk} style={{
@@ -546,21 +629,20 @@ function FootballOddsBox({ markets, bttsResult, home, away, frozen }) {
             padding: '0.3rem 0', borderBottom: '1px solid rgba(255,255,255,0.04)',
             background: isPinnacle ? 'rgba(255,255,255,0.03)' : 'transparent',
           }}>
-            <span style={{ fontSize: 11, fontWeight: isPinnacle ? 700 : 400, color: 'var(--text)' }}>
+            <span style={{ fontSize: 11, fontWeight: isPinnacle ? 700 : 400, color: isPinnacle ? '#60a5fa' : 'var(--text)' }}>
               {FB_BK_LABELS[bk] ?? bk}
-              {isPinnacle && <span style={{ fontSize: 8, color: 'var(--accent)', marginLeft: 3, fontWeight: 700 }}>REF</span>}
             </span>
             {tab === 'result' && <>
-              <Cell val={h?.home}  edgeVal={fairH2H ? calcEdge(h?.home,  fairH2H.home)  : null} isPinnacle={isPinnacle} color={color} fairPct={fairH2H ? fairH2H.home * 100  : null} trend={h2h?.trends?.[bk]?.home} />
-              <Cell val={h?.draw}  edgeVal={fairH2H ? calcEdge(h?.draw,  fairH2H.draw)  : null} isPinnacle={isPinnacle} color={color} fairPct={fairH2H ? (fairH2H.draw ?? 0) * 100 : null} trend={h2h?.trends?.[bk]?.draw} />
-              <Cell val={h?.away}  edgeVal={fairH2H ? calcEdge(h?.away,  fairH2H.away)  : null} isPinnacle={isPinnacle} color={color} fairPct={fairH2H ? fairH2H.away * 100  : null} trend={h2h?.trends?.[bk]?.away} />
+              <Cell val={h?.home}  edgeVal={null} isPinnacle={isPinnacle} color={color} trend={h2h?.trends?.[bk]?.home} />
+              <Cell val={h?.draw}  edgeVal={null} isPinnacle={isPinnacle} color={color} trend={h2h?.trends?.[bk]?.draw} />
+              <Cell val={h?.away}  edgeVal={null} isPinnacle={isPinnacle} color={color} trend={h2h?.trends?.[bk]?.away} />
             </>}
             {tab === 'buts' && <>
-              <div style={{ textAlign: 'center', fontSize: 11, fontVariantNumeric: 'tabular-nums', fontWeight: isPinnacle ? 700 : 400, color: isPinnacle ? 'var(--text)' : color ?? 'var(--text-dim)' }}>
-                {(t?.over != null || t?.under != null) ? totalsLine : '—'}
+              <div style={{ textAlign: 'center', fontSize: 11, fontVariantNumeric: 'tabular-nums', fontWeight: isPinnacle ? 700 : 400, color: 'var(--text)' }}>
+                {(t?.over != null || t?.under != null) ? tLine : '—'}
               </div>
-              <Cell val={t?.over}  edgeVal={fairTots ? calcEdge(t?.over,  fairTots.over)  : null} isPinnacle={isPinnacle} color={color} fairPct={fairTots ? fairTots.over * 100  : null} trend={tots?.trends?.[bk]?.[totalsLine]?.over} />
-              <Cell val={t?.under} edgeVal={fairTots ? calcEdge(t?.under, fairTots.under) : null} isPinnacle={isPinnacle} color={color} fairPct={fairTots ? fairTots.under * 100 : null} trend={tots?.trends?.[bk]?.[totalsLine]?.under} />
+              <Cell val={t?.over}  edgeVal={null} isPinnacle={isPinnacle} color={color} trend={tots?.trends?.[bk]?.[totalsLine]?.over} />
+              <Cell val={t?.under} edgeVal={null} isPinnacle={isPinnacle} color={color} trend={tots?.trends?.[bk]?.[totalsLine]?.under} />
             </>}
             {tab === 'btts' && <>
               <Cell val={b?.yes} edgeVal={fairBtts ? calcEdge(b?.yes, fairBtts.yes) : null} isPinnacle={isPinnacle} color={color} fairPct={fairBtts ? fairBtts.yes * 100 : null} trend={btts?.trends?.[bk]?.yes} />
@@ -576,29 +658,58 @@ function FootballOddsBox({ markets, bttsResult, home, away, frozen }) {
 
       {tab === 'buts' && ouResult && (() => {
         const { over, under, lambda_total } = ouResult;
-        const pinnOver = fairTots ? Math.round(fairTots.over * 100) : null;
+        const pinnOver  = fairTots ? Math.round(fairTots.over  * 100) : null;
+        const pinnUnder = fairTots ? Math.round(fairTots.under * 100) : null;
         const edge = pinnOver != null ? over - pinnOver : null;
         const isOver = edge == null || edge >= 0;
         const edgeColor = isOver ? '#4ade80' : '#f87171';
         const edgeBg    = isOver ? 'rgba(74,222,128,0.12)' : 'rgba(248,113,113,0.12)';
         const probColor = over >= 62 ? '#10b981' : over >= 52 ? '#f59e0b' : '#ef4444';
+        const ubT = tots?.bookmakers?.unibet?.[totalsLine];
+        const bcT = tots?.bookmakers?.betclic?.[totalsLine];
+        const ubEdgeOver  = fairTots ? calcEdge(ubT?.over,  fairTots.over)  : null;
+        const bcEdgeOver  = fairTots ? calcEdge(bcT?.over,  fairTots.over)  : null;
+        const ubEdgeUnder = fairTots ? calcEdge(ubT?.under, fairTots.under) : null;
+        const bcEdgeUnder = fairTots ? calcEdge(bcT?.under, fairTots.under) : null;
+        const canClickOver  = pinnOver  != null;
+        const canClickUnder = pinnUnder != null;
+        const PinnaclePopup = ({ ub, bc }) => (
+          <div ref={edgePopupRef} style={{
+            position: 'absolute', top: '100%', left: '50%', transform: 'translateX(-50%)', marginTop: 6,
+            background: 'var(--bg-card, #11141c)', border: '1px solid var(--border)', borderRadius: 6,
+            padding: '0.35rem 0.55rem', boxShadow: '0 6px 16px rgba(0,0,0,0.4)', zIndex: 50, whiteSpace: 'nowrap',
+            textAlign: 'center',
+          }}>
+            <div style={{ fontSize: 8, fontWeight: 700, color: 'var(--text-dim)', marginBottom: 3 }}>vs Pinnacle</div>
+            {ub != null && <div style={{ fontSize: 10, fontWeight: 600, color: FB_BK_COLORS.unibet }}>Unibet {ub >= 0 ? '+' : ''}{ub.toFixed(1)}%</div>}
+            {bc != null && <div style={{ fontSize: 10, fontWeight: 600, color: FB_BK_COLORS.betclic }}>Betclic {bc >= 0 ? '+' : ''}{bc.toFixed(1)}%</div>}
+          </div>
+        );
         return (
-          <div style={{ borderTop: '1px solid var(--border)', marginTop: '0.5rem', paddingTop: '0.5rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem' }}>
-            <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-dim)' }}>
+          <div style={{ borderTop: '1px solid var(--border)', marginTop: '0.5rem', paddingTop: '0.5rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem', flexWrap: 'nowrap' }}>
+            <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-dim)', flexShrink: 0 }}>
               Modèle O/U {totalsLine}<span style={{ fontSize: 9, color: 'var(--text-dim)', marginLeft: 4, fontWeight: 400 }}>λ={lambda_total}</span>
             </span>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-              <span style={{ fontSize: 10, color: 'var(--text-dim)', fontWeight: 500 }}>Over <span style={{ color: probColor, fontWeight: 700 }}>{over}%</span></span>
-              <span style={{ fontSize: 9, color: 'rgba(255,255,255,0.15)' }}>·</span>
-              <span style={{ fontSize: 10, fontWeight: 700, color: under >= 65 ? '#10b981' : under >= 52 ? '#f59e0b' : 'var(--text-dim)' }}>Under {under}%</span>
-              {pinnOver != null && (
-                <>
-                  <span style={{ fontSize: 10, color: 'var(--text-dim)' }}>vs Pinnacle {pinnOver}%</span>
-                  <span style={{ fontSize: 11, fontWeight: 800, padding: '1px 6px', borderRadius: 4, background: edgeBg, color: edgeColor, border: `1px solid ${isOver ? 'rgba(74,222,128,0.3)' : 'rgba(248,113,113,0.3)'}` }}>
-                    {isOver ? '▲' : '▼'} {Math.abs(edge)}pt
-                  </span>
-                </>
-              )}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '1.1rem', flexWrap: 'nowrap', flexShrink: 0 }}>
+              <span style={{ display: 'flex', alignItems: 'center', gap: 5, position: 'relative' }}>
+                <span
+                  onClick={canClickOver ? e => { e.stopPropagation(); setEdgePopupKey(prev => prev === 'over' ? null : 'over'); } : undefined}
+                  style={{ fontSize: 9, fontWeight: 700, color: 'var(--text)', cursor: canClickOver ? 'pointer' : 'default', textDecoration: canClickOver ? 'underline dotted' : 'none', textDecorationColor: 'rgba(255,255,255,0.3)' }}
+                >Over</span>
+                <span style={{ fontSize: 8, fontWeight: 600, color: probColor }}>{over}%</span>
+                {edge != null && Math.abs(edge) >= 3 && (
+                  <span style={{ fontSize: 7, fontWeight: 700, color: edgeColor }}>({isOver ? '+' : '−'}{Math.abs(edge)}pt)</span>
+                )}
+                {edgePopupKey === 'over' && <PinnaclePopup ub={ubEdgeOver} bc={bcEdgeOver} />}
+              </span>
+              <span style={{ display: 'flex', alignItems: 'center', gap: 5, position: 'relative' }}>
+                <span
+                  onClick={canClickUnder ? e => { e.stopPropagation(); setEdgePopupKey(prev => prev === 'under' ? null : 'under'); } : undefined}
+                  style={{ fontSize: 9, fontWeight: 700, color: 'var(--text)', cursor: canClickUnder ? 'pointer' : 'default', textDecoration: canClickUnder ? 'underline dotted' : 'none', textDecorationColor: 'rgba(255,255,255,0.3)' }}
+                >Under</span>
+                <span style={{ fontSize: 8, fontWeight: 600, color: under >= 65 ? '#10b981' : under >= 52 ? '#f59e0b' : '#ef4444' }}>{under}%</span>
+                {edgePopupKey === 'under' && <PinnaclePopup ub={ubEdgeUnder} bc={bcEdgeUnder} />}
+              </span>
             </div>
           </div>
         );
@@ -610,24 +721,51 @@ function FootballOddsBox({ markets, bttsResult, home, away, frozen }) {
           { key: 'draw', label: 'Nul', prob: result1X2.pDraw },
           { key: 'away', label: away?.short ?? 'Ext', prob: result1X2.pAway },
         ];
+        const ubH = h2h?.bookmakers?.unibet;
+        const bcH = h2h?.bookmakers?.betclic;
         return (
-          <div style={{ borderTop: '1px solid var(--border)', marginTop: '0.5rem', paddingTop: '0.5rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem' }}>
-            <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-dim)' }}>Modèle 1X2</span>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.7rem' }}>
+          <div style={{ borderTop: '1px solid var(--border)', marginTop: '0.9rem', paddingTop: '0.85rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem', flexWrap: 'nowrap' }}>
+            <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-dim)', flexShrink: 0 }}>Modèle 1X2</span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '1.1rem', flexWrap: 'nowrap', flexShrink: 0 }}>
               {items.map(it => {
-                const probColor = it.prob >= 65 ? '#10b981' : it.prob >= 50 ? '#f59e0b' : '#ef4444';
+                const probColor = it.prob >= 62 ? '#10b981' : it.prob >= 52 ? '#f59e0b' : '#ef4444';
                 const marketProb = fairMarket1X2 ? Math.round(fairMarket1X2[it.key] * 100) : null;
                 const edge = marketProb != null ? it.prob - marketProb : null;
                 const isOver = edge == null || edge >= 0;
                 const edgeColor = isOver ? '#4ade80' : '#f87171';
+                // Edge Unibet/Betclic vs Pinnacle (25 juin 2026) — déplacé dans un mini popup au clic
+                // sur le libellé de l'issue, plutôt qu'une ligne séparée qui prenait trop de place.
+                const ubEdge = fairH2H ? calcEdge(ubH?.[it.key], fairH2H[it.key]) : null;
+                const bcEdge = fairH2H ? calcEdge(bcH?.[it.key], fairH2H[it.key]) : null;
+                const hasPinnacleEdge = ubEdge != null || bcEdge != null;
                 return (
-                  <span key={it.key} style={{ fontSize: 11, display: 'flex', alignItems: 'center', gap: 3 }}>
-                    <span style={{ color: 'var(--text-dim)' }}>{it.label}</span>
-                    <span style={{ fontWeight: 700, color: probColor }}>{it.prob}%</span>
+                  <span key={it.key} style={{ display: 'flex', alignItems: 'center', gap: 5, position: 'relative' }}>
+                    <span
+                      onClick={hasPinnacleEdge ? e => { e.stopPropagation(); setEdgePopupKey(prev => prev === it.key ? null : it.key); } : undefined}
+                      style={{
+                        fontSize: 9, fontWeight: 700, color: 'var(--text)',
+                        cursor: hasPinnacleEdge ? 'pointer' : 'default',
+                        textDecoration: hasPinnacleEdge ? 'underline dotted' : 'none', textDecorationColor: 'rgba(255,255,255,0.3)',
+                      }}
+                    >{it.label}</span>
+                    <span style={{ fontSize: 8, fontWeight: 600, color: probColor }}>{it.prob}%</span>
                     {edge != null && Math.abs(edge) >= 3 && (
-                      <span style={{ fontSize: 9, fontWeight: 800, color: edgeColor }}>
-                        {isOver ? '▲' : '▼'}{Math.abs(edge)}
+                      // Écart modèle vs marché (points) — signe +/- plutôt que ▲▼ pour ne pas se
+                      // confondre avec les flèches de tendance de cote utilisées ailleurs sur cette page.
+                      <span style={{ fontSize: 7, fontWeight: 700, color: edgeColor }}>
+                        ({isOver ? '+' : '−'}{Math.abs(edge)}pt)
                       </span>
+                    )}
+                    {edgePopupKey === it.key && (
+                      <div ref={edgePopupRef} style={{
+                        position: 'absolute', top: '100%', left: '50%', transform: 'translateX(-50%)', marginTop: 6,
+                        background: 'var(--bg-card, #11141c)', border: '1px solid var(--border)', borderRadius: 6,
+                        padding: '0.35rem 0.55rem', boxShadow: '0 6px 16px rgba(0,0,0,0.4)', zIndex: 50, whiteSpace: 'nowrap',
+                      }}>
+                        <div style={{ fontSize: 8, fontWeight: 700, color: 'var(--text-dim)', marginBottom: 2 }}>Vs Pinnacle</div>
+                        {ubEdge != null && <div style={{ fontSize: 10, fontWeight: 600, color: FB_BK_COLORS.unibet }}>{ubEdge >= 0 ? '+' : ''}{ubEdge.toFixed(1)}%</div>}
+                        {bcEdge != null && <div style={{ fontSize: 10, fontWeight: 600, color: FB_BK_COLORS.betclic }}>{bcEdge >= 0 ? '+' : ''}{bcEdge.toFixed(1)}%</div>}
+                      </div>
                     )}
                   </span>
                 );
@@ -646,22 +784,22 @@ function FootballOddsBox({ markets, bttsResult, home, away, frozen }) {
         const edgeBg    = isOver ? 'rgba(74,222,128,0.12)' : 'rgba(248,113,113,0.12)';
         const probColor = prob >= 62 ? '#10b981' : prob >= 52 ? '#f59e0b' : '#ef4444';
         return (
-          <div style={{ borderTop: '1px solid var(--border)', marginTop: '0.5rem', paddingTop: '0.5rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem' }}>
-            <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-dim)' }}>
+          <div style={{ borderTop: '1px solid var(--border)', marginTop: '0.5rem', paddingTop: '0.5rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem', flexWrap: 'nowrap' }}>
+            <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-dim)', flexShrink: 0 }}>
               Modèle BTTS{isStatic ? <span style={{ fontSize: 9, color: 'var(--text-dim)', marginLeft: 4, fontWeight: 400 }}>stats saison</span> : ''}
             </span>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-              <span style={{ fontSize: 10, color: 'var(--text-dim)', fontWeight: 500 }}>Oui <span style={{ color: probColor, fontWeight: 700 }}>{prob}%</span></span>
-              <span style={{ fontSize: 9, color: 'rgba(255,255,255,0.15)' }}>·</span>
-              <span style={{ fontSize: 10, fontWeight: 700, color: (100 - prob) >= 65 ? '#10b981' : (100 - prob) >= 52 ? '#f59e0b' : 'var(--text-dim)' }}>Non {100 - prob}%</span>
-              {pinnFair != null && (
-                <>
-                  <span style={{ fontSize: 10, color: 'var(--text-dim)' }}>vs Pinnacle {pinnFair}%</span>
-                  <span style={{ fontSize: 11, fontWeight: 800, padding: '1px 6px', borderRadius: 4, background: edgeBg, color: edgeColor, border: `1px solid ${isOver ? 'rgba(74,222,128,0.3)' : 'rgba(248,113,113,0.3)'}` }}>
-                    {isOver ? '▲' : '▼'} {Math.abs(edge)}pt
-                  </span>
-                </>
-              )}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '1.1rem', flexWrap: 'nowrap', flexShrink: 0 }}>
+              <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                <span style={{ fontSize: 9, fontWeight: 700, color: 'var(--text)' }}>Oui</span>
+                <span style={{ fontSize: 8, fontWeight: 600, color: probColor }}>{prob}%</span>
+                {edge != null && Math.abs(edge) >= 3 && (
+                  <span style={{ fontSize: 7, fontWeight: 700, color: edgeColor }}>({isOver ? '+' : '−'}{Math.abs(edge)}pt)</span>
+                )}
+              </span>
+              <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                <span style={{ fontSize: 9, fontWeight: 700, color: 'var(--text)' }}>Non</span>
+                <span style={{ fontSize: 8, fontWeight: 600, color: (100 - prob) >= 65 ? '#10b981' : (100 - prob) >= 52 ? '#f59e0b' : '#ef4444' }}>{100 - prob}%</span>
+              </span>
             </div>
           </div>
         );
@@ -719,7 +857,7 @@ const CDM_NAME_ALIASES = {
   mexico: 'mexique', mexique: 'mexique',
   morocco: 'maroc', maroc: 'maroc',
   netherlands: 'paysbas', paysbas: 'paysbas',
-  newzealand: 'nouvellezelande', nouvellezelande: 'nouvellezelande',
+  newzealand: 'nouvellezelande', nouvellezelande: 'nouvellezelande', nllezelande: 'nouvellezelande',
   norway: 'norvege', norvege: 'norvege',
   saudiarabia: 'arabiesaoudite', arabiesaoudite: 'arabiesaoudite',
   scotland: 'ecosse', ecosse: 'ecosse',
@@ -1026,14 +1164,18 @@ export default function MatchDetailPage() {
   const [matchOdds, setMatchOdds] = useState(null);
   const [matchOddsFrozen, setMatchOddsFrozen] = useState(false);
   const [showOddsDropdown, setShowOddsDropdown] = useState(false);
+  const [refreshingOdds, setRefreshingOdds] = useState(false);
   const [liveHomeStats, setLiveHomeStats] = useState(null);
   const [liveAwayStats, setLiveAwayStats] = useState(null);
   const [cdmPoolAvg,   setCdmPoolAvg]    = useState(null);
   const [homeMatches, setHomeMatches] = useState([]);
   const [awayMatches, setAwayMatches] = useState([]);
 
-  useEffect(() => {
-    if (!fixture) return;
+  // Extrait en fonction réutilisable pour le bouton refresh manuel (FootballOddsBox) — appelle
+  // /api/odds SANS ?refresh=1 : on relit juste le cache déjà alimenté par le cycle automatique
+  // (toutes les 20min), jamais un nouveau scraping live déclenché par un clic utilisateur.
+  const loadOdds = () => {
+    if (!fixture) return Promise.resolve();
     const norm = s => {
       const base = (s || '').toLowerCase()
         .normalize('NFD').replace(/[̀-ͯ]/g, '')
@@ -1043,7 +1185,7 @@ export default function MatchDetailPage() {
       return CDM_NAME_ALIASES[base] || base;
     };
     const fuzzy = (a, b) => { const na = norm(a), nb = norm(b); return na.includes(nb) || nb.includes(na); };
-    fetch('/api/odds')
+    return fetch('/api/odds')
       .then(r => r.json())
       .then(data => {
         const match = (data.matches || []).find(m =>
@@ -1054,7 +1196,20 @@ export default function MatchDetailPage() {
         setMatchOddsFrozen(!!match?.frozen);
       })
       .catch(() => setMatchOdds(false));
-  }, [fixture?.id]);
+  };
+
+  useEffect(() => { loadOdds(); }, [fixture?.id]);
+
+  const handleRefreshOdds = () => {
+    setRefreshingOdds(true);
+    const start = Date.now();
+    // Le fetch sert quasi toujours depuis le cache (réponse <100ms) — sans délai minimum,
+    // le bouton clignote trop vite pour être perceptible et donne l'impression de ne rien faire.
+    loadOdds().finally(() => {
+      const remaining = 500 - (Date.now() - start);
+      setTimeout(() => setRefreshingOdds(false), Math.max(0, remaining));
+    });
+  };
 
   useEffect(() => {
     if (!fixture) return;
@@ -1072,7 +1227,7 @@ export default function MatchDetailPage() {
       };
       fetchTeam(fixture.home.name, setLiveHomeStats);
       fetchTeam(fixture.away.name, setLiveAwayStats);
-      fetch('/api/football/cdm/poolavg').then(r => r.json()).then(d => setCdmPoolAvg(d)).catch(() => {});
+      fetch(`/api/football/cdm/poolavg?fixtureId=${encodeURIComponent(fixture.id)}`).then(r => r.json()).then(d => setCdmPoolAvg(d)).catch(() => {});
       return;
     }
     fetch(`/api/football/standings/${fixture.league}`)
@@ -1129,7 +1284,7 @@ export default function MatchDetailPage() {
     : away;
 
   const bttsResult = fixture?.league === 'cdm'
-    ? computeCdmBTTS(liveHomeStats, liveAwayStats, cdmPoolAvg)
+    ? computeCdmBTTS(liveHomeStats, liveAwayStats, cdmPoolAvg, fixture.home?.name)
     : (homeMatches.length && awayMatches.length && liveHomeStats?.id && liveAwayStats?.id)
       ? computeBTTS(homeMatches, awayMatches, liveHomeStats.id, liveAwayStats.id)
       : computeStaticBTTS(fixture);
@@ -1295,7 +1450,7 @@ export default function MatchDetailPage() {
 
       {showOddsDropdown && matchOdds && Object.keys(matchOdds).length > 0 && (
         <section className="detail-card compact-card" style={{ marginBottom: '0.5rem' }}>
-          <FootballOddsBox markets={matchOdds} bttsResult={bttsResult} home={home} away={away} frozen={matchOddsFrozen} />
+          <FootballOddsBox markets={matchOdds} bttsResult={bttsResult} home={home} away={away} frozen={matchOddsFrozen} onRefresh={handleRefreshOdds} refreshing={refreshingOdds} />
         </section>
       )}
 

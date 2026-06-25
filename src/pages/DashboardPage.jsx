@@ -253,6 +253,7 @@ function HealthBar({ label, lastRun, nextRun, intervalMs = BG_INTERVAL_MS }) {
 function SystemHealthSection() {
   const [health, setHealth] = useState(null);
   const [showScrape, setShowScrape] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
 
   useEffect(() => {
     const load = () => fetch('/api/system/health').then(r => r.json()).then(setHealth).catch(() => {});
@@ -260,6 +261,19 @@ function SystemHealthSection() {
     const id = setInterval(load, 15_000);
     return () => clearInterval(id);
   }, []);
+
+  const handleRefresh = () => {
+    setRefreshing(true);
+    const start = Date.now();
+    fetch('/api/system/health?refresh=1')
+      .then(r => r.json())
+      .then(setHealth)
+      .catch(() => {})
+      .finally(() => {
+        const remaining = 500 - (Date.now() - start);
+        setTimeout(() => setRefreshing(false), Math.max(0, remaining));
+      });
+  };
 
   const sc = health?.scrapers ?? {};
 
@@ -277,6 +291,7 @@ function SystemHealthSection() {
             <div style={{ display: 'flex', gap: '0.9rem', alignItems: 'flex-end' }}>
               <SignalIcon label="Unibet"  ts={sc.unibet?.ts}  ok={sc.unibet?.ok}  lastOk={sc.unibet?.lastOk}  />
               <SignalIcon label="Betclic" ts={sc.betclic?.ts} ok={sc.betclic?.ok} lastOk={sc.betclic?.lastOk} />
+              <SignalIcon label="Pinnacle (WNBA)" ts={sc.pinnacle_wnba?.ts} ok={sc.pinnacle_wnba?.ok} lastOk={sc.pinnacle_wnba?.lastOk} />
             </div>
           </div>
           {/* Séparateur subtil */}
@@ -287,7 +302,7 @@ function SystemHealthSection() {
             <div style={{ display: 'flex', gap: '0.9rem', alignItems: 'flex-end' }}>
               <SignalIcon label="ESPN"     ts={sc.espn?.ts}     ok={sc.espn?.ok}     lastOk={sc.espn?.lastOk}     />
               <SignalIcon label="ACB"      ts={sc.acb?.ts}      ok={sc.acb?.ok}      lastOk={sc.acb?.lastOk}      />
-              <SignalIcon label="Bzzoiro"  ts={sc.bzzoiro?.ts}  ok={sc.bzzoiro?.ok}  lastOk={sc.bzzoiro?.lastOk}  />
+              {/* Bzzoiro masqué — EuroLeague en pause jusqu'à octobre, remettre cette ligne à la reprise */}
               <SignalIcon label="RotoWire" ts={sc.rotowire?.ts} ok={sc.rotowire?.ok} lastOk={sc.rotowire?.lastOk} />
             </div>
           </div>
@@ -300,27 +315,31 @@ function SystemHealthSection() {
       <div style={{ padding: '0.25rem 0.75rem', display: 'flex', flexDirection: 'column', justifyContent: 'flex-start', gap: '0.4rem' }}>
         <div style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--text)' }}>Football</div>
         <div style={{ display: 'flex', gap: '0', alignItems: 'flex-start' }}>
-          {/* Cotes foot */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem', paddingRight: '1rem' }}>
+          {/* Cotes foot — pas de "Données" foot ici : football-data.org/API-Football sont des
+              APIs officielles (cf. "Requêtes restantes"), pas du scraping à surveiller comme Bzzoiro */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
             <div style={{ fontSize: 8, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-dim)' }}>Cotes</div>
             <div style={{ display: 'flex', gap: '0.9rem', alignItems: 'flex-end' }}>
-              <SignalIcon label="Unibet"  ts={sc.unibet_foot?.ts}  ok={sc.unibet_foot?.ok}  lastOk={sc.unibet_foot?.lastOk}  />
-              <SignalIcon label="Betclic" ts={sc.betclic_foot?.ts} ok={sc.betclic_foot?.ok} lastOk={sc.betclic_foot?.lastOk} />
-            </div>
-          </div>
-          {/* Séparateur subtil */}
-          <div style={{ width: 1, background: 'rgba(255,255,255,0.06)', alignSelf: 'stretch', flexShrink: 0 }} />
-          {/* Données foot */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem', paddingLeft: '1rem' }}>
-            <div style={{ fontSize: 8, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-dim)' }}>Données</div>
-            <div style={{ display: 'flex', gap: '0.9rem', alignItems: 'flex-end' }}>
-              <SignalIcon label="Bzzoiro" ts={sc.bzzoiro?.ts} ok={sc.bzzoiro?.ok} lastOk={sc.bzzoiro?.lastOk} />
+              <SignalIcon label="Unibet"   ts={sc.unibet_foot?.ts}   ok={sc.unibet_foot?.ok}   lastOk={sc.unibet_foot?.lastOk}   />
+              <SignalIcon label="Betclic"  ts={sc.betclic_foot?.ts}  ok={sc.betclic_foot?.ok}  lastOk={sc.betclic_foot?.lastOk}  />
+              <SignalIcon label="Pinnacle" ts={sc.pinnacle_foot?.ts} ok={sc.pinnacle_foot?.ok} lastOk={sc.pinnacle_foot?.lastOk} />
             </div>
           </div>
         </div>
       </div>
 
     </div>
+
+    {/* Rafraîchir RotoWire/ACB immédiatement (corrige les faux négatifs liés au timing) — coin haut-droit */}
+    <button
+      className={`icon-refresh-btn${refreshing ? ' spinning' : ''}`}
+      onClick={handleRefresh}
+      disabled={refreshing}
+      title="Rafraîchir"
+      style={{ position: 'absolute', top: 6, right: 6, zIndex: 1 }}
+    >
+      ↻
+    </button>
 
     {/* Toggle taux de scraping — collé au coin bas-droit */}
     <button
@@ -413,9 +432,9 @@ function ScrapingRatePanel({ sc }) {
 
   const GROUPS = [
     { label: 'Basket — Cotes',   items: [{ key: 'unibet', name: 'Unibet' }, { key: 'betclic', name: 'Betclic' }] },
-    { label: 'Basket — Données', items: [{ key: 'espn', name: 'ESPN' }, { key: 'acb', name: 'ACB' }, { key: 'bzzoiro', name: 'Bzzoiro' }, { key: 'rotowire', name: 'RotoWire' }] },
+    // Bzzoiro masqué — EuroLeague en pause jusqu'à octobre, remettre dans Basket — Données à la reprise
+    { label: 'Basket — Données', items: [{ key: 'espn', name: 'ESPN' }, { key: 'acb', name: 'ACB' }, { key: 'rotowire', name: 'RotoWire' }] },
     { label: 'Foot — Cotes',     items: [{ key: 'unibet_foot', name: 'Unibet' }, { key: 'betclic_foot', name: 'Betclic' }] },
-    { label: 'Foot — Données',   items: [{ key: 'bzzoiro', name: 'Bzzoiro' }] },
   ];
 
   const SIZE = 54, R = 22, STROKE = 4;
@@ -864,40 +883,13 @@ export default function DashboardPage() {
           <p id="vue-ensemble" style={{ fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.12em', color: '#3b82f6', marginBottom: '0.6rem' }}>
             Vue d'ensemble
           </p>
-          <h1 style={{ fontSize: '2.2rem', fontWeight: 800, letterSpacing: '-0.04em', color: 'var(--text)', lineHeight: 1.1 }}>
+          <h1 style={{ fontSize: '1.7rem', fontWeight: 800, letterSpacing: '-0.04em', color: 'var(--text)', lineHeight: 1.1 }}>
             Tableau de bord
           </h1>
           <p style={{ color: 'var(--text-sub)', marginTop: '0.6rem', fontSize: 14, maxWidth: 420, lineHeight: 1.6 }}>
             Suivi des alertes
           </p>
         </div>
-        <button
-          onClick={() => {
-            if (!window.confirm('Supprimer toutes les alertes et l\'historique ?')) return;
-            // Preserve Dallas vs Seattle under alert before clearing
-            const keepTotal = JSON.parse(localStorage.getItem('nba_game_total_alerts') || '[]').filter(a => {
-              const h = (a.home || a.homeShort || '').toLowerCase();
-              const aw = (a.away || a.awayShort || '').toLowerCase();
-              return (h.includes('dallas') || aw.includes('dallas')) &&
-                     (h.includes('seattle') || aw.includes('seattle')) &&
-                     a.direction === 'under';
-            });
-            ['nba_prop_alerts','nba_game_total_alerts','nba_earlywin_alerts','fb_btts_alerts','nba_bet_history','nba_has_history'].forEach(k => localStorage.removeItem(k));
-            if (keepTotal.length) localStorage.setItem('nba_game_total_alerts', JSON.stringify(keepTotal));
-            window.dispatchEvent(new Event('nba_alerts_updated'));
-            load();
-          }}
-          style={{
-            marginTop: '0.5rem', display: 'flex', alignItems: 'center', gap: '0.4rem',
-            padding: '0.35rem 0.75rem', borderRadius: 7, cursor: 'pointer',
-            fontSize: 11, fontWeight: 600,
-            border: '1px solid rgba(248,113,113,0.3)', background: 'rgba(248,113,113,0.07)',
-            color: '#f87171',
-          }}
-        >
-          <svg width="11" height="11" viewBox="0 0 12 12" fill="none"><path d="M2 2L10 10M10 2L2 10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>
-          Réinitialiser les données
-        </button>
       </div>
 
       {/* Chart */}

@@ -3,6 +3,7 @@ import { BrowserRouter, Routes, Route, Navigate, useParams, useNavigate, useLoca
 import LeftNav from './components/LeftNav';
 import StarField from './components/StarField';
 import DashboardPage from './pages/DashboardPage';
+import { syncSettlements, syncBackgroundAlerts, syncGameTotalAlerts, syncBasketballResultAlerts, syncFootballAlerts } from './utils/syncAlerts';
 
 const ALERT_KEY = 'nba_prop_alerts';
 
@@ -105,10 +106,26 @@ function useAlertCount() {
     window.addEventListener('nba_alerts_updated', refresh);
     FB_ALERT_EVENTS.forEach(e => window.addEventListener(e, refresh));
     const tick = setInterval(refresh, 60_000);
+
+    // Sans ça, le localStorage (et donc le badge) n'était peuplé/rafraîchi qu'en visitant
+    // PlaceBetPage/RunningPage — sur Dashboard ou ailleurs, les badges restaient à 0 tant que
+    // l'utilisateur n'avait pas ouvert la page Alertes au moins une fois. Ces syncs tournent
+    // maintenant ici, au niveau racine, quelle que soit la page affichée.
+    const syncAll = () => {
+      syncSettlements();
+      syncBackgroundAlerts();
+      syncGameTotalAlerts();
+      syncBasketballResultAlerts();
+      syncFootballAlerts();
+    };
+    syncAll();
+    const syncTick = setInterval(syncAll, 2 * 60_000);
+
     return () => {
       window.removeEventListener('nba_alerts_updated', refresh);
       FB_ALERT_EVENTS.forEach(e => window.removeEventListener(e, refresh));
       clearInterval(tick);
+      clearInterval(syncTick);
     };
   }, []);
   return counts;
@@ -122,6 +139,7 @@ const importBacktesting     = () => import('./pages/BacktestingPage');
 const importWorldMap        = () => import('./pages/WorldMapPage');
 const importEffectif        = () => import('./pages/EffectifPage');
 const importPlayerLines     = () => import('./pages/PlayerLinesPage');
+const importOutrights       = () => import('./pages/OutrightsPage');
 
 const MatchDetailPage      = lazy(importMatchDetail);
 const BasketballDetailPage = lazy(importBasketballDetail);
@@ -131,6 +149,7 @@ const BacktestingPage      = lazy(importBacktesting);
 const WorldMapPage         = lazy(importWorldMap);
 const EffectifPage         = lazy(importEffectif);
 const PlayerLinesPage      = lazy(importPlayerLines);
+const OutrightsPage        = lazy(importOutrights);
 const UtilisationPage      = lazy(() => import('./pages/UtilisationPage'));
 const AnalyserPage         = lazy(() => import('./pages/AnalyserPage'));
 const SportsPage           = lazy(() => import('./pages/SportsPage'));
@@ -161,6 +180,7 @@ export function preloadPage(path) {
   else if (path.includes('carte'))      importWorldMap();
   else if (path.includes('effectif'))   importEffectif();
   else if (path.includes('/player/'))   importPlayerLines();
+  else if (path.includes('outrights'))  importOutrights();
   else if (path.includes('basketball')) importBasketballDetail();
   else if (path.includes('football'))   importMatchDetail();
 }
@@ -273,6 +293,7 @@ export default function App() {
               <Route path="/database/effectif" element={<EffectifPage />} />
               <Route path="/utilisation" element={<UtilisationPage />} />
               <Route path="/backtesting" element={<BacktestingPage />} />
+              <Route path="/outrights" element={<OutrightsPage />} />
               <Route path="/carte" element={<WorldMapPage />} />
             </Routes>
           </Suspense>

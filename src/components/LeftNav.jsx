@@ -35,14 +35,15 @@ const NAV_SECTIONS = [
     items: [
       { to: '/dashboard',   icon: '◈', label: 'Dashboard',   sub: 'Vue d\'ensemble' },
       { to: '/carte',       icon: '⬡', label: 'Sports',       sub: 'Championnats' },
-      { to: '/placebet',    icon: '◎', label: 'Alertes',      sub: 'Value bets' },
-      { to: '/backtesting', icon: '◉', label: 'Backtesting',  sub: 'Statistiques' },
+      { to: '/database/effectif', icon: '▤', label: 'Base de données', sub: 'Effectifs' },
     ],
   },
   {
     label: 'Database',
     items: [
-      { to: '/database/effectif', icon: '▤', label: 'Base de données', sub: 'Effectifs' },
+      { to: '/backtesting', icon: '◉', label: 'Backtesting',  sub: 'Statistiques' },
+      { to: '/placebet',    icon: '◎', label: 'Alertes',      sub: 'Value bets' },
+      { to: '/outrights',   icon: '★', label: 'Outrights',    sub: 'Longterme' },
     ],
   },
 ];

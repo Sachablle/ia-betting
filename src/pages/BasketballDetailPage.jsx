@@ -6,6 +6,7 @@ import { useFixture, useFixturesByLeague } from '../utils/useFixtures';
 import { formatFullDate, formatMatchTime, formatCapacity } from '../utils/formatters';
 import FormStrip from '../components/FormStrip';
 import StatBar from '../components/StatBar';
+import { OddsCell, EdgeBadge } from '../components/OddsCell';
 
 // ── ESPN WNBA lookup (name → teamId) ─────────────────────────────────────────
 const ESPN_WNBA = {
@@ -252,7 +253,7 @@ function RosterColumn({ team, players, names, side, loading, onAssign, injuryDat
               <div className="rp-group">
                 <div className="rp-group-label">Titulaires</div>
                 {starters.map(p => {
-                  const isUsed = names.includes(p.name);
+                  const isUsed = names.some(n => euNameEq(n, p.name));
                   return (
                     <button key={p.id}
                       className={`rp-player-btn ${isUsed ? 'rp-used' : ''}`}
@@ -275,7 +276,7 @@ function RosterColumn({ team, players, names, side, loading, onAssign, injuryDat
               <div className="rp-group">
                 <div className="rp-group-label">Remplaçants</div>
                 {bench.map(p => {
-                  const isUsed = names.includes(p.name);
+                  const isUsed = names.some(n => euNameEq(n, p.name));
                   return (
                     <button key={p.id}
                       className={`rp-player-btn ${isUsed ? 'rp-used' : ''}`}
@@ -369,21 +370,27 @@ const EU_LEAGUE_CONST = {
 const EURO_LEAGUES_IDS = ['acb', 'lnb', 'bbl', 'legaa'];
 const getEuroConst = league => EU_LEAGUE_CONST[league] || null;
 
-// Bandes de confiance par catégorie (stat × ligue) — mêmes valeurs que propBadgeClass dans PlaceBetPage.jsx,
-// calibrées sur la plage de confiance réelle que le modèle (post-refonte 6 juin 2026) atteint pour chaque catégorie.
-// Remplace l'ancienne échelle générique (≥80% vert / ≥65% jaune) qui ne reflétait plus la sélectivité réelle par stat.
+// api-sports.io ne renvoie pas toujours les noms EU dans le même ordre (Prénom Nom vs Nom Prénom)
+// selon l'endpoint — comparaison insensible à l'ordre des mots pour matcher malgré ça
+const euNameKey = s => (s || '')
+  .toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '')
+  .replace(/[^a-z\s]/g, '').split(/\s+/).filter(Boolean).sort().join(' ');
+const euNameEq = (a, b) => !!a && !!b && euNameKey(a) === euNameKey(b);
+
+// Bandes de confiance — plancher unique 80% depuis le 22 juin 2026 (75% exception spécialiste).
+// high = seuil alerte (vert) · mid = zone intermédiaire (cyan) · en-dessous = faible (ambre)
 const PROP_CONF_BANDS = {
   nba_short: {
-    pts: { high: 70, mid: 62 },
-    reb: { high: 62, mid: 55 },
-    ast: { high: 65, mid: 58 },
-    tpm: { high: 65, mid: 58 },
+    pts: { high: 80, mid: 70 },
+    reb: { high: 80, mid: 70 },
+    ast: { high: 80, mid: 70 },
+    tpm: { high: 80, mid: 70 },
   },
   eu: {
-    pts: { high: 75, mid: 67 },
-    reb: { high: 68, mid: 61 },
-    ast: { high: 70, mid: 62 },
-    tpm: { high: 68, mid: 61 },
+    pts: { high: 80, mid: 70 },
+    reb: { high: 80, mid: 70 },
+    ast: { high: 80, mid: 70 },
+    tpm: { high: 80, mid: 70 },
   },
 };
 const EU_PROP_LEAGUES = new Set(['acb', 'lnb', 'bbl', 'legaa', 'euroleague']);
@@ -403,36 +410,21 @@ function PropLegendCard({ league }) {
   const Dot = ({ color }) => <span style={{ display: 'inline-block', width: 6, height: 6, borderRadius: '50%', background: color, marginRight: 4, flexShrink: 0 }} />;
   return (
     <div>
-      <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text)', marginBottom: '1rem' }}>
+      <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text)', marginBottom: '0.6rem' }}>
         Code couleur — confiance
       </div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.3rem', marginBottom: '0.5rem' }}>
-        {STATS.map(([key, label]) => {
-          const b = bands[key];
-          return (
-            <div key={key} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-              <div style={{ fontSize: 9, fontWeight: 700, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.04em', width: 42, flexShrink: 0 }}>{label}</div>
-              <span style={{ display: 'flex', alignItems: 'center', fontSize: 9.5, whiteSpace: 'nowrap' }}>
-                <Dot color="#4a9b6f" />≥{b.high}% <span style={{ color: '#4a9b6f', fontWeight: 700, marginLeft: 3 }}>Seuil de déclenchement</span>
-              </span>
-            </div>
-          );
-        })}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.15rem', marginTop: '0.3rem' }}>
-          {(() => {
-            const allMid  = STATS.map(([k]) => bands[k]?.mid).filter(Boolean);
-            const allHigh = STATS.map(([k]) => bands[k]?.high).filter(Boolean);
-            const minMid  = Math.min(...allMid);
-            const maxHigh = Math.max(...allHigh) - 1;
-            return <>
-              <span style={{ display: 'flex', alignItems: 'center', fontSize: 9.5, color: 'var(--text-dim)', whiteSpace: 'nowrap' }}><Dot color="#00d4ff" />{minMid}–{maxHigh}% moyen</span>
-              <span style={{ display: 'flex', alignItems: 'center', fontSize: 9.5, color: 'var(--text-dim)', whiteSpace: 'nowrap' }}><Dot color="#ffb400" />&lt;{minMid}% faible</span>
-            </>;
-          })()}
-        </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', marginBottom: '0.5rem' }}>
+        <span style={{ display: 'flex', alignItems: 'center', fontSize: 9.5, whiteSpace: 'nowrap' }}>
+          <Dot color="#4a9b6f" /><b style={{ color: '#4a9b6f' }}>≥ 80%</b>&nbsp;— seuil de déclenchement
+        </span>
+        <span style={{ display: 'flex', alignItems: 'center', fontSize: 9.5, whiteSpace: 'nowrap' }}>
+          <Dot color="#4a9b6f" style={{ opacity: 0.6 }} /><b style={{ color: '#4a9b6f', opacity: 0.8 }}>≥ 75%</b>&nbsp;— spécialiste régulière sur la stat
+        </span>
+        <span style={{ display: 'flex', alignItems: 'center', fontSize: 9.5, color: 'var(--text-dim)', whiteSpace: 'nowrap' }}><Dot color="#00d4ff" />70–79% moyen</span>
+        <span style={{ display: 'flex', alignItems: 'center', fontSize: 9.5, color: 'var(--text-dim)', whiteSpace: 'nowrap' }}><Dot color="#ffb400" />&lt;70% faible</span>
       </div>
       <div style={{ fontSize: 9, lineHeight: 1.45, color: 'var(--text-dim)', borderTop: '1px solid var(--border)', paddingTop: '0.4rem' }}>
-        Alerte envoyée si <b style={{ color: '#4a9b6f' }}>seuil vert</b> + cotes Unibet/Betclic ≥ 1,70 + minutes ≥ 10/match. WNBA : AST Over bloqué si ligne ≥ 4,5 · 3pts Over réservé aux shooteuses (moy ≥ 1,5/match).
+        Alerte envoyée si <b style={{ color: '#4a9b6f' }}>seuil vert</b> + cotes Unibet/Betclic ≥ 1,60 + minutes ≥ 10/match. WNBA : AST Over bloqué si ligne ≥ 4,5 · 3pts Over réservé aux shooteuses (moy ≥ 1,5/match).
       </div>
     </div>
   );
@@ -1023,30 +1015,14 @@ function computeEstimate(player, isHome, oppGames, myGames, gamelogs, oppAbbr, g
 
 // ── Game Total O/U model ──────────────────────────────────────────────────────
 
-const GAME_TOTAL_ALERT_KEY   = 'nba_game_total_alerts';
-const GAME_TOTAL_ALERT_EDGE  = 4;   // edge % minimum (déclaré, ne sert plus dans la condition)
-const GAME_TOTAL_ALERT_PROB  = 0.80; // P(Over/Under) minimum — aligné sur le seuil backend (10 juin 2026)
+// resultEstimate.pHome/pAway viennent de computeTeamWinProb (backend), même fonction que les
+// alertes basketball_result, via /api/basketball/result — couleurs gérées directement dans le
+// widget "Modèle 1X2" (mêmes seuils que le foot, 22 juin 2026).
 
-const EARLYWIN_ALERT_KEY  = 'nba_earlywin_alerts';
-const EARLYWIN_ALERT_EDGE = 3;    // edge % minimum
-const EARLYWIN_ALERT_PROB = 0.88; // confiance minimum
-const EARLYWIN_MIN_ODDS   = 1.45; // cote mini — sous ce seuil, pas d'intérêt même à forte confiance
-
-// P(team leads by `threshold` at any point) via Brownian motion avec drift
-function computeLeadProb(expectedMargin, std, threshold) {
-  const sigma = (std > 0 ? std : 12) * 1.7; // variance "en cours de match" > variance finale
-  return Math.max(0.01, Math.min(0.99, 1 - tCDF4((threshold - expectedMargin) / sigma)));
-}
-
-// P(EarlyWin) = P(win) + P(lead by threshold AND lose)
-// ≈ P(win) + P(lead threshold+) × comeback_rate (≈3%)
-function computeEarlyWinProb(homeExpected, awayExpected, std, threshold, forHome) {
-  const margin = homeExpected - awayExpected;
-  const teamMargin = forHome ? margin : -margin;
-  const pWin = Math.max(0.01, Math.min(0.99, 1 - tCDF4(-teamMargin / (std > 0 ? std : 12))));
-  const pLead = computeLeadProb(teamMargin, std, threshold);
-  return Math.min(0.99, pWin + pLead * 0.03);
-}
+// Idem pour le widget "Modèle O/U" — gameTotalEstimate vient de computeGameTotalFull (backend)
+// via /api/basketball/total depuis le 22 juin 2026, déjà en échelle 0-100 (TOTAL_ALERT_PROB côté
+// serveur est en fraction 0.80, ne pas comparer directement à pOver/pUnder ici).
+const GAME_TOTAL_DISPLAY_ALERT_PROB = 80; // %
 
 // Détecte automatiquement si le round est un match de playoffs
 function isPlayoffRound(round) {
@@ -1215,16 +1191,43 @@ function computeGameTotal(homeGames, awayGames, fixture, refTotal = null) {
 }
 
 // Widget d'affichage du modèle O/U
-function GameTotalWidget({ estimate, fixture }) {
+function GameTotalWidget({ estimate, fixture, tot, edgePopupKey, setEdgePopupKey, edgePopupRef }) {
   const [expanded, setExpanded] = useState(false);
   if (!estimate) return null;
 
   const { estimated, refTotal, edge, pOver, pUnder, std, direction, homeExpected, awayExpected, details, refBk } = estimate;
   const isOver  = direction === 'over';
   const bestP   = pOver != null ? Math.max(pOver, pUnder) : null;
-  const isAlert = bestP != null && bestP >= GAME_TOTAL_ALERT_PROB;
+  const isAlert = bestP != null && bestP >= GAME_TOTAL_DISPLAY_ALERT_PROB;
   const BK_LABELS = { unibet: 'Unibet', betclic: 'Betclic', winamax: 'Winamax' };
   const edgeColor = isOver ? '#4ade80' : '#f87171';
+
+  // Bookmaker non affiché en ligne 1 (refBk) — même format, recalculé ici à partir de
+  // estimated/std déjà connus (même maths que computeGameTotalFull côté serveur, pas de
+  // 2e appel réseau) puisque chaque bookmaker peut avoir sa propre ligne (25 juin 2026).
+  const otherBk = ['unibet', 'betclic', 'winamax'].find(b => b !== refBk && tot?.bookmakers?.[b]?.line != null);
+  const otherLine = otherBk ? tot.bookmakers[otherBk].line : null;
+  let otherCalc = null;
+  if (otherLine && std) {
+    const oEdge = +((estimated - otherLine) / otherLine * 100).toFixed(1);
+    const oIsOver = oEdge >= 0;
+    const oPOver = 1 - tCDF4((otherLine - estimated) / std);
+    const oBestP = Math.round((oIsOver ? oPOver : 1 - oPOver) * 100);
+    otherCalc = { line: otherLine, bk: otherBk, edge: oEdge, isOver: oIsOver, bestP: oBestP };
+  }
+
+  // Vs Pinnacle (25 juin 2026) — edge Unibet/Betclic sur la direction retenue par le modèle,
+  // seulement si leur ligne correspond exactement à celle de Pinnacle (sinon comparaison invalide).
+  const pin = tot?.bookmakers?.pinnacle;
+  const fairPin = pin?.over != null && pin?.under != null ? (() => {
+    const s = 1 / pin.over + 1 / pin.under;
+    return { over: (1 / pin.over) / s, under: (1 / pin.under) / s };
+  })() : null;
+  const calcEdgeLocal = (o, f) => (o != null && f != null) ? +((o * f - 1) * 100).toFixed(1) : null;
+  const ub = tot?.bookmakers?.unibet, bc = tot?.bookmakers?.betclic;
+  const ubEdge = (fairPin && ub?.line === pin?.line) ? calcEdgeLocal(isOver ? ub?.over : ub?.under, isOver ? fairPin.over : fairPin.under) : null;
+  const bcEdge = (fairPin && bc?.line === pin?.line) ? calcEdgeLocal(isOver ? bc?.over : bc?.under, isOver ? fairPin.over : fairPin.under) : null;
+  const hasPinnacleEdge = ubEdge != null || bcEdge != null;
   const edgeBg    = isOver ? 'rgba(74,222,128,0.12)' : 'rgba(248,113,113,0.12)';
 
   return (
@@ -1233,30 +1236,73 @@ function GameTotalWidget({ estimate, fixture }) {
         onClick={() => setExpanded(v => !v)}
         style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem' }}
       >
-        <span style={{ fontSize: 10, fontWeight: 400, color: 'var(--text-dim)' }}>Modèle O/U</span>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-          <span style={{ fontSize: 10, fontWeight: 600 }}>{estimated}</span>
+        <span style={{ fontSize: 10, fontWeight: 400, color: 'var(--text-dim)', alignSelf: 'center' }}>Modèle O/U</span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+          {/* Centré verticalement par rapport aux 2 lignes ci-dessous (align-items:center du parent
+              + ce span n'a qu'une ligne alors que la pile à droite en a 2, ou 1 si un seul book). */}
+          <span style={{ position: 'relative' }}>
+            <span
+              onClick={hasPinnacleEdge ? e => { e.stopPropagation(); setEdgePopupKey(prev => prev === 'gtw' ? null : 'gtw'); } : undefined}
+              style={{
+                fontSize: 10, fontWeight: 600,
+                cursor: hasPinnacleEdge ? 'pointer' : 'default',
+                textDecoration: hasPinnacleEdge ? 'underline dotted' : 'none', textDecorationColor: 'rgba(255,255,255,0.3)',
+              }}
+            >{estimated}</span>
+            {edgePopupKey === 'gtw' && (
+              <div ref={edgePopupRef} onClick={e => e.stopPropagation()} style={{
+                position: 'absolute', top: '100%', left: '50%', transform: 'translateX(-50%)', marginTop: 6,
+                background: 'var(--bg-card, #11141c)', border: '1px solid var(--border)', borderRadius: 6,
+                padding: '0.35rem 0.55rem', boxShadow: '0 6px 16px rgba(0,0,0,0.4)', zIndex: 50, whiteSpace: 'nowrap',
+              }}>
+                <div style={{ fontSize: 8, fontWeight: 700, color: 'var(--text-dim)', marginBottom: 2 }}>Vs Pinnacle</div>
+                {ubEdge != null && <div style={{ fontSize: 10, fontWeight: 600, color: '#1db954' }}>{ubEdge >= 0 ? '+' : ''}{ubEdge.toFixed(1)}%</div>}
+                {bcEdge != null && <div style={{ fontSize: 10, fontWeight: 600, color: '#e0292e' }}>{bcEdge >= 0 ? '+' : ''}{bcEdge.toFixed(1)}%</div>}
+              </div>
+            )}
+          </span>
+
+          {/* Pile des lignes bookmaker — largeur fixe sur "vs X (Book)" pour que Unibet et Betclic
+              s'alignent colonne par colonne (25 juin 2026), peu importe la longueur du nom/de la ligne. */}
           {refTotal ? (
-            <>
-              <span style={{ fontSize: 8, color: 'var(--text-dim)' }}>vs {refTotal} {refBk ? `(${BK_LABELS[refBk] ?? refBk})` : ''}</span>
-              <span style={{ fontSize: 9, fontWeight: 800, padding: '1px 5px', borderRadius: 4, background: edgeBg, color: edgeColor, border: `1px solid ${isOver ? 'rgba(74,222,128,0.3)' : 'rgba(248,113,113,0.3)'}` }}>
-                {isOver ? '▲' : '▼'} {Math.abs(edge)}%
-              </span>
-              {bestP != null && (
-                <span style={{ fontSize: 10, fontWeight: 700, color: bestP >= 0.90 ? edgeColor : 'var(--text-dim)' }}>
-                  {Math.round(bestP * 100)}%
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                <span style={{ fontSize: 8, color: 'var(--text-dim)', width: 92, textAlign: 'right', flexShrink: 0 }}>vs {refTotal} {refBk ? `(${BK_LABELS[refBk] ?? refBk})` : ''}</span>
+                <span style={{ fontSize: 9, fontWeight: 800, padding: '1px 5px', borderRadius: 4, background: edgeBg, color: edgeColor, border: `1px solid ${isOver ? 'rgba(74,222,128,0.3)' : 'rgba(248,113,113,0.3)'}` }}>
+                  {isOver ? '▲' : '▼'} {Math.abs(edge)}%
                 </span>
+                {bestP != null && (
+                  <span style={{ fontSize: 10, fontWeight: 700, color: bestP >= 90 ? edgeColor : 'var(--text-dim)' }}>
+                    {Math.round(bestP)}%
+                  </span>
+                )}
+                {isAlert && (
+                  <span style={{ fontSize: 8, fontWeight: 800, padding: '1px 5px', borderRadius: 3, background: edgeBg, color: edgeColor, letterSpacing: '0.05em', border: `1px solid ${isOver ? 'rgba(74,222,128,0.4)' : 'rgba(248,113,113,0.4)'}` }}>
+                    {isOver ? 'OVER' : 'UNDER'}
+                  </span>
+                )}
+              </div>
+              {otherCalc && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                  <span style={{ fontSize: 8, color: 'var(--text-dim)', width: 92, textAlign: 'right', flexShrink: 0 }}>vs {otherCalc.line} ({BK_LABELS[otherCalc.bk] ?? otherCalc.bk})</span>
+                  <span style={{
+                    fontSize: 9, fontWeight: 800, padding: '1px 5px', borderRadius: 4,
+                    background: otherCalc.isOver ? 'rgba(74,222,128,0.12)' : 'rgba(248,113,113,0.12)',
+                    color: otherCalc.isOver ? '#4ade80' : '#f87171',
+                    border: `1px solid ${otherCalc.isOver ? 'rgba(74,222,128,0.3)' : 'rgba(248,113,113,0.3)'}`,
+                  }}>
+                    {otherCalc.isOver ? '▲' : '▼'} {Math.abs(otherCalc.edge)}%
+                  </span>
+                  <span style={{ fontSize: 10, fontWeight: 700, color: otherCalc.bestP >= 90 ? (otherCalc.isOver ? '#4ade80' : '#f87171') : 'var(--text-dim)' }}>
+                    {otherCalc.bestP}%
+                  </span>
+                </div>
               )}
-              {isAlert && (
-                <span style={{ fontSize: 8, fontWeight: 800, padding: '1px 5px', borderRadius: 3, background: edgeBg, color: edgeColor, letterSpacing: '0.05em', border: `1px solid ${isOver ? 'rgba(74,222,128,0.4)' : 'rgba(248,113,113,0.4)'}` }}>
-                  {isOver ? 'OVER' : 'UNDER'}
-                </span>
-              )}
-            </>
+            </div>
           ) : (
             <span style={{ fontSize: 8, color: 'var(--text-dim)' }}>ligne N/D</span>
           )}
-          <span style={{ fontSize: 9, color: 'var(--text-dim)' }}>{expanded ? '▴' : '▾'}</span>
+          <span style={{ fontSize: 9, color: 'var(--text-dim)', alignSelf: 'center' }}>{expanded ? '▴' : '▾'}</span>
         </div>
       </div>
 
@@ -1346,7 +1392,7 @@ function BetLine({ label, estimated, line, onChange }) {
 
 const ALERT_KEY = 'nba_prop_alerts';
 
-function PropsSection({ fixture, homePlayers, awayPlayers, rosterLoading, isCompleted, projLineup, gameTotal, eventId, onClose, pinnacleH2H, showHomeOverride, onTeamChange, homeNames, awayNames }) {
+function PropsSection({ fixture, homePlayers, awayPlayers, rosterLoading, isCompleted, projLineup, gameTotal, eventId, onClose, pinnacleH2H, showHomeOverride, onTeamChange, homeNames, awayNames, rankSlotRef }) {
   const isWNBA = fixture?.league === 'wnba';
   const [showLegend, setShowLegend]      = useState(false);
   const [legendBox, setLegendBox]         = useState(null); // { top, left }
@@ -1398,6 +1444,52 @@ function PropsSection({ fixture, homePlayers, awayPlayers, rosterLoading, isComp
   const [probabilities, setProbabilities] = useState({});
   const [expandedId,  setExpandedId]  = useState(null);
   const [injuryData,  setInjuryData]  = useState({});
+
+  // Classement ligue par catégorie — clic sur une stat projetée dans Analyse Props (22 juin 2026).
+  // Seules NBA/WNBA/ACB ont un classement complet aujourd'hui (cf. /api/<ligue>/leaders) ; les
+  // autres ligues EU affichent un message plutôt qu'un faux classement.
+  const [rankPlayer,  setRankPlayer]  = useState(null);
+  const [rankLeaders, setRankLeaders] = useState(null);
+  const [rankLoading, setRankLoading] = useState(false);
+  const LEADERS_LEAGUES = new Set(['nba', 'wnba', 'acb']);
+  const lastRankTriggerRef = useRef(null); // { id, stat } de la dernière perf cliquée pour ouvrir le panneau
+  async function openRankPanel(p, stat) {
+    const last = lastRankTriggerRef.current;
+    if (rankPlayer && last && String(last.id) === String(p.id) && last.stat === stat) {
+      setRankPlayer(null);
+      lastRankTriggerRef.current = null;
+      return;
+    }
+    lastRankTriggerRef.current = { id: p.id, stat };
+    setRankPlayer(p);
+    if (!LEADERS_LEAGUES.has(fixture?.league)) { setRankLeaders(null); return; }
+    if (rankLeaders?._league === fixture.league) return;
+    setRankLoading(true);
+    try {
+      const d = await fetch(`/api/${fixture.league}/leaders`).then(r => r.ok ? r.json() : null);
+      setRankLeaders(d ? { ...d, _league: fixture.league } : null);
+    } catch { setRankLeaders(null); }
+    setRankLoading(false);
+  }
+  const rankCardRef = useRef(null);
+  useEffect(() => {
+    if (!rankPlayer) return;
+    const onDocClick = (e) => {
+      if (rankCardRef.current?.contains(e.target)) return;
+      // Un re-clic sur la perf déjà ouverte doit togglé-fermer via openRankPanel lui-même
+      // (sinon ce listener la ferme au mousedown, puis le click qui suit la réouvre aussitôt).
+      if (e.target.closest?.('.rank-trigger')) return;
+      setRankPlayer(null);
+      lastRankTriggerRef.current = null;
+    };
+    document.addEventListener('mousedown', onDocClick, true);
+    return () => document.removeEventListener('mousedown', onDocClick, true);
+  }, [rankPlayer]);
+  // Lookup insensible à l'ordre des mots (api-sports.io n'est pas cohérent Prénom/Nom selon l'endpoint)
+  const getInjury = name => {
+    const key = Object.keys(injuryData).find(k => euNameEq(k, name));
+    return key ? injuryData[key] : undefined;
+  };
 
   // Charge les probabilités gelées (après le match)
   useEffect(() => {
@@ -1523,12 +1615,34 @@ function PropsSection({ fixture, homePlayers, awayPlayers, rosterLoading, isComp
 
   // Fetch rapport de blessures (RotoWire injuries page + MAY NOT PLAY lineups)
   useEffect(() => {
-    if (isCompleted || fixture.league === 'euroleague') return;
+    if (isCompleted || fixture.league === 'euroleague' || EURO_LEAGUES_IDS.includes(fixture.league)) return;
     const injBase = fixture.league === 'wnba' ? '/api/wnba' : '/api/nba';
     fetch(`${injBase}/injuries`)
       .then(r => r.ok ? r.json() : {})
       .then(d => setInjuryData(d || {}))
       .catch(() => {});
+  }, [fixture.id]);
+
+  // Compo EU confirmée (ACB/LNB/BBL) : joueur déclaré OUT au moment du remplacement — merge
+  // dans injuryData pour réutiliser la redistribution déjà existante (même mécanisme que
+  // NBA/WNBA, il manquait juste ce signal côté EU faute de flux blessures type RotoWire).
+  useEffect(() => {
+    const EU_OUT_BENCH_LEAGUES = ['acb', 'lnb', 'bbl'];
+    if (isCompleted || !EU_OUT_BENCH_LEAGUES.includes(fixture.league) || !fixture.home?.id || !fixture.away?.id) return;
+    Promise.all([
+      fetch(`/api/euro/${fixture.league}/team-lineup/${fixture.home.id}`).then(r => r.json()).catch(() => null),
+      fetch(`/api/euro/${fixture.league}/team-lineup/${fixture.away.id}`).then(r => r.json()).catch(() => null),
+    ]).then(([homeRes, awayRes]) => {
+      const out = {};
+      for (const res of [homeRes, awayRes]) {
+        if (!res?.confirmed || !res.outPlayers?.length) continue;
+        if (res.date && Math.abs(new Date(res.date) - new Date(fixture.date)) > 3 * 86400_000) continue;
+        for (const o of res.outPlayers) {
+          if (o.status === 'out') out[o.name] = { status: 'Out' };
+        }
+      }
+      if (Object.keys(out).length) setInjuryData(prev => ({ ...prev, ...out }));
+    });
   }, [fixture.id]);
 
   // Fetch team schedules (pace / défense / repos)
@@ -1667,7 +1781,7 @@ function PropsSection({ fixture, homePlayers, awayPlayers, rosterLoading, isComp
 
       // Identifie les OUT actuels pour cette équipe
       const teamOutIds = new Set(players.filter(p => {
-        const inj = injuryData[p.name]?.status || p.injury;
+        const inj = getInjury(p.name)?.status || p.injury;
         return inj === 'Out';
       }).map(p => String(p.id)));
 
@@ -1684,7 +1798,7 @@ function PropsSection({ fixture, homePlayers, awayPlayers, rosterLoading, isComp
       // des coéquipiers via gamelogs/EWA — redistribuer en plus double-compterait l'usage, cf. cas Collier)
       let outWeightSum = 0, activeWeightSum = 0;
       for (const p of players) {
-        const inj = injuryData[p.name]?.status || p.injury;
+        const inj = getInjury(p.name)?.status || p.injury;
         const w = getWeight(p);
         const pidW = String(p.id);
         const hasPlayedThisSeason = (gamelogs[pidW]?.length > 0) || (seriesGamelogs[pidW]?.length > 0);
@@ -1711,7 +1825,7 @@ function PropsSection({ fixture, homePlayers, awayPlayers, rosterLoading, isComp
         // même quand un autre joueur de l'équipe force un recalcul global (sinon le chiffre affiché diverge du %, qui lui reste basé sur le snapshot)
         // snapshotMatch couvre aussi le fallback par nom (IDs Bzzoiro instables entre roster et snapshot)
         if (snapshotMatch.current.has(pidCheck)) return;
-        const ext = injuryData[p.name];
+        const ext = getInjury(p.name);
         const ep  = ext ? { ...p, injury: ext.status, injuryReason: ext.reason } : p;
         if (ep.injury === 'Out' && idx < 5) return;
         const pid = String(p.id);
@@ -1734,7 +1848,7 @@ function PropsSection({ fixture, homePlayers, awayPlayers, rosterLoading, isComp
           const existingNames = JSON.parse(localStorage.getItem(projKey) || '{}').byName || {};
           const allPlayers   = [...(homePlayers || []), ...(awayPlayers || [])];
           const allOutIds    = allPlayers
-            .filter(p => (injuryData[p.name]?.status || p.injury) === 'Out')
+            .filter(p => (getInjury(p.name)?.status || p.injury) === 'Out')
             .map(p => String(p.id));
           const nextByName = {};
           allPlayers.forEach(p => { if (next[String(p.id)]) nextByName[p.name] = next[String(p.id)]; });
@@ -1912,7 +2026,7 @@ function PropsSection({ fixture, homePlayers, awayPlayers, rosterLoading, isComp
       for (const a of stored) {
         if (a.status !== 'pending') continue;
         if (a.homeTeam !== fixture.home.name && a.awayTeam !== fixture.away.name) continue;
-        const currentStatus = injuryData[a.player]?.status;
+        const currentStatus = getInjury(a.player)?.status;
         if (currentStatus === 'Out' && a.injury !== 'Out') {
           a.injuryAlert = { from: a.injury || 'Actif', at: Date.now() };
           a.injury = 'Out';
@@ -2000,7 +2114,7 @@ function PropsSection({ fixture, homePlayers, awayPlayers, rosterLoading, isComp
       }
     }
   }
-  const isPlayerOut = p => (injuryData[p.name]?.status || p.injury) === 'Out';
+  const isPlayerOut = p => (getInjury(p.name)?.status || p.injury) === 'Out';
   const projected = [...startersSorted, { __separator: 'bench' }, ...benchSorted]
     .filter(p => p.__separator || !isPlayerOut(p));
 
@@ -2055,6 +2169,96 @@ function PropsSection({ fixture, homePlayers, awayPlayers, rosterLoading, isComp
           <TeamBtn home={false} />
         </div>
       </div>
+
+      {/* Panneau classement ligue — clic sur une stat projetée d'une joueuse (22 juin 2026).
+          Inséré dans le flux de page (portail vers rankSlotRef, entre les chips et la boîte
+          Odds) plutôt que flottant par-dessus — pousse le contenu du dessous, page scrollable. */}
+      {rankPlayer && rankSlotRef?.current && createPortal(
+        <>
+          <style>{`@keyframes rankPanelReveal{0%{opacity:0;transform:scale(0.96)}100%{opacity:1;transform:scale(1)}}`}</style>
+          <div
+            ref={rankCardRef}
+            style={{
+              width: '100%', marginBottom: '0.5rem',
+              background: 'rgba(0,6,20,0.97)', border: '1px solid rgba(96,165,250,0.15)',
+              borderRadius: 10, boxShadow: '0 8px 32px rgba(0,0,0,0.8)', overflow: 'hidden',
+              animation: 'rankPanelReveal 0.5s ease-out both',
+            }}
+          >
+          <div style={{ padding: '8px 12px 6px', borderBottom: '1px solid rgba(96,165,250,0.1)', display: 'flex', alignItems: 'center', gap: 6 }}>
+            <span style={{ fontSize: 10, fontWeight: 800, color: '#60a5fa', fontFamily: 'monospace', textTransform: 'uppercase', letterSpacing: '0.1em', flex: 1 }}>
+              Classement — {rankPlayer.name}
+            </span>
+            <button onClick={() => { setRankPlayer(null); lastRankTriggerRef.current = null; }} style={{ background: 'none', border: 'none', color: 'rgba(255,255,255,0.3)', cursor: 'pointer', fontSize: 14, lineHeight: 1, padding: 0 }}>×</button>
+          </div>
+          <div style={{ padding: 8 }}>
+            {rankLoading ? (
+              <div style={{ padding: '1.2rem', textAlign: 'center', fontSize: 10, color: 'rgba(255,255,255,0.2)', fontFamily: 'monospace' }}>CHARGEMENT...</div>
+            ) : !rankLeaders ? (
+              <div style={{ padding: '1.2rem', textAlign: 'center', fontSize: 10, color: 'rgba(255,255,255,0.2)', fontFamily: 'monospace' }}>Classement non disponible pour cette ligue</div>
+            ) : (
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8 }}>
+                {[['pts', 'PTS', '#60a5fa'], ['reb', 'REB', '#4ade80'], ['ast', 'AST', '#fb923c'], ['tpm', '3PM', '#a78bfa']].map(([stat, label, color], ci) => {
+                  const top5 = rankLeaders[stat] || [];
+                  const full = rankLeaders.full?.[stat] || [];
+                  const matchesPlayer = l => String(l.id) === String(rankPlayer.id) || (lastName(l.name) && lastName(l.name) === lastName(rankPlayer.name));
+                  const top5Entry = top5.find(matchesPlayer);
+                  const fullEntry = !top5Entry ? full.find(matchesPlayer) : null;
+                  const headEntry = top5Entry || fullEntry;
+                  const restRows = top5Entry ? top5.filter(l => l !== top5Entry) : top5;
+                  const abbrevName = n => { const p = n.split(' '); return p.length > 1 ? p[0][0] + '. ' + p.slice(1).join(' ') : n; };
+                  return (
+                    <div key={stat} style={{
+                      background: 'rgba(255,255,255,0.025)', border: `1px solid ${color}2a`,
+                      borderRadius: 8, overflow: 'hidden', boxShadow: '0 4px 14px rgba(0,0,0,0.35)',
+                      animation: 'rankPanelReveal 0.6s ease-out both', animationDelay: `${ci * 0.12}s`,
+                    }}>
+                      <div style={{ padding: '6px 10px 4px', borderBottom: `1px solid ${color}22` }}>
+                        <span style={{ fontSize: 11, fontWeight: 800, color, fontFamily: 'monospace' }}>{label}</span>
+                        <span style={{ fontSize: 8, color: 'rgba(255,255,255,0.3)', marginLeft: 5, textTransform: 'uppercase', letterSpacing: '0.06em' }}>match</span>
+                      </div>
+                      <div>
+                        {headEntry && (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 10px', borderBottom: `1px solid ${color}33`, background: `${color}1a` }}>
+                            <span style={{ fontSize: 9, color: 'rgba(255,255,255,0.3)', fontFamily: 'monospace', width: 12, flexShrink: 0, textAlign: 'right' }}>{headEntry.rank}</span>
+                            {headEntry.photo
+                              ? <img src={headEntry.photo} alt="" width={24} height={24} style={{ borderRadius: '50%', objectFit: 'cover', border: `1px solid ${color}55`, flexShrink: 0 }} onError={e => { e.target.style.display = 'none'; }} />
+                              : <div style={{ width: 24, height: 24, borderRadius: '50%', background: 'rgba(255,255,255,0.08)', flexShrink: 0 }} />}
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <div style={{ fontSize: 10, fontWeight: 800, color: '#fff', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{abbrevName(headEntry.name)}</div>
+                              <div style={{ fontSize: 8, color: 'rgba(255,255,255,0.3)' }}>{headEntry.team}</div>
+                            </div>
+                            <div style={{ fontSize: 14, fontWeight: 800, color, fontFamily: 'monospace', flexShrink: 0 }}>{headEntry.displayValue ?? headEntry.value?.toFixed(1)}</div>
+                          </div>
+                        )}
+                        {restRows.map((l, i) => (
+                          <div key={l.id ?? l.rank} style={{
+                            display: 'flex', alignItems: 'center', gap: 6, padding: '6px 10px',
+                            borderBottom: i < restRows.length - 1 ? '1px solid rgba(255,255,255,0.04)' : 'none',
+                          }}>
+                            <span style={{ fontSize: 9, color: 'rgba(255,255,255,0.3)', fontFamily: 'monospace', width: 12, flexShrink: 0, textAlign: 'right' }}>{l.rank}</span>
+                            {l.photo && <img src={l.photo} alt="" width={24} height={24} style={{ borderRadius: '50%', objectFit: 'cover', border: '1px solid rgba(255,255,255,0.08)', flexShrink: 0 }} onError={e => { e.target.style.display = 'none'; }} />}
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <div style={{ fontSize: 10, fontWeight: 600, color: 'rgba(255,255,255,0.75)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{abbrevName(l.name)}</div>
+                              <div style={{ fontSize: 8, color: 'rgba(255,255,255,0.3)' }}>{l.team}</div>
+                            </div>
+                            <div style={{ fontSize: 11, fontWeight: 800, color: 'rgba(255,255,255,0.6)', fontFamily: 'monospace', flexShrink: 0 }}>{l.displayValue}</div>
+                          </div>
+                        ))}
+                        {!headEntry && (
+                          <div style={{ padding: '6px 10px', fontSize: 8, color: 'rgba(255,255,255,0.25)', fontStyle: 'italic' }}>Top 5 uniquement</div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+          </div>
+        </>,
+        rankSlotRef.current
+      )}
 
       {/* En-têtes de colonnes */}
       {/* Libellés de section */}
@@ -2111,7 +2315,7 @@ function PropsSection({ fixture, homePlayers, awayPlayers, rosterLoading, isComp
                 <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: '1 1 0' }}>{p.name}</span>
                 {/* Badge blessure (RotoWire ou ESPN) */}
                 {(() => {
-                  const inj = injuryData[p.name]?.status || p.injury;
+                  const inj = getInjury(p.name)?.status || p.injury;
                   if (!inj) return null;
                   const isOut = inj === 'Out';
                   const lbl   = isOut ? 'Out' : 'Q';
@@ -2134,7 +2338,12 @@ function PropsSection({ fixture, homePlayers, awayPlayers, rosterLoading, isComp
                 const pc = propConfColor(stat, fixture?.league, pct);
                 return (
                   <div key={stat} style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 1 }}>
-                    <span style={statStyle(dim, false)}>{val ?? '—'}</span>
+                    <span
+                      className={val ? 'rank-trigger' : undefined}
+                      style={{ ...statStyle(dim, false), ...(val ? { cursor: 'pointer', textDecoration: 'underline', textDecorationStyle: 'dotted', textDecorationColor: 'rgba(255,255,255,0.25)' } : {}) }}
+                      onClick={e => { if (!val) return; e.stopPropagation(); openRankPanel(p, stat); }}
+                      title={val ? 'Voir le classement ligue' : undefined}
+                    >{val ?? '—'}</span>
                     {show && <span style={{ fontSize: 9, fontWeight: 800, color: pc, lineHeight: 1 }}>{dir}{pct}%</span>}
                   </div>
                 );
@@ -2227,53 +2436,65 @@ const BK_LABELS  = { pinnacle: 'Pinnacle', betfair: 'Betfair', unibet: 'Unibet',
 const BK_COLORS  = { unibet: '#1db954', betclic: '#e0292e', winamax: '#ffffff' };
 const BK_ORDER   = ['pinnacle', 'unibet', 'betclic', 'betfair', 'winamax'];
 
-function EdgeBadge({ val }) {
-  if (val == null) return null;
-  const pos = val > 0.5;
-  const neg = val < -0.5;
-  return (
-    <span style={{
-      fontSize: 10, fontWeight: 700, marginLeft: 4,
-      color: pos ? '#22c55e' : neg ? '#ef4444' : 'var(--text-dim)',
-    }}>
-      {val > 0 ? '+' : ''}{val.toFixed(1)}%
-    </span>
-  );
-}
+// EdgeBadge / OddsCell : importés de ../components/OddsCell (source unique avec MatchDetailPage
+// depuis le 22 juin 2026, voir ce fichier pour le détail).
 
-function OddsCell({ value, edge, isPinnacle, isHome, fairProb, color }) {
-  if (value == null) return <div style={{ textAlign: 'center', color: 'var(--text-dim)' }}>—</div>;
-  return (
-    <div style={{ textAlign: 'center' }}>
-      <span style={{ fontWeight: isPinnacle ? 700 : 500, fontVariantNumeric: 'tabular-nums', fontSize: 11, color: color ?? undefined }}>
-        {value.toFixed(2)}
-      </span>
-      {isPinnacle && fairProb != null && (
-        <span style={{ display: 'block', fontSize: 9, color: 'var(--text-dim)', marginTop: 1 }}>
-          {(fairProb * 100).toFixed(1)}%
-        </span>
-      )}
-      {!isPinnacle && <EdgeBadge val={edge} />}
-    </div>
-  );
-}
-
-function OddsCard({ odds, home, away, league, homePlayers, awayPlayers, onRefresh, refreshing, defaultTab = 'all', gameTotalEstimate = null, fixture = null, onTabChange = null, onTeamChange = null, showHomeOverride = null, eventId = null }) {
+function OddsCard({ odds, home, away, league, homePlayers, awayPlayers, onRefresh, refreshing, defaultTab = 'all', gameTotalEstimate = null, resultEstimate = null, fixture = null, onTabChange = null, onTeamChange = null, showHomeOverride = null, eventId = null }) {
   const navigate = useNavigate();
   const location = useLocation();
   const isEL = league === 'euroleague';
   const [tab, setTab] = useState(defaultTab);
   const switchTab = (id) => { setTab(id); onTabChange?.(id); };
+  // Mini popup "Vs Pinnacle" au clic sur une issue du widget Modèle 1X2 (25 juin 2026) — même
+  // mécanique que FootballOddsBox (MatchDetailPage) : 'click' bubble + stopPropagation sur le
+  // libellé, pas 'mousedown'/capture, pour éviter une course entre ouverture et fermeture.
+  const [edgePopupKey, setEdgePopupKey] = useState(null);
+  const edgePopupRef = useRef(null);
+  useEffect(() => {
+    if (!edgePopupKey) return;
+    const onDocClick = (e) => { if (!edgePopupRef.current?.contains(e.target)) setEdgePopupKey(null); };
+    document.addEventListener('click', onDocClick);
+    return () => document.removeEventListener('click', onDocClick);
+  }, [edgePopupKey]);
+  useEffect(() => { setEdgePopupKey(null); }, [tab]);
   const [playerProps, setPlayerProps] = useState(null);
   const [propsLoading, setPropsLoading] = useState(false);
   const [showHome, setShowHome] = useState(true);
   useEffect(() => { if (showHomeOverride != null) setShowHome(showHomeOverride); }, [showHomeOverride]);
   const [lastRefreshed, setLastRefreshed] = useState(null);
   const [propStat, setPropStat] = useState('pts');
+  const [showOddsLegend, setShowOddsLegend] = useState(false);
+  const [oddsLegendBox, setOddsLegendBox] = useState(null);
+  const oddsLegendRef = useRef(null);
+  const oddsLegendBtnRef = useRef(null);
+  const ODDS_LEGEND_W = 252;
+  useEffect(() => {
+    if (!showOddsLegend) return;
+    const onDown = (e) => {
+      if (oddsLegendRef.current?.contains(e.target) || oddsLegendBtnRef.current?.contains(e.target)) return;
+      setShowOddsLegend(false);
+    };
+    document.addEventListener('mousedown', onDown, true);
+    return () => document.removeEventListener('mousedown', onDown, true);
+  }, [showOddsLegend]);
+  useEffect(() => {
+    if (!showOddsLegend) return;
+    const update = () => {
+      if (!oddsCardRef.current) return;
+      const r = oddsCardRef.current.getBoundingClientRect();
+      const gutterCenter = r.right + (window.innerWidth - r.right) / 2;
+      setOddsLegendBox({ top: r.top, left: gutterCenter - ODDS_LEGEND_W / 2 });
+    };
+    update();
+    window.addEventListener('scroll', update, true);
+    window.addEventListener('resize', update);
+    return () => { window.removeEventListener('scroll', update, true); window.removeEventListener('resize', update); };
+  }, [showOddsLegend]);
 
   async function fetchPlayerProps(force = false) {
     if (propsLoading) return;
     setPropsLoading(true);
+    const _propsFetchStart = force ? Date.now() : null;
     const propsKey = `eu_props_${fixture?.id}`;
     const isEU = ['acb','lnb','bbl','legaa','euroleague'].includes(league);
     const isMatchDone = fixture?.status === 'STATUS_FINAL';
@@ -2333,7 +2554,8 @@ function OddsCard({ odds, home, away, league, homePlayers, awayPlayers, onRefres
     } catch {
       setPlayerProps({ found: false });
     } finally {
-      setPropsLoading(false);
+      const remaining = _propsFetchStart ? 500 - (Date.now() - _propsFetchStart) : 0;
+      setTimeout(() => setPropsLoading(false), Math.max(0, remaining));
     }
   }
 
@@ -2353,6 +2575,16 @@ function OddsCard({ odds, home, away, league, homePlayers, awayPlayers, onRefres
   const tot = odds?.markets?.totals;
   const ew  = odds?.markets?.earlywin;
   const availBks = BK_ORDER.filter(bk => h2h?.bookmakers?.[bk] || tot?.bookmakers?.[bk]);
+
+  // Edge Unibet/Betclic vs Pinnacle (25 juin 2026) — h2h?.fairProb / tot?.fairProb / h?.edgeHome
+  // etc. lus plus bas dans OddsCell n'étaient en fait jamais assignés nulle part (vérifié) ; calculé
+  // ici, même principe que MatchDetailPage (foot) mais 2 voies seulement (pas de nul en basket).
+  const fairH2H = h2h?.bookmakers?.pinnacle?.home && h2h?.bookmakers?.pinnacle?.away ? (() => {
+    const p = h2h.bookmakers.pinnacle;
+    const s = 1 / p.home + 1 / p.away;
+    return { home: (1 / p.home) / s, away: (1 / p.away) / s };
+  })() : null;
+  const calcEdge = (bkOdds, fair) => (bkOdds != null && fair != null) ? +((bkOdds * fair - 1) * 100).toFixed(1) : null;
 
   // Pour EL : si l'onglet actif n'a pas de données scrappées, basculer sur Joueurs
   useEffect(() => {
@@ -2377,6 +2609,7 @@ function OddsCard({ odds, home, away, league, homePlayers, awayPlayers, onRefres
     background: tab === id ? 'rgba(251,146,60,0.25)' : 'rgba(251,146,60,0.08)',
     color: '#ffffff',
     borderColor: tab === id ? 'rgba(251,146,60,0.55)' : 'rgba(251,146,60,0.22)',
+    boxShadow: '0 0 0 1px rgba(255,255,255,0.22)',
     transition: 'background 0.15s, border-color 0.15s',
   });
 
@@ -2385,8 +2618,10 @@ function OddsCard({ odds, home, away, league, homePlayers, awayPlayers, onRefres
 
   const cols = tab === 'all' ? COLS : tab === 'points' ? COLS_TOT : COLS_H2H;
 
+  const oddsCardRef = useRef(null);
+
   return (
-    <div>
+    <div ref={oddsCardRef}>
       {/* Catégories + toggle équipe + refresh */}
       <div style={{ display: 'flex', gap: '0.6rem', marginBottom: '0.75rem', alignItems: 'center' }}>
         {TABS.map(t => (
@@ -2396,19 +2631,50 @@ function OddsCard({ odds, home, away, league, homePlayers, awayPlayers, onRefres
           </button>
         ))}
         <div style={{ marginLeft: 'auto', display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '0.25rem' }}>
-          <button onClick={() => {
-              if (tab === 'joueurs') { setPlayerProps(null); fetchPlayerProps(true); }
-              else { onRefresh(); setLastRefreshed(new Date()); }
-            }}
-            disabled={tab === 'joueurs' ? propsLoading : refreshing}
-            style={{
-              padding: '0.2rem 0.5rem', borderRadius: 4,
-              border: '1px solid var(--border)', background: 'transparent',
-              color: 'var(--text-dim)', cursor: (tab === 'joueurs' ? propsLoading : refreshing) ? 'default' : 'pointer',
-              fontSize: 13, lineHeight: 1, opacity: (tab === 'joueurs' ? propsLoading : refreshing) ? 0.4 : 0.7,
-            }} title="Rafraîchir">
-            {(tab === 'joueurs' ? propsLoading : refreshing) ? '…' : '↻'}
-          </button>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+            <button onClick={() => {
+                if (tab === 'joueurs') { setPlayerProps(null); fetchPlayerProps(true); }
+                else { onRefresh(); setLastRefreshed(new Date()); }
+              }}
+              disabled={tab === 'joueurs' ? propsLoading : refreshing}
+              className={`icon-refresh-btn${(tab === 'joueurs' ? propsLoading : refreshing) ? ' spinning' : ''}`}
+              title="Rafraîchir">
+              ↻
+            </button>
+            <span
+              ref={oddsLegendBtnRef}
+              onClick={() => setShowOddsLegend(v => !v)}
+              style={{
+                width: 16, height: 16, borderRadius: '50%', fontSize: 10, fontWeight: 700,
+                display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                color: showOddsLegend ? '#fb923c' : 'var(--text-dim)',
+                border: `1px solid ${showOddsLegend ? 'rgba(251,146,60,0.5)' : 'var(--border)'}`,
+                cursor: 'pointer', flexShrink: 0,
+              }}
+            >?</span>
+            {showOddsLegend && oddsLegendBox && createPortal(
+              <div ref={oddsLegendRef} style={{
+                position: 'fixed', top: oddsLegendBox.top, left: oddsLegendBox.left, zIndex: 200,
+                width: ODDS_LEGEND_W, maxWidth: 'calc(100vw - 2rem)',
+                background: 'var(--bg-card, #11141c)', border: '1px solid var(--border)', borderRadius: 8,
+                padding: '0.6rem 0.65rem', boxShadow: '0 8px 24px rgba(0,0,0,0.4)',
+              }}>
+                <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text)', marginBottom: '0.4rem' }}>Cotes — Basket</div>
+                <div style={{ fontSize: 9.5, lineHeight: 1.6, color: 'var(--text-dim)' }}>
+                  <b style={{ color: '#60a5fa' }}>Pinnacle</b> est le bookmaker de référence : ses cotes sont les plus serrées du marché (marge ~2%). On l'utilise comme baromètre de la "vraie" probabilité.
+                  <br /><br />
+                  <b style={{ color: 'var(--text)' }}>Résultat</b> : cotes victoire dom./ext. par bookmaker. Le widget <b>Modèle 1X2</b> affiche la <span style={{ color: '#a78bfa' }}>probabilité Pinnacle</span> (marge retirée) et l'écart vs les autres books.
+                  <br /><br />
+                  <b style={{ color: 'var(--text)' }}>Points</b> : ligne O/U avec cote Over / Under par bookmaker.
+                  <br /><br />
+                  <b style={{ color: 'var(--text)' }}>Joueurs</b> : lignes et cotes props joueur (Pts / Reb / Ast / 3pts). La colonne <b style={{ color: '#60a5fa' }}>Pinnacle</b> apparaît quand ses cotes props sont disponibles (NBA/WNBA).
+                  <br /><br />
+                  <b style={{ color: '#4ade80' }}>Alertes Pinnacle props</b> : déclenchées si un bookmaker (Unibet/Betclic) offre ≥ <b style={{ color: '#fbbf24' }}>20% d'edge</b> par rapport à la ligne Pinnacle, cote bookmaker ≥ <b style={{ color: '#fbbf24' }}>1.60</b> — signale une vraie erreur de cote, pas un simple écart de marge.
+                </div>
+              </div>,
+              document.body
+            )}
+          </div>
           {lastRefreshed && (
             <div style={{ fontSize: 9, color: 'var(--text-dim)', textAlign: 'right' }}>
               {lastRefreshed.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
@@ -2539,56 +2805,79 @@ function OddsCard({ odds, home, away, league, homePlayers, awayPlayers, onRefres
                   ))}
                 </div>
                 {/* Headers */}
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 34px 76px 8px 34px 76px', gap: '0 0.2rem', paddingBottom: '0.15rem', marginBottom: '0.1rem' }}>
-                  <div />
-                  <div style={{ fontSize: 8, fontWeight: 800, textTransform: 'uppercase', color: '#1db954', textAlign: 'center', letterSpacing: '0.05em', gridColumn: '2 / 4' }}>Unibet</div>
-                  <div />
-                  <div style={{ fontSize: 8, fontWeight: 800, textTransform: 'uppercase', color: '#e0292e', textAlign: 'center', letterSpacing: '0.05em', gridColumn: '5 / 7' }}>Betclic</div>
-                </div>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 34px 76px 8px 34px 76px', gap: '0 0.2rem', paddingBottom: '0.25rem', borderBottom: '1px solid var(--border)', marginBottom: '0.2rem' }}>
-                  <div style={{ fontSize: 8, fontWeight: 700, textTransform: 'uppercase', color: 'var(--text-dim)', letterSpacing: '0.05em' }}>Joueur</div>
-                  <div style={{ fontSize: 8, color: 'rgba(255,255,255,0.6)', textAlign: 'center' }}>Ligne</div>
-                  <div style={{ fontSize: 8, textAlign: 'center' }}><span style={{ color: '#4ade80' }}>↑</span><span style={{ color: 'var(--text-dim)', margin: '0 2px' }}>/</span><span style={{ color: '#ef4444' }}>↓</span></div>
-                  <div />
-                  <div style={{ fontSize: 8, color: 'rgba(255,255,255,0.6)', textAlign: 'center' }}>Ligne</div>
-                  <div style={{ fontSize: 8, textAlign: 'center' }}><span style={{ color: '#4ade80' }}>↑</span><span style={{ color: 'var(--text-dim)', margin: '0 2px' }}>/</span><span style={{ color: '#ef4444' }}>↓</span></div>
-                </div>
-                <div style={{ maxHeight: 320, overflowY: 'auto' }}>
-                  {entries.length === 0 && <div style={{ textAlign: 'center', padding: '0.8rem 0', color: 'var(--text-dim)', fontSize: 12 }}>Aucun joueur trouvé</div>}
-                  {entries.map(([name, bks]) => {
-                    const ub = bks.unibet?.[propStat];
-                    const bc = bks.betclic?.[propStat];
-                    const cell = { textAlign: 'center', fontSize: 10, fontWeight: 600, fontVariantNumeric: 'tabular-nums' };
-                    const dim  = { color: 'var(--text-dim)', fontWeight: 400 };
-                    return (
-                      <div key={name}
-                        onClick={() => {
-                          // Réécrit l'URL courante pour que le retour rouvre la boxe ODDS (onglet Joueurs)
-                          const params = new URLSearchParams(location.search);
-                          params.set('props', '1');
-                          navigate(`${location.pathname}?${params.toString()}`, { replace: true });
-                          navigate(`/basketball/${fixture.id}/player/${encodeURIComponent(name)}`, { state: { fixture, league: fixture.league, eventId } });
-                        }}
-                        title="Voir toutes les lignes du joueur"
-                        style={{ display: 'grid', gridTemplateColumns: '1fr 34px 76px 8px 34px 76px', gap: '0 0.2rem', alignItems: 'center', padding: '0.2rem 0', borderBottom: '1px solid rgba(255,255,255,0.04)', cursor: 'pointer' }}>
-                        <span style={{ fontSize: 11, fontWeight: 400, color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{name}</span>
-                        <div style={{ ...cell, color: ub?.line != null ? 'rgba(255,255,255,0.85)' : 'var(--text-dim)' }}>{ub?.line ?? <span style={dim}>—</span>}</div>
-                        <div style={{ ...cell, display: 'flex', justifyContent: 'center', gap: 2 }}>
-                          <span style={{ color: ub?.over != null ? '#4ade80' : 'var(--text-dim)' }}>{ub?.over != null ? ub.over.toFixed(2) : '—'}</span>
-                          <span style={{ color: 'var(--text-dim)' }}>/</span>
-                          <span style={{ color: ub?.under != null ? '#ef4444' : 'var(--text-dim)' }}>{ub?.under != null ? ub.under.toFixed(2) : '—'}</span>
-                        </div>
+                {(() => {
+                  const hasPinn = Object.values(playerProps?.players || {}).some(bks => bks.pinnacle != null);
+                  const cols = hasPinn ? '1fr 34px 76px 8px 34px 76px 8px 34px 76px' : '1fr 34px 76px 8px 34px 76px';
+                  return (
+                    <>
+                      <div style={{ display: 'grid', gridTemplateColumns: cols, gap: '0 0.2rem', paddingBottom: '0.15rem', marginBottom: '0.1rem' }}>
                         <div />
-                        <div style={{ ...cell, color: bc?.line != null ? 'rgba(255,255,255,0.85)' : 'var(--text-dim)' }}>{bc?.line ?? <span style={dim}>—</span>}</div>
-                        <div style={{ ...cell, display: 'flex', justifyContent: 'center', gap: 2 }}>
-                          <span style={{ color: bc?.over != null ? '#4ade80' : 'var(--text-dim)' }}>{bc?.over != null ? bc.over.toFixed(2) : '—'}</span>
-                          <span style={{ color: 'var(--text-dim)' }}>/</span>
-                          <span style={{ color: bc?.under != null ? '#ef4444' : 'var(--text-dim)' }}>{bc?.under != null ? bc.under.toFixed(2) : '—'}</span>
-                        </div>
+                        <div style={{ fontSize: 8, fontWeight: 800, textTransform: 'uppercase', color: '#1db954', textAlign: 'center', letterSpacing: '0.05em', gridColumn: '2 / 4' }}>Unibet</div>
+                        <div />
+                        <div style={{ fontSize: 8, fontWeight: 800, textTransform: 'uppercase', color: '#e0292e', textAlign: 'center', letterSpacing: '0.05em', gridColumn: '5 / 7' }}>Betclic</div>
+                        {hasPinn && <><div /><div style={{ fontSize: 8, fontWeight: 800, textTransform: 'uppercase', color: '#60a5fa', textAlign: 'center', letterSpacing: '0.05em', gridColumn: '8 / 10' }}>Pinnacle</div></>}
                       </div>
-                    );
-                  })}
-                </div>
+                      <div style={{ display: 'grid', gridTemplateColumns: cols, gap: '0 0.2rem', paddingBottom: '0.25rem', borderBottom: '1px solid var(--border)', marginBottom: '0.2rem' }}>
+                        <div style={{ fontSize: 8, fontWeight: 700, textTransform: 'uppercase', color: 'var(--text-dim)', letterSpacing: '0.05em' }}>Joueur</div>
+                        <div style={{ fontSize: 8, color: 'rgba(255,255,255,0.6)', textAlign: 'center' }}>Ligne</div>
+                        <div style={{ fontSize: 8, textAlign: 'center' }}><span style={{ color: '#4ade80' }}>↑</span><span style={{ color: 'var(--text-dim)', margin: '0 2px' }}>/</span><span style={{ color: '#ef4444' }}>↓</span></div>
+                        <div />
+                        <div style={{ fontSize: 8, color: 'rgba(255,255,255,0.6)', textAlign: 'center' }}>Ligne</div>
+                        <div style={{ fontSize: 8, textAlign: 'center' }}><span style={{ color: '#4ade80' }}>↑</span><span style={{ color: 'var(--text-dim)', margin: '0 2px' }}>/</span><span style={{ color: '#ef4444' }}>↓</span></div>
+                        {hasPinn && <>
+                          <div />
+                          <div style={{ fontSize: 8, color: 'rgba(255,255,255,0.6)', textAlign: 'center' }}>Ligne</div>
+                          <div style={{ fontSize: 8, textAlign: 'center' }}><span style={{ color: '#4ade80' }}>↑</span><span style={{ color: 'var(--text-dim)', margin: '0 2px' }}>/</span><span style={{ color: '#ef4444' }}>↓</span></div>
+                        </>}
+                      </div>
+                      <div style={{ maxHeight: 320, overflowY: 'auto' }}>
+                        {entries.length === 0 && <div style={{ textAlign: 'center', padding: '0.8rem 0', color: 'var(--text-dim)', fontSize: 12 }}>Aucun joueur trouvé</div>}
+                        {entries.map(([name, bks]) => {
+                          const ub = bks.unibet?.[propStat];
+                          const bc = bks.betclic?.[propStat];
+                          const pn = bks.pinnacle?.[propStat];
+                          const cell = { textAlign: 'center', fontSize: 10, fontWeight: 600, fontVariantNumeric: 'tabular-nums' };
+                          const dim  = { color: 'var(--text-dim)', fontWeight: 400 };
+                          return (
+                            <div key={name}
+                              onClick={() => {
+                                const params = new URLSearchParams(location.search);
+                                params.set('props', '1');
+                                navigate(`${location.pathname}?${params.toString()}`, { replace: true });
+                                navigate(`/basketball/${fixture.id}/player/${encodeURIComponent(name)}`, { state: { fixture, league: fixture.league, eventId } });
+                              }}
+                              title="Voir toutes les lignes du joueur"
+                              style={{ display: 'grid', gridTemplateColumns: cols, gap: '0 0.2rem', alignItems: 'center', padding: '0.2rem 0', borderBottom: '1px solid rgba(255,255,255,0.04)', cursor: 'pointer' }}>
+                              <span style={{ fontSize: 11, fontWeight: 400, color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{name}</span>
+                              <div style={{ ...cell, color: ub?.line != null ? 'rgba(255,255,255,0.85)' : 'var(--text-dim)' }}>{ub?.line ?? <span style={dim}>—</span>}</div>
+                              <div style={{ ...cell, display: 'flex', justifyContent: 'center', gap: 2 }}>
+                                <span style={{ color: ub?.over != null ? '#4ade80' : 'var(--text-dim)' }}>{ub?.over != null ? ub.over.toFixed(2) : '—'}</span>
+                                <span style={{ color: 'var(--text-dim)' }}>/</span>
+                                <span style={{ color: ub?.under != null ? '#ef4444' : 'var(--text-dim)' }}>{ub?.under != null ? ub.under.toFixed(2) : '—'}</span>
+                              </div>
+                              <div />
+                              <div style={{ ...cell, color: bc?.line != null ? 'rgba(255,255,255,0.85)' : 'var(--text-dim)' }}>{bc?.line ?? <span style={dim}>—</span>}</div>
+                              <div style={{ ...cell, display: 'flex', justifyContent: 'center', gap: 2 }}>
+                                <span style={{ color: bc?.over != null ? '#4ade80' : 'var(--text-dim)' }}>{bc?.over != null ? bc.over.toFixed(2) : '—'}</span>
+                                <span style={{ color: 'var(--text-dim)' }}>/</span>
+                                <span style={{ color: bc?.under != null ? '#ef4444' : 'var(--text-dim)' }}>{bc?.under != null ? bc.under.toFixed(2) : '—'}</span>
+                              </div>
+                              {hasPinn && <>
+                                <div />
+                                <div style={{ ...cell, color: pn?.line != null ? '#60a5fa' : 'var(--text-dim)' }}>{pn?.line ?? <span style={dim}>—</span>}</div>
+                                <div style={{ ...cell, display: 'flex', justifyContent: 'center', gap: 2 }}>
+                                  <span style={{ color: pn?.over != null ? '#4ade80' : 'var(--text-dim)' }}>{pn?.over != null ? pn.over.toFixed(2) : '—'}</span>
+                                  <span style={{ color: 'var(--text-dim)' }}>/</span>
+                                  <span style={{ color: pn?.under != null ? '#ef4444' : 'var(--text-dim)' }}>{pn?.under != null ? pn.under.toFixed(2) : '—'}</span>
+                                </div>
+                              </>}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </>
+                  );
+                })()}
               </>
             )}
           </div>
@@ -2606,21 +2895,20 @@ function OddsCard({ odds, home, away, league, homePlayers, awayPlayers, onRefres
             padding: '0.3rem 0', borderBottom: '1px solid rgba(255,255,255,0.04)',
             background: isPinnacle ? 'rgba(255,255,255,0.03)' : 'transparent',
           }}>
-            <span style={{ fontSize: 11, fontWeight: isPinnacle ? 700 : 400, color: isPinnacle ? 'var(--text)' : 'var(--text)' }}>
+            <span style={{ fontSize: 11, fontWeight: isPinnacle ? 700 : 400, color: isPinnacle ? '#60a5fa' : 'var(--text)' }}>
               {BK_LABELS[bk] ?? bk}
-              {isPinnacle && <span style={{ fontSize: 8, color: 'var(--accent)', marginLeft: 3, fontWeight: 700 }}>REF</span>}
             </span>
             {tab === 'all' ? <>
               <div style={{ position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                <OddsCell value={h?.home} edge={h?.edgeHome} isPinnacle={isPinnacle} fairProb={h2h?.fairProb?.home} color={isPinnacle ? undefined : BK_COLORS[bk]} />
+                <OddsCell value={h?.home} edge={null} isPinnacle={isPinnacle} color={isPinnacle ? undefined : BK_COLORS[bk]} />
                 {ew?.bookmakers?.[bk]?.home && <span style={{ position: 'absolute', left: '50%', marginLeft: '1.3rem', fontSize: 9, color: 'var(--text-dim)', whiteSpace: 'nowrap', pointerEvents: 'none' }}>({ew.bookmakers[bk].home.toFixed(2)})</span>}
               </div>
               <div style={{ position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                <OddsCell value={h?.away} edge={h?.edgeAway} isPinnacle={isPinnacle} fairProb={h2h?.fairProb?.away} color={isPinnacle ? undefined : BK_COLORS[bk]} />
+                <OddsCell value={h?.away} edge={null} isPinnacle={isPinnacle} color={isPinnacle ? undefined : BK_COLORS[bk]} />
                 {ew?.bookmakers?.[bk]?.away && <span style={{ position: 'absolute', left: '50%', marginLeft: '1.3rem', fontSize: 9, color: 'var(--text-dim)', whiteSpace: 'nowrap', pointerEvents: 'none' }}>({ew.bookmakers[bk].away.toFixed(2)})</span>}
               </div>
             </> : <>
-              <div style={{ textAlign: 'center', fontSize: 10, fontVariantNumeric: 'tabular-nums', fontWeight: isPinnacle ? 700 : 400, color: isPinnacle ? 'var(--text)' : BK_COLORS[bk] ?? 'var(--text-dim)' }}>
+              <div style={{ textAlign: 'center', fontSize: 10, fontVariantNumeric: 'tabular-nums', fontWeight: isPinnacle ? 700 : 400, color: 'var(--text)' }}>
                 {t?.line ?? '—'}
               </div>
               <OddsCell value={t?.over}  edge={t?.edgeOver}  isPinnacle={isPinnacle} fairProb={tot?.fairProb?.over}  color={isPinnacle ? undefined : BK_COLORS[bk]} />
@@ -2630,41 +2918,65 @@ function OddsCard({ odds, home, away, league, homePlayers, awayPlayers, onRefres
         );
       })}
 
-      {tab === 'all' && gameTotalEstimate && (() => {
-        const { homeExpected, awayExpected, std } = gameTotalEstimate;
-        if (!homeExpected || !awayExpected || !std) return null;
-        const margin = homeExpected - awayExpected;
-        const pHome = Math.min(0.99, Math.max(0.01, 1 / (1 + Math.exp(-margin * Math.PI / (std * Math.sqrt(3))))));
-        const pAway = 1 - pHome;
-        const ewThreshold = Object.values(ew?.bookmakers ?? {})[0]?.threshold ?? (league === 'wnba' ? 18 : 20);
-        const pEWHome = Math.min(0.99, Math.max(0.01, computeEarlyWinProb(homeExpected, awayExpected, std, ewThreshold, true)));
-        const pEWAway = Math.min(0.99, Math.max(0.01, computeEarlyWinProb(homeExpected, awayExpected, std, ewThreshold, false)));
-        const bestEW = Math.max(pEWHome, pEWAway);
-        const ewDir = pEWHome >= pEWAway ? 'HOME' : 'AWAY';
-        const isEWAlert = bestEW >= EARLYWIN_ALERT_PROB;
+      {tab === 'all' && resultEstimate && (() => {
+        const { pHome, pAway } = resultEstimate;
+        if (pHome == null || pAway == null) return null;
+        // Mêmes seuils de couleur que le Modèle 1X2 foot (MatchDetailPage) — vert ≥62%, orange
+        // 52-62%, rouge <52% — et même structure en ligne (label, puis chaque issue), pour que les
+        // deux sports se présentent pareil (22 juin 2026, remplace l'ancien badge HOME/AWAY dupliqué).
+        const items = [
+          { key: 'home', label: home?.short ?? 'Dom', prob: Math.round(pHome) },
+          { key: 'away', label: away?.short ?? 'Ext', prob: Math.round(pAway) },
+        ];
+        const ubH = h2h?.bookmakers?.unibet;
+        const bcH = h2h?.bookmakers?.betclic;
         return (
-          <div style={{ position: 'relative', display: 'grid', gridTemplateColumns: COLS_H2H, gap: '0 0.25rem', alignItems: 'center', padding: '0.5rem 0 0', borderTop: '1px solid var(--border)', marginTop: '0.5rem' }}>
-            <span style={{ fontSize: 10, color: 'var(--text-dim)' }}>Modèle 1X2</span>
-            <div style={{ position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-              <span style={{ fontSize: 10, fontWeight: 600, color: pHome > pAway ? 'rgba(96,165,250,0.75)' : 'var(--text-dim)' }}>{Math.round(pHome * 100)}%</span>
-              <span style={{ position: 'absolute', left: '50%', marginLeft: '1.15rem', top: '50%', transform: 'translateY(calc(-50% + 0.02cm))', fontSize: 8, color: 'var(--text-dim)', whiteSpace: 'nowrap', pointerEvents: 'none' }}>(EW {Math.round(pEWHome * 100)}%)</span>
-            </div>
-            <div style={{ position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-              <span style={{ fontSize: 10, fontWeight: 600, color: pAway > pHome ? 'rgba(96,165,250,0.75)' : 'var(--text-dim)' }}>{Math.round(pAway * 100)}%</span>
-              <span style={{ position: 'absolute', left: '50%', marginLeft: '1.15rem', top: '50%', transform: 'translateY(calc(-50% + 0.02cm))', fontSize: 8, color: 'var(--text-dim)', whiteSpace: 'nowrap', pointerEvents: 'none' }}>(EW {Math.round(pEWAway * 100)}%)</span>
-            </div>
-            <div style={{ position: 'absolute', right: 0, top: '50%', transform: 'translateY(calc(-50% + 0.3cm))', display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
-              <span style={{ fontSize: 10, fontWeight: 700, color: isEWAlert ? '#4ade80' : 'var(--text-dim)' }}>{Math.round(bestEW * 100)}%</span>
-              {isEWAlert && (
-                <span style={{ fontSize: 9, fontWeight: 800, padding: '1px 5px', borderRadius: 3, background: 'rgba(96,165,250,0.12)', color: 'rgba(96,165,250,0.9)', border: '1px solid rgba(96,165,250,0.3)', letterSpacing: '0.05em' }}>{ewDir}</span>
-              )}
+          <div style={{ borderTop: '1px solid var(--border)', marginTop: '0.5rem', paddingTop: '0.5rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem', flexWrap: 'nowrap' }}>
+            <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-dim)', flexShrink: 0 }}>Modèle 1X2</span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '1.1rem', flexWrap: 'nowrap', flexShrink: 0 }}>
+              {items.map(it => {
+                const probColor = it.prob >= 62 ? '#10b981' : it.prob >= 52 ? '#f59e0b' : '#ef4444';
+                // Edge Unibet/Betclic vs Pinnacle (25 juin 2026) — mini popup au clic sur le libellé,
+                // même mécanique que MatchDetailPage (foot), 2 voies (pas de nul en basket).
+                const ubEdge = fairH2H ? calcEdge(ubH?.[it.key], fairH2H[it.key]) : null;
+                const bcEdge = fairH2H ? calcEdge(bcH?.[it.key], fairH2H[it.key]) : null;
+                const hasPinnacleEdge = fairH2H != null;
+                const pinnacleProb = fairH2H ? Math.round(fairH2H[it.key] * 100) : null;
+                return (
+                  <span key={it.key} style={{ display: 'flex', alignItems: 'center', gap: 5, position: 'relative' }}>
+                    <span
+                      onClick={hasPinnacleEdge ? e => { e.stopPropagation(); setEdgePopupKey(prev => prev === it.key ? null : it.key); } : undefined}
+                      style={{
+                        fontSize: 9, fontWeight: 700, color: 'var(--text)',
+                        cursor: hasPinnacleEdge ? 'pointer' : 'default',
+                        textDecoration: hasPinnacleEdge ? 'underline dotted' : 'none', textDecorationColor: 'rgba(255,255,255,0.3)',
+                      }}
+                    >{it.label}</span>
+                    <span style={{ fontSize: 8, fontWeight: 600, color: probColor }}>{it.prob}%</span>
+                    {edgePopupKey === it.key && (
+                      <div ref={edgePopupRef} style={{
+                        position: 'absolute', top: '100%', left: '50%', transform: 'translateX(-50%)', marginTop: 6,
+                        background: 'var(--bg-card, #11141c)', border: '1px solid rgba(139,92,246,0.35)', borderRadius: 6,
+                        padding: '0.4rem 0.6rem', boxShadow: '0 6px 16px rgba(0,0,0,0.4)', zIndex: 50, whiteSpace: 'nowrap',
+                        minWidth: 90, textAlign: 'center',
+                      }}>
+                        <div style={{ fontSize: 8, fontWeight: 700, color: '#a78bfa', marginBottom: 3, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Pinnacle</div>
+                        {pinnacleProb != null && <div style={{ fontSize: 16, fontWeight: 800, color: '#8b5cf6', marginBottom: 4, fontVariantNumeric: 'tabular-nums' }}>{pinnacleProb}%</div>}
+                        {(ubEdge != null || bcEdge != null) && <div style={{ fontSize: 8, color: 'var(--text-dim)', marginBottom: 2 }}>vs bookmakers</div>}
+                        {ubEdge != null && <div style={{ fontSize: 10, fontWeight: 600, color: BK_COLORS.unibet }}>Unibet {ubEdge >= 0 ? '+' : ''}{ubEdge.toFixed(1)}%</div>}
+                        {bcEdge != null && <div style={{ fontSize: 10, fontWeight: 600, color: BK_COLORS.betclic }}>Betclic {bcEdge >= 0 ? '+' : ''}{bcEdge.toFixed(1)}%</div>}
+                      </div>
+                    )}
+                  </span>
+                );
+              })}
             </div>
           </div>
         );
       })()}
 
       {tab === 'points' && gameTotalEstimate && fixture && (
-        <GameTotalWidget estimate={gameTotalEstimate} fixture={fixture} />
+        <GameTotalWidget estimate={gameTotalEstimate} fixture={fixture} tot={tot} edgePopupKey={edgePopupKey} setEdgePopupKey={setEdgePopupKey} edgePopupRef={edgePopupRef} />
       )}
     </div>
   );
@@ -2717,6 +3029,7 @@ export default function BasketballDetailPage() {
   const euroLeague = searchParams.get('league'); // 'acb' | 'lnb' | 'bbl' | 'legaa' | null
   const isEuro    = ['acb','lnb','bbl','legaa'].includes(euroLeague);
   const propsSectionRef = useRef(null);
+  const rankSlotRef = useRef(null);
   const dropRef = useRef(null);
   const [dropOpen, setDropOpen] = useState(false);
   const staticFixture    = useFixture(id);
@@ -2737,10 +3050,15 @@ export default function BasketballDetailPage() {
   const [oddsRefreshing, setOddsRefreshing]   = useState(false);
   const [gameSchedules, setGameSchedules]     = useState(null);
   const [gameTotalEstimate, setGameTotalEstimate] = useState(null);
+  const [resultEstimate, setResultEstimate] = useState(null);
   const [showOddsDropdown, setShowOddsDropdown] = useState(fromAlert);
   const [oddsTab, setOddsTab] = useState(fromAlert ? 'joueurs' : 'all'); // onglet actif de la boîte Odds — pilote l'affichage des cartes en dessous
   const [homeNames, setHomeNames]       = useState(Array(5).fill(''));
   const savedLineupLoaded = useRef(false);
+  // Compo telle que chargée au mount (avant toute modif utilisateur) — sert à détecter les
+  // remplacements au moment d'Enregistrer (ACB/LNB/BBL : prompt OUT/BENCH par joueur retiré)
+  const baselineNames = useRef({ home: [], away: [] });
+  const [outPrompt, setOutPrompt] = useState(null); // { home: [...names], away: [...names], choices: {} }
   const [awayNames, setAwayNames]       = useState(Array(5).fill(''));
   const [homePlayers, setHomePlayers]   = useState(null);
   const [awayPlayers, setAwayPlayers]   = useState(null);
@@ -2907,6 +3225,39 @@ export default function BasketballDetailPage() {
     elapsed >= LIVE_WINDOW_MS
   );
   const isEuroleague = fixture?.league === 'euroleague';
+
+  // ACB/LNB/BBL uniquement : un joueur retiré au moment d'Enregistrer doit être qualifié
+  // OUT (redistribution complète) ou BENCH (toujours sur le terrain, pas de redistribution)
+  const EU_OUT_BENCH_LEAGUES = ['acb', 'lnb', 'bbl'];
+  const supportsOutBench = EU_OUT_BENCH_LEAGUES.includes(euroLeague);
+  const saveEuroLineup = (outPlayersBySide = { home: [], away: [] }) => {
+    if (!fixture?.home?.id || !fixture?.away?.id) return;
+    const save = (names, teamId, opp, outPlayers) => {
+      const filled = names.filter(n => n);
+      if (!filled.length) return Promise.resolve();
+      return fetch(`/api/euro/${euroLeague}/team-lineup/${teamId}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ starters: filled, opponent: opp, date: fixture.date, confirmed: true, outPlayers }),
+      }).catch(() => {});
+    };
+    Promise.all([
+      save(homeNames, fixture.home.id, fixture.away.name, outPlayersBySide.home),
+      save(awayNames, fixture.away.id, fixture.home.name, outPlayersBySide.away),
+    ]).then(() => {
+      setSavedOk(true);
+      setTimeout(() => setSavedOk(false), 2500);
+      setProjLineup(prev => ({ ...(prev || {}), source: 'saved', confirmed: true }));
+      baselineNames.current = { home: [...homeNames], away: [...awayNames] };
+      setOutPrompt(null);
+    });
+  };
+  const handleSaveClick = () => {
+    if (!supportsOutBench) { saveEuroLineup(); return; }
+    const removedHome = (baselineNames.current.home || []).filter(n => n && !homeNames.some(m => euNameEq(m, n)));
+    const removedAway = (baselineNames.current.away || []).filter(n => n && !awayNames.some(m => euNameEq(m, n)));
+    if (!removedHome.length && !removedAway.length) { saveEuroLineup(); return; }
+    setOutPrompt({ home: removedHome, away: removedAway, choices: {} });
+  };
 
   // Fetch team stats WNBA (ppg / oppg / rpg / apg / fg%)
   useEffect(() => {
@@ -3087,27 +3438,14 @@ export default function BasketballDetailPage() {
       fetch(`/api/euro/${euroLeague}/team-lineup/${awayId}`).then(r=>r.json()).catch(()=>null),
     ]).then(([homeRes, awayRes]) => {
       savedLineupLoaded.current = true;
-      if (homeRes?.found && homeRes.starters?.length) setHomeNames(homeRes.starters.concat(Array(5).fill('')).slice(0,5));
-      if (awayRes?.found && awayRes.starters?.length) setAwayNames(awayRes.starters.concat(Array(5).fill('')).slice(0,5));
+      const homeStarters = homeRes?.found && homeRes.starters?.length ? homeRes.starters : [];
+      const awayStarters = awayRes?.found && awayRes.starters?.length ? awayRes.starters : [];
+      if (homeStarters.length) setHomeNames(homeStarters.concat(Array(5).fill('')).slice(0,5));
+      if (awayStarters.length) setAwayNames(awayStarters.concat(Array(5).fill('')).slice(0,5));
+      // Baseline = ce qui était affiché avant toute modif (carry-over non confirmé le plus souvent)
+      baselineNames.current = { home: homeStarters, away: awayStarters };
     });
   }, [fixture?.home?.id, fixture?.away?.id]);
-
-  // Auto-save compo EU quand 5 noms sont assignés manuellement
-  useEffect(() => {
-    if (!isEuro || !euroFixture || isCompleted) return;
-    const saveIfFull = (names, teamId, opponentName) => {
-      const filled = names.filter(n => n);
-      if (filled.length >= 5) {
-        fetch(`/api/euro/${euroLeague}/team-lineup/${teamId}`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ starters: filled, opponent: opponentName, date: euroFixture.date }),
-        }).catch(() => {});
-      }
-    };
-    saveIfFull(homeNames, euroFixture.home.id, euroFixture.away.name);
-    saveIfFull(awayNames, euroFixture.away.id, euroFixture.home.name);
-  }, [homeNames, awayNames]);
 
   // Fetch schedules des deux équipes pour le modèle O/U
   useEffect(() => {
@@ -3146,115 +3484,38 @@ export default function BasketballDetailPage() {
   }, [fixture?.id]);
 
   // Calcule l'estimation O/U dès que les schedules sont prêts (total bookmaker en bonus si dispo)
+  // Source unique — même modèle (computeGameTotalFull) que les alertes game_total, pour que ce
+  // widget affiche exactement le même chiffre que l'alerte (22 juin 2026 ; remplace l'ancien calcul
+  // local computeGameTotal + générateur d'alertes local, qui pouvaient diverger du serveur et qui
+  // ne vérifiaient pas la cote minimum — même classe de bug déjà corrigée sur les props le 8 juin).
   useEffect(() => {
     if (!gameSchedules || !fixture) return;
     const bks = bballOdds?.markets?.totals?.bookmakers ?? {};
     const refBk = ['unibet', 'betclic', 'winamax'].find(b => bks[b]?.line);
-    const refTotal = refBk ? { line: bks[refBk].line, bk: refBk } : null;
-    const est = computeGameTotal(gameSchedules.home, gameSchedules.away, fixture, refTotal?.line ?? null);
-    if (est) est.refBk = refBk ?? null;
-    setGameTotalEstimate(est);
-    // Sauvegarde alerte si edge ≥ seuil
-    // Bloque le total O/U si joueur clé (≥15 pts) Q/GTD sur l'un des deux côtés (playoffs, ≤2h30)
-    const Q_STATUSES_TOTAL = ['Questionable', 'GTD', 'Game Time Decision', 'Doubtful', 'Day-To-Day'];
-    const hoursToTip = (new Date(fixture.date).getTime() - Date.now()) / 3600000;
-    const isPlayoffGame = (() => { const m = new Date(fixture.date).getMonth() + 1; return m >= 4 && m <= 6; })();
-    const hasKeyQPlayer = isPlayoffGame && hoursToTip <= 2.5 && [...(homePlayers || []), ...(awayPlayers || [])].some(p => {
-      if ((p.stats?.pts ?? 0) < 15) return false;
-      const inj = outerInjuryData[p.name]?.status || p.injury;
-      return Q_STATUSES_TOTAL.includes(inj);
-    });
-    const shouldAlert = !hasKeyQPlayer && est && est.pOver != null
-      && Math.max(est.pOver, est.pUnder) >= GAME_TOTAL_ALERT_PROB;
-    if (shouldAlert) {
-      try {
-        const existing = JSON.parse(localStorage.getItem(GAME_TOTAL_ALERT_KEY) || '[]');
-        const id = `${fixture.id}_total`;
-        const isOverDir = est.direction === 'over';
-        const newData = {
-          id,
-          type:       'game_total',
-          league:     fixture.league || 'nba',
-          home:       fixture.home.name,
-          away:       fixture.away.name,
-          homeShort:  fixture.home.short,
-          awayShort:  fixture.away.short,
-          date:       fixture.date,
-          estimated:  est.estimated,
-          line:       est.refTotal,
-          edge:       est.edge,
-          direction:  est.direction,
-          prob:       +(Math.max(est.pOver, est.pUnder) * 100).toFixed(1),
-          savedAt:    Date.now(),
-          unibetOdds:  bks.unibet  ? (isOverDir ? bks.unibet.over  : bks.unibet.under)  ?? null : null,
-          betclicOdds: bks.betclic ? (isOverDir ? bks.betclic.over : bks.betclic.under) ?? null : null,
-          winamaxOdds: bks.winamax ? (isOverDir ? bks.winamax.over : bks.winamax.under) ?? null : null,
-        };
-        const idx = existing.findIndex(a => a.id === id);
-        if (idx === -1) {
-          existing.push({ ...newData, status: 'pending' });
-        } else {
-          // Met à jour tout sauf statut et cote acceptée
-          const prev = existing[idx];
-          existing[idx] = { ...newData, status: prev.status, acceptedAt: prev.acceptedAt, acceptedBk: prev.acceptedBk, acceptedOdds: prev.acceptedOdds };
-        }
-        localStorage.setItem(GAME_TOTAL_ALERT_KEY, JSON.stringify(existing));
-        window.dispatchEvent(new Event('nba_alerts_updated'));
-      } catch {}
+    const refTotal = refBk ? bks[refBk].line : null;
+    if (refTotal) {
+      fetch('/api/basketball/total', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          homeGames: gameSchedules.home, awayGames: gameSchedules.away,
+          gameDate: fixture.date, round: fixture.round, league: fixture.league, refTotal,
+          awayTeamKey: isEuro ? fixture.away.id : fixture.away.short,
+        }),
+      }).then(r => r.json()).then(d => setGameTotalEstimate(d?.error ? null : { ...d, refBk })).catch(() => setGameTotalEstimate(null));
+    } else {
+      setGameTotalEstimate(null);
     }
 
-    // ── EarlyWin alert ────────────────────────────────────────────────────────
-    if (est && !isCompleted) {
-      const ewBks = bballOdds?.markets?.earlywin?.bookmakers ?? {};
-      const candidates = [];
-      for (const [bk, data] of Object.entries(ewBks)) {
-        const threshold = data.threshold ?? 20;
-        for (const [side, forHome] of [['home', true], ['away', false]]) {
-          const odds = data[side];
-          if (!odds) continue;
-          const p = computeEarlyWinProb(est.homeExpected, est.awayExpected, est.std, threshold, forHome);
-          const edge = +((odds * p - 1) * 100).toFixed(1);
-          if (p >= EARLYWIN_ALERT_PROB && odds >= EARLYWIN_MIN_ODDS) {
-            candidates.push({ bk, side, odds, threshold, p: +(p * 100).toFixed(1), edge, teamName: forHome ? fixture.home.name : fixture.away.name, teamShort: forHome ? fixture.home.short : fixture.away.short });
-          }
-        }
-      }
-
-      for (const c of candidates) {
-        try {
-          const existing = JSON.parse(localStorage.getItem(EARLYWIN_ALERT_KEY) || '[]');
-          const id = `${fixture.id}_earlywin_${c.side}_${c.bk}`;
-          const newData = {
-            id,
-            type:      'earlywin',
-            league:    fixture.league || 'nba',
-            home:      fixture.home.name,
-            away:      fixture.away.name,
-            homeShort: fixture.home.short,
-            awayShort: fixture.away.short,
-            date:      fixture.date,
-            side:      c.side,
-            teamName:  c.teamName,
-            teamShort: c.teamShort,
-            threshold: c.threshold,
-            prob:      c.p,
-            edge:      c.edge,
-            odds:      c.odds,
-            bookmaker: c.bk,
-            savedAt:   Date.now(),
-          };
-          const idx = existing.findIndex(a => a.id === id);
-          if (idx === -1) {
-            existing.push({ ...newData, status: 'pending' });
-          } else {
-            const prev = existing[idx];
-            existing[idx] = { ...newData, status: prev.status, acceptedAt: prev.acceptedAt, acceptedBk: prev.acceptedBk, acceptedOdds: prev.acceptedOdds };
-          }
-          localStorage.setItem(EARLYWIN_ALERT_KEY, JSON.stringify(existing));
-          window.dispatchEvent(new Event('nba_alerts_updated'));
-        } catch {}
-      }
-    }
+    // Proba de victoire — même modèle (computeTeamWinProb) que les alertes basketball_result,
+    // pour que ce widget affiche exactement le même chiffre que l'alerte (pas une formule locale).
+    fetch('/api/basketball/result', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        homeGames: gameSchedules.home, awayGames: gameSchedules.away,
+        gameDate: fixture.date, round: fixture.round, league: fixture.league,
+        homePlayers, awayPlayers,
+      }),
+    }).then(r => r.json()).then(d => setResultEstimate(d?.error ? null : d)).catch(() => setResultEstimate(null));
   }, [gameSchedules, bballOdds]);
 
   // Reset + fetch cotes quand le match change
@@ -3295,11 +3556,15 @@ export default function BasketballDetailPage() {
   function refreshOdds() {
     if (!fixture || oddsRefreshing || isLive) return;
     setOddsRefreshing(true);
+    const start = Date.now();
     fetch(`/api/basketball/odds?home=${encodeURIComponent(fixture.home.name)}&away=${encodeURIComponent(fixture.away.name)}&league=${fixture.league}&date=${encodeURIComponent(fixture.date)}&refresh=1`)
       .then(r => r.json())
       .then(d => setBballOdds(d))
       .catch(() => {})
-      .finally(() => setOddsRefreshing(false));
+      .finally(() => {
+        const remaining = 500 - (Date.now() - start);
+        setTimeout(() => setOddsRefreshing(false), Math.max(0, remaining));
+      });
   }
 
   // Action partagée par le chip "Odds" et le bouton "Analyse Props" — les deux ouvrent
@@ -3545,9 +3810,13 @@ export default function BasketballDetailPage() {
         </button>
       </div>
 
+      {/* Emplacement du panneau classement ligue (PropsSection) — entre les chips et la boîte
+          Odds, pousse le contenu en dessous plutôt que de flotter par-dessus. */}
+      <div ref={rankSlotRef} />
+
       {showOddsDropdown && (bballOdds?.found || (isEuroleague && bballOdds !== null)) && (
         <section className="detail-card compact-card" style={{ marginBottom: '0.5rem' }}>
-          <OddsCard key={fixture?.id} odds={bballOdds} home={home} away={away} league={fixture.league} homePlayers={homePlayers} awayPlayers={(awayPlayers||[]).filter(p=>!new Set((homePlayers||[]).map(p=>String(p.id))).has(String(p.id)))} onRefresh={refreshOdds} refreshing={oddsRefreshing} defaultTab={fromAlert ? 'joueurs' : 'all'} gameTotalEstimate={!isCompleted ? gameTotalEstimate : null} fixture={fixture} onTabChange={(id) => { setOddsTab(id); if (id === 'joueurs') { setShowProps(true); setPropsCollapsed(false); } else { setPropsCollapsed(true); } }} onTeamChange={setOddsTeam} showHomeOverride={oddsTeam} eventId={bballOdds?.eventId ?? null} />
+          <OddsCard key={fixture?.id} odds={bballOdds} home={home} away={away} league={fixture.league} homePlayers={homePlayers} awayPlayers={(awayPlayers||[]).filter(p=>!new Set((homePlayers||[]).map(p=>String(p.id))).has(String(p.id)))} onRefresh={refreshOdds} refreshing={oddsRefreshing} defaultTab={fromAlert ? 'joueurs' : 'all'} gameTotalEstimate={!isCompleted ? gameTotalEstimate : null} resultEstimate={!isCompleted ? resultEstimate : null} fixture={fixture} onTabChange={(id) => { setOddsTab(id); if (id === 'joueurs') { setShowProps(true); setPropsCollapsed(false); } else { setPropsCollapsed(true); } }} onTeamChange={setOddsTeam} showHomeOverride={oddsTeam} eventId={bballOdds?.eventId ?? null} />
         </section>
       )}
 
@@ -3577,6 +3846,7 @@ export default function BasketballDetailPage() {
             onTeamChange={setOddsTeam}
             homeNames={homeNames}
             awayNames={awayNames}
+            rankSlotRef={rankSlotRef}
           />
         </div>
       )}
@@ -3602,7 +3872,7 @@ export default function BasketballDetailPage() {
               onAssign={(team, name) => {
                 const names  = team === 'home' ? homeNames : awayNames;
                 const setter = team === 'home' ? setHomeNames : setAwayNames;
-                const used   = names.findIndex(n => n === name);
+                const used   = names.findIndex(n => euNameEq(n, name));
                 if (used !== -1) {
                   setter(n => { const c=[...n]; c[used]=''; return c; });
                 } else {
@@ -3631,24 +3901,6 @@ export default function BasketballDetailPage() {
                   : (projLineup?.source === 'rotowire' || projLineup?.source === 'sofascore' || projLineup?.source === 'gamelog' || projLineup?.source === 'saved' || hasEuroPlayers || hasNames) ? 'Compos probables'
                   : null;
                 const canSaveEuro = isEuro && fixture?.home?.id && fixture?.away?.id;
-                const saveEuroLineup = () => {
-                  const save = (names, teamId, opp) => {
-                    const filled = names.filter(n=>n);
-                    if (!filled.length) return Promise.resolve();
-                    return fetch(`/api/euro/${euroLeague}/team-lineup/${teamId}`, {
-                      method: 'POST', headers: {'Content-Type':'application/json'},
-                      body: JSON.stringify({ starters: filled, opponent: opp, date: fixture.date }),
-                    }).catch(()=>{});
-                  };
-                  Promise.all([
-                    save(homeNames, fixture.home.id, fixture.away.name),
-                    save(awayNames, fixture.away.id, fixture.home.name),
-                  ]).then(() => {
-                    setSavedOk(true);
-                    setTimeout(() => setSavedOk(false), 2500);
-                    setProjLineup(prev => ({ ...(prev||{}), source: 'saved', confirmed: true }));
-                  });
-                };
                 return (
                   <div style={{ display:'flex', alignItems:'center', justifyContent:'center', gap:8, marginBottom:'0.5rem' }}>
                     {label && <span style={{
@@ -3659,7 +3911,7 @@ export default function BasketballDetailPage() {
                       border: `1px solid ${isConfirmed ? 'rgba(34,197,94,0.3)' : 'rgba(251,191,36,0.3)'}`,
                     }}>{label}</span>}
                     {canSaveEuro && (
-                      <button onClick={saveEuroLineup} style={{
+                      <button onClick={handleSaveClick} style={{
                         fontSize: 9, fontWeight: 700, padding: '2px 10px', borderRadius: 4, cursor: 'pointer',
                         background: savedOk ? 'rgba(34,197,94,0.15)' : 'rgba(96,165,250,0.12)',
                         color: savedOk ? '#22c55e' : '#60a5fa',
@@ -3670,6 +3922,54 @@ export default function BasketballDetailPage() {
                   </div>
                 );
               })()}
+              {outPrompt && (
+                <div className="detail-card" style={{ padding: '0.6rem 0.8rem', marginBottom: '0.5rem' }}>
+                  <div style={{ fontSize: 10, fontWeight: 700, marginBottom: 6, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                    Joueur(s) retiré(s) de la compo — précise leur statut
+                  </div>
+                  {[...outPrompt.home.map(n => ({ name: n, side: 'home' })), ...outPrompt.away.map(n => ({ name: n, side: 'away' }))].map(({ name, side }) => (
+                    <div key={`${side}_${name}`} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '3px 0' }}>
+                      <span style={{ fontSize: 11 }}>{name}</span>
+                      <div style={{ display: 'flex', gap: 4 }}>
+                        {['out', 'bench'].map(status => {
+                          const active = outPrompt.choices[`${side}_${name}`] === status;
+                          return (
+                            <button
+                              key={status}
+                              onClick={() => setOutPrompt(p => ({ ...p, choices: { ...p.choices, [`${side}_${name}`]: status } }))}
+                              style={{
+                                fontSize: 9, fontWeight: 700, padding: '2px 8px', borderRadius: 4, cursor: 'pointer', textTransform: 'uppercase',
+                                background: active ? (status === 'out' ? 'rgba(239,68,68,0.2)' : 'rgba(96,165,250,0.2)') : 'rgba(255,255,255,0.06)',
+                                color: active ? (status === 'out' ? '#ef4444' : '#60a5fa') : 'var(--text-dim)',
+                                border: `1px solid ${active ? (status === 'out' ? 'rgba(239,68,68,0.4)' : 'rgba(96,165,250,0.4)') : 'rgba(255,255,255,0.1)'}`,
+                              }}
+                            >{status === 'out' ? 'OUT' : 'BENCH'}</button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ))}
+                  <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
+                    <button
+                      disabled={Object.keys(outPrompt.choices).length < (outPrompt.home.length + outPrompt.away.length)}
+                      onClick={() => {
+                        const outHome = outPrompt.home.filter(n => outPrompt.choices[`home_${n}`]).map(n => ({ name: n, status: outPrompt.choices[`home_${n}`] }));
+                        const outAway = outPrompt.away.filter(n => outPrompt.choices[`away_${n}`]).map(n => ({ name: n, status: outPrompt.choices[`away_${n}`] }));
+                        saveEuroLineup({ home: outHome, away: outAway });
+                      }}
+                      style={{
+                        fontSize: 9, fontWeight: 700, padding: '3px 10px', borderRadius: 4, cursor: 'pointer', textTransform: 'uppercase',
+                        background: 'rgba(34,197,94,0.15)', color: '#22c55e', border: '1px solid rgba(34,197,94,0.4)',
+                        opacity: Object.keys(outPrompt.choices).length < (outPrompt.home.length + outPrompt.away.length) ? 0.4 : 1,
+                      }}
+                    >Confirmer</button>
+                    <button onClick={() => setOutPrompt(null)} style={{
+                      fontSize: 9, fontWeight: 700, padding: '3px 10px', borderRadius: 4, cursor: 'pointer', textTransform: 'uppercase',
+                      background: 'rgba(255,255,255,0.06)', color: 'var(--text-dim)', border: '1px solid rgba(255,255,255,0.1)',
+                    }}>Annuler</button>
+                  </div>
+                </div>
+              )}
               <LineupBuilder
                 home={home} away={away}
                 homeNames={homeNames} awayNames={awayNames}

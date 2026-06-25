@@ -7,36 +7,114 @@
 const ALERT_KEY     = 'nba_prop_alerts';
 const HISTORY_KEY   = 'nba_bet_history';
 const GAME_TOTAL_KEY = 'nba_game_total_alerts';
+const BASKETBALL_RESULT_KEY = 'basketball_result_alerts';
 const FB_BTTS_KEY   = 'fb_btts_alerts';
 const FB_TOTAL_KEY  = 'fb_total_alerts';
 const FB_RESULT_KEY = 'fb_result_alerts';
+const FB_PINNACLE_KEY = 'fb_pinnacle_alerts';
+const BBALL_PINNACLE_KEY = 'bball_pinnacle_alerts';
 const PURGE_PLAYERS = ['Justin Bean', 'Jack Kayil', 'Leandro Bolmaro'];
 
-// Applique les settlements backend (won/lost) dans le localStorage — appeler depuis n'importe quelle page
+// Applique les settlements backend (won/lost/void) dans le localStorage — appeler depuis n'importe
+// quelle page. Boucle sur toutes les clés d'alertes connues (props, total, résultat équipe, foot)
+// pour que chaque type bénéficie du même règlement serveur — un seul endroit à étendre pour un
+// futur type d'alerte (22 juin 2026, avant ça seul ALERT_KEY/props était couvert ici).
+const SETTLEABLE_KEYS = [ALERT_KEY, GAME_TOTAL_KEY, BASKETBALL_RESULT_KEY, FB_BTTS_KEY, FB_TOTAL_KEY, FB_RESULT_KEY, FB_PINNACLE_KEY, BBALL_PINNACLE_KEY];
+
+const PENDING_SYNC_KEY = 'pending_alert_sync';
+const readPendingSync  = () => { try { return JSON.parse(localStorage.getItem(PENDING_SYNC_KEY) || '[]'); } catch { return []; } };
+const writePendingSync = list => { try { localStorage.setItem(PENDING_SYNC_KEY, JSON.stringify(list)); } catch {} };
+
+// Envoie une alerte acceptée au serveur avec retry — avant ce fix (22 juin 2026), un .catch(()=>{})
+// silencieux laissait le pari invisible côté serveur (jamais réglé automatiquement par
+// runAutoSettle) si la requête échouait une seule fois, ex. redémarrage backend (node --watch)
+// pendant le clic "accepter" — cas réel constaté sur une alerte ACB Total. 3 tentatives
+// rapprochées, puis mise en file localStorage pour réessai au prochain chargement de page
+// (flushPendingAlertSync, appelé depuis syncSettlements).
+export async function postAcceptedAlertReliably(alert) {
+  if (!alert?.id) return;
+  for (const delay of [0, 1500, 4000]) {
+    if (delay) await new Promise(r => setTimeout(r, delay));
+    try {
+      const res = await fetch('/api/accepted-alerts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(alert) });
+      if (res.ok) { writePendingSync(readPendingSync().filter(a => a.id !== alert.id)); return; }
+    } catch {}
+  }
+  writePendingSync([...readPendingSync().filter(a => a.id !== alert.id), alert]);
+}
+
+// Réessaie les alertes acceptées jamais confirmées côté serveur (3 tentatives épuisées) — appelé
+// au chargement de PlaceBetPage/RunningPage via syncSettlements.
+export async function flushPendingAlertSync() {
+  const pending = readPendingSync();
+  for (const alert of pending) {
+    try {
+      const res = await fetch('/api/accepted-alerts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(alert) });
+      if (res.ok) writePendingSync(readPendingSync().filter(a => a.id !== alert.id));
+    } catch {}
+  }
+}
+
+const PENDING_SETTLEMENT_KEY = 'pending_settlement_sync';
+const readPendingSettlements  = () => { try { return JSON.parse(localStorage.getItem(PENDING_SETTLEMENT_KEY) || '[]'); } catch { return []; } };
+const writePendingSettlements = list => { try { localStorage.setItem(PENDING_SETTLEMENT_KEY, JSON.stringify(list)); } catch {} };
+
+// Même fiabilité que postAcceptedAlertReliably ci-dessus, appliquée à l'envoi du résultat foot par
+// resolveCompletedFootballAlerts() — avant ce fix (25 juin 2026), un .catch(()=>{}) silencieux sans
+// retry perdait la trace serveur du pari dès la moindre panne réseau/redémarrage backend, alors que
+// le résultat était déjà correctement réglé dans le localStorage (cas réel : 3 alertes Under CDM du
+// 24 juin correctement W/L côté navigateur mais absentes de settlements.json côté serveur).
+async function postSettlementReliably(payload) {
+  if (!payload?.id) return;
+  for (const delay of [0, 1500, 4000]) {
+    if (delay) await new Promise(r => setTimeout(r, delay));
+    try {
+      const res = await fetch('/api/settlements', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      if (res.ok) { writePendingSettlements(readPendingSettlements().filter(p => p.id !== payload.id)); return; }
+    } catch {}
+  }
+  writePendingSettlements([...readPendingSettlements().filter(p => p.id !== payload.id), payload]);
+}
+
+// Réessaie les résultats foot jamais confirmés côté serveur — appelé au chargement via syncSettlements.
+export async function flushPendingSettlementSync() {
+  const pending = readPendingSettlements();
+  for (const payload of pending) {
+    try {
+      const res = await fetch('/api/settlements', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      if (res.ok) writePendingSettlements(readPendingSettlements().filter(p => p.id !== payload.id));
+    } catch {}
+  }
+}
+
 export async function syncSettlements() {
   try {
+    await flushPendingAlertSync();
+    await flushPendingSettlementSync();
     const settlements = await fetch('/api/settlements').then(r => r.ok ? r.json() : []).catch(() => []);
     if (!settlements?.length) return;
-    const raw = JSON.parse(localStorage.getItem(ALERT_KEY) || '[]');
-    let changed = false;
     const purges = settlements.filter(s => s.purge);
-    const updated = raw
-      .filter(a => {
-        const s = settlements.find(x => x.id === a.id);
-        if (s?.status === 'void' && a.status === 'accepted') { changed = true; return false; }
-        if (purges.some(p => p.player === a.player && (!p.date || a.fixtureDate?.startsWith(p.date)))) { changed = true; return false; }
-        return true;
-      })
-      .map(a => {
-        const s = settlements.find(x => x.id === a.id);
-        if (!s || a.status === s.status || s.status === 'void') return a;
-        changed = true;
-        return { ...a, status: s.status, actualStat: s.actualStat ?? null };
-      });
-    if (changed) {
-      localStorage.setItem(ALERT_KEY, JSON.stringify(updated));
-      window.dispatchEvent(new Event('nba_alerts_updated'));
+    let anyChanged = false;
+
+    for (const key of SETTLEABLE_KEYS) {
+      const raw = JSON.parse(localStorage.getItem(key) || '[]');
+      let changed = false;
+      const updated = raw
+        .filter(a => {
+          const s = settlements.find(x => x.id === a.id);
+          if (s?.status === 'void' && a.status === 'accepted') { changed = true; return false; }
+          if (purges.some(p => p.player && p.player === a.player && (!p.date || a.fixtureDate?.startsWith(p.date)))) { changed = true; return false; }
+          return true;
+        })
+        .map(a => {
+          const s = settlements.find(x => x.id === a.id);
+          if (!s || a.status === s.status || s.status === 'void') return a;
+          changed = true;
+          return { ...a, status: s.status, actualStat: s.actualStat ?? a.actualStat ?? null };
+        });
+      if (changed) { localStorage.setItem(key, JSON.stringify(updated)); anyChanged = true; }
     }
+    if (anyChanged) window.dispatchEvent(new Event('nba_alerts_updated'));
   } catch {}
 }
 
@@ -378,6 +456,178 @@ export async function syncGameTotalAlerts() {
   } catch {}
 }
 
+// Pont alertes "Value Bet vs Pinnacle" basket (25 juin 2026) — même principe que syncGameTotalAlerts
+// ci-dessus, mais pour basketball_pinnacle_edge (WNBA Total uniquement, cf. getPinnacleWnbaTotals
+// backend). Clé localStorage séparée pour rester visuellement/structurellement distinct de
+// nba_game_total_alerts (même marché, mais méthode de calcul indépendante — comparaison à
+// Pinnacle, pas à notre modèle).
+export async function syncBballPinnacleAlerts() {
+  try {
+    const { alerts: bgAlerts } = await fetch('/api/nba/background-alerts').then(r => r.json());
+    if (!bgAlerts?.length) return;
+    const pinAlerts = bgAlerts.filter(a => a.type === 'basketball_pinnacle_edge' && a.prob > 0);
+    if (!pinAlerts.length) return;
+
+    const existing = JSON.parse(localStorage.getItem(BBALL_PINNACLE_KEY) || '[]');
+    const sameFixture = (a, b) => {
+      if (a.home !== b.home || a.away !== b.away) return false;
+      const aT = new Date(a.date).getTime();
+      const bT = new Date(b.date).getTime();
+      if (isNaN(aT) || isNaN(bT)) return true;
+      return Math.abs(aT - bT) <= 36 * 3600_000;
+    };
+
+    let changed = false;
+    const result = [...existing];
+    pinAlerts.forEach(a => {
+      const idx = result.findIndex(p => p.id === a.id || sameFixture(p, a));
+      if (idx === -1) {
+        result.push({
+          id: a.id, type: 'basketball_pinnacle_edge', market: a.market ?? null,
+          league: a.league, eventId: a.eventId, home: a.home, away: a.away,
+          homeShort: a.homeShort, awayShort: a.awayShort, date: a.date,
+          line: a.line, edge: a.edge, direction: a.direction, prob: a.prob,
+          pinnacleOdds: a.pinnacleOdds, bookmaker: a.bookmaker,
+          unibetOdds: a.unibetOdds ?? null, betclicOdds: a.betclicOdds ?? null,
+          savedAt: Date.now(), status: 'pending',
+        });
+        changed = true;
+        return;
+      }
+      const prev = result[idx];
+      if ((prev.status || 'pending') !== 'pending') return;
+      if (prev.line !== a.line || prev.direction !== a.direction || prev.edge !== a.edge || prev.prob !== a.prob || prev.pinnacleOdds !== a.pinnacleOdds) {
+        result[idx] = {
+          ...prev,
+          market: a.market ?? prev.market,
+          line: a.line, edge: a.edge, direction: a.direction, prob: a.prob,
+          pinnacleOdds: a.pinnacleOdds, bookmaker: a.bookmaker,
+          unibetOdds: a.unibetOdds ?? prev.unibetOdds,
+          betclicOdds: a.betclicOdds ?? prev.betclicOdds,
+        };
+        changed = true;
+      }
+    });
+
+    const ORPHAN_GRACE_MS = 25 * 60_000;
+    const purged = result.filter(a => {
+      if ((a.status || 'pending') !== 'pending') return true;
+      if (Date.now() - (a.savedAt || 0) < ORPHAN_GRACE_MS) return true;
+      return pinAlerts.some(p => p.id === a.id || sameFixture(p, a));
+    });
+    if (purged.length !== result.length) changed = true;
+
+    if (changed) {
+      localStorage.setItem(BBALL_PINNACLE_KEY, JSON.stringify(purged));
+      window.dispatchEvent(new Event('bball_pinnacle_alerts_updated'));
+    }
+  } catch {}
+}
+
+// Pont alertes props joueurs vs Pinnacle — basketball_pinnacle_props_alerts
+const BBALL_PINNACLE_PROPS_KEY = 'bball_pinnacle_props_alerts';
+
+export async function syncBballPinnaclePropsAlerts() {
+  try {
+    const { alerts: bgAlerts } = await fetch('/api/nba/background-alerts').then(r => r.json());
+    if (!bgAlerts?.length) return;
+    const pinProps = bgAlerts.filter(a => a.type === 'basketball_pinnacle_props');
+    if (!pinProps.length) return;
+
+    const existing = JSON.parse(localStorage.getItem(BBALL_PINNACLE_PROPS_KEY) || '[]');
+    let changed = false;
+    const result = [...existing];
+    pinProps.forEach(a => {
+      const idx = result.findIndex(p => p.id === a.id);
+      if (idx === -1) {
+        result.push({ ...a, status: 'pending', savedAt: Date.now() });
+        changed = true;
+        return;
+      }
+      const prev = result[idx];
+      if ((prev.status || 'pending') !== 'pending') return;
+      if (prev.edge !== a.edge || prev.pinnacleOdds !== a.pinnacleOdds) {
+        result[idx] = { ...prev, edge: a.edge, pinnacleOdds: a.pinnacleOdds, bookmaker: a.bookmaker,
+          unibetOdds: a.unibetOdds ?? prev.unibetOdds, betclicOdds: a.betclicOdds ?? prev.betclicOdds };
+        changed = true;
+      }
+    });
+    const ORPHAN_MS = 25 * 60_000;
+    const purged = result.filter(a => {
+      if ((a.status || 'pending') !== 'pending') return true;
+      if (Date.now() - (a.savedAt || 0) < ORPHAN_MS) return true;
+      return pinProps.some(p => p.id === a.id);
+    });
+    if (purged.length !== result.length) changed = true;
+    if (changed) {
+      localStorage.setItem(BBALL_PINNACLE_PROPS_KEY, JSON.stringify(purged));
+      window.dispatchEvent(new Event('bball_pinnacle_props_alerts_updated'));
+    }
+  } catch {}
+}
+
+export function loadBballPinnaclePropsAlerts() {
+  try { return JSON.parse(localStorage.getItem(BBALL_PINNACLE_PROPS_KEY) || '[]'); } catch { return []; }
+}
+export function saveBballPinnaclePropsAlerts(arr) {
+  try { localStorage.setItem(BBALL_PINNACLE_PROPS_KEY, JSON.stringify(arr)); } catch {}
+}
+
+// Pont alertes "Résultat" basket (victoire équipe, NBA/WNBA/EU) backend → localStorage
+// basketball_result_alerts. Remplace EarlyWin (19 juin 2026) — seule source = backend
+// (computeTeamWinProb), plus de génération côté client dans BasketballDetailPage.
+export async function syncBasketballResultAlerts() {
+  try {
+    const { alerts: bgAlerts } = await fetch('/api/nba/background-alerts').then(r => r.json());
+    if (!bgAlerts?.length) return;
+    const resultAlerts = bgAlerts.filter(a => a.type === 'basketball_result' && a.probability > 0);
+    if (!resultAlerts.length) return;
+
+    const existing = JSON.parse(localStorage.getItem(BASKETBALL_RESULT_KEY) || '[]');
+
+    // Empreinte = même affiche (home+away) + même issue (direction) à ±36h
+    const sameBet = (a, b) => {
+      if (a.home !== b.home || a.away !== b.away || a.direction !== b.direction) return false;
+      const aT = new Date(a.date).getTime();
+      const bT = new Date(b.date).getTime();
+      if (isNaN(aT) || isNaN(bT)) return true;
+      return Math.abs(aT - bT) <= 36 * 3600_000;
+    };
+
+    let changed = false;
+    const result = [...existing];
+    resultAlerts.forEach(a => {
+      const idx = result.findIndex(p => p.id === a.id || sameBet(p, a));
+      if (idx === -1) {
+        result.push({ ...a, status: 'pending' });
+        changed = true;
+        return;
+      }
+      const prev = result[idx];
+      if ((prev.status || 'pending') !== 'pending') return; // accepté/rejeté/réglé : ne pas toucher
+      if (prev.probability !== a.probability || prev.margin !== a.margin || prev.edge !== a.edge
+          || prev.odds !== a.odds || prev.bookmaker !== a.bookmaker) {
+        result[idx] = { ...prev, probability: a.probability, margin: a.margin, edge: a.edge, odds: a.odds, bookmaker: a.bookmaker };
+        changed = true;
+      }
+    });
+
+    // Purge des "pending" que le backend ne génère plus (modèle repassé sous le seuil)
+    const ORPHAN_GRACE_MS = 25 * 60_000;
+    const purged = result.filter(a => {
+      if ((a.status || 'pending') !== 'pending') return true;
+      if (Date.now() - (a.savedAt || 0) < ORPHAN_GRACE_MS) return true;
+      return resultAlerts.some(p => p.id === a.id || sameBet(p, a));
+    });
+    if (purged.length !== result.length) changed = true;
+
+    if (changed) {
+      localStorage.setItem(BASKETBALL_RESULT_KEY, JSON.stringify(purged));
+      window.dispatchEvent(new Event('nba_alerts_updated'));
+    }
+  } catch {}
+}
+
 // Pont alertes football BTTS + Over/Under (Poisson, générées en arrière-plan) → localStorage
 // fb_btts_alerts (même clé/format que la génération côté client de MatchDetailPage — même id
 // `${fixtureId}_btts_yes` → dédup naturelle) et fb_total_alerts (nouvelle clé).
@@ -535,6 +785,55 @@ export async function syncFootballAlerts() {
         window.dispatchEvent(new Event('fb_result_alerts_updated'));
       }
     }
+
+    // Value Bet vs Pinnacle (25 juin 2026) — méthode indépendante de football_result : compare les
+    // cotes Unibet/Betclic à la ligne Pinnacle démarginée plutôt qu'à notre propre modèle Poisson.
+    // CDM uniquement (seule compétition où Pinnacle est scrapé). Même format de sync que les 3
+    // autres types foot, clé localStorage séparée pour rester visuellement/structurellement distinct.
+    const pinnacleAlerts = bgAlerts.filter(a => a.type === 'football_pinnacle_edge' && a.probability > 0);
+    if (pinnacleAlerts.length) {
+      const existing = JSON.parse(localStorage.getItem(FB_PINNACLE_KEY) || '[]');
+      let changed = false;
+      const result = [...existing];
+      pinnacleAlerts.forEach(a => {
+        const idx = result.findIndex(p => p.id === a.id);
+        if (idx === -1) {
+          result.push({ ...a, status: 'pending' });
+          changed = true;
+          return;
+        }
+        const prev = result[idx];
+        if ((prev.status || 'pending') !== 'pending') {
+          if (prev.status === 'rejected' && !prev.rejectedAt && (prev.fixtureId || '').startsWith('fdcdm_')) {
+            result[idx] = { ...a, status: 'pending' };
+            changed = true;
+          }
+          return; // accepté/rejeté (récent) : ne pas toucher
+        }
+        if (prev.probability !== a.probability || prev.direction !== a.direction || prev.pinnacleOdds !== a.pinnacleOdds
+            || prev.unibetOdds !== a.unibetOdds || prev.betclicOdds !== a.betclicOdds || prev.winamaxOdds !== a.winamaxOdds || prev.edge !== a.edge) {
+          result[idx] = {
+            ...prev,
+            probability: a.probability, direction: a.direction, edge: a.edge, pinnacleOdds: a.pinnacleOdds, bookmaker: a.bookmaker,
+            unibetOdds: a.unibetOdds ?? prev.unibetOdds,
+            betclicOdds: a.betclicOdds ?? prev.betclicOdds,
+            winamaxOdds: a.winamaxOdds ?? prev.winamaxOdds,
+          };
+          changed = true;
+        }
+      });
+      const liveIds = new Set(pinnacleAlerts.map(a => a.id));
+      const purged = result.filter(a => {
+        if ((a.status || 'pending') !== 'pending') return true;
+        if (Date.now() - (a.savedAt || 0) < ORPHAN_GRACE_MS) return true;
+        return liveIds.has(a.id);
+      });
+      if (purged.length !== result.length) changed = true;
+      if (changed) {
+        localStorage.setItem(FB_PINNACLE_KEY, JSON.stringify(purged));
+        window.dispatchEvent(new Event('fb_pinnacle_alerts_updated'));
+      }
+    }
   } catch {}
 }
 
@@ -553,8 +852,11 @@ export function resolveFootballAlertResult(a, game) {
     if (hs > 0 && as_ > 0) return 'won';
     return isFinal ? 'lost' : null;
   }
-  if (a.type === 'football_result') {
+  if (a.type === 'football_result' || (a.type === 'football_pinnacle_edge' && a.market !== 'totals')) {
     // Le résultat 1X2 peut s'inverser jusqu'au coup de sifflet final — pas de règlement "live"
+    // (football_pinnacle_edge sur le marché h2h porte sur la même issue que football_result,
+    // même règle — mais sur le marché totals il faut tomber dans la branche Over/Under ci-dessous,
+    // sinon "over"/"under" serait lu à tort comme un sens h2h et toujours résolu comme un nul).
     if (!isFinal) return null;
     if (a.direction === 'home') return hs > as_ ? 'won' : 'lost';
     if (a.direction === 'away') return as_ > hs ? 'won' : 'lost';
@@ -591,8 +893,9 @@ export async function resolveCompletedFootballAlerts(alerts, save) {
       a.settledAt = Date.now();
       changed = true;
       // Trace serveur du résultat — sans ça aucun bilan foot n'est possible côté backend
-      // (contrairement aux props basket, réglées automatiquement par runAutoSettle()).
-      fetch('/api/settlements', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: a.id, status: result, settledAt: a.settledAt }) }).catch(() => {});
+      // (contrairement aux props basket, réglées automatiquement par runAutoSettle()). Envoi fiable
+      // avec retry + file d'attente (postSettlementReliably) depuis le 25 juin 2026.
+      postSettlementReliably({ id: a.id, status: result, probability: a.acceptedProbability ?? a.probability, line: a.line, edge: a.edge, settledAt: a.settledAt });
     }
     if (changed) save([...alerts]);
   } catch {}
