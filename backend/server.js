@@ -5517,6 +5517,105 @@ async function getPinnacleOutrights() {
 // (CDM en ce moment) renvoie des matchs.
 const PINNACLE_FOOT_MIN_INTERVAL_MS = 15 * 60 * 1000;
 
+// ── Pinnacle direct JSON API (remplace Playwright pour foot + basket) ─────────
+// Clé publique extraite du frontend Pinnacle (même pour tous les visiteurs anonymes).
+const PINNACLE_GUEST_API_KEY = 'CmX2KcMrXuFmNg6YFbmTxE0y9CIrOi0R';
+const PINNACLE_GUEST_API     = 'https://guest.api.arcadia.pinnacle.com/0.1';
+
+const PINNACLE_FOOT_LEAGUE_IDS = [
+  2686,  // FIFA World Cup 2026
+  2036,  // France Ligue 1
+  1980,  // England Premier League
+  2196,  // Spain La Liga
+  1842,  // Germany Bundesliga
+  2436,  // Italy Serie A
+];
+
+const PINNACLE_BASKET_LEAGUE_IDS = [
+  { id: 578, league: 'wnba' },
+  { id: 487, league: 'nba' },
+  { id: 559, league: 'acb' },
+  { id: 423, league: 'bbl' },
+  { id: 472, league: 'legaa' },
+  { id: 382, league: 'euroleague' },
+];
+
+function _pinDecimal(americanPrice) {
+  if (!americanPrice) return NaN;
+  return americanPrice > 0
+    ? +((americanPrice / 100) + 1).toFixed(3)
+    : +((100 / (-americanPrice)) + 1).toFixed(3);
+}
+
+async function _fetchPinnacleLeagueOdds(leagueId, sportType) {
+  const headers = {
+    'x-api-key': PINNACLE_GUEST_API_KEY,
+    'Accept':    'application/json',
+    'Origin':    'https://www.pinnacle.com',
+    'Referer':   'https://www.pinnacle.com/',
+  };
+  const [matchupsResp, marketsResp] = await Promise.all([
+    fetch(`${PINNACLE_GUEST_API}/leagues/${leagueId}/matchups?withSpecials=false`, { headers, signal: AbortSignal.timeout(10000) }),
+    fetch(`${PINNACLE_GUEST_API}/leagues/${leagueId}/markets/straight`,            { headers, signal: AbortSignal.timeout(10000) }),
+  ]);
+  if (!matchupsResp.ok || !marketsResp.ok) return [];
+
+  const [matchups, markets] = await Promise.all([matchupsResp.json(), marketsResp.json()]);
+
+  const mktsById = {};
+  for (const mkt of markets) (mktsById[mkt.matchupId] ??= []).push(mkt);
+
+  const results = [];
+  for (const mu of matchups) {
+    if (mu.parentId) continue;
+    const ps   = mu.participants ?? [];
+    const homeP = ps.find(p => p.alignment === 'home');
+    const awayP = ps.find(p => p.alignment === 'away');
+    if (!homeP || !awayP) continue;
+
+    const matchMarkets = mktsById[mu.id] ?? [];
+    const mlMkt  = matchMarkets.find(m => m.type === 'moneyline' && m.key === 's;0;m' && !m.isAlternate);
+    const totMkt = matchMarkets.find(m => m.type === 'total'     && !m.isAlternate && m.key.startsWith('s;0;ou;'));
+
+    const result = { homeTeam: homeP.name, awayTeam: awayP.name, commenceTime: mu.startTime };
+
+    if (mlMkt) {
+      const hp = mlMkt.prices.find(p => p.designation === 'home');
+      const ap = mlMkt.prices.find(p => p.designation === 'away');
+      const dp = mlMkt.prices.find(p => p.designation === 'draw');
+      if (hp && ap) {
+        result.h2h = { home: _pinDecimal(hp.price), away: _pinDecimal(ap.price) };
+        if (dp) result.h2h.draw = _pinDecimal(dp.price);
+      }
+    }
+
+    if (totMkt) {
+      const op   = totMkt.prices.find(p => p.designation === 'over');
+      const up   = totMkt.prices.find(p => p.designation === 'under');
+      const line = op?.points ?? up?.points;
+      if (op && up && line != null) {
+        if (sportType === 'football') {
+          result.totals = { [String(line)]: { over: _pinDecimal(op.price), under: _pinDecimal(up.price) } };
+        } else {
+          result.line  = line;
+          result.over  = _pinDecimal(op.price);
+          result.under = _pinDecimal(up.price);
+        }
+      }
+    }
+
+    if (sportType === 'basketball') {
+      result.line  ??= NaN;
+      result.over  ??= NaN;
+      result.under ??= NaN;
+      result.h2h   ??= null;
+    }
+
+    if (result.h2h || result.totals || !Number.isNaN(result.line)) results.push(result);
+  }
+  return results;
+}
+
 const PINNACLE_FOOT_PAGES = [
   { path: '/en/soccer/fifa-world-cup/matchups/',        href: '/fifa-world-cup/' },
   { path: '/en/soccer/french-ligue-1/matchups/',        href: '/french-ligue-1/' },
@@ -5584,45 +5683,23 @@ async function fetchPinnacleAllFootball() {
   _outrightAttempts.pinnacleFootCdm = Date.now();
   _saveOutrightAttempts();
 
-  const { chromium } = await import('playwright');
-  const allMatches = [];
-  const browser = await chromium.launch({ headless: true });
-  try {
-    const context = await browser.newContext({
-      userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-      locale: 'en-US',
-    });
-    const page = await context.newPage();
-    let cookieDismissed = false;
-    for (const { path, href } of PINNACLE_FOOT_PAGES) {
-      try {
-        await page.goto(`https://www.pinnacle.com${path}`, { waitUntil: 'domcontentloaded', timeout: 30000 });
-        if (!cookieDismissed) {
-          await page.waitForTimeout(1500);
-          const acceptBtn = page.locator('button:has-text("ACCEPT")').first();
-          if (await acceptBtn.count() > 0 && await acceptBtn.isVisible().catch(() => false)) {
-            await acceptBtn.click({ timeout: 3000 }).catch(() => {});
-          }
-          cookieDismissed = true;
-        } else {
-          await page.waitForTimeout(800);
-        }
-        const matches = await _scrapePinnacleFootballPage(page, href);
-        allMatches.push(...matches);
-      } catch { /* ligue hors-saison ou inaccessible, on passe */ }
-    }
-    await page.close().catch(() => {});
-  } finally {
-    await browser.close().catch(() => {});
-  }
+  let callsOk = 0;
+  const chunks = await Promise.all(
+    PINNACLE_FOOT_LEAGUE_IDS.map(id =>
+      _fetchPinnacleLeagueOdds(id, 'football')
+        .then(r => { callsOk++; return r; })
+        .catch(() => [])
+    )
+  );
+  const allMatches = chunks.flat();
 
-  if (!allMatches.length) {
+  if (allMatches.length > 0 || callsOk > 0) {
+    _scraperFailStreak.pinnacle_foot = 0;
+  } else {
     _scraperFailStreak.pinnacle_foot = (_scraperFailStreak.pinnacle_foot || 0) + 1;
     const backoff = Math.min(BK_BACKOFF_BASE_MS * 2 ** (_scraperFailStreak.pinnacle_foot - 1), BK_BACKOFF_MAX_MS);
     _scraperBlockedUntil.pinnacle_foot = Date.now() + backoff;
     _saveScraperBlocks();
-  } else {
-    _scraperFailStreak.pinnacle_foot = 0;
   }
   return allMatches;
 }
@@ -5826,41 +5903,17 @@ async function fetchPinnacleAllBasket() {
   _outrightAttempts.pinnacleWnbaTotals = Date.now();
   _saveOutrightAttempts();
 
-  const { chromium } = await import('playwright');
+  let callsOk = 0;
   const allMatches = [];
-  const browser = await chromium.launch({ headless: true });
-  try {
-    const context = await browser.newContext({
-      userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-      locale: 'en-US',
-    });
-    const page = await context.newPage();
-    let cookieDismissed = false;
-    for (const { league, path, href } of PINNACLE_BASKET_PAGES) {
-      try {
-        await page.goto(`https://www.pinnacle.com${path}`, { waitUntil: 'domcontentloaded', timeout: 30000 });
-        if (!cookieDismissed) {
-          await page.waitForTimeout(1500);
-          const acceptBtn = page.locator('button:has-text("ACCEPT")').first();
-          if (await acceptBtn.count() > 0 && await acceptBtn.isVisible().catch(() => false)) {
-            await acceptBtn.click({ timeout: 3000 }).catch(() => {});
-          }
-          cookieDismissed = true;
-        } else {
-          await page.waitForTimeout(800);
-        }
-        const matches = await _scrapePinnacleBasketPage(page, href);
-        for (const m of matches) allMatches.push({ ...m, league });
-      } catch { /* ligue hors-saison ou inaccessible */ }
-    }
-    await page.close().catch(() => {});
-  } finally {
-    await browser.close().catch(() => {});
+  for (const { id, league } of PINNACLE_BASKET_LEAGUE_IDS) {
+    const matches = await _fetchPinnacleLeagueOdds(id, 'basketball')
+      .then(r => { callsOk++; return r; })
+      .catch(() => []);
+    for (const m of matches) allMatches.push({ ...m, league });
   }
 
-  // Succès si au moins WNBA a renvoyé des matchs (WNBA est toujours en saison quand ce code tourne)
   const hasAny = allMatches.length > 0;
-  if (!hasAny) {
+  if (!hasAny && callsOk === 0) {
     _scraperFailStreak.pinnacle_wnba = (_scraperFailStreak.pinnacle_wnba || 0) + 1;
     const backoff = Math.min(BK_BACKOFF_BASE_MS * 2 ** (_scraperFailStreak.pinnacle_wnba - 1), BK_BACKOFF_MAX_MS);
     _scraperBlockedUntil.pinnacle_wnba = Date.now() + backoff;
