@@ -1226,7 +1226,7 @@ export default function MatchDetailPage() {
           .then(r => r.json())
           .then(d => {
             if (d.goalsFor == null) return;
-            setter({ goalsFor: d.goalsFor, goalsAgainst: d.goalsAgainst, lastMatchDate: d.lastMatchDate, form: toForm(d.results) });
+            setter({ goalsFor: d.goalsFor, goalsAgainst: d.goalsAgainst, games: d.games, lastMatchDate: d.lastMatchDate, form: toForm(d.results) });
           })
           .catch(() => {});
       };
