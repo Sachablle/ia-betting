@@ -1531,6 +1531,62 @@ export default function UtilisationPage() {
           </div>
         </div>
       </Accordion>
+
+      <Accordion title="Déploiement — comment le site tourne sur internet">
+        <p style={{ marginBottom: '1rem', color: 'var(--text-sub)', fontSize: 13 }}>
+          L'application tourne en permanence sur internet, sans que ton Mac soit allumé. Elle repose sur 4 services gratuits indépendants.
+        </p>
+
+        {/* Schéma */}
+        <div style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid var(--border)', borderRadius: 10, padding: '1rem 1.25rem', marginBottom: '1.25rem', fontFamily: 'monospace', fontSize: 12, color: 'var(--text-sub)', lineHeight: 2 }}>
+          <div style={{ color: '#60a5fa', fontWeight: 700, marginBottom: '0.5rem', fontFamily: 'inherit' }}>Navigateur (toi)</div>
+          <div style={{ paddingLeft: '1rem' }}>↓ HTTPS</div>
+          <div style={{ color: '#4ade80', fontWeight: 700 }}>Vercel — Frontend React</div>
+          <div style={{ paddingLeft: '1rem' }}>↓ /api/* proxié</div>
+          <div style={{ color: '#fb923c', fontWeight: 700 }}>Render — Backend Express</div>
+          <div style={{ paddingLeft: '1rem', display: 'flex', flexDirection: 'column', gap: 2 }}>
+            <span>↓ scraping Unibet / Betclic / Pinnacle</span>
+            <span>↓ APIs football-data.org / ESPN / api-sports.io</span>
+            <span>↓ lecture/écriture alertes utilisateur</span>
+          </div>
+          <div style={{ color: '#a78bfa', fontWeight: 700 }}>MongoDB Atlas — Base de données</div>
+          <div style={{ paddingLeft: '1rem' }}>↑ sync alertes / paris entre appareils</div>
+          <div style={{ color: '#94a3b8', fontWeight: 700 }}>GitHub — Code source</div>
+          <div style={{ paddingLeft: '1rem' }}>→ push sur main → Vercel redéploie automatiquement</div>
+        </div>
+
+        {/* Tableau des services */}
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, marginBottom: '1rem' }}>
+          <thead>
+            <tr style={{ borderBottom: '1px solid var(--border)' }}>
+              <th style={{ textAlign: 'left', padding: '6px 10px', color: 'var(--text-sub)', fontWeight: 700, fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Service</th>
+              <th style={{ textAlign: 'left', padding: '6px 10px', color: 'var(--text-sub)', fontWeight: 700, fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Rôle</th>
+              <th style={{ textAlign: 'left', padding: '6px 10px', color: 'var(--text-sub)', fontWeight: 700, fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Tarif</th>
+              <th style={{ textAlign: 'left', padding: '6px 10px', color: 'var(--text-sub)', fontWeight: 700, fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Limite</th>
+            </tr>
+          </thead>
+          <tbody>
+            {[
+              { name: 'Vercel', color: '#60a5fa', role: 'Héberge le frontend React. Redéploie automatiquement à chaque push GitHub.', tarif: 'Gratuit', limite: 'Illimité pour usage perso' },
+              { name: 'Render', color: '#fb923c', role: 'Héberge le backend Express (scraping, APIs, alertes background toutes les 20 min).', tarif: 'Gratuit', limite: 'S\'endort après 15 min d\'inactivité (30-60s de réveil)' },
+              { name: 'MongoDB Atlas', color: '#a78bfa', role: 'Stocke les alertes acceptées/rejetées, l\'historique des paris, synchronise les données entre appareils.', tarif: 'Gratuit', limite: '512 Mo de stockage' },
+              { name: 'GitHub', color: '#4ade80', role: 'Héberge le code source. Chaque git push déclenche un redéploiement automatique sur Vercel.', tarif: 'Gratuit', limite: 'Dépôts privés illimités' },
+            ].map((s, i) => (
+              <tr key={s.name} style={{ borderBottom: '1px solid rgba(255,255,255,0.05)', background: i % 2 === 0 ? 'transparent' : 'rgba(255,255,255,0.015)' }}>
+                <td style={{ padding: '8px 10px', fontWeight: 700, color: s.color }}>{s.name}</td>
+                <td style={{ padding: '8px 10px', color: 'var(--text-main)', lineHeight: 1.5 }}>{s.role}</td>
+                <td style={{ padding: '8px 10px', color: '#4ade80', fontWeight: 600 }}>{s.tarif}</td>
+                <td style={{ padding: '8px 10px', color: 'var(--text-sub)', fontSize: 11 }}>{s.limite}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+
+        <div style={{ background: 'rgba(96,165,250,0.07)', border: '1px solid rgba(96,165,250,0.2)', borderRadius: 8, padding: '0.75rem 1rem', fontSize: 12, color: 'var(--text-sub)', lineHeight: 1.7 }}>
+          <strong style={{ color: '#60a5fa' }}>Synchronisation multi-appareils</strong><br />
+          Quand tu acceptes ou rejettes une alerte sur un appareil, MongoDB est mis à jour immédiatement. Tous les autres appareils connectés reçoivent une notification SSE (Server-Sent Events) et rechargent les données en temps réel — sans rafraîchir la page.
+        </div>
+      </Accordion>
     </div>
   );
 }
