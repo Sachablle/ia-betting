@@ -128,8 +128,6 @@ function _refreshInBackground(key, refreshFn) {
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-// ── The Odds API ─────────────────────────────────────────────────────────────
-const ODDS_KEY      = process.env.ODDS_API_KEY;
 const THRESHOLD     = parseFloat(process.env.VALUE_THRESHOLD || '2') / 100;
 const PINNACLE_EDGE_THRESHOLD = 0.20; // Seuil alertes diff Pinnacle — erreur de cote franche uniquement
 const PINNACLE_MIN_ODDS = 1.60;       // Cote bookmaker minimum pour alertes Pinnacle
@@ -400,7 +398,7 @@ const FOOTBALL_LEAGUES = [
 ];
 
 app.use(cors({ origin: ['http://localhost:5173', 'http://localhost:4173'] }));
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -1547,48 +1545,6 @@ app.get('/api/nba/playergamelog/:playerId', async (req, res) => {
     // Sort descending by date, take 30 (capture full playoff run + recent regular season)
     games.sort((a, b) => new Date(b.date) - new Date(a.date));
     const result = { playerId, games: games.slice(0, 30) };
-    _espnCache[cacheKey] = { data: result, ts: Date.now() };
-    res.json(result);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// ── NBA Game Line (Vegas total + moneyline) ───────────────────────────────────
-app.get('/api/nba/gameline', async (req, res) => {
-  if (!ODDS_KEY) return res.status(503).json({ error: 'ODDS_API_KEY not configured' });
-  const { home, away } = req.query;
-  if (!home || !away) return res.status(400).json({ error: 'home and away required' });
-
-  const cacheKey = `gameline_${home}_${away}`;
-  const cached = _espnCache[cacheKey];
-  if (cached && Date.now() - cached.ts < 30 * 60 * 1000) return res.json(cached.data);
-
-  try {
-    const url = `https://api.the-odds-api.com/v4/sports/basketball_nba/odds/?apiKey=${ODDS_KEY}&regions=us&markets=totals,h2h&oddsFormat=decimal&bookmakers=draftkings,fanduel,pinnacle`;
-    const resp = await fetch(url);
-    if (!resp.ok) throw new Error(`Odds API ${resp.status}`);
-    _captureOddsQuota(resp);
-    const games = await resp.json();
-
-    const norm = s => s.toLowerCase().replace(/[^a-z]/g, '');
-    const lastWord = s => s.split(' ').pop();
-    const match = games.find(g =>
-      (norm(g.home_team).includes(norm(lastWord(home))) || norm(g.away_team).includes(norm(lastWord(home)))) &&
-      (norm(g.home_team).includes(norm(lastWord(away))) || norm(g.away_team).includes(norm(lastWord(away))))
-    );
-
-    if (!match) return res.json({ total: null });
-
-    let total = null;
-    for (const bm of (match.bookmakers || [])) {
-      const mkt = bm.markets?.find(m => m.key === 'totals');
-      if (mkt) {
-        const over = mkt.outcomes?.find(o => o.name === 'Over');
-        if (over?.point) { total = over.point; break; }
-      }
-    }
-    const result = { total };
     _espnCache[cacheKey] = { data: result, ts: Date.now() };
     res.json(result);
   } catch (err) {
@@ -7234,7 +7190,6 @@ const ESPN_WNBA_MAP = {
 const WNBA_SCALE = 114.5 / 87.0; // normalize WNBA pts to NBA-equivalent for computeEstimate
 
 let backgroundAlerts = [];
-let _bgOddsCache = { data: null, ts: 0 }; // cache 2h for the full NBA odds list
 
 // Anti-ban Betclic/Unibet/Winamax — pause un bookmaker après un 403/429 pour ne pas aggraver
 // un blocage CDN (cf. project_winamax_ban_juin10/11). Persisté sur disque pour survivre aux
@@ -7344,16 +7299,10 @@ function _updateScraper(name, ok) {
 }
 
 // Quotas API — mis à jour à chaque appel réel (pas depuis le cache)
-let _oddsApiQuota    = { remaining: null, used: null, ts: null };   // The Odds API (500/mois)
 let _footballApiQuota = { remaining: null, limit: null, ts: null }; // API-Football (100/jour)
 let _basketballApiQuota = { remaining: null, limit: null, ts: null }; // API-Basketball (7500/jour)
 let _fdQuota = { remaining: null, limit: 10, ts: null }; // football-data.org (10/min)
 
-function _captureOddsQuota(resp) {
-  const remaining = parseInt(resp.headers.get('x-requests-remaining'), 10);
-  const used      = parseInt(resp.headers.get('x-requests-used'), 10);
-  if (!isNaN(remaining)) _oddsApiQuota = { remaining, used: isNaN(used) ? null : used, ts: Date.now() };
-}
 function _captureFootballQuota(resp) {
   const remaining = parseInt(resp.headers.get('x-ratelimit-requests-remaining'), 10);
   const limit     = parseInt(resp.headers.get('x-ratelimit-requests-limit'), 10);
@@ -7399,17 +7348,6 @@ function _saveLinesSnapshot(cacheKey, data) {
   }, 2000);
 }
 
-async function fetchAllNBAOddsGames() {
-  const TWO_HOURS = 2 * 3600 * 1000;
-  if (_bgOddsCache.data && Date.now() - _bgOddsCache.ts < TWO_HOURS) return _bgOddsCache.data;
-  const url = `https://api.the-odds-api.com/v4/sports/basketball_nba/odds/?apiKey=${ODDS_KEY}&regions=us&markets=totals,h2h&oddsFormat=decimal&bookmakers=pinnacle`;
-  const resp = await fetch(url);
-  if (!resp.ok) throw new Error(`Odds API ${resp.status}`);
-  _captureOddsQuota(resp);
-  const data = await resp.json();
-  _bgOddsCache = { data, ts: Date.now() };
-  return data;
-}
 
 async function bgFetchRoster(teamId) {
   const cached = _espnCache[teamId];
@@ -8683,7 +8621,6 @@ function oppInjuryEffect(oppPlayers, oppStarters, playerPos, stat, hoursToGame, 
 }
 
 async function generateBackgroundAlerts() {
-  if (!ODDS_KEY) { _bgLog = ['no ODDS_KEY']; return; }
   _bgLastRun = Date.now();
   _bgLog = ['started'];
   console.log('[bg-alerts] Running…');
@@ -10550,7 +10487,6 @@ app.post('/api/nba/trigger-alerts', async (req, res) => {
 });
 
 app.get('/api/nba/debug-alerts', async (req, res) => {
-  if (!ODDS_KEY) return res.json({ error: 'no ODDS_KEY' });
   const log = [];
   const nameMatch = (a, b) => {
     if (!a || !b) return false;
@@ -11061,7 +10997,7 @@ const _manualHealthRefreshers = {};
 let _warmupRunning = false;
 app.post('/api/system/warmup', (req, res) => {
   res.json({ ok: true, alreadyRunning: _warmupRunning });
-  if (!_warmupRunning && ODDS_KEY) {
+  if (!_warmupRunning) {
     _warmupRunning = true;
     generateBackgroundAlerts().catch(() => {}).finally(() => { _warmupRunning = false; });
   }
@@ -11070,7 +11006,7 @@ app.post('/api/system/warmup', (req, res) => {
 app.listen(PORT, () => {
   console.log(`ValueBet backend → http://localhost:${PORT}`);
   if (!FOOTBALL_KEY) console.warn('⚠  FOOTBALL_API_KEY not set — /api/football/matches returns 503');
-  if (!ODDS_KEY)     console.warn('⚠  ODDS_API_KEY not set — /api/odds returns 503');
+;
 
   // Sanity check au démarrage — détecte les problèmes critiques avant qu'ils atteignent l'UI
   setTimeout(async () => {
@@ -11102,10 +11038,8 @@ app.listen(PORT, () => {
   }, 5000);
 
   // Start background alert job: first run after 2s, then every 20min
-  if (ODDS_KEY) {
-    setTimeout(generateBackgroundAlerts, 2_000);
-    setInterval(generateBackgroundAlerts, 20 * 60 * 1000);
-  }
+  setTimeout(generateBackgroundAlerts, 2_000);
+  setInterval(generateBackgroundAlerts, 20 * 60 * 1000);
 
   // Auto-settle : toutes les 3 min
   setInterval(() => runAutoSettle().catch(() => {}), 3 * 60 * 1000);
