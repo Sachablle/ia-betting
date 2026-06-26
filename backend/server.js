@@ -467,6 +467,9 @@ let _fbCache = null;
 let _fbCacheTs = 0;
 const FB_TTL = 30 * 60 * 1000; // 30 min
 
+// ── SSE sync : notifie tous les clients connectés quand MongoDB change ───────
+const _sseClients = new Set();
+
 // ── MongoDB userdata ─────────────────────────────────────────────────────────
 let _mongoClient = null;
 async function getMongoDb() {
@@ -481,6 +484,15 @@ async function getMongoDb() {
 // ── Routes ───────────────────────────────────────────────────────────────────
 
 app.get('/api/health', (req, res) => res.json({ ok: true, timestamp: new Date().toISOString() }));
+
+app.get('/api/sync-events', (req, res) => {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders();
+  _sseClients.add(res);
+  req.on('close', () => _sseClients.delete(res));
+});
 
 // Données utilisateur synchronisées (alertes, paris, historique)
 app.get('/api/userdata', async (req, res) => {
@@ -506,6 +518,7 @@ app.post('/api/userdata', async (req, res) => {
       { $set: { [`data.${key}`]: value, updatedAt: Date.now() } },
       { upsert: true }
     );
+    _sseClients.forEach(c => c.write(`data: sync\n\n`));
     res.json({ ok: true });
   } catch (e) {
     console.error('[userdata POST]', e.message);

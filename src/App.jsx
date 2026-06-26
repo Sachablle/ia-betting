@@ -116,17 +116,21 @@ function useAlertCount() {
       syncFootballAlerts();
     };
 
-    // loadFromCloud d'abord, syncAll ensuite — évite que cloudSet() dans syncAll
-    // écrase MongoDB avec des données localStorage périmées avant que le pull cloud soit terminé.
-    loadFromCloud().then(() => { refresh(); syncAll(); });
+    const cloudSync = () => loadFromCloud().then(() => { refresh(); syncAll(); });
+    cloudSync();
 
-    const syncTick = setInterval(syncAll, 2 * 60_000);
+    // SSE : dès qu'un autre appareil modifie MongoDB, on recharge immédiatement.
+    const es = new EventSource('/api/sync-events');
+    es.onmessage = () => cloudSync();
+
+    const syncTick = setInterval(cloudSync, 2 * 60_000);
 
     return () => {
       window.removeEventListener('nba_alerts_updated', refresh);
       FB_ALERT_EVENTS.forEach(e => window.removeEventListener(e, refresh));
       clearInterval(tick);
       clearInterval(syncTick);
+      es.close();
     };
   }, []);
   return counts;
