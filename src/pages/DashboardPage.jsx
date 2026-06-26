@@ -134,32 +134,34 @@ function CountdownWidget() {
       {/* Ligne du haut — En cours + Prochain match */}
       <div style={{ display: 'flex', alignItems: 'stretch' }}>
         {/* Section gauche — En cours */}
-        <div style={{ padding: '0.3rem 0.75rem', display: 'flex', flexDirection: 'column', justifyContent: 'center', minWidth: 130 }}>
+        <div style={{ padding: '0.3rem 0.75rem', display: 'flex', flexDirection: 'column', justifyContent: 'flex-start', minWidth: 130 }}>
           <div style={{ fontSize: 8, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--text-sub)', borderBottom: '1px solid var(--border)', paddingBottom: '0.3rem', marginBottom: '0.25rem' }}>
             En cours
           </div>
-          <div style={{ display: 'flex', alignItems: 'baseline', gap: '0.35rem' }}>
-            <span style={{ fontSize: '1rem', fontWeight: 800, color: liveCount > 0 ? '#4ade80' : dim, lineHeight: 1, fontVariantNumeric: 'tabular-nums' }}>
-              {liveCount}
-            </span>
-            <span style={{ fontSize: 10, color: dim }}>alerte{liveCount !== 1 ? 's' : ''}</span>
-          </div>
-          {live.length > 0 && (
-            <div style={{ fontSize: 9, color: dim, marginTop: '0.2rem', maxWidth: 140, lineHeight: 1.3 }}>
-              {live.map(m => m.fixture).join(' · ')}
+          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: '0.35rem' }}>
+              <span style={{ fontSize: '1rem', fontWeight: 800, color: liveCount > 0 ? '#4ade80' : dim, lineHeight: 1, fontVariantNumeric: 'tabular-nums' }}>
+                {liveCount}
+              </span>
+              <span style={{ fontSize: 10, color: dim }}>alerte{liveCount !== 1 ? 's' : ''}</span>
             </div>
-          )}
+            {live.length > 0 && (
+              <div style={{ fontSize: 9, color: dim, marginTop: '0.2rem', maxWidth: 140, lineHeight: 1.3 }}>
+                {live.map(m => m.fixture).join(' · ')}
+              </div>
+            )}
+          </div>
         </div>
         {/* Séparateur vertical */}
         <div style={{ width: 1, background: 'var(--border)', flexShrink: 0 }} />
         {/* Section droite — Prochain match */}
-        <div style={{ padding: '0.3rem 0.75rem', display: 'flex', flexDirection: 'column', justifyContent: 'center', minWidth: 160 }}>
+        <div style={{ padding: '0.3rem 0.75rem', display: 'flex', flexDirection: 'column', justifyContent: 'flex-start', minWidth: 160 }}>
           <div style={{ fontSize: 8, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--text-sub)', borderBottom: '1px solid var(--border)', paddingBottom: '0.3rem', marginBottom: '0.25rem' }}>
             Prochain match
           </div>
           {next ? (
             <>
-              <div style={{ fontSize: '1.4rem', fontWeight: 800, letterSpacing: '-0.02em', fontVariantNumeric: 'tabular-nums', lineHeight: 1, ...countdownStyle }}>
+              <div style={{ fontSize: '1rem', fontWeight: 800, letterSpacing: '-0.02em', fontVariantNumeric: 'tabular-nums', lineHeight: 1, marginTop: '0.4rem', ...countdownStyle }}>
                 {fmt(msToNext)}
               </div>
               <div style={{ fontSize: 9, color: dim, marginTop: '0.2rem' }}>
@@ -349,10 +351,10 @@ function SystemHealthSection() {
           >↻</button>
         </div>
 
-        <div style={{ display: 'flex', alignItems: 'flex-end', gap: '0' }}>
+        <div style={{ display: 'flex', alignItems: 'flex-start', gap: '0' }}>
           {/* Cotes */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem', paddingRight: '1rem' }}>
-            <div style={{ fontSize: 8, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-dim)' }}>Cotes</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem', paddingRight: '1rem' }}>
+            <div style={{ fontSize: 7, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-dim)' }}>Cotes</div>
             <div style={{ display: 'flex', gap: '0.9rem', alignItems: 'flex-end' }}>
               <SignalIcon label="Pinnacle" ts={pinnacle.ts} ok={pinnacle.ok} lastOk={pinnacle.lastOk} greenMs={22 * 60_000} yellowMs={45 * 60_000} />
               <SignalIcon label="Unibet"   ts={unibet.ts}   ok={unibet.ok}   lastOk={unibet.lastOk}   />
@@ -361,8 +363,8 @@ function SystemHealthSection() {
           </div>
           <div style={{ width: 1, background: 'rgba(255,255,255,0.08)', alignSelf: 'stretch', flexShrink: 0 }} />
           {/* Données */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem', paddingLeft: '1rem' }}>
-            <div style={{ fontSize: 8, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-dim)' }}>Données</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem', paddingLeft: '1rem' }}>
+            <div style={{ fontSize: 7, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-dim)' }}>Données</div>
             <div style={{ display: 'flex', gap: '0.9rem', alignItems: 'flex-end' }}>
               <SignalIcon label="ESPN"     ts={sc.espn?.ts}     ok={sc.espn?.ok}     lastOk={sc.espn?.lastOk}     />
               <SignalIcon label="RotoWire" ts={sc.rotowire?.ts} ok={sc.rotowire?.ok} lastOk={sc.rotowire?.lastOk} />
@@ -417,8 +419,8 @@ function QuotasWidget() {
 
   return (
     <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 16, display: 'flex', flexDirection: 'column' }}>
-      <div style={{ padding: '0.3rem 0.75rem', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center' }}>
-        <span style={{ fontSize: 8, fontWeight: 700, color: 'var(--text-sub)', textTransform: 'uppercase', letterSpacing: '0.1em' }}>Requêtes restantes</span>
+      <div style={{ padding: '0.3rem 0.75rem 0' }}>
+        <div style={{ fontSize: 8, fontWeight: 700, color: 'var(--text-sub)', textTransform: 'uppercase', letterSpacing: '0.1em', borderBottom: '1px solid var(--border)', paddingBottom: '0.3rem' }}>Requêtes restantes</div>
       </div>
       <div style={{ display: 'flex', alignItems: 'stretch', marginTop: 'auto', marginBottom: '0.6rem' }}>
         {cards.map((c, i) => (
@@ -976,8 +978,9 @@ function UpcomingMatchesWidget() {
   return (
     <div style={{ background:'var(--bg-card)', border:'1px solid var(--border)', borderRadius:16, display:'flex', flexDirection:'column', alignSelf:'start', overflow:'hidden' }}>
       {/* Header — clic partout pour ouvrir/fermer */}
-      <div onClick={()=>setOpen(o=>!o)} style={{ padding:'0.3rem 0.75rem', borderBottom: open ? '1px solid var(--border)' : 'none', display:'flex', alignItems:'center', justifyContent:'space-between', flexShrink:0, cursor:'pointer', userSelect:'none' }}>
-        <span style={{ fontSize:8, fontWeight:700, textTransform:'uppercase', letterSpacing:'0.1em', color:'var(--text-sub)' }}>Matchs à venir</span>
+      <div onClick={()=>setOpen(o=>!o)} style={{ padding:'0.3rem 0.75rem 0', flexShrink:0, cursor:'pointer', userSelect:'none' }}>
+        <div style={{ fontSize:8, fontWeight:700, textTransform:'uppercase', letterSpacing:'0.1em', color:'var(--text-sub)', borderBottom: open ? '1px solid var(--border)' : '1px solid var(--border)', paddingBottom:'0.3rem', display:'flex', alignItems:'center', justifyContent:'space-between' }}>
+        <span>Matchs à venir</span>
         <div style={{ display:'flex', alignItems:'center', gap:'0.4rem' }}>
           {open && [['all','Tous'],['foot','⚽'],['basket','🏀']].map(([k,l])=>(
             <button key={k} onClick={e=>{e.stopPropagation();setFilter(k);}} style={{
@@ -989,6 +992,7 @@ function UpcomingMatchesWidget() {
           <svg style={{ transform: open ? 'rotate(180deg)' : 'none', transition:'transform 0.2s', color:dim }} width="10" height="10" viewBox="0 0 12 12" fill="none">
             <path d="M2.5 4.5L6 8L9.5 4.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
           </svg>
+        </div>
         </div>
       </div>
 
