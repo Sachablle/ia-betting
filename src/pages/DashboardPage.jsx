@@ -1172,8 +1172,8 @@ export default function DashboardPage() {
       {/* Grid 2 colonnes : chaque ligne partage la même hauteur */}
       <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '1.5rem', marginBottom: '1.5rem', width: '100%' }}>
         <CountdownWidget />
-        <UpcomingMatchesWidget />
         <QuotasWidget />
+        <UpcomingMatchesWidget />
         <SystemHealthSection />
       </div>
 
