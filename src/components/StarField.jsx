@@ -1,5 +1,4 @@
-// Fond d'écran — 3 styles dispo (Nébuleuse / Poussière dorée / Océan), switcher en haut à
-// droite pour changer à tout moment, le choix est mémorisé dans localStorage.
+// Fond d'écran — 5 styles dispo, switcher en haut à droite, choix mémorisé dans localStorage.
 import { useState } from 'react';
 
 function generateDotShadows(count, colorFn, spread = 0, minOpacity = 0.25, opacityRange = 0.7) {
@@ -13,17 +12,19 @@ function generateDotShadows(count, colorFn, spread = 0, minOpacity = 0.25, opaci
   return shadows.join(', ');
 }
 
-const white = o => `rgba(255,255,255,${o})`;
-const gold = o => `rgba(251,191,36,${o})`;
+const white  = o => `rgba(255,255,255,${o})`;
 const bubble = o => `rgba(165,243,252,${o})`;
+const ember  = o => `rgba(249,115,22,${o})`;
+const violet = o => `rgba(167,139,250,${o})`;
 
-// Même mécanique de particules (montée + fondu) sur les 3 fonds — seule la couleur change.
-const STARS_A = generateDotShadows(70, white, 0.5, 0.18, 0.42);
-const STARS_B = generateDotShadows(60, white, 0.5, 0.18, 0.42);
-const GOLD_A = generateDotShadows(70, gold, 0.5, 0.18, 0.42);
-const GOLD_B = generateDotShadows(60, gold, 0.5, 0.18, 0.42);
-const BUBBLES = generateDotShadows(70, bubble, 0.5, 0.18, 0.42);
+const STARS_A   = generateDotShadows(70, white,  0.5, 0.18, 0.42);
+const STARS_B   = generateDotShadows(60, white,  0.5, 0.18, 0.42);
+const BUBBLES   = generateDotShadows(70, bubble, 0.5, 0.18, 0.42);
 const BUBBLES_2 = generateDotShadows(60, bubble, 0.5, 0.18, 0.42);
+const EMBERS_A  = generateDotShadows(70, ember,  0.5, 0.18, 0.42);
+const EMBERS_B  = generateDotShadows(60, ember,  0.5, 0.18, 0.42);
+const VIOLETS_A = generateDotShadows(80, violet, 0.5, 0.15, 0.50);
+const VIOLETS_B = generateDotShadows(70, violet, 0.5, 0.15, 0.50);
 
 const Wrap = ({ bg, children }) => (
   <div style={{ position: 'fixed', inset: 0, zIndex: -1, pointerEvents: 'none', overflow: 'hidden', background: bg }}>
@@ -31,6 +32,7 @@ const Wrap = ({ bg, children }) => (
   </div>
 );
 
+// ── 1. Nébuleuse spatiale ────────────────────────────────────────────────────
 function NebulaBackground() {
   return (
     <Wrap bg="radial-gradient(ellipse at 50% 30%, #0c0a1a 0%, #05050b 70%)">
@@ -50,21 +52,7 @@ function NebulaBackground() {
   );
 }
 
-function GoldDustBackground() {
-  return (
-    <Wrap bg="radial-gradient(ellipse at 50% 100%, #2a2012 0%, #15100a 60%)">
-      <style>{`
-        @keyframes riseUp  { 0% { transform: translateY(10vh); opacity: 0.9; } 100% { transform: translateY(-30vh); opacity: 0; } }
-        @keyframes riseUp2 { 0% { transform: translateY(15vh); opacity: 0.85; } 100% { transform: translateY(-35vh); opacity: 0; } }
-        @keyframes glowPulse { 0%,100% { opacity: 0.5; } 50% { opacity: 0.85; } }
-      `}</style>
-      <div style={{ position: 'absolute', bottom: '-10%', left: '30%', width: '60vw', height: '60vw', borderRadius: '50%', background: 'radial-gradient(circle, rgba(245,158,11,0.18), transparent 70%)', filter: 'blur(90px)', animation: 'glowPulse 8s ease-in-out infinite' }} />
-      <div style={{ position: 'absolute', top: 0, left: 0, width: '1px', height: '1px', borderRadius: '50%', boxShadow: GOLD_A, animation: 'riseUp 16s linear infinite' }} />
-      <div style={{ position: 'absolute', top: 0, left: 0, width: '1px', height: '1px', borderRadius: '50%', boxShadow: GOLD_B, animation: 'riseUp2 22s linear infinite', animationDelay: '-8s' }} />
-    </Wrap>
-  );
-}
-
+// ── 2. Profondeurs océan ─────────────────────────────────────────────────────
 function OceanDepthBackground() {
   return (
     <Wrap bg="linear-gradient(180deg, #0d2636 0%, #091a26 70%, #050f16 100%)">
@@ -82,10 +70,71 @@ function OceanDepthBackground() {
   );
 }
 
+// ── 3. Aurora boréale ────────────────────────────────────────────────────────
+function AuroraBackground() {
+  return (
+    <Wrap bg="linear-gradient(180deg, #010a08 0%, #020e0b 60%, #010806 100%)">
+      <style>{`
+        @keyframes auroraDrift1 { 0%,100% { transform: translateX(-8%) scaleY(1);   opacity: 0.55; } 50% { transform: translateX(8%) scaleY(1.3);  opacity: 0.9; } }
+        @keyframes auroraDrift2 { 0%,100% { transform: translateX(6%) scaleY(0.9);  opacity: 0.4;  } 50% { transform: translateX(-6%) scaleY(1.2); opacity: 0.7; } }
+        @keyframes auroraDrift3 { 0%,100% { transform: translateX(-4%) scaleY(1.1); opacity: 0.35; } 50% { transform: translateX(5%) scaleY(0.85); opacity: 0.6; } }
+        @keyframes riseUp  { 0% { transform: translateY(10vh); opacity: 0.9; }  100% { transform: translateY(-30vh); opacity: 0; } }
+        @keyframes riseUp2 { 0% { transform: translateY(15vh); opacity: 0.85; } 100% { transform: translateY(-35vh); opacity: 0; } }
+      `}</style>
+      <div style={{ position: 'absolute', top: '-10%', left: '-5%', width: '45vw', height: '80vh', background: 'linear-gradient(180deg, rgba(52,211,153,0.55) 0%, rgba(16,185,129,0.28) 40%, transparent 80%)', filter: 'blur(50px)', animation: 'auroraDrift1 12s ease-in-out infinite', willChange: 'transform' }} />
+      <div style={{ position: 'absolute', top: '-15%', left: '30%', width: '50vw', height: '90vh', background: 'linear-gradient(180deg, rgba(99,102,241,0.45) 0%, rgba(139,92,246,0.22) 40%, transparent 80%)', filter: 'blur(60px)', animation: 'auroraDrift2 16s ease-in-out infinite', willChange: 'transform' }} />
+      <div style={{ position: 'absolute', top: '-5%', left: '60%', width: '40vw', height: '75vh', background: 'linear-gradient(180deg, rgba(34,211,238,0.38) 0%, rgba(6,182,212,0.18) 40%, transparent 80%)', filter: 'blur(50px)', animation: 'auroraDrift3 20s ease-in-out infinite', willChange: 'transform' }} />
+      <div style={{ position: 'absolute', top: 0, left: 0, width: '1px', height: '1px', borderRadius: '50%', boxShadow: STARS_A, animation: 'riseUp 16s linear infinite' }} />
+      <div style={{ position: 'absolute', top: 0, left: 0, width: '1px', height: '1px', borderRadius: '50%', boxShadow: STARS_B, animation: 'riseUp2 22s linear infinite', animationDelay: '-8s' }} />
+    </Wrap>
+  );
+}
+
+// ── 4. Braises rouges ────────────────────────────────────────────────────────
+function EmberBackground() {
+  return (
+    <Wrap bg="radial-gradient(ellipse at 50% 100%, #1a0a05 0%, #0d0504 60%, #080202 100%)">
+      <style>{`
+        @keyframes emberPulse  { 0%,100% { opacity: 0.4; } 50% { opacity: 0.72; } }
+        @keyframes emberPulse2 { 0%,100% { opacity: 0.3; } 50% { opacity: 0.6;  } }
+        @keyframes riseUp  { 0% { transform: translateY(10vh); opacity: 0.9; }  100% { transform: translateY(-30vh); opacity: 0; } }
+        @keyframes riseUp2 { 0% { transform: translateY(15vh); opacity: 0.85; } 100% { transform: translateY(-35vh); opacity: 0; } }
+      `}</style>
+      <div style={{ position: 'absolute', bottom: '-20%', left: '20%', width: '70vw', height: '70vw', borderRadius: '50%', background: 'radial-gradient(circle, rgba(239,68,68,0.22), rgba(249,115,22,0.12), transparent 70%)', filter: 'blur(80px)', animation: 'emberPulse 6s ease-in-out infinite' }} />
+      <div style={{ position: 'absolute', bottom: '-5%', right: '5%', width: '40vw', height: '40vw', borderRadius: '50%', background: 'radial-gradient(circle, rgba(220,38,38,0.28), transparent 70%)', filter: 'blur(60px)', animation: 'emberPulse2 9s ease-in-out infinite', animationDelay: '-3s' }} />
+      <div style={{ position: 'absolute', bottom: '-10%', left: '5%', width: '30vw', height: '30vw', borderRadius: '50%', background: 'radial-gradient(circle, rgba(251,146,60,0.2), transparent 70%)', filter: 'blur(50px)', animation: 'emberPulse 11s ease-in-out infinite', animationDelay: '-5s' }} />
+      <div style={{ position: 'absolute', top: 0, left: 0, width: '1px', height: '1px', borderRadius: '50%', boxShadow: EMBERS_A, animation: 'riseUp 16s linear infinite' }} />
+      <div style={{ position: 'absolute', top: 0, left: 0, width: '1px', height: '1px', borderRadius: '50%', boxShadow: EMBERS_B, animation: 'riseUp2 22s linear infinite', animationDelay: '-8s' }} />
+    </Wrap>
+  );
+}
+
+// ── 5. Minuit violet ─────────────────────────────────────────────────────────
+function MidnightVioletBackground() {
+  return (
+    <Wrap bg="radial-gradient(ellipse at 50% 50%, #0a0514 0%, #060310 55%, #030208 100%)">
+      <style>{`
+        @keyframes orbPulse  { 0%,100% { transform: scale(1);    opacity: 0.28; } 50% { transform: scale(1.1);  opacity: 0.48; } }
+        @keyframes orbPulse2 { 0%,100% { transform: scale(1.05); opacity: 0.18; } 50% { transform: scale(0.95); opacity: 0.32; } }
+        @keyframes riseUp  { 0% { transform: translateY(10vh); opacity: 0.9; }  100% { transform: translateY(-30vh); opacity: 0; } }
+        @keyframes riseUp2 { 0% { transform: translateY(15vh); opacity: 0.85; } 100% { transform: translateY(-35vh); opacity: 0; } }
+      `}</style>
+      <div style={{ position: 'absolute', top: '15%', left: '50%', transform: 'translate(-50%,-10%)', width: '65vw', height: '65vw', borderRadius: '50%', background: 'radial-gradient(circle, rgba(139,92,246,0.3), rgba(109,40,217,0.14), transparent 65%)', filter: 'blur(65px)', animation: 'orbPulse 10s ease-in-out infinite' }} />
+      <div style={{ position: 'absolute', bottom: '5%', right: '10%', width: '35vw', height: '35vw', borderRadius: '50%', background: 'radial-gradient(circle, rgba(167,139,250,0.18), transparent 70%)', filter: 'blur(55px)', animation: 'orbPulse2 14s ease-in-out infinite', animationDelay: '-5s' }} />
+      <div style={{ position: 'absolute', bottom: '20%', left: '5%', width: '25vw', height: '25vw', borderRadius: '50%', background: 'radial-gradient(circle, rgba(196,181,253,0.14), transparent 70%)', filter: 'blur(45px)', animation: 'orbPulse 18s ease-in-out infinite', animationDelay: '-9s' }} />
+      <div style={{ position: 'absolute', top: 0, left: 0, width: '1px', height: '1px', borderRadius: '50%', boxShadow: VIOLETS_A, animation: 'riseUp 16s linear infinite' }} />
+      <div style={{ position: 'absolute', top: 0, left: 0, width: '1px', height: '1px', borderRadius: '50%', boxShadow: VIOLETS_B, animation: 'riseUp2 22s linear infinite', animationDelay: '-8s' }} />
+    </Wrap>
+  );
+}
+
+// ── Switcher ─────────────────────────────────────────────────────────────────
 const VARIANTS = [
   { name: 'Nébuleuse spatiale', Comp: NebulaBackground },
-  { name: 'Poussière dorée', Comp: GoldDustBackground },
-  { name: 'Profondeurs océan', Comp: OceanDepthBackground },
+  { name: 'Profondeurs océan',  Comp: OceanDepthBackground },
+  { name: 'Aurora boréale',     Comp: AuroraBackground },
+  { name: 'Braises rouges',     Comp: EmberBackground },
+  { name: 'Minuit violet',      Comp: MidnightVioletBackground },
 ];
 
 export default function StarField() {
@@ -110,7 +159,7 @@ export default function StarField() {
         padding: '2px 10px', fontSize: 12, lineHeight: 1.2, color: '#e2e8f0', backdropFilter: 'blur(8px)',
       }}>
         <button onClick={() => set((i - 1 + VARIANTS.length) % VARIANTS.length)} style={{ background: 'transparent', border: 'none', color: '#e2e8f0', cursor: 'pointer', fontSize: 14, lineHeight: 1, padding: 0 }}>‹</button>
-        <span style={{ minWidth: 150, textAlign: 'center' }}>{i + 1}/{VARIANTS.length} · {name}</span>
+        <span style={{ minWidth: 160, textAlign: 'center' }}>{i + 1}/{VARIANTS.length} · {name}</span>
         <button onClick={() => set((i + 1) % VARIANTS.length)} style={{ background: 'transparent', border: 'none', color: '#e2e8f0', cursor: 'pointer', fontSize: 14, lineHeight: 1, padding: 0 }}>›</button>
       </div>
     </>

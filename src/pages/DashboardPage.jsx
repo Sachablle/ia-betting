@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
+import { useNavigate } from 'react-router-dom';
 
 const ALERT_KEY       = 'nba_prop_alerts';
 const GAME_TOTAL_KEY  = 'nba_game_total_alerts';
@@ -133,12 +134,12 @@ function CountdownWidget() {
       {/* Ligne du haut — En cours + Prochain match */}
       <div style={{ display: 'flex', alignItems: 'stretch' }}>
         {/* Section gauche — En cours */}
-        <div style={{ padding: '0.25rem 0.75rem', display: 'flex', flexDirection: 'column', justifyContent: 'center', minWidth: 130 }}>
-          <div style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--text-sub)', marginBottom: '0.25rem' }}>
+        <div style={{ padding: '0.3rem 0.75rem', display: 'flex', flexDirection: 'column', justifyContent: 'center', minWidth: 130 }}>
+          <div style={{ fontSize: 8, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--text-sub)', borderBottom: '1px solid var(--border)', paddingBottom: '0.3rem', marginBottom: '0.25rem' }}>
             En cours
           </div>
           <div style={{ display: 'flex', alignItems: 'baseline', gap: '0.35rem' }}>
-            <span style={{ fontSize: '1.4rem', fontWeight: 800, color: liveCount > 0 ? '#4ade80' : dim, lineHeight: 1, fontVariantNumeric: 'tabular-nums' }}>
+            <span style={{ fontSize: '1rem', fontWeight: 800, color: liveCount > 0 ? '#4ade80' : dim, lineHeight: 1, fontVariantNumeric: 'tabular-nums' }}>
               {liveCount}
             </span>
             <span style={{ fontSize: 10, color: dim }}>alerte{liveCount !== 1 ? 's' : ''}</span>
@@ -152,8 +153,8 @@ function CountdownWidget() {
         {/* Séparateur vertical */}
         <div style={{ width: 1, background: 'var(--border)', flexShrink: 0 }} />
         {/* Section droite — Prochain match */}
-        <div style={{ padding: '0.25rem 0.75rem', display: 'flex', flexDirection: 'column', justifyContent: 'center', minWidth: 160 }}>
-          <div style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--text-sub)', marginBottom: '0.25rem' }}>
+        <div style={{ padding: '0.3rem 0.75rem', display: 'flex', flexDirection: 'column', justifyContent: 'center', minWidth: 160 }}>
+          <div style={{ fontSize: 8, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--text-sub)', borderBottom: '1px solid var(--border)', paddingBottom: '0.3rem', marginBottom: '0.25rem' }}>
             Prochain match
           </div>
           {next ? (
@@ -277,8 +278,23 @@ function HealthBar({ label, lastRun, nextRun, intervalMs = BG_INTERVAL_MS }) {
 
 function SystemHealthSection() {
   const [health, setHealth] = useState(null);
-  const [showScrape, setShowScrape] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const cardRef = useRef(null);
+  const [cardRect, setCardRect] = useState({ w: 420, h: 120 });
+
+  useEffect(() => {
+    const measure = () => {
+      if (!cardRef.current) return;
+      const r = cardRef.current.getBoundingClientRect();
+      const gridRight = cardRef.current.parentElement?.getBoundingClientRect().right ?? (r.right + 200);
+      const gap = 12;
+      const panelW = Math.max(200, gridRight - r.right - gap);
+      setCardRect({ w: panelW, h: r.height });
+    };
+    measure();
+    window.addEventListener('resize', measure);
+    return () => window.removeEventListener('resize', measure);
+  }, []);
 
   useEffect(() => {
     const load = () => fetch('/api/system/health').then(r => r.json()).then(setHealth).catch(() => {});
@@ -318,11 +334,20 @@ function SystemHealthSection() {
   const betclic  = merge(sc.betclic_foot,  sc.betclic);
 
   return (
-    <div style={{ position: 'relative', height: '100%', justifySelf: 'start' }}>
+    <div ref={cardRef} style={{ position: 'relative', height: '100%', justifySelf: 'start' }}>
     <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 16, display: 'flex', alignItems: 'stretch', height: '100%', boxSizing: 'border-box' }}>
 
-      <div style={{ padding: '0.25rem 0.75rem', display: 'flex', flexDirection: 'column', justifyContent: 'flex-start', gap: '0.75rem' }}>
-        <div style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--text-sub)' }}>Cotes &amp; Données</div>
+      <div style={{ padding: '0.3rem 0.75rem', display: 'flex', flexDirection: 'column', justifyContent: 'flex-start', gap: '0.75rem' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid var(--border)', paddingBottom: '0.3rem', marginBottom: '0' }}>
+          <span style={{ fontSize: 8, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--text-sub)' }}>Cotes &amp; Données</span>
+          <button
+            className={`icon-refresh-btn${refreshing ? ' spinning' : ''}`}
+            onClick={handleRefresh}
+            disabled={refreshing}
+            title="Rafraîchir"
+            style={{ width: 16, height: 16, fontSize: 11, lineHeight: 1, padding: 0, flexShrink: 0 }}
+          >↻</button>
+        </div>
 
         <div style={{ display: 'flex', alignItems: 'flex-end', gap: '0' }}>
           {/* Cotes */}
@@ -349,39 +374,14 @@ function SystemHealthSection() {
 
     </div>
 
-    {/* Rafraîchir RotoWire/ACB immédiatement (corrige les faux négatifs liés au timing) — coin haut-droit */}
-    <button
-      className={`icon-refresh-btn${refreshing ? ' spinning' : ''}`}
-      onClick={handleRefresh}
-      disabled={refreshing}
-      title="Rafraîchir"
-      style={{ position: 'absolute', top: 6, right: 6, zIndex: 1 }}
-    >
-      ↻
-    </button>
-
-    {/* Toggle taux de scraping — collé au coin bas-droit */}
-    <button
-      onClick={() => setShowScrape(v => !v)}
-      title="Taux de scraping"
-      style={{
-        position: 'absolute', bottom: 3, right: 3, zIndex: 1,
-        width: 12, height: 12, padding: 0,
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-        background: 'transparent', border: 'none',
-        color: 'var(--text-dim)', cursor: 'pointer', opacity: 0.6,
-      }}
-    >
-      <svg style={{ transform: showScrape ? 'rotate(180deg)' : 'none', transition: 'transform 0.2s' }} width="9" height="9" viewBox="0 0 12 12" fill="none">
-        <path d="M2.5 4.5L6 8L9.5 4.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-      </svg>
-    </button>
-
-    {showScrape && (
-      <div style={{ position: 'absolute', top: '100%', right: 0, marginTop: '0.5rem', zIndex: 2, background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 16, padding: '0.75rem 1rem', minWidth: 420 }}>
-        <ScrapingRatePanel sc={sc} />
-      </div>
-    )}
+    <div className="no-scrollbar" style={{
+      position: 'absolute', top: 0, left: `calc(100% + 0.75rem)`, zIndex: 2,
+      width: cardRect.w, height: '100%',
+      background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 16,
+      padding: '0.3rem 0.75rem', boxSizing: 'border-box', overflowY: 'auto',
+    }}>
+      <ScrapingRatePanel sc={sc} />
+    </div>
     </div>
   );
 }
@@ -418,7 +418,7 @@ function QuotasWidget() {
   return (
     <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 16, display: 'flex', flexDirection: 'column' }}>
       <div style={{ padding: '0.3rem 0.75rem', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center' }}>
-        <span style={{ fontSize: 9, fontWeight: 700, color: 'var(--text-sub)', textTransform: 'uppercase', letterSpacing: '0.1em' }}>Requêtes restantes</span>
+        <span style={{ fontSize: 8, fontWeight: 700, color: 'var(--text-sub)', textTransform: 'uppercase', letterSpacing: '0.1em' }}>Requêtes restantes</span>
       </div>
       <div style={{ display: 'flex', alignItems: 'stretch', marginTop: 'auto', marginBottom: '0.6rem' }}>
         {cards.map((c, i) => (
@@ -450,13 +450,12 @@ function ScrapingRatePanel({ sc }) {
   ];
 
   const GROUPS = [
-    { label: 'Basket — Cotes',   items: [{ key: 'unibet', name: 'Unibet' }, { key: 'betclic', name: 'Betclic' }] },
-    // Bzzoiro masqué — EuroLeague en pause jusqu'à octobre, remettre dans Basket — Données à la reprise
-    { label: 'Basket — Données', items: [{ key: 'espn', name: 'ESPN' }, { key: 'acb', name: 'ACB' }, { key: 'rotowire', name: 'RotoWire' }] },
-    { label: 'Foot — Cotes',     items: [{ key: 'unibet_foot', name: 'Unibet' }, { key: 'betclic_foot', name: 'Betclic' }] },
+    { label: 'Basket — Cotes',   items: [{ key: 'pinnacle_wnba', name: 'Pinnacle' }, { key: 'unibet', name: 'Unibet' }, { key: 'betclic', name: 'Betclic' }] },
+    { label: 'Basket — Données', items: [{ key: 'espn', name: 'ESPN' }, { key: 'rotowire', name: 'RotoWire' }, { key: 'acb', name: 'ACB' }] },
+    { label: 'Foot — Cotes',     items: [{ key: 'pinnacle_foot', name: 'Pinnacle' }, { key: 'unibet_foot', name: 'Unibet' }, { key: 'betclic_foot', name: 'Betclic' }] },
   ];
 
-  const SIZE = 54, R = 22, STROKE = 4;
+  const SIZE = 26, R = 10, STROKE = 2;
   const CIRC = 2 * Math.PI * R;
 
   const RingChart = ({ name, scraper, colorIdx = 0 }) => {
@@ -469,23 +468,19 @@ function ScrapingRatePanel({ sc }) {
     const fid      = `glow-${scraper}`;
     const cx       = SIZE / 2, cy = SIZE / 2;
     return (
-      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.3rem', width: SIZE, flexShrink: 0 }}>
+      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.2rem', width: SIZE, flexShrink: 0 }}>
         <svg width={SIZE} height={SIZE} viewBox={`0 0 ${SIZE} ${SIZE}`} style={{ display: 'block' }}>
           <defs>
-            {/* Dégradé : sombre en bas-gauche → lumineux en haut-droite */}
             <linearGradient id={gid} x1="0" y1={SIZE} x2={SIZE} y2="0" gradientUnits="userSpaceOnUse">
               <stop offset="0%"   stopColor={c0} stopOpacity="0.55" />
               <stop offset="100%" stopColor={c1} stopOpacity="1" />
             </linearGradient>
-            {/* Glow */}
             <filter id={fid} x="-60%" y="-60%" width="220%" height="220%">
-              <feGaussianBlur stdDeviation="3" result="blur" />
+              <feGaussianBlur stdDeviation="2" result="blur" />
               <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
             </filter>
           </defs>
-          {/* Track */}
           <circle cx={cx} cy={cy} r={R} fill="none" stroke="rgba(255,255,255,0.06)" strokeWidth={STROKE} />
-          {/* Arc dégradé */}
           {pct != null && (
             <circle
               cx={cx} cy={cy} r={R} fill="none"
@@ -497,27 +492,37 @@ function ScrapingRatePanel({ sc }) {
               style={{ transition: 'stroke-dasharray 0.5s ease' }}
             />
           )}
-          {/* % au centre */}
           <text x={cx} y={cy} textAnchor="middle" dominantBaseline="central"
-            style={{ fontSize: 10, fontWeight: 800, fill: pct != null ? c1 : 'rgba(255,255,255,0.2)', fontFamily: 'inherit', fontVariantNumeric: 'tabular-nums' }}>
+            style={{ fontSize: 4, fontWeight: 800, fill: pct != null ? c1 : 'rgba(255,255,255,0.2)', fontFamily: 'inherit', fontVariantNumeric: 'tabular-nums' }}>
             {pct != null ? `${pct}%` : '—'}
           </text>
         </svg>
-        <span style={{ fontSize: 9, color: 'var(--text-sub)', textAlign: 'center', whiteSpace: 'nowrap' }}>{name}</span>
+        <span style={{ fontSize: 7, color: 'var(--text-sub)', textAlign: 'center', whiteSpace: 'nowrap' }}>{name}</span>
       </div>
     );
   };
 
+  const ROWS = [
+    { sport: 'Basket', groups: [GROUPS[0], GROUPS[1]] },
+    { sport: 'Foot',   groups: [GROUPS[2]] },
+  ];
+
   return (
-    <div>
-      <div style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--text)', marginBottom: '0.75rem' }}>Taux de scraping</div>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem 2rem' }}>
-        {GROUPS.map(g => (
-          <div key={g.label} style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-            <span style={{ fontSize: 8, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-dim)' }}>{g.label}</span>
-            <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap' }}>
-              {g.items.map((item, i) => <RingChart key={item.key + g.label} name={item.name} scraper={item.key} colorIdx={i} />)}
-            </div>
+    <div style={{ height: '100%', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+      <div style={{ fontSize: 8, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--text-sub)', borderBottom: '1px solid var(--border)', paddingBottom: '0.3rem' }}>Taux de scraping</div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem', flex: 1 }}>
+        {ROWS.map(row => (
+          <div key={row.sport} style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+            <span style={{ fontSize: 5, textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-dim)', width: 18, flexShrink: 0 }}>{row.sport}</span>
+            <div style={{ width: 1, background: 'rgba(255,255,255,0.08)', alignSelf: 'stretch', flexShrink: 0 }} />
+            {row.groups.map((g, gi) => (
+              <div key={g.label} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                {gi > 0 && <div style={{ width: 1, background: 'rgba(255,255,255,0.06)', alignSelf: 'stretch', flexShrink: 0 }} />}
+                <div style={{ display: 'flex', gap: '0.5rem' }}>
+                  {g.items.map((item, i) => <RingChart key={item.key + g.label} name={item.name} scraper={item.key} colorIdx={i} />)}
+                </div>
+              </div>
+            ))}
           </div>
         ))}
       </div>
@@ -861,6 +866,16 @@ function UpcomingMatchesWidget() {
   const [filter, setFilter] = useState('all');
   const [loading, setLoading] = useState(true);
   const [open, setOpen]     = useState(false);
+  const navigate = useNavigate();
+
+  const goToMatch = g => {
+    if (g.sport === 'foot') {
+      navigate(`/football/${g.id}`);
+    } else {
+      const leagueParam = g.league !== 'nba' ? `?league=${g.league}` : '';
+      navigate(`/basketball/${g.id}${leagueParam}`);
+    }
+  };
 
   useEffect(() => {
     const LIVE_MS = 3 * 3600_000;
@@ -962,7 +977,7 @@ function UpcomingMatchesWidget() {
     <div style={{ background:'var(--bg-card)', border:'1px solid var(--border)', borderRadius:16, display:'flex', flexDirection:'column', alignSelf:'start', overflow:'hidden' }}>
       {/* Header — clic partout pour ouvrir/fermer */}
       <div onClick={()=>setOpen(o=>!o)} style={{ padding:'0.3rem 0.75rem', borderBottom: open ? '1px solid var(--border)' : 'none', display:'flex', alignItems:'center', justifyContent:'space-between', flexShrink:0, cursor:'pointer', userSelect:'none' }}>
-        <span style={{ fontSize:9, fontWeight:700, textTransform:'uppercase', letterSpacing:'0.1em', color:'var(--text-sub)' }}>Matchs à venir</span>
+        <span style={{ fontSize:8, fontWeight:700, textTransform:'uppercase', letterSpacing:'0.1em', color:'var(--text-sub)' }}>Matchs à venir</span>
         <div style={{ display:'flex', alignItems:'center', gap:'0.4rem' }}>
           {open && [['all','Tous'],['foot','⚽'],['basket','🏀']].map(([k,l])=>(
             <button key={k} onClick={e=>{e.stopPropagation();setFilter(k);}} style={{
@@ -977,13 +992,13 @@ function UpcomingMatchesWidget() {
         </div>
       </div>
 
-      {/* Liste — même format ouvert/fermé */}
-      <div style={{ overflowY: open ? 'auto' : 'hidden', maxHeight: open ? 280 : 'none', padding:'0.15rem 0' }}>
+      {/* Liste — scrollable dans les deux états */}
+      <div className="no-scrollbar" style={{ overflowY: 'auto', maxHeight: open ? 320 : 78, padding:'0.15rem 0', transition:'max-height 0.25s ease' }}>
         {loading ? (
           <div style={{ padding:'0.5rem 0.75rem', fontSize:10, color:dim }}>Chargement…</div>
         ) : visible.length === 0 ? (
           <div style={{ padding:'0.5rem 0.75rem', fontSize:10, color:dim }}>Aucun match à venir</div>
-        ) : (open ? groups : [{ label: null, games: visible.slice(0, 3) }]).map((group, gi) => (
+        ) : (open ? groups : [{ label: null, games: visible }]).map((group, gi) => (
           <div key={group.label || gi}>
             {open && group.label && <div style={{ padding:'0.2rem 0.75rem 0.1rem', fontSize:8, fontWeight:700, textTransform:'uppercase', letterSpacing:'0.08em', color:'rgba(255,255,255,0.18)' }}>
               {group.label}
@@ -994,33 +1009,63 @@ function UpcomingMatchesWidget() {
               const color = LEAGUE_COLOR_MAP[g.league] || '#94a3b8';
               const lbl   = LEAGUE_LABEL_MAP[g.league] || g.league.toUpperCase();
               return (
-                <div key={g.id} style={{ display:'flex', alignItems:'center', gap:'0.45rem', padding:'0.22rem 0.75rem', borderBottom:'1px solid rgba(255,255,255,0.03)' }}>
-                  {/* Heure */}
-                  <span style={{ fontSize:9, fontVariantNumeric:'tabular-nums', color: live ? '#f87171' : dim, width:28, flexShrink:0, fontWeight: live ? 700 : 400 }}>
-                    {fmtTime(g.date)}
-                  </span>
-                  {/* Badge ligue */}
-                  <span style={{ fontSize:7, fontWeight:700, color, background:`${color}18`, border:`1px solid ${color}30`, borderRadius:3, padding:'1px 4px', flexShrink:0, minWidth:22, textAlign:'center', letterSpacing:'0.04em' }}>
-                    {lbl}
-                  </span>
-                  {/* Équipes */}
-                  <span style={{ fontSize:10, color:'var(--text)', flex:1, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
-                    {g.home} <span style={{ color:dim }}>vs</span> {g.away}
-                  </span>
-                  {/* Score si live */}
-                  {live && g.homeScore !== null && (
-                    <span style={{ fontSize:9, fontWeight:700, color:'#f87171', fontVariantNumeric:'tabular-nums', flexShrink:0 }}>
-                      {g.homeScore}-{g.awayScore}
+                <div key={g.id} onClick={() => goToMatch(g)} style={{
+                  display:'flex', alignItems:'center', gap:'0.5rem',
+                  padding:'0.28rem 0.75rem 0.28rem 0.65rem',
+                  borderLeft: `2px solid ${live ? '#f87171' : color}55`,
+                  marginLeft: 2,
+                  background: live ? 'rgba(248,113,113,0.04)' : alert ? 'rgba(251,146,60,0.03)' : 'transparent',
+                  transition:'background 0.15s', cursor:'pointer',
+                }}
+                onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.04)'}
+                onMouseLeave={e => e.currentTarget.style.background = live ? 'rgba(248,113,113,0.04)' : alert ? 'rgba(251,146,60,0.03)' : 'transparent'}
+                >
+                  {/* Live dot ou heure */}
+                  {live ? (
+                    <span style={{ display:'flex', alignItems:'center', gap:3, width:36, flexShrink:0 }}>
+                      <span style={{ width:5, height:5, borderRadius:'50%', background:'#f87171', flexShrink:0, boxShadow:'0 0 4px #f87171' }} />
+                      <span style={{ fontSize:9, fontWeight:700, color:'#f87171', fontVariantNumeric:'tabular-nums' }}>{fmtTime(g.date)}</span>
+                    </span>
+                  ) : (
+                    <span style={{ fontSize:9, color:dim, width:36, flexShrink:0, fontVariantNumeric:'tabular-nums' }}>{fmtTime(g.date)}</span>
+                  )}
+                  {/* Badge ligue — pill coloré */}
+                  {g.league === 'cdm' ? (
+                    <span style={{ fontSize:11, lineHeight:1, flexShrink:0 }}>🌍</span>
+                  ) : g.league === 'wnba' ? (
+                    <img src="https://a.espncdn.com/i/teamlogos/leagues/500/wnba.png" alt="WNBA" style={{ width:12, height:12, objectFit:'contain', flexShrink:0 }} />
+                  ) : (
+                    <span style={{
+                      fontSize:7, fontWeight:800, letterSpacing:'0.06em',
+                      color, background:`${color}15`, borderRadius:20,
+                      padding:'2px 6px', flexShrink:0, minWidth:20, textAlign:'center',
+                    }}>
+                      {lbl}
                     </span>
                   )}
-                  {/* Point d'alerte */}
-                  {alert && <span style={{ width:5, height:5, borderRadius:'50%', background:'#fb923c', flexShrink:0 }} title="Alerte active" />}
+                  {/* Équipes */}
+                  <span style={{ fontSize:10, color:'var(--text)', flex:1, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', fontWeight: live ? 600 : 400 }}>
+                    {g.home}
+                    <span style={{ color:'rgba(255,255,255,0.2)', margin:'0 4px', fontSize:8 }}>·</span>
+                    {g.away}
+                  </span>
+                  {/* Score live */}
+                  {live && g.homeScore !== null && (
+                    <span style={{ fontSize:10, fontWeight:700, color:'#f87171', fontVariantNumeric:'tabular-nums', flexShrink:0, background:'rgba(248,113,113,0.1)', padding:'1px 5px', borderRadius:4 }}>
+                      {g.homeScore}–{g.awayScore}
+                    </span>
+                  )}
+                  {/* Alerte */}
+                  {alert && !live && (
+                    <span style={{ width:5, height:5, borderRadius:'50%', background:'#fb923c', flexShrink:0, boxShadow:'0 0 4px #fb923c88' }} title="Alerte active" />
+                  )}
                 </div>
               );
             })}
           </div>
         ))}
       </div>
+
     </div>
   );
 }
@@ -1127,9 +1172,9 @@ export default function DashboardPage() {
       {/* Grid 2 colonnes : chaque ligne partage la même hauteur */}
       <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '1.5rem', marginBottom: '1.5rem', width: '100%' }}>
         <CountdownWidget />
-        <SystemHealthSection />
-        <QuotasWidget />
         <UpcomingMatchesWidget />
+        <QuotasWidget />
+        <SystemHealthSection />
       </div>
 
     </div>

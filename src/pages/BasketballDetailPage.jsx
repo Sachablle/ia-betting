@@ -407,6 +407,7 @@ function propConfColor(stat, league, pct) {
 function PropLegendCard({ league }) {
   const bands = EU_PROP_LEAGUES.has(league) ? PROP_CONF_BANDS.eu : PROP_CONF_BANDS.nba_short;
   const STATS = [['pts', 'Pts'], ['reb', 'Rebs'], ['ast', 'Passes'], ['tpm', '3pts']];
+  const isWNBA = league === 'wnba';
   const Dot = ({ color }) => <span style={{ display: 'inline-block', width: 6, height: 6, borderRadius: '50%', background: color, marginRight: 4, flexShrink: 0 }} />;
   return (
     <div>
@@ -414,17 +415,36 @@ function PropLegendCard({ league }) {
         Code couleur — confiance
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', marginBottom: '0.5rem' }}>
-        <span style={{ display: 'flex', alignItems: 'center', fontSize: 9.5, whiteSpace: 'nowrap' }}>
-          <Dot color="#4a9b6f" /><b style={{ color: '#4a9b6f' }}>≥ 80%</b>&nbsp;— seuil de déclenchement
-        </span>
-        <span style={{ display: 'flex', alignItems: 'center', fontSize: 9.5, whiteSpace: 'nowrap' }}>
-          <Dot color="#4a9b6f" style={{ opacity: 0.6 }} /><b style={{ color: '#4a9b6f', opacity: 0.8 }}>≥ 75%</b>&nbsp;— spécialiste régulière sur la stat
-        </span>
-        <span style={{ display: 'flex', alignItems: 'center', fontSize: 9.5, color: 'var(--text-dim)', whiteSpace: 'nowrap' }}><Dot color="#00d4ff" />70–79% moyen</span>
-        <span style={{ display: 'flex', alignItems: 'center', fontSize: 9.5, color: 'var(--text-dim)', whiteSpace: 'nowrap' }}><Dot color="#ffb400" />&lt;70% faible</span>
+        {isWNBA ? (
+          <>
+            <span style={{ display: 'flex', alignItems: 'center', fontSize: 9.5, whiteSpace: 'nowrap' }}>
+              <Dot color="#4a9b6f" /><b style={{ color: '#4a9b6f' }}>≥ 80%</b>&nbsp;— seuil AST
+            </span>
+            <span style={{ display: 'flex', alignItems: 'center', fontSize: 9.5, whiteSpace: 'nowrap' }}>
+              <Dot color="#4a9b6f" style={{ opacity: 0.85 }} /><b style={{ color: '#4a9b6f', opacity: 0.9 }}>≥ 77%</b>&nbsp;— seuil pts / reb / 3pts
+            </span>
+            <span style={{ display: 'flex', alignItems: 'center', fontSize: 9.5, whiteSpace: 'nowrap' }}>
+              <Dot color="#4a9b6f" style={{ opacity: 0.55 }} /><b style={{ color: '#4a9b6f', opacity: 0.7 }}>≥ 72%</b>&nbsp;— spécialiste régulière sur la stat
+            </span>
+          </>
+        ) : (
+          <>
+            <span style={{ display: 'flex', alignItems: 'center', fontSize: 9.5, whiteSpace: 'nowrap' }}>
+              <Dot color="#4a9b6f" /><b style={{ color: '#4a9b6f' }}>≥ 80%</b>&nbsp;— seuil de déclenchement
+            </span>
+            <span style={{ display: 'flex', alignItems: 'center', fontSize: 9.5, whiteSpace: 'nowrap' }}>
+              <Dot color="#4a9b6f" style={{ opacity: 0.6 }} /><b style={{ color: '#4a9b6f', opacity: 0.8 }}>≥ 75%</b>&nbsp;— spécialiste régulière sur la stat
+            </span>
+          </>
+        )}
+        <span style={{ display: 'flex', alignItems: 'center', fontSize: 9.5, color: 'var(--text-dim)', whiteSpace: 'nowrap' }}><Dot color="#00d4ff" />{isWNBA ? '65–71%' : '70–79%'} moyen</span>
+        <span style={{ display: 'flex', alignItems: 'center', fontSize: 9.5, color: 'var(--text-dim)', whiteSpace: 'nowrap' }}><Dot color="#ffb400" />&lt;{isWNBA ? '65%' : '70%'} faible</span>
       </div>
       <div style={{ fontSize: 9, lineHeight: 1.45, color: 'var(--text-dim)', borderTop: '1px solid var(--border)', paddingTop: '0.4rem' }}>
-        Alerte envoyée si <b style={{ color: '#4a9b6f' }}>seuil vert</b> + cotes Unibet/Betclic ≥ 1,60 + minutes ≥ 10/match. WNBA : AST Over bloqué si ligne ≥ 4,5 · 3pts Over réservé aux shooteuses (moy ≥ 1,5/match).
+        {isWNBA
+          ? <>Alerte si <b style={{ color: '#4a9b6f' }}>seuil vert</b> + cotes ≥ 1,60 + minutes ≥ 10/match. AST Over bloqué si ligne ≥ 4,5 · 3pts Over : moy ≥ 1,2/match.</>
+          : <>Alerte si <b style={{ color: '#4a9b6f' }}>seuil vert</b> + cotes Unibet/Betclic ≥ 1,60 + minutes ≥ 10/match. 3pts Over : moy ≥ 1,5/match.</>
+        }
       </div>
     </div>
   );
