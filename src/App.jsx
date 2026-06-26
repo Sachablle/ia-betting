@@ -102,19 +102,12 @@ function useAlertCount() {
 
     setCounts({ total: basket + foot, basket, foot });
   };
-  // Charge les données depuis MongoDB au démarrage (sync cross-device)
-  useEffect(() => { loadFromCloud().then(refresh); }, []);
-
   useEffect(() => {
     refresh();
     window.addEventListener('nba_alerts_updated', refresh);
     FB_ALERT_EVENTS.forEach(e => window.addEventListener(e, refresh));
     const tick = setInterval(refresh, 60_000);
 
-    // Sans ça, le localStorage (et donc le badge) n'était peuplé/rafraîchi qu'en visitant
-    // PlaceBetPage/RunningPage — sur Dashboard ou ailleurs, les badges restaient à 0 tant que
-    // l'utilisateur n'avait pas ouvert la page Alertes au moins une fois. Ces syncs tournent
-    // maintenant ici, au niveau racine, quelle que soit la page affichée.
     const syncAll = () => {
       syncSettlements();
       syncBackgroundAlerts();
@@ -122,16 +115,17 @@ function useAlertCount() {
       syncBasketballResultAlerts();
       syncFootballAlerts();
     };
-    syncAll();
-    // Re-charge depuis MongoDB toutes les 2 min pour rester en sync avec le local
-    const cloudTick = setInterval(() => loadFromCloud().then(refresh), 2 * 60_000);
+
+    // loadFromCloud d'abord, syncAll ensuite — évite que cloudSet() dans syncAll
+    // écrase MongoDB avec des données localStorage périmées avant que le pull cloud soit terminé.
+    loadFromCloud().then(() => { refresh(); syncAll(); });
+
     const syncTick = setInterval(syncAll, 2 * 60_000);
 
     return () => {
       window.removeEventListener('nba_alerts_updated', refresh);
       FB_ALERT_EVENTS.forEach(e => window.removeEventListener(e, refresh));
       clearInterval(tick);
-      clearInterval(cloudTick);
       clearInterval(syncTick);
     };
   }, []);
