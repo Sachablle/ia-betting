@@ -491,7 +491,9 @@ app.get('/api/sync-events', (req, res) => {
   res.setHeader('Connection', 'keep-alive');
   res.flushHeaders();
   _sseClients.add(res);
-  req.on('close', () => _sseClients.delete(res));
+  // Heartbeat toutes les 25s pour éviter que le proxy coupe la connexion
+  const hb = setInterval(() => { try { res.write(':\n\n'); } catch { clearInterval(hb); } }, 25_000);
+  req.on('close', () => { clearInterval(hb); _sseClients.delete(res); });
 });
 
 // Données utilisateur synchronisées (alertes, paris, historique)

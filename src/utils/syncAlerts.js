@@ -654,14 +654,7 @@ export async function syncFootballAlerts() {
         }
         const prev = result[idx];
         if ((prev.status || 'pending') !== 'pending') {
-          // CDM : un rejet sans `rejectedAt` date d'avant le filtre "24h avant coup d'envoi"
-          // (proba instable, recalculée à chaque match précédent) — l'alerte régénérée dans
-          // la fenêtre stable est une opportunité différente, on la fait réapparaître.
-          if (prev.status === 'rejected' && !prev.rejectedAt && (prev.fixtureId || '').startsWith('fdcdm_')) {
-            result[idx] = { ...a, status: 'pending' };
-            changed = true;
-          }
-          return; // accepté/rejeté (récent) : ne pas toucher
+          return; // accepté/rejeté/réglé : ne jamais toucher
         }
         if (prev.probability !== a.probability || prev.unibetOdds !== a.unibetOdds
             || prev.betclicOdds !== a.betclicOdds || prev.winamaxOdds !== a.winamaxOdds || prev.edge !== a.edge) {
@@ -795,11 +788,7 @@ export async function syncFootballAlerts() {
         }
         const prev = result[idx];
         if ((prev.status || 'pending') !== 'pending') {
-          if (prev.status === 'rejected' && !prev.rejectedAt && (prev.fixtureId || '').startsWith('fdcdm_')) {
-            result[idx] = { ...a, status: 'pending' };
-            changed = true;
-          }
-          return; // accepté/rejeté (récent) : ne pas toucher
+          return; // accepté/rejeté/réglé : ne jamais toucher
         }
         if (prev.probability !== a.probability || prev.direction !== a.direction || prev.pinnacleOdds !== a.pinnacleOdds
             || prev.unibetOdds !== a.unibetOdds || prev.betclicOdds !== a.betclicOdds || prev.winamaxOdds !== a.winamaxOdds || prev.edge !== a.edge) {
