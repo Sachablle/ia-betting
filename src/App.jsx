@@ -4,6 +4,7 @@ import LeftNav from './components/LeftNav';
 import StarField from './components/StarField';
 import DashboardPage from './pages/DashboardPage';
 import { syncSettlements, syncBackgroundAlerts, syncGameTotalAlerts, syncBasketballResultAlerts, syncFootballAlerts } from './utils/syncAlerts';
+import { loadFromCloud } from './utils/cloudStorage';
 
 const ALERT_KEY = 'nba_prop_alerts';
 
@@ -101,6 +102,9 @@ function useAlertCount() {
 
     setCounts({ total: basket + foot, basket, foot });
   };
+  // Charge les données depuis MongoDB au démarrage (sync cross-device)
+  useEffect(() => { loadFromCloud().then(refresh); }, []);
+
   useEffect(() => {
     refresh();
     window.addEventListener('nba_alerts_updated', refresh);

@@ -5,6 +5,7 @@ import fetch from 'node-fetch';
 import { readFileSync, writeFileSync, writeFile, existsSync, mkdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import { MongoClient } from 'mongodb';
 import { computeEstimate, calcStd, isConsistentStat, winsorizeRecent, getShotVolumeAnchor, probAtLeast, tCDF4, getRestFactor, getScheduleDensityFactor, isPlayoffRound, toDefCat } from './compute.js';
 import { computeLambdas, computeBTTSProb, computeOUProb, compute1X2Probs } from './computeFootball.js';
 
@@ -468,9 +469,51 @@ let _fbCache = null;
 let _fbCacheTs = 0;
 const FB_TTL = 30 * 60 * 1000; // 30 min
 
+// ── MongoDB userdata ─────────────────────────────────────────────────────────
+let _mongoClient = null;
+async function getMongoDb() {
+  if (!process.env.MONGODB_URI) return null;
+  if (!_mongoClient) {
+    _mongoClient = new MongoClient(process.env.MONGODB_URI);
+    await _mongoClient.connect();
+  }
+  return _mongoClient.db('ia-betting');
+}
+
 // ── Routes ───────────────────────────────────────────────────────────────────
 
 app.get('/api/health', (req, res) => res.json({ ok: true, timestamp: new Date().toISOString() }));
+
+// Données utilisateur synchronisées (alertes, paris, historique)
+app.get('/api/userdata', async (req, res) => {
+  try {
+    const db = await getMongoDb();
+    if (!db) return res.json({});
+    const doc = await db.collection('userdata').findOne({ _id: 'main' });
+    res.json(doc?.data || {});
+  } catch (e) {
+    console.error('[userdata GET]', e.message);
+    res.json({});
+  }
+});
+
+app.post('/api/userdata', async (req, res) => {
+  try {
+    const db = await getMongoDb();
+    if (!db) return res.json({ ok: false, reason: 'no mongo' });
+    const { key, value } = req.body;
+    if (!key) return res.status(400).json({ ok: false });
+    await db.collection('userdata').updateOne(
+      { _id: 'main' },
+      { $set: { [`data.${key}`]: value, updatedAt: Date.now() } },
+      { upsert: true }
+    );
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('[userdata POST]', e.message);
+    res.status(500).json({ ok: false });
+  }
+});
 
 // API-Football : matchs enrichis avec stats de classement
 app.get('/api/football/matches', async (req, res) => {

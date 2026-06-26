@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { BBALL_FIXTURES } from '../utils/basketball';
 import { syncBackgroundAlerts, syncGameTotalAlerts, syncBasketballResultAlerts, syncBballPinnacleAlerts, syncBballPinnaclePropsAlerts, loadBballPinnaclePropsAlerts, saveBballPinnaclePropsAlerts, syncOddsDrift, syncFootballAlerts, resolveCompletedFootballAlerts, postAcceptedAlertReliably } from '../utils/syncAlerts';
 import { BTTSAlertCard, FootballTotalCard, FootballResultCard, PinnacleEdgeCard } from '../components/FootballAlertCards';
+import { setItem as cloudSet } from '../utils/cloudStorage';
 
 const ALERT_KEY        = 'nba_prop_alerts';
 const HISTORY_KEY      = 'nba_bet_history';
@@ -476,8 +477,8 @@ function CompactAcceptedCard({ group, onDismiss, onVoid, variant = 'accepted' })
 
 function CompactAcceptedTotalCard({ alert, onDismiss, variant = 'accepted' }) {
   const navigate = useNavigate();
-  const { id, homeShort, awayShort, home, away, date, direction, line, prob, unibetOdds, betclicOdds, winamaxOdds, acceptedUnibetOdds, acceptedBetclicOdds, acceptedWinamaxOdds, acceptedBookmaker, acceptedOdds, league } = alert;
-  const fixtureId = id?.replace('_total', '') ?? null;
+  const { id, homeShort, awayShort, home, away, date, direction, line, prob, unibetOdds, betclicOdds, winamaxOdds, acceptedUnibetOdds, acceptedBetclicOdds, acceptedWinamaxOdds, acceptedBookmaker, acceptedOdds, league, eventId } = alert;
+  const fixtureId = eventId ?? id?.replace('_total', '') ?? null;
   const leagueParam = league && league !== 'nba' ? `?league=${league}` : '';
   const isOver = direction === 'over';
   const accent = isOver ? '#4ade80' : '#f87171';
@@ -525,11 +526,11 @@ function CompactAcceptedTotalCard({ alert, onDismiss, variant = 'accepted' }) {
 }
 
 function GameTotalCard({ alert, onAccept, onReject, onDismiss }) {
-  const { id, home, away, homeShort, awayShort, date, estimated, line, edge, direction, prob, status, league, unibetOdds, betclicOdds, winamaxOdds } = alert;
+  const { id, home, away, homeShort, awayShort, date, estimated, line, edge, direction, prob, status, league, unibetOdds, betclicOdds, winamaxOdds, eventId } = alert;
   const navigate   = useNavigate();
   const isPending  = status === 'pending';
   const isAccepted = status === 'accepted';
-  const fixtureId   = id?.replace('_total', '') ?? null;
+  const fixtureId   = eventId ?? id?.replace('_total', '') ?? null;
   const leagueParam = league && league !== 'nba' ? `?league=${league}` : '';
   const isOver      = direction === 'over';
   const accent     = isOver ? '#4ade80' : '#f87171';
@@ -1228,7 +1229,7 @@ export default function PlaceBetPage() {
       ['nba_prop_alerts', 'nba_bet_history'].forEach(key => {
         const raw = JSON.parse(localStorage.getItem(key) || '[]');
         const clean = raw.filter(a => a.status !== 'void');
-        if (clean.length !== raw.length) localStorage.setItem(key, JSON.stringify(clean));
+        if (clean.length !== raw.length) cloudSet(key, JSON.stringify(clean));
       });
       return JSON.parse(localStorage.getItem('nba_prop_alerts') || '[]');
     } catch { return []; }
@@ -1250,7 +1251,7 @@ export default function PlaceBetPage() {
   });
 
   const saveBttsAlerts = (alerts) => {
-    try { localStorage.setItem(FB_BTTS_KEY, JSON.stringify(alerts)); } catch {}
+    try { cloudSet(FB_BTTS_KEY, JSON.stringify(alerts)); } catch {}
     setBttsAlerts(alerts);
   };
 
@@ -1266,7 +1267,7 @@ export default function PlaceBetPage() {
         if (['accepted', 'rejected', 'won', 'lost'].includes(a.status)) return true;
         return t > now;
       });
-      if (valid.length !== raw.length) localStorage.setItem(FB_BTTS_KEY, JSON.stringify(valid));
+      if (valid.length !== raw.length) cloudSet(FB_BTTS_KEY, JSON.stringify(valid));
       setBttsAlerts(valid);
       resolveCompletedFootballAlerts(valid, saveBttsAlerts);
     } catch { setBttsAlerts([]); }
@@ -1319,14 +1320,14 @@ export default function PlaceBetPage() {
         if (['accepted', 'rejected', 'won', 'lost'].includes(a.status)) return true;
         return t > now;
       });
-      if (valid.length !== raw.length) localStorage.setItem(FB_TOTAL_KEY, JSON.stringify(valid));
+      if (valid.length !== raw.length) cloudSet(FB_TOTAL_KEY, JSON.stringify(valid));
       setFbTotalAlerts(valid);
       resolveCompletedFootballAlerts(valid, saveFbTotalAlerts);
     } catch { setFbTotalAlerts([]); }
   };
 
   const saveFbTotalAlerts = (alerts) => {
-    try { localStorage.setItem(FB_TOTAL_KEY, JSON.stringify(alerts)); } catch {}
+    try { cloudSet(FB_TOTAL_KEY, JSON.stringify(alerts)); } catch {}
     setFbTotalAlerts(alerts);
   };
 
@@ -1373,14 +1374,14 @@ export default function PlaceBetPage() {
         if (['accepted', 'rejected', 'won', 'lost'].includes(a.status)) return true;
         return t > now;
       });
-      if (valid.length !== raw.length) localStorage.setItem(FB_RESULT_KEY, JSON.stringify(valid));
+      if (valid.length !== raw.length) cloudSet(FB_RESULT_KEY, JSON.stringify(valid));
       setFbResultAlerts(valid);
       resolveCompletedFootballAlerts(valid, saveFbResultAlerts);
     } catch { setFbResultAlerts([]); }
   };
 
   const saveFbResultAlerts = (alerts) => {
-    try { localStorage.setItem(FB_RESULT_KEY, JSON.stringify(alerts)); } catch {}
+    try { cloudSet(FB_RESULT_KEY, JSON.stringify(alerts)); } catch {}
     setFbResultAlerts(alerts);
   };
 
@@ -1425,14 +1426,14 @@ export default function PlaceBetPage() {
         if (['accepted', 'rejected', 'won', 'lost'].includes(a.status)) return true;
         return t > now;
       });
-      if (valid.length !== raw.length) localStorage.setItem(FB_PINNACLE_KEY, JSON.stringify(valid));
+      if (valid.length !== raw.length) cloudSet(FB_PINNACLE_KEY, JSON.stringify(valid));
       setFbPinnacleAlerts(valid);
       resolveCompletedFootballAlerts(valid, saveFbPinnacleAlerts);
     } catch { setFbPinnacleAlerts([]); }
   };
 
   const saveFbPinnacleAlerts = (alerts) => {
-    try { localStorage.setItem(FB_PINNACLE_KEY, JSON.stringify(alerts)); } catch {}
+    try { cloudSet(FB_PINNACLE_KEY, JSON.stringify(alerts)); } catch {}
     setFbPinnacleAlerts(alerts);
   };
 
@@ -1469,7 +1470,7 @@ export default function PlaceBetPage() {
 
   const saveAlerts = (alerts) => {
     try {
-      localStorage.setItem(ALERT_KEY, JSON.stringify(alerts));
+      cloudSet(ALERT_KEY, JSON.stringify(alerts));
       setRawAlerts([...alerts]);
     } catch {}
   };
@@ -1550,7 +1551,7 @@ export default function PlaceBetPage() {
         return a;
       });
       if (valid.length !== merged.length || reverted || backfilled) {
-        localStorage.setItem(ALERT_KEY, JSON.stringify(finalAlerts));
+        cloudSet(ALERT_KEY, JSON.stringify(finalAlerts));
         if (backfilled) window.dispatchEvent(new Event('nba_alerts_updated'));
       }
       setRawAlerts(finalAlerts);
@@ -1621,7 +1622,7 @@ export default function PlaceBetPage() {
         const merged = currentRaw.map(a =>
           TERMINAL.includes(a.status) ? a : (enrichedById[a.id] || a)
         );
-        localStorage.setItem(ALERT_KEY, JSON.stringify(merged));
+        cloudSet(ALERT_KEY, JSON.stringify(merged));
         setRawAlerts([...merged]);
       } catch {}
     }
@@ -1704,7 +1705,7 @@ export default function PlaceBetPage() {
   };
 
   const saveTotalAlerts = (alerts) => {
-    try { localStorage.setItem(GAME_TOTAL_KEY, JSON.stringify(alerts)); } catch {}
+    try { cloudSet(GAME_TOTAL_KEY, JSON.stringify(alerts)); } catch {}
     setRawTotalAlerts([...alerts]);
   };
 
@@ -1721,7 +1722,7 @@ export default function PlaceBetPage() {
         if (status === 'accepted' || status === 'rejected') return matchTime > cutoff7d;
         return matchTime > now;
       });
-      if (valid.length !== raw.length) localStorage.setItem(GAME_TOTAL_KEY, JSON.stringify(valid));
+      if (valid.length !== raw.length) cloudSet(GAME_TOTAL_KEY, JSON.stringify(valid));
       setRawTotalAlerts(valid);
       resolveCompletedTotalAlerts(valid, saveTotalAlerts);
     } catch { setRawTotalAlerts([]); }
@@ -1741,7 +1742,7 @@ export default function PlaceBetPage() {
         acceptedWinamaxOdds: bk === 'winamax' ? (odds ?? a.winamaxOdds) : null,
       } : {})
     } : a);
-    try { localStorage.setItem(GAME_TOTAL_KEY, JSON.stringify(updated)); } catch {}
+    try { cloudSet(GAME_TOTAL_KEY, JSON.stringify(updated)); } catch {}
     setRawTotalAlerts(updated);
     // Envoi au serveur — le règlement automatique (toutes les 3 min) prend le relais, plus besoin
     // d'ouvrir cette page pour que le pari se règle (22 juin 2026, même principe que les props).
@@ -1754,13 +1755,13 @@ export default function PlaceBetPage() {
 
   const dismissTotal = (id) => {
     const updated = rawTotalAlerts.filter(a => a.id !== id);
-    try { localStorage.setItem(GAME_TOTAL_KEY, JSON.stringify(updated)); } catch {}
+    try { cloudSet(GAME_TOTAL_KEY, JSON.stringify(updated)); } catch {}
     setRawTotalAlerts(updated);
     notify();
   };
 
   const saveBballPinnacleAlerts = (alerts) => {
-    try { localStorage.setItem(BBALL_PINNACLE_KEY, JSON.stringify(alerts)); } catch {}
+    try { cloudSet(BBALL_PINNACLE_KEY, JSON.stringify(alerts)); } catch {}
     setBballPinnacleAlerts([...alerts]);
   };
 
@@ -1776,7 +1777,7 @@ export default function PlaceBetPage() {
         if (['won', 'lost', 'accepted', 'rejected'].includes(status)) return matchTime > cutoff7d;
         return matchTime > now;
       });
-      if (valid.length !== raw.length) localStorage.setItem(BBALL_PINNACLE_KEY, JSON.stringify(valid));
+      if (valid.length !== raw.length) cloudSet(BBALL_PINNACLE_KEY, JSON.stringify(valid));
       setBballPinnacleAlerts(valid);
       // H2H Pinnacle alerts (market === 'h2h') se règlent via syncSettlements, pas via le boxscore total.
       // Passer seulement les totals à resolveCompletedTotalAlerts pour éviter une résolution erronée.
@@ -1871,7 +1872,7 @@ export default function PlaceBetPage() {
         if (status === 'pending' && (a.odds ?? 0) < BASKETBALL_RESULT_MIN_ODDS) return false;
         return matchTime > now;
       });
-      if (valid.length !== raw.length) localStorage.setItem(BASKETBALL_RESULT_KEY, JSON.stringify(valid));
+      if (valid.length !== raw.length) cloudSet(BASKETBALL_RESULT_KEY, JSON.stringify(valid));
       setRawResultAlerts(valid);
     } catch { setRawResultAlerts([]); }
   };
@@ -1881,7 +1882,7 @@ export default function PlaceBetPage() {
       ...a, status,
       ...(status === 'accepted' && !a.acceptedAt ? { acceptedAt: Date.now() } : {})
     } : a);
-    try { localStorage.setItem(BASKETBALL_RESULT_KEY, JSON.stringify(updated)); } catch {}
+    try { cloudSet(BASKETBALL_RESULT_KEY, JSON.stringify(updated)); } catch {}
     setRawResultAlerts(updated);
     // Envoi au serveur — premier type d'alerte Résultat équipe à se régler automatiquement,
     // jamais le cas avant le 22 juin 2026 (ni navigateur ni serveur).
@@ -1894,7 +1895,7 @@ export default function PlaceBetPage() {
 
   const dismissResult = (id) => {
     const updated = rawResultAlerts.filter(a => a.id !== id);
-    try { localStorage.setItem(BASKETBALL_RESULT_KEY, JSON.stringify(updated)); } catch {}
+    try { cloudSet(BASKETBALL_RESULT_KEY, JSON.stringify(updated)); } catch {}
     setRawResultAlerts(updated);
     notify();
   };
@@ -1907,7 +1908,7 @@ export default function PlaceBetPage() {
     try {
       const raw = JSON.parse(localStorage.getItem(ALERT_KEY) || '[]');
       const clean = raw.filter(a => a.status !== 'void' && !PURGE_PLAYERS.includes(a.player));
-      if (clean.length !== raw.length) localStorage.setItem(ALERT_KEY, JSON.stringify(clean));
+      if (clean.length !== raw.length) cloudSet(ALERT_KEY, JSON.stringify(clean));
     } catch {}
     loadAlerts();
     loadTotalAlerts();
@@ -1992,7 +1993,7 @@ export default function PlaceBetPage() {
       return a;
     });
     try {
-      localStorage.setItem(ALERT_KEY, JSON.stringify(updated));
+      cloudSet(ALERT_KEY, JSON.stringify(updated));
       // Sync backend : POST les acceptées, DELETE les rejetées
       if (status === 'accepted') {
         updated.filter(a => idSet.has(a.id)).forEach(a => postAcceptedAlertReliably(a));
@@ -2005,8 +2006,8 @@ export default function PlaceBetPage() {
         const histById = {};
         history.forEach(a => { histById[a.id] = a; });
         updated.filter(a => idSet.has(a.id)).forEach(a => { histById[a.id] = a; });
-        localStorage.setItem(HISTORY_KEY, JSON.stringify(Object.values(histById)));
-        localStorage.setItem('nba_has_history', '1');
+        cloudSet(HISTORY_KEY, JSON.stringify(Object.values(histById)));
+        cloudSet('nba_has_history', '1');
         setHistoryExists(true);
       }
     } catch {}
@@ -2019,7 +2020,7 @@ export default function PlaceBetPage() {
     const dismissed = rawAlerts.filter(a => idSet.has(a.id));
     const updated = rawAlerts.filter(a => !idSet.has(a.id));
     try {
-      localStorage.setItem(ALERT_KEY, JSON.stringify(updated));
+      cloudSet(ALERT_KEY, JSON.stringify(updated));
       // Archive toutes les alertes dismissées en history — les pending passent en void+userDismissed
       // pour bloquer leur re-génération par syncBackgroundAlerts (findByFingerprint 'void')
       const TERMINAL = ['accepted', 'won', 'lost', 'void', 'rejected'];
@@ -2031,7 +2032,7 @@ export default function PlaceBetPage() {
         const histById = {};
         history.forEach(a => { histById[a.id] = a; });
         toArchive.forEach(a => { histById[a.id] = a; });
-        localStorage.setItem(HISTORY_KEY, JSON.stringify(Object.values(histById)));
+        cloudSet(HISTORY_KEY, JSON.stringify(Object.values(histById)));
       }
     } catch {}
     setRawAlerts(updated);
@@ -2049,7 +2050,7 @@ export default function PlaceBetPage() {
   const voidIds = (ids) => {
     const idSet = new Set(ids);
     const updated = rawAlerts.map(a => idSet.has(a.id) ? { ...a, status: 'void', actualStat: null, resolvedAt: Date.now() } : a);
-    try { localStorage.setItem(ALERT_KEY, JSON.stringify(updated)); } catch {}
+    try { cloudSet(ALERT_KEY, JSON.stringify(updated)); } catch {}
     setRawAlerts(updated);
     notify();
   };
@@ -2116,13 +2117,13 @@ export default function PlaceBetPage() {
 
   const clearPending = () => {
     const kept = rawAlerts.filter(a => a.status !== 'pending');
-    try { localStorage.setItem(ALERT_KEY, JSON.stringify(kept)); } catch {}
+    try { cloudSet(ALERT_KEY, JSON.stringify(kept)); } catch {}
     setRawAlerts(kept);
     const keptTotals = rawTotalAlerts.filter(a => a.status !== 'pending');
-    try { localStorage.setItem(GAME_TOTAL_KEY, JSON.stringify(keptTotals)); } catch {}
+    try { cloudSet(GAME_TOTAL_KEY, JSON.stringify(keptTotals)); } catch {}
     setRawTotalAlerts(keptTotals);
     const keptResult = rawResultAlerts.filter(a => a.status !== 'pending');
-    try { localStorage.setItem(BASKETBALL_RESULT_KEY, JSON.stringify(keptResult)); } catch {}
+    try { cloudSet(BASKETBALL_RESULT_KEY, JSON.stringify(keptResult)); } catch {}
     setRawResultAlerts(keptResult);
     notify();
   };

@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { BBALL_FIXTURES } from '../utils/basketball';
 import { syncBackgroundAlerts, syncSettlements, syncGameTotalAlerts, syncBballPinnacleAlerts, syncOddsDrift, syncFootballAlerts, resolveCompletedFootballAlerts, postAcceptedAlertReliably } from '../utils/syncAlerts';
+import { setItem as cloudSet } from '../utils/cloudStorage';
 
 const ALERT_KEY      = 'nba_prop_alerts';
 const GAME_TOTAL_KEY = 'nba_game_total_alerts';
@@ -613,13 +614,13 @@ export default function RunningPage() {
     // Règlement BTTS/O-U football (CDM uniquement, cf. resolveCompletedFootballAlerts)
     try {
       const btts = JSON.parse(localStorage.getItem(FB_BTTS_KEY) || '[]');
-      resolveCompletedFootballAlerts(btts, alerts => { localStorage.setItem(FB_BTTS_KEY, JSON.stringify(alerts)); setBttsAlerts(alerts); });
+      resolveCompletedFootballAlerts(btts, alerts => { cloudSet(FB_BTTS_KEY, JSON.stringify(alerts)); setBttsAlerts(alerts); });
       const fbTotal = JSON.parse(localStorage.getItem(FB_TOTAL_KEY) || '[]');
-      resolveCompletedFootballAlerts(fbTotal, alerts => { localStorage.setItem(FB_TOTAL_KEY, JSON.stringify(alerts)); setFbTotalAlerts(alerts); });
+      resolveCompletedFootballAlerts(fbTotal, alerts => { cloudSet(FB_TOTAL_KEY, JSON.stringify(alerts)); setFbTotalAlerts(alerts); });
       const fbResult = JSON.parse(localStorage.getItem(FB_RESULT_KEY) || '[]');
-      resolveCompletedFootballAlerts(fbResult, alerts => { localStorage.setItem(FB_RESULT_KEY, JSON.stringify(alerts)); setFbResultAlerts(alerts); });
+      resolveCompletedFootballAlerts(fbResult, alerts => { cloudSet(FB_RESULT_KEY, JSON.stringify(alerts)); setFbResultAlerts(alerts); });
       const fbPinnacle = JSON.parse(localStorage.getItem(FB_PINNACLE_KEY) || '[]');
-      resolveCompletedFootballAlerts(fbPinnacle, alerts => { localStorage.setItem(FB_PINNACLE_KEY, JSON.stringify(alerts)); setFbPinnacleAlerts(alerts); });
+      resolveCompletedFootballAlerts(fbPinnacle, alerts => { cloudSet(FB_PINNACLE_KEY, JSON.stringify(alerts)); setFbPinnacleAlerts(alerts); });
     } catch {}
     // basketball_pinnacle_edge (WNBA) se règle côté serveur (runAutoSettle, totalsToCheck) — pas
     // de résolution client séparée nécessaire, syncSettlements() ci-dessus suffit (BBALL_PINNACLE_KEY
@@ -662,7 +663,7 @@ export default function RunningPage() {
     if (group?.type === 'game_total') {
       const idSet = new Set(ids);
       const updated = rawTotalAlerts.map(a => idSet.has(a.id) ? { ...a, status: 'void' } : a);
-      try { localStorage.setItem(GAME_TOTAL_KEY, JSON.stringify(updated)); } catch {}
+      try { cloudSet(GAME_TOTAL_KEY, JSON.stringify(updated)); } catch {}
       setRawTotalAlerts(updated);
       return;
     }
@@ -684,33 +685,33 @@ export default function RunningPage() {
         return { ...a, status: 'void', userDismissed: true };
       return a;
     });
-    try { localStorage.setItem(ALERT_KEY, JSON.stringify(updated)); } catch {}
+    try { cloudSet(ALERT_KEY, JSON.stringify(updated)); } catch {}
     setRawAlerts(updated);
   };
 
   const dismissBtts = (id) => {
     const updated = bttsAlerts.filter(a => a.id !== id);
-    try { localStorage.setItem(FB_BTTS_KEY, JSON.stringify(updated)); } catch {}
+    try { cloudSet(FB_BTTS_KEY, JSON.stringify(updated)); } catch {}
     setBttsAlerts(updated);
   };
   const dismissFbTotal = (id) => {
     const updated = fbTotalAlerts.filter(a => a.id !== id);
-    try { localStorage.setItem(FB_TOTAL_KEY, JSON.stringify(updated)); } catch {}
+    try { cloudSet(FB_TOTAL_KEY, JSON.stringify(updated)); } catch {}
     setFbTotalAlerts(updated);
   };
   const dismissFbResult = (id) => {
     const updated = fbResultAlerts.filter(a => a.id !== id);
-    try { localStorage.setItem(FB_RESULT_KEY, JSON.stringify(updated)); } catch {}
+    try { cloudSet(FB_RESULT_KEY, JSON.stringify(updated)); } catch {}
     setFbResultAlerts(updated);
   };
   const dismissFbPinnacle = (id) => {
     const updated = fbPinnacleAlerts.filter(a => a.id !== id);
-    try { localStorage.setItem(FB_PINNACLE_KEY, JSON.stringify(updated)); } catch {}
+    try { cloudSet(FB_PINNACLE_KEY, JSON.stringify(updated)); } catch {}
     setFbPinnacleAlerts(updated);
   };
   const dismissBballPinnacle = (id) => {
     const updated = bballPinnacleAlerts.filter(a => a.id !== id);
-    try { localStorage.setItem(BBALL_PINNACLE_KEY, JSON.stringify(updated)); } catch {}
+    try { cloudSet(BBALL_PINNACLE_KEY, JSON.stringify(updated)); } catch {}
     setBballPinnacleAlerts(updated);
   };
 

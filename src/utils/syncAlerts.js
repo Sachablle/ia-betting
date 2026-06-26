@@ -4,6 +4,8 @@
 // donc des % figés au moment du clic, jamais resynchronisés sur le modèle en direct
 // (cf. memory feedback_session_08juin_bugs_recurrents #4, divergence Clark/Bridges/Castle/Brunson).
 
+import { setItem as cloudSet } from './cloudStorage.js';
+
 const ALERT_KEY     = 'nba_prop_alerts';
 const HISTORY_KEY   = 'nba_bet_history';
 const GAME_TOTAL_KEY = 'nba_game_total_alerts';
@@ -112,7 +114,7 @@ export async function syncSettlements() {
           changed = true;
           return { ...a, status: s.status, actualStat: s.actualStat ?? a.actualStat ?? null };
         });
-      if (changed) { localStorage.setItem(key, JSON.stringify(updated)); anyChanged = true; }
+      if (changed) { cloudSet(key, JSON.stringify(updated)); anyChanged = true; }
     }
     if (anyChanged) window.dispatchEvent(new Event('nba_alerts_updated'));
   } catch {}
@@ -362,7 +364,7 @@ export async function syncBackgroundAlerts() {
     if (removedIds.size) {
       const cleanHistory = history.filter(h => !removedIds.has(h.id));
       if (cleanHistory.length !== history.length) {
-        localStorage.setItem(HISTORY_KEY, JSON.stringify(cleanHistory));
+        cloudSet(HISTORY_KEY, JSON.stringify(cleanHistory));
       }
     }
 
@@ -378,7 +380,7 @@ export async function syncBackgroundAlerts() {
         if (cur && TERMINAL.includes(cur.status)) return cur;
         return a;
       });
-      localStorage.setItem(ALERT_KEY, JSON.stringify(merged));
+      cloudSet(ALERT_KEY, JSON.stringify(merged));
       window.dispatchEvent(new Event('nba_alerts_updated'));
     }
   } catch (e) { console.error('[syncBackgroundAlerts] error:', e); }
@@ -450,7 +452,7 @@ export async function syncGameTotalAlerts() {
     if (purged.length !== result.length) changed = true;
 
     if (changed) {
-      localStorage.setItem(GAME_TOTAL_KEY, JSON.stringify(purged));
+      cloudSet(GAME_TOTAL_KEY, JSON.stringify(purged));
       window.dispatchEvent(new Event('nba_alerts_updated'));
     }
   } catch {}
@@ -518,7 +520,7 @@ export async function syncBballPinnacleAlerts() {
     if (purged.length !== result.length) changed = true;
 
     if (changed) {
-      localStorage.setItem(BBALL_PINNACLE_KEY, JSON.stringify(purged));
+      cloudSet(BBALL_PINNACLE_KEY, JSON.stringify(purged));
       window.dispatchEvent(new Event('bball_pinnacle_alerts_updated'));
     }
   } catch {}
@@ -560,7 +562,7 @@ export async function syncBballPinnaclePropsAlerts() {
     });
     if (purged.length !== result.length) changed = true;
     if (changed) {
-      localStorage.setItem(BBALL_PINNACLE_PROPS_KEY, JSON.stringify(purged));
+      cloudSet(BBALL_PINNACLE_PROPS_KEY, JSON.stringify(purged));
       window.dispatchEvent(new Event('bball_pinnacle_props_alerts_updated'));
     }
   } catch {}
@@ -570,7 +572,7 @@ export function loadBballPinnaclePropsAlerts() {
   try { return JSON.parse(localStorage.getItem(BBALL_PINNACLE_PROPS_KEY) || '[]'); } catch { return []; }
 }
 export function saveBballPinnaclePropsAlerts(arr) {
-  try { localStorage.setItem(BBALL_PINNACLE_PROPS_KEY, JSON.stringify(arr)); } catch {}
+  try { cloudSet(BBALL_PINNACLE_PROPS_KEY, JSON.stringify(arr)); } catch {}
 }
 
 // Pont alertes "Résultat" basket (victoire équipe, NBA/WNBA/EU) backend → localStorage
@@ -622,7 +624,7 @@ export async function syncBasketballResultAlerts() {
     if (purged.length !== result.length) changed = true;
 
     if (changed) {
-      localStorage.setItem(BASKETBALL_RESULT_KEY, JSON.stringify(purged));
+      cloudSet(BASKETBALL_RESULT_KEY, JSON.stringify(purged));
       window.dispatchEvent(new Event('nba_alerts_updated'));
     }
   } catch {}
@@ -686,7 +688,7 @@ export async function syncFootballAlerts() {
       });
       if (purged.length !== result.length) changed = true;
       if (changed) {
-        localStorage.setItem(FB_BTTS_KEY, JSON.stringify(purged));
+        cloudSet(FB_BTTS_KEY, JSON.stringify(purged));
         window.dispatchEvent(new Event('fb_btts_alerts_updated'));
       }
     }
@@ -735,7 +737,7 @@ export async function syncFootballAlerts() {
       });
       if (purged.length !== result.length) changed = true;
       if (changed) {
-        localStorage.setItem(FB_TOTAL_KEY, JSON.stringify(purged));
+        cloudSet(FB_TOTAL_KEY, JSON.stringify(purged));
         window.dispatchEvent(new Event('fb_total_alerts_updated'));
       }
     }
@@ -781,7 +783,7 @@ export async function syncFootballAlerts() {
       });
       if (purged.length !== result.length) changed = true;
       if (changed) {
-        localStorage.setItem(FB_RESULT_KEY, JSON.stringify(purged));
+        cloudSet(FB_RESULT_KEY, JSON.stringify(purged));
         window.dispatchEvent(new Event('fb_result_alerts_updated'));
       }
     }
@@ -830,7 +832,7 @@ export async function syncFootballAlerts() {
       });
       if (purged.length !== result.length) changed = true;
       if (changed) {
-        localStorage.setItem(FB_PINNACLE_KEY, JSON.stringify(purged));
+        cloudSet(FB_PINNACLE_KEY, JSON.stringify(purged));
         window.dispatchEvent(new Event('fb_pinnacle_alerts_updated'));
       }
     }
@@ -995,7 +997,7 @@ export async function syncOddsDrift() {
     }
 
     if (changed) {
-      localStorage.setItem(ALERT_KEY, JSON.stringify(Object.values(byId)));
+      cloudSet(ALERT_KEY, JSON.stringify(Object.values(byId)));
       window.dispatchEvent(new Event('nba_alerts_updated'));
     }
   } catch {}
