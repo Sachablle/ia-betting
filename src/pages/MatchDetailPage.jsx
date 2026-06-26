@@ -377,11 +377,11 @@ function BTTSSection({ result, home, away, marketOdds }) {
 }
 
 // ── Football Odds Box ─────────────────────────────────────────────────────────
-const FB_BK_LABELS = { pinnacle: 'Pinnacle', unibet: 'Unibet', betclic: 'Betclic', winamax: 'Winamax' };
-const FB_BK_COLORS = { unibet: '#1db954', betclic: '#e0292e', winamax: '#ffffff' };
+const FB_BK_LABELS = { pinnacle: 'Pinnacle', unibet: 'Unibet', betclic: 'Betclic' };
+const FB_BK_COLORS = { unibet: '#1db954', betclic: '#e0292e' };
 // Pinnacle en tête — réactivé en scraping le 25 juin 2026 (CDM uniquement, H2H seulement),
 // affiché avec le style "REF" déjà prévu dans le rendu ci-dessous (isPinnacle).
-const FB_BK_ORDER  = ['pinnacle', 'unibet', 'betclic', 'winamax'];
+const FB_BK_ORDER  = ['pinnacle', 'unibet', 'betclic'];
 
 function FootballOddsBox({ markets, bttsResult, home, away, frozen, onRefresh, refreshing }) {
   const [tab, setTab] = useState('result');
@@ -591,7 +591,7 @@ function FootballOddsBox({ markets, bttsResult, home, away, frozen, onRefresh, r
               <br />
               <b style={{ color: '#00ff80' }}>Résultat 1X2</b> : alerte si probabilité ≥ 65% sur une issue (domicile/nul/extérieur), chacune traitée indépendamment — au plus une alerte par match.
               <br /><br />
-              Dans les trois cas, il faut aussi une cote ≥ 1,45 chez Unibet, Betclic ou Winamax sur l'issue concernée.
+              Dans les trois cas, il faut aussi une cote ≥ 1,60 chez Unibet ou Betclic sur l'issue concernée (1,50 pour le Résultat 1X2).
               <br /><br />
               Une seule alerte par match et par type (BTTS / Total / Résultat), générée automatiquement toutes les 20 min — pas besoin d'ouvrir cette page.
               <br /><br />

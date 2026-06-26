@@ -335,11 +335,10 @@ function ResultCard({ group, onDismiss }) {
         })}
       </div>
 
-      {(group.results[0]?.unibetOdds || group.results[0]?.betclicOdds || group.results[0]?.winamaxOdds) && (
+      {(group.results[0]?.unibetOdds || group.results[0]?.betclicOdds) && (
         <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.5rem', fontSize: 10, color: 'var(--text-dim)' }}>
           {group.results[0].unibetOdds && <span>Unibet <b style={{ color: '#1db954' }}>{group.results[0].unibetOdds.toFixed(2)}</b></span>}
           {group.results[0].betclicOdds && <span>Betclic <b style={{ color: '#e0292e' }}>{group.results[0].betclicOdds.toFixed(2)}</b></span>}
-          {group.results[0].winamaxOdds && <span>Winamax <b style={{ color: '#fff' }}>{group.results[0].winamaxOdds.toFixed(2)}</b></span>}
         </div>
       )}
     </div>
@@ -402,7 +401,6 @@ function CompactAcceptedCard({ group, onDismiss, onVoid, variant = 'accepted' })
               {s.oddsAlert.lineTo   != null && <span>Cut : <b>{s.oddsAlert.lineFrom}</b> → <b>{s.oddsAlert.lineTo}</b> · </span>}
               {s.oddsAlert.ubTo    != null && <span>Unibet : {s.oddsAlert.ubFrom?.toFixed(2)} → <b>{s.oddsAlert.ubTo?.toFixed(2)}</b> · </span>}
               {s.oddsAlert.bcTo    != null && <span>Betclic : {s.oddsAlert.bcFrom?.toFixed(2)} → <b>{s.oddsAlert.bcTo?.toFixed(2)}</b> · </span>}
-              {s.oddsAlert.wmTo    != null && <span>Winamax : {s.oddsAlert.wmFrom?.toFixed(2)} → <b>{s.oddsAlert.wmTo?.toFixed(2)}</b></span>}
             </div>
           ))}
           {flipAlerts.map(s => (
@@ -421,12 +419,10 @@ function CompactAcceptedCard({ group, onDismiss, onVoid, variant = 'accepted' })
               ? [
                   bk === 'unibet'  && { value: s.acceptedUnibetOdds  ?? s.unibetOdds,  color: '#1db954', label: 'Unibet' },
                   bk === 'betclic' && { value: s.acceptedBetclicOdds ?? s.betclicOdds, color: '#e0292e', label: 'Betclic' },
-                  bk === 'winamax' && { value: s.acceptedWinamaxOdds ?? s.winamaxOdds, color: '#e5e7eb', label: 'Winamax' },
                 ].filter(Boolean).filter(o => o.value != null)
               : [
                   { value: s.acceptedUnibetOdds  ?? s.unibetOdds,  color: '#1db954' },
                   { value: s.acceptedBetclicOdds ?? s.betclicOdds, color: '#e0292e' },
-                  { value: s.acceptedWinamaxOdds ?? s.winamaxOdds, color: '#e5e7eb' },
                 ].filter(o => o.value != null);
             const best = bkOdds.length ? bkOdds.reduce((a, b) => a.value > b.value ? a : b) : null;
             const others = best ? bkOdds.filter(o => o !== best) : [];
@@ -483,12 +479,11 @@ function CompactAcceptedTotalCard({ alert, onDismiss, variant = 'accepted' }) {
   const isOver = direction === 'over';
   const accent = isOver ? '#4ade80' : '#f87171';
   // Si un bookmaker a été sélectionné au clic, n'afficher que celui-là
-  const bkColors = { unibet: '#1db954', betclic: '#e0292e', winamax: '#e5e7eb' };
-  const bkLabels = { unibet: 'Unibet', betclic: 'Betclic', winamax: 'Winamax' };
+  const bkColors = { unibet: '#1db954', betclic: '#e0292e' };
+  const bkLabels = { unibet: 'Unibet', betclic: 'Betclic' };
   const dispUnibet  = acceptedBookmaker ? (acceptedBookmaker === 'unibet'  ? (acceptedUnibetOdds  ?? unibetOdds)  : null) : (acceptedUnibetOdds  ?? unibetOdds);
   const dispBetclic = acceptedBookmaker ? (acceptedBookmaker === 'betclic' ? (acceptedBetclicOdds ?? betclicOdds) : null) : (acceptedBetclicOdds ?? betclicOdds);
-  const dispWinamax = acceptedBookmaker ? (acceptedBookmaker === 'winamax' ? (acceptedWinamaxOdds ?? winamaxOdds) : null) : (acceptedWinamaxOdds ?? winamaxOdds);
-  const hasOdds = dispUnibet || dispBetclic || dispWinamax;
+  const hasOdds = dispUnibet || dispBetclic;
   const colors = CARD_ACCENT[variant] || CARD_ACCENT.accepted;
 
   return (
@@ -518,7 +513,6 @@ function CompactAcceptedTotalCard({ alert, onDismiss, variant = 'accepted' }) {
         <div style={{ display: 'flex', gap: '0.6rem', paddingLeft: 4, marginTop: 1 }}>
           {dispUnibet  && <span style={{ fontSize: 10, color: 'var(--text-dim)' }}>Unibet <b style={{ color: '#1db954', fontVariantNumeric: 'tabular-nums' }}>{dispUnibet.toFixed(2)}</b></span>}
           {dispBetclic && <span style={{ fontSize: 10, color: 'var(--text-dim)' }}>Betclic <b style={{ color: '#e0292e', fontVariantNumeric: 'tabular-nums' }}>{dispBetclic.toFixed(2)}</b></span>}
-          {dispWinamax && <span style={{ fontSize: 10, color: 'var(--text-dim)' }}>Winamax <b style={{ color: '#e5e7eb', fontVariantNumeric: 'tabular-nums' }}>{dispWinamax.toFixed(2)}</b></span>}
         </div>
       )}
     </div>
@@ -600,12 +594,11 @@ function GameTotalCard({ alert, onAccept, onReject, onDismiss }) {
         </div>
       </div>
 
-      {(unibetOdds || betclicOdds || winamaxOdds) && (
+      {(unibetOdds || betclicOdds) && (
         <div style={{ display: 'flex', gap: '0.5rem' }}>
           {[
             { label: 'Unibet',  odds: unibetOdds,  color: '#1db954' },
             { label: 'Betclic', odds: betclicOdds, color: '#e0292e' },
-            { label: 'Winamax', odds: winamaxOdds, color: '#e5e7eb' },
           ].filter(b => b.odds).map(({ label, odds, color }) => (
             <div key={label}
               onClick={isPending ? e => { e.stopPropagation(); onAccept(id, label.toLowerCase(), odds); } : undefined}
@@ -1045,7 +1038,6 @@ function PropAlertCard({ group, onDismiss, onAccept, onReject }) {
                 <div style={{ fontSize: 9, color: '#fca5a5', marginTop: 2 }}>
                   {oddsAlert.ubTo != null && `Unibet ${oddsAlert.ubFrom?.toFixed(2)} → ${oddsAlert.ubTo?.toFixed(2)}`}
                   {oddsAlert.bcTo != null && ` · Betclic ${oddsAlert.bcFrom?.toFixed(2)} → ${oddsAlert.bcTo?.toFixed(2)}`}
-                  {oddsAlert.wmTo != null && ` · Winamax ${oddsAlert.wmFrom?.toFixed(2)} → ${oddsAlert.wmTo?.toFixed(2)}`}
                 </div>
               )}
             </div>
@@ -1059,9 +1051,9 @@ function PropAlertCard({ group, onDismiss, onAccept, onReject }) {
               </div>
             </div>
             {/* Cotes séparées — cliquer = accepter */}
-            {(unibetOdds || betclicOdds || winamaxOdds) && (
+            {(unibetOdds || betclicOdds) && (
               <div style={{ display: 'flex', gap: '0.5rem' }}>
-                {[{ label: 'Unibet', odds: unibetOdds, color: '#1db954' }, { label: 'Betclic', odds: betclicOdds, color: '#e0292e' }, { label: 'Winamax', odds: winamaxOdds, color: '#e5e7eb' }]
+                {[{ label: 'Unibet', odds: unibetOdds, color: '#1db954' }, { label: 'Betclic', odds: betclicOdds, color: '#e0292e' }]
                   .filter(b => b.odds)
                   .map(({ label, odds, color }) => (
                     <div key={label}
@@ -1931,6 +1923,11 @@ export default function PlaceBetPage() {
     try {
       const existing = JSON.parse(localStorage.getItem(ALERT_KEY) || '[]');
       existing.filter(a => a.status === 'accepted').forEach(a => postAcceptedAlertReliably(a));
+      // game_total et basketball_result stockent la date dans `date` (pas fixtureDate) — normaliser avant envoi
+      [GAME_TOTAL_KEY, BASKETBALL_RESULT_KEY].forEach(key => {
+        const stored = JSON.parse(localStorage.getItem(key) || '[]');
+        stored.filter(a => a.status === 'accepted').forEach(a => postAcceptedAlertReliably({ ...a, fixtureDate: a.fixtureDate || a.date }));
+      });
       [FB_BTTS_KEY, FB_TOTAL_KEY, FB_RESULT_KEY, FB_PINNACLE_KEY, BBALL_PINNACLE_KEY].forEach(key => {
         const fbExisting = JSON.parse(localStorage.getItem(key) || '[]');
         fbExisting.filter(a => ['accepted', 'won', 'lost'].includes(a.status)).forEach(a => postAcceptedAlertReliably(a));

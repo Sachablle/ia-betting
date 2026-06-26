@@ -219,11 +219,12 @@ function freezeCdmPoolAvg(fixtureId, avgGF, avgGA) {
   _saveCdmFixturePoolAvg();
   return frozen;
 }
-const FB_BTTS_ALERT_PROB = 0.68;
-const FB_OU_ALERT_PROB   = 0.65;
-const FB_RESULT_ALERT_PROB = 0.65; // par issue (home/draw/away), même seuil que BTTS/O-U — chaque issue est un pari oui/non indépendant
-const FB_RESULT_MAX_PROB   = 0.75; // plafond de confiance 1X2 — le modèle Poisson sur stats qualifs/amicaux surestime les favoris
-const FB_MIN_ODDS = 1.50; // cote mini sur la direction proposée (unibet/betclic — winamax exclu depuis le 22 juin)
+const FB_BTTS_ALERT_PROB   = 0.70;
+const FB_OU_ALERT_PROB     = 0.70;
+const FB_RESULT_ALERT_PROB = 0.70; // par issue (home/draw/away) — chaque issue est un pari oui/non indépendant
+const FB_RESULT_MAX_PROB   = 0.80; // plafond de confiance 1X2 — le modèle Poisson sur stats qualifs/amicaux surestime les favoris
+const FB_BTTS_OU_MIN_ODDS  = 1.60; // cote mini BTTS/O-U (unibet/betclic — winamax exclu)
+const FB_RESULT_MIN_ODDS   = 1.50; // cote mini Résultat 1X2 (unibet/betclic — winamax exclu)
 
 // ── football-data.org (TEST) ──────────────────────────────────────────────────
 const FD_KEY  = process.env.FD_API_KEY;
@@ -7995,7 +7996,7 @@ function computeGameTotalFull({ homeGames, awayGames, avgPtsAllowed, ouBaseline,
 // attendue (offensif/défensif EWA, repos, densité calendrier, avantage terrain, pénalité
 // absence titulaire clé), converti en proba de victoire via Student t df=4 — même esprit
 // que le modèle Poisson foot (indépendant des cotes, comparé ensuite au marché pour l'edge).
-const RESULT_ALERT_PROB     = 0.80;
+const RESULT_ALERT_PROB     = 0.75;
 const HOME_COURT_PTS        = 2.5;  // avantage terrain moyen, en points de marge (échelle NBA)
 const KEY_PLAYER_PTS        = 15;   // seuil "titulaire clé" pour la pénalité Out (échelle NBA — EU déjà recalé)
 const KEY_PLAYER_OUT_FACTOR = 0.4;  // part de sa moyenne pts retirée du rating équipe (le reste redistribué aux coéquipiers ailleurs dans l'app)
@@ -8461,7 +8462,7 @@ async function runEUPropsAlerts(newAlerts, PORT) {
             if (!isHome && awayGated) continue;
 
             for (const stat of ['pts','reb','ast','tpm']) {
-              const refBk = ['unibet','betclic','winamax'].find(b => bkLines[b]?.[stat]?.line);
+              const refBk = ['unibet','betclic'].find(b => bkLines[b]?.[stat]?.line);
               if (!refBk) continue;
               const refLine = bkLines[refBk][stat];
               const estVal  = est[stat];
@@ -9510,7 +9511,7 @@ async function generateBackgroundAlerts() {
             } catch { oddsData = null; }
           }
           const bks = oddsData?.markets?.totals?.bookmakers || {};
-          const refBk = ['unibet', 'betclic', 'winamax'].find(b => bks[b]?.line);
+          const refBk = ['unibet', 'betclic'].find(b => bks[b]?.line);
           if (!refBk) { _bgLog.push(`${leagueKey} total skip ${game.home.short}v${game.away.short}: no odds (key=${oddsKey}, cached=${!!_espnCache[oddsKey]})`); continue; }
           const line = bks[refBk].line;
 
@@ -10004,7 +10005,7 @@ async function generateBackgroundAlerts() {
               } catch { oddsData = null; }
             }
             const bks = oddsData?.markets?.totals?.bookmakers || {};
-            const refBk = ['betclic', 'winamax', 'unibet'].find(b => bks[b]?.line);
+            const refBk = ['betclic', 'unibet'].find(b => bks[b]?.line);
             if (!refBk) { _bgLog.push(`${euLeague} total skip ${g.home.short}v${g.away.short}: no odds (key=${oddsKey}, cached=${!!_espnCache[oddsKey]})`); continue; }
             const line = bks[refBk].line;
             if (!line) continue;
@@ -10221,7 +10222,7 @@ async function generateBackgroundAlerts() {
           // BTTS — id identique à celui généré côté client (MatchDetailPage) → dédup au sync
           const bttsProb = computeBTTSProb(lambdaHome, lambdaAway);
           if (bttsProb >= FB_BTTS_ALERT_PROB) {
-            const bestBk = FB_BOOKS.find(bk => (bttsBk[bk]?.yes ?? 0) >= FB_MIN_ODDS);
+            const bestBk = FB_BOOKS.find(bk => (bttsBk[bk]?.yes ?? 0) >= FB_BTTS_OU_MIN_ODDS);
             if (bestBk) {
               const pair = bttsBk[bestBk];
               let edge = null;
@@ -10267,7 +10268,7 @@ async function generateBackgroundAlerts() {
           for (const { key, prob } of RESULT_OUTCOMES) {
             if (isCdmJ3) continue; // J3 CDM bloqué — enjeux tactiques imprévisibles
             if (prob < FB_RESULT_ALERT_PROB) continue;
-            const bestBk = FB_BOOKS.find(bk => (h2hBk[bk]?.[key] ?? 0) >= FB_MIN_ODDS);
+            const bestBk = FB_BOOKS.find(bk => (h2hBk[bk]?.[key] ?? 0) >= FB_RESULT_MIN_ODDS);
             if (!bestBk) continue;
             const pair = h2hBk[bestBk];
             let edge = null;
@@ -10392,7 +10393,7 @@ async function generateBackgroundAlerts() {
             const bestP = Math.max(ou.pOver, ou.pUnder);
             if (bestP < FB_OU_ALERT_PROB) continue;
             const direction = ou.pOver >= ou.pUnder ? 'over' : 'under';
-            const bestBk = FB_BOOKS.find(bk => (totalsBk[bk]?.[line]?.[direction] ?? 0) >= FB_MIN_ODDS);
+            const bestBk = FB_BOOKS.find(bk => (totalsBk[bk]?.[line]?.[direction] ?? 0) >= FB_BTTS_OU_MIN_ODDS);
             if (!bestBk) continue;
             const pair = totalsBk[bestBk][line];
             let edge = null;
@@ -10573,7 +10574,7 @@ app.get('/api/nba/debug-alerts', async (req, res) => {
     if (routeCached?.data?.players) {
       for (const [name, bks] of Object.entries(routeCached.data.players)) {
         scrapedPlayers[name] = {};
-        for (const bk of ['unibet', 'winamax', 'betclic']) {
+        for (const bk of ['unibet', 'betclic']) {
           if (!bks[bk]) continue;
           scrapedPlayers[name][bk] = {};
           for (const st of ['pts', 'reb', 'ast']) {

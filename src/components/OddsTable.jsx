@@ -3,13 +3,11 @@ const BM_LABELS = {
   betfair:  'Betfair',
   unibet:   'Unibet',
   betclic:  'Betclic',
-  winamax:  'Winamax',
 };
 
 const BM_COLORS = {
   unibet:  '#1db954',
   betclic: '#e0292e',
-  winamax: '#ffffff',
 };
 
 function getBest(bookmakers, outcomes) {

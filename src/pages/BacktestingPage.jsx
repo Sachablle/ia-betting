@@ -18,6 +18,7 @@ function countAccepted(periodDays, sportFilter, typeFilter, model = 'new') {
   const rawCutoff = periodDays === Infinity ? 0 : now - periodDays * 24 * 3600_000;
   const cutoff   = model === 'new' ? Math.max(rawCutoff, MODEL_SPLIT_MS) : rawCutoff;
   const endCutoff = model === 'old' ? MODEL_SPLIT_MS : Infinity;
+  // model === 'all' → rawCutoff + endCutoff=Infinity → tout afficher
   const inPeriod = date => { const t = new Date(date).getTime(); return !isNaN(t) && t >= cutoff && t < endCutoff; };
   const EU = ['euroleague','wnba','acb','lnb','bbl','legaa'];
 
@@ -62,7 +63,15 @@ function countAccepted(periodDays, sportFilter, typeFilter, model = 'new') {
       return true;
     });
 
-  return props.length + totals.length + btts.length + fbTotals.length + fbResults.length;
+  const basketResults = JSON.parse(localStorage.getItem('basketball_result_alerts') || '[]')
+    .filter(a => a.status === 'accepted' && inPeriod(a.date))
+    .filter(a => {
+      if (sportFilter !== 'all' && (a.league || 'nba') !== sportFilter) return false;
+      if (typeFilter !== 'all' && 'result' !== typeFilter) return false;
+      return true;
+    });
+
+  return props.length + totals.length + btts.length + fbTotals.length + fbResults.length + basketResults.length;
 }
 
 function loadAllResolved(periodDays, model = 'new') {
@@ -141,7 +150,19 @@ function loadAllResolved(periodDays, model = 'new') {
       bookmaker: a.acceptedBookmaker,
     }));
 
-  return [...props, ...totals, ...btts, ...fbTotals, ...fbResults]
+  const basketResults = JSON.parse(localStorage.getItem('basketball_result_alerts') || '[]')
+    .filter(a => ['won', 'lost'].includes(a.status))
+    .map(a => ({
+      type: 'result', sport: a.league || 'nba',
+      label: `${a.homeShort || a.home} vs ${a.awayShort || a.away}`,
+      sub: `🏆 Victoire ${a.direction === 'home' ? (a.homeShort || a.home) : (a.awayShort || a.away)}`,
+      date: a.date, status: a.status,
+      odds: a.acceptedUnibetOdds ?? a.acceptedBetclicOdds ?? a.odds ?? null,
+      probability: a.acceptedProbability ?? a.probability,
+      direction: a.direction, bookmaker: a.acceptedBookmaker ?? a.bookmaker, league: a.league || 'nba',
+    }));
+
+  return [...props, ...totals, ...btts, ...fbTotals, ...fbResults, ...basketResults]
     .filter(a => { const t = new Date(a.date).getTime(); return !isNaN(t) && t >= cutoff && t < endCutoff; })
     .sort((a, b) => new Date(a.date) - new Date(b.date));
 }

@@ -355,8 +355,7 @@ function AlertCard({ group, playerStats, onDismiss }) {
   const s = group.stats[0];
   const bk = group.acceptedBookmaker;
   const acceptedOdds = bk === 'unibet' ? (s?.acceptedUnibetOdds ?? s?.unibetOdds)
-    : bk === 'betclic' ? (s?.acceptedBetclicOdds ?? s?.betclicOdds)
-    : bk === 'winamax' ? (s?.acceptedWinamaxOdds ?? s?.winamaxOdds) : null;
+    : bk === 'betclic' ? (s?.acceptedBetclicOdds ?? s?.betclicOdds) : null;
   const bkColor = bk === 'unibet' ? '#1db954' : bk === 'betclic' ? '#e0292e' : '#e5e7eb';
 
   const goToMatch = () => {

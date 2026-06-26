@@ -1219,13 +1219,13 @@ function GameTotalWidget({ estimate, fixture, tot, edgePopupKey, setEdgePopupKey
   const isOver  = direction === 'over';
   const bestP   = pOver != null ? Math.max(pOver, pUnder) : null;
   const isAlert = bestP != null && bestP >= GAME_TOTAL_DISPLAY_ALERT_PROB;
-  const BK_LABELS = { unibet: 'Unibet', betclic: 'Betclic', winamax: 'Winamax' };
+  const BK_LABELS = { unibet: 'Unibet', betclic: 'Betclic' };
   const edgeColor = isOver ? '#4ade80' : '#f87171';
 
   // Bookmaker non affiché en ligne 1 (refBk) — même format, recalculé ici à partir de
   // estimated/std déjà connus (même maths que computeGameTotalFull côté serveur, pas de
   // 2e appel réseau) puisque chaque bookmaker peut avoir sa propre ligne (25 juin 2026).
-  const otherBk = ['unibet', 'betclic', 'winamax'].find(b => b !== refBk && tot?.bookmakers?.[b]?.line != null);
+  const otherBk = ['unibet', 'betclic'].find(b => b !== refBk && tot?.bookmakers?.[b]?.line != null);
   const otherLine = otherBk ? tot.bookmakers[otherBk].line : null;
   let otherCalc = null;
   if (otherLine && std) {
@@ -2452,9 +2452,9 @@ function PropsSection({ fixture, homePlayers, awayPlayers, rosterLoading, isComp
 
 // ── Bookmakers ────────────────────────────────────────────────────────────────
 
-const BK_LABELS  = { pinnacle: 'Pinnacle', betfair: 'Betfair', unibet: 'Unibet', winamax: 'Winamax', betclic: 'Betclic' };
-const BK_COLORS  = { unibet: '#1db954', betclic: '#e0292e', winamax: '#ffffff' };
-const BK_ORDER   = ['pinnacle', 'unibet', 'betclic', 'betfair', 'winamax'];
+const BK_LABELS  = { pinnacle: 'Pinnacle', betfair: 'Betfair', unibet: 'Unibet', betclic: 'Betclic' };
+const BK_COLORS  = { unibet: '#1db954', betclic: '#e0292e' };
+const BK_ORDER   = ['pinnacle', 'unibet', 'betclic', 'betfair'];
 
 // EdgeBadge / OddsCell : importés de ../components/OddsCell (source unique avec MatchDetailPage
 // depuis le 22 juin 2026, voir ce fichier pour le détail).
@@ -2798,7 +2798,7 @@ function OddsCard({ odds, home, away, league, homePlayers, awayPlayers, onRefres
             return bestScore(name, teamPlayers) > 0;
           })
           .sort((a, b) => {
-            const line = d => d[1].unibet?.[propStat]?.line ?? d[1].betclic?.[propStat]?.line ?? d[1].winamax?.[propStat]?.line ?? 0;
+            const line = d => d[1].unibet?.[propStat]?.line ?? d[1].betclic?.[propStat]?.line ?? 0;
             return line(b) - line(a);
           });
 
@@ -3511,7 +3511,7 @@ export default function BasketballDetailPage() {
   useEffect(() => {
     if (!gameSchedules || !fixture) return;
     const bks = bballOdds?.markets?.totals?.bookmakers ?? {};
-    const refBk = ['unibet', 'betclic', 'winamax'].find(b => bks[b]?.line);
+    const refBk = ['unibet', 'betclic'].find(b => bks[b]?.line);
     const refTotal = refBk ? bks[refBk].line : null;
     if (refTotal) {
       fetch('/api/basketball/total', {
@@ -3858,7 +3858,7 @@ export default function BasketballDetailPage() {
             rosterLoading={rosterLoading}
             isCompleted={isCompleted}
             projLineup={projLineup}
-            gameTotal={(() => { const bks = bballOdds?.markets?.totals?.bookmakers ?? {}; return bks.pinnacle?.line ?? bks.unibet?.line ?? bks.betclic?.line ?? bks.winamax?.line ?? null; })()}
+            gameTotal={(() => { const bks = bballOdds?.markets?.totals?.bookmakers ?? {}; return bks.pinnacle?.line ?? bks.unibet?.line ?? bks.betclic?.line ?? null; })()}
             eventId={bballOdds?.eventId ?? null}
             pinnacleH2H={bballOdds?.markets?.h2h?.bookmakers?.pinnacle ?? bballOdds?.markets?.h2h?.bookmakers?.unibet ?? null}
             onClose={() => { setPropsCollapsed(true); if (bballOdds?.found) setShowOddsDropdown(true); }}
