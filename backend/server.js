@@ -5434,28 +5434,6 @@ const normPinnacleTeam = s => {
   return PINNACLE_NBA_TEAM_ALIASES[lower] || lower;
 };
 
-async function _scrapePinnacleNBAOutright(page) {
-  await page.goto('https://www.pinnacle.com/en/basketball/nba/matchups/', { waitUntil: 'domcontentloaded', timeout: 30000 });
-  const acceptBtn = page.locator('button:has-text("ACCEPT")').first();
-  if (await acceptBtn.count() > 0 && await acceptBtn.isVisible().catch(() => false)) {
-    await acceptBtn.click({ timeout: 3000 }).catch(() => {});
-  }
-  const marketGroup = page.locator('[class*="marketGroup"]', { has: page.locator('text=/NBA Champion/i') }).first();
-  await marketGroup.waitFor({ state: 'visible', timeout: 10000 }).catch(() => {});
-  if (await marketGroup.count() === 0) return [];
-
-  const buttons = marketGroup.locator('button[class*="market-btn"]');
-  const count = await buttons.count();
-  const teams = [];
-  for (let i = 0; i < count; i++) {
-    const name = await buttons.nth(i).locator('[class*="label"]').innerText().catch(() => '');
-    const oddsText = await buttons.nth(i).locator('[class*="price"]').innerText().catch(() => '');
-    const odds = parseFloat(oddsText);
-    if (name && !isNaN(odds)) teams.push({ name: name.trim(), odds });
-  }
-  return teams.sort((a, b) => a.odds - b.odds);
-}
-
 const PINNACLE_OUTRIGHT_MIN_INTERVAL_MS = 15 * 60 * 1000;
 
 async function fetchPinnacleOutrights() {
@@ -5463,24 +5441,43 @@ async function fetchPinnacleOutrights() {
   _outrightAttempts.pinnacle = Date.now();
   _saveOutrightAttempts();
 
-  const { chromium } = await import('playwright');
+  const headers = {
+    'x-api-key': PINNACLE_GUEST_API_KEY,
+    'Accept':    'application/json',
+    'Origin':    'https://www.pinnacle.com',
+    'Referer':   'https://www.pinnacle.com/',
+  };
   const out = {};
-  const browser = await chromium.launch({ headless: true });
   try {
-    const context = await browser.newContext({
-      userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-      locale: 'en-US',
-    });
-    const page = await context.newPage();
-    try {
-      const teams = await _scrapePinnacleNBAOutright(page);
-      if (teams.length) out.nba = teams;
-    } catch {} finally {
-      await page.close().catch(() => {});
-    }
-  } finally {
-    await browser.close().catch(() => {});
-  }
+    // Find "NBA Champion" futures matchup dynamically
+    const allMatchups = await fetch(
+      `${PINNACLE_GUEST_API}/leagues/487/matchups?withSpecials=true`,
+      { headers, signal: AbortSignal.timeout(10000) }
+    ).then(r => r.json());
+
+    const championMatchup = allMatchups.find(m =>
+      m.type === 'special' && /nba champion/i.test(m.special?.description ?? '')
+    );
+    if (!championMatchup) throw new Error('NBA Champion futures not found');
+
+    const [muDetail, mkts] = await Promise.all([
+      fetch(`${PINNACLE_GUEST_API}/matchups/${championMatchup.id}`,                { headers, signal: AbortSignal.timeout(10000) }).then(r => r.json()),
+      fetch(`${PINNACLE_GUEST_API}/matchups/${championMatchup.id}/markets/straight`, { headers, signal: AbortSignal.timeout(10000) }).then(r => r.json()),
+    ]);
+
+    const nameById = {};
+    for (const p of muDetail.participants ?? []) nameById[p.id] = p.name;
+
+    const mkt = mkts.find(m => m.key === 's;0;m');
+    if (!mkt) throw new Error('no moneyline market');
+
+    const teams = mkt.prices
+      .map(p => ({ name: nameById[p.participantId], odds: _pinDecimal(p.price) }))
+      .filter(t => t.name && !isNaN(t.odds))
+      .sort((a, b) => a.odds - b.odds);
+
+    if (teams.length) out.nba = teams;
+  } catch {}
 
   if (!out.nba) {
     _scraperFailStreak.pinnacle = (_scraperFailStreak.pinnacle || 0) + 1;
