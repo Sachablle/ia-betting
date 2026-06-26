@@ -5383,6 +5383,7 @@ const _saveOutrightAttempts = () => { try { writeFileSync(OUTRIGHT_ATTEMPTS_FILE
 const BETCLIC_OUTRIGHT_MIN_INTERVAL_MS = 15 * 60 * 1000;
 
 async function fetchBetclicOutrights() {
+  if (process.env.RENDER === 'true') return {}; // Playwright → OOM sur Render free tier
   if (Date.now() - _outrightAttempts.betclic < BETCLIC_OUTRIGHT_MIN_INTERVAL_MS) return {};
   _outrightAttempts.betclic = Date.now();
   _saveOutrightAttempts();
@@ -5849,6 +5850,7 @@ let _pinnaclePropsCache = { data: {}, ts: 0 };
 const PINNACLE_PROPS_CACHE_MS = 40 * 60 * 1000; // 40 min
 
 async function fetchPinnaclePropsNBA() {
+  if (process.env.RENDER === 'true') return _pinnaclePropsCache.data; // Playwright → OOM sur Render free tier
   if (Date.now() - _pinnaclePropsCache.ts < PINNACLE_PROPS_CACHE_MS) return _pinnaclePropsCache.data;
   const { chromium } = await import('playwright');
   const propsData = {}; // clé: "${homeTeam}|${awayTeam}" → [{ player, stat, line, over, under }]
@@ -6035,6 +6037,7 @@ async function _scrapePmuOutrightPage(page, slug, titlePattern) {
 const PMU_OUTRIGHT_MIN_INTERVAL_MS = 15 * 60 * 1000;
 
 async function fetchPmuOutrights() {
+  if (process.env.RENDER === 'true') return {}; // Playwright → OOM sur Render free tier
   if (Date.now() - _outrightAttempts.pmu < PMU_OUTRIGHT_MIN_INTERVAL_MS) return {};
   _outrightAttempts.pmu = Date.now();
   _saveOutrightAttempts();
