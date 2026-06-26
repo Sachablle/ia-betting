@@ -123,12 +123,15 @@ function useAlertCount() {
       syncFootballAlerts();
     };
     syncAll();
+    // Re-charge depuis MongoDB toutes les 2 min pour rester en sync avec le local
+    const cloudTick = setInterval(() => loadFromCloud().then(refresh), 2 * 60_000);
     const syncTick = setInterval(syncAll, 2 * 60_000);
 
     return () => {
       window.removeEventListener('nba_alerts_updated', refresh);
       FB_ALERT_EVENTS.forEach(e => window.removeEventListener(e, refresh));
       clearInterval(tick);
+      clearInterval(cloudTick);
       clearInterval(syncTick);
     };
   }, []);
