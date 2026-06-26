@@ -39,7 +39,7 @@ const NAV_SECTIONS = [
     ],
   },
   {
-    label: 'Database',
+    label: 'Betting',
     items: [
       { to: '/backtesting', icon: '◉', label: 'Backtesting',  sub: 'Statistiques' },
       { to: '/placebet',    icon: '◎', label: 'Alertes',      sub: 'Value bets' },

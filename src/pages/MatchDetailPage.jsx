@@ -282,7 +282,12 @@ function compute1X2(lambda_home, lambda_away, kMax = 10, rho = 0) {
       else pAway += p;
     }
   }
-  return { pHome: Math.round(pHome * 100), pDraw: Math.round(pDraw * 100), pAway: Math.round(pAway * 100) };
+  const MAX_PROB = 75; // plafond — même valeur que FB_RESULT_MAX_PROB backend
+  return {
+    pHome: Math.min(Math.round(pHome * 100), MAX_PROB),
+    pDraw: Math.min(Math.round(pDraw * 100), MAX_PROB),
+    pAway: Math.min(Math.round(pAway * 100), MAX_PROB),
+  };
 }
 
 function BTTSSection({ result, home, away, marketOdds }) {

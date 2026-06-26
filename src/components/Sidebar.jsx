@@ -40,7 +40,7 @@ function DatabaseGroup() {
   return (
     <div className="sidebar-group">
       <button className="sidebar-group-header" onClick={() => setOpen(o => !o)}>
-        <span>Data base</span>
+        <span>Betting</span>
         <svg
           className={`sidebar-chevron ${open ? 'open' : ''}`}
           width="12" height="12" viewBox="0 0 12 12" fill="none"

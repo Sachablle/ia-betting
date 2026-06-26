@@ -223,6 +223,7 @@ function freezeCdmPoolAvg(fixtureId, avgGF, avgGA) {
 const FB_BTTS_ALERT_PROB = 0.68;
 const FB_OU_ALERT_PROB   = 0.65;
 const FB_RESULT_ALERT_PROB = 0.65; // par issue (home/draw/away), même seuil que BTTS/O-U — chaque issue est un pari oui/non indépendant
+const FB_RESULT_MAX_PROB   = 0.75; // plafond de confiance 1X2 — le modèle Poisson sur stats qualifs/amicaux surestime les favoris
 const FB_MIN_ODDS = 1.50; // cote mini sur la direction proposée (unibet/betclic — winamax exclu depuis le 22 juin)
 
 // ── football-data.org (TEST) ──────────────────────────────────────────────────
@@ -10157,7 +10158,10 @@ async function generateBackgroundAlerts() {
           });
           if (!lambdas) continue;
           const { lambdaHome, lambdaAway } = lambdas;
-          const { pHome, pDraw, pAway } = compute1X2Probs(lambdaHome, lambdaAway);
+          const _1x2raw = compute1X2Probs(lambdaHome, lambdaAway);
+          const pHome = Math.min(_1x2raw.pHome, FB_RESULT_MAX_PROB);
+          const pDraw = Math.min(_1x2raw.pDraw, FB_RESULT_MAX_PROB);
+          const pAway = Math.min(_1x2raw.pAway, FB_RESULT_MAX_PROB);
 
           const oddsMatch = oddsMatches.find(m => fuzzy(m.homeTeam, f.home.name) && fuzzy(m.awayTeam, f.away.name));
           const bttsBk   = oddsMatch?.markets?.btts?.bookmakers || {};
@@ -10202,12 +10206,15 @@ async function generateBackgroundAlerts() {
           // Résultat 1X2 — chaque issue (dom./nul/ext.) traitée comme un pari oui/non indépendant,
           // même seuil/format que BTTS. Une fixture peut générer 0 à 3 alertes "résultat".
           const h2hBk = oddsMatch?.markets?.h2h?.bookmakers || {};
+          // J3 CDM : calcul tactique entre équipes (qualification mutuelle possible) → résultat imprévisible, on bloque
+          const isCdmJ3 = f.league === 'cdm' && /^J3$/i.test(f.round?.trim());
           const RESULT_OUTCOMES = [
             { key: 'home', prob: pHome },
             { key: 'draw', prob: pDraw },
             { key: 'away', prob: pAway },
           ];
           for (const { key, prob } of RESULT_OUTCOMES) {
+            if (isCdmJ3) continue; // J3 CDM bloqué — enjeux tactiques imprévisibles
             if (prob < FB_RESULT_ALERT_PROB) continue;
             const bestBk = FB_BOOKS.find(bk => (h2hBk[bk]?.[key] ?? 0) >= FB_MIN_ODDS);
             if (!bestBk) continue;
@@ -11140,6 +11147,33 @@ app.listen(PORT, () => {
     refreshRotoWireHealth().catch(() => {});
     setInterval(() => refreshRotoWireHealth().catch(() => {}), 15 * 60 * 1000);
   }, 30_000);
+
+  // ── Pings manuels légers (bouton Rafraîchir dashboard) ───────────────────
+  const PING_UA = { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36', 'Accept-Language': 'fr-FR,fr;q=0.9' };
+
+  _manualHealthRefreshers.espn = async () => {
+    try {
+      const r = await fetch('https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard', { signal: AbortSignal.timeout(8000) });
+      const d = await r.json();
+      _updateScraper('espn', r.ok && Array.isArray(d?.events));
+    } catch { _updateScraper('espn', false); }
+  };
+
+  _manualHealthRefreshers.unibet = async () => {
+    try {
+      const r = await fetchBk('unibet', 'https://www.unibet.fr/paris-basketball', { headers: PING_UA, signal: AbortSignal.timeout(10000) });
+      _updateScraper('unibet', r?.status === 200);
+      _updateScraper('unibet_foot', r?.status === 200);
+    } catch { _updateScraper('unibet', false); _updateScraper('unibet_foot', false); }
+  };
+
+  _manualHealthRefreshers.betclic = async () => {
+    try {
+      const r = await fetchBk('betclic', 'https://www.betclic.fr/basketball-s4', { headers: PING_UA, signal: AbortSignal.timeout(10000) });
+      _updateScraper('betclic', r?.status === 200);
+      _updateScraper('betclic_foot', r?.status === 200);
+    } catch { _updateScraper('betclic', false); _updateScraper('betclic_foot', false); }
+  };
 
   // ── Health check Bzzoiro — toutes les 15min ───────────────────────────────────
   async function refreshBzzoiroHealth() {

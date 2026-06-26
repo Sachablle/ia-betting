@@ -395,31 +395,33 @@ function exportCSV(bets) {
 
 // ── Composants visuels ─────────────────────────────────────────────────────
 
-function KpiCard({ label, value, sub, color, small }) {
+function KpiCard({ label, value, sub, color, small, pinnacle }) {
   return (
     <div style={{
       flex: 1, minWidth: small ? 90 : 110,
-      background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)',
+      background: 'rgba(255,255,255,0.03)',
+      border: `1px solid ${pinnacle ? 'rgba(96,165,250,0.3)' : 'rgba(255,255,255,0.08)'}`,
       borderRadius: 14, padding: small ? '0.75rem 1rem' : '1rem 1.25rem',
       display: 'flex', flexDirection: 'column', gap: '0.2rem',
     }}>
-      <span style={{ fontSize: 10, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-dim)' }}>{label}</span>
+      <span style={{ fontSize: 10, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.08em', color: pinnacle ? '#60a5fa' : 'var(--text-dim)' }}>{label}</span>
       <span style={{ fontSize: small ? 18 : 24, fontWeight: 800, color: color || 'var(--text)', fontVariantNumeric: 'tabular-nums', lineHeight: 1.1 }}>{value}</span>
       {sub && <span style={{ fontSize: 10, color: 'var(--text-dim)' }}>{sub}</span>}
     </div>
   );
 }
 
-function SigBadge({ sig }) {
+function SigBadge({ sig, pinnacle }) {
   if (!sig) return null;
   return (
     <div style={{
       flex: 1, minWidth: 140,
-      background: `${sig.color}10`, border: `1px solid ${sig.color}44`,
+      background: `${sig.color}10`,
+      border: `1px solid ${pinnacle ? 'rgba(96,165,250,0.3)' : `${sig.color}44`}`,
       borderRadius: 14, padding: '0.75rem 1rem',
       display: 'flex', flexDirection: 'column', gap: '0.2rem',
     }}>
-      <span style={{ fontSize: 10, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-dim)' }}>Significativité</span>
+      <span style={{ fontSize: 10, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.08em', color: pinnacle ? '#60a5fa' : 'var(--text-dim)' }}>Significativité</span>
       <span style={{ fontSize: 18, fontWeight: 800, color: sig.color }}>{sig.icon} {sig.label}</span>
       {sig.z != null && (
         <span style={{ fontSize: 10, color: 'var(--text-dim)' }}>
@@ -645,7 +647,7 @@ const TYPE_COLORS = {
   'Props Ast ▲': '#4ade80', 'Props Ast ▼': '#60a5fa',
   'Total O/U': '#f97316', 'BTTS': '#10b981',
 };
-const BK_COLORS   = { unibet: '#1db954', betclic: '#e0292e', winamax: '#e5e7eb', pinnacle: '#8b5cf6', inconnu: '#64748b' };
+const BK_COLORS   = { unibet: '#1db954', betclic: '#e0292e', winamax: '#e5e7eb', pinnacle: '#3b82f6', inconnu: '#64748b' };
 
 function TypeStatsRow({ g }) {
   const roiColor = g.roi == null ? 'var(--text-dim)' : g.roi >= 0 ? '#4ade80' : '#f87171';
@@ -712,7 +714,7 @@ function BetRow({ bet, rank, stake = 10, compact = false }) {
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', paddingLeft: 14 }}>
           <span style={{ fontSize: 10, color: 'var(--text-dim)', flex: 1 }}>{bet.sub}</span>
           <span style={{ fontSize: 9, color: 'var(--text-dim)', flexShrink: 0 }}>{dateStr}</span>
-          <span style={{ fontSize: 10, fontWeight: 700, color: '#a78bfa', flexShrink: 0, fontVariantNumeric: 'tabular-nums' }}>
+          <span style={{ fontSize: 10, fontWeight: 700, color: '#60a5fa', flexShrink: 0, fontVariantNumeric: 'tabular-nums' }}>
             {bet.probability != null ? `${bet.probability.toFixed(0)}%` : '—'}
           </span>
           <span style={{ fontSize: 10, fontWeight: 700, color: '#60a5fa', flexShrink: 0, fontVariantNumeric: 'tabular-nums' }}>
@@ -733,7 +735,7 @@ function BetRow({ bet, rank, stake = 10, compact = false }) {
       <span style={{ fontSize: 10, color: 'var(--text-dim)', whiteSpace: 'nowrap' }}>
         {dateStr}
       </span>
-      <span style={{ fontSize: 11, fontWeight: 700, color: '#a78bfa', minWidth: 32, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
+      <span style={{ fontSize: 11, fontWeight: 700, color: '#60a5fa', minWidth: 32, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
         {bet.probability != null ? `${bet.probability.toFixed(0)}%` : '—'}
       </span>
       <span style={{ fontSize: 11, fontWeight: 700, color: '#60a5fa', minWidth: 28, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
@@ -814,19 +816,22 @@ function DropdownFilter({ label, options, value, onChange }) {
   );
 }
 
-function Section({ title, children, mb = true, defaultOpen = true }) {
+function Section({ title, children, mb = true, defaultOpen = true, pinnacle = false }) {
   const [open, setOpen] = useState(defaultOpen);
+  const border = pinnacle ? 'rgba(96,165,250,0.35)' : 'rgba(255,255,255,0.07)';
+  const bg     = 'rgba(255,255,255,0.02)';
+  const titleColor = pinnacle ? '#60a5fa' : 'var(--text-dim)';
   return (
-    <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 16, overflow: 'hidden', marginBottom: mb ? '1.25rem' : 0 }}>
+    <div style={{ background: bg, border: `1px solid ${border}`, borderRadius: 16, overflow: 'hidden', marginBottom: mb ? '1.25rem' : 0 }}>
       <button
         onClick={() => setOpen(o => !o)}
         style={{
           width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'space-between',
           padding: '0.85rem 1.25rem', background: 'none', border: 'none', cursor: 'pointer',
-          borderBottom: open ? '1px solid rgba(255,255,255,0.07)' : 'none',
+          borderBottom: open ? `1px solid ${border}` : 'none',
         }}
       >
-        <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.09em' }}>{title}</span>
+        <span style={{ fontSize: 11, fontWeight: 700, color: titleColor, textTransform: 'uppercase', letterSpacing: '0.09em' }}>{title}</span>
         <svg width="12" height="12" viewBox="0 0 12 12" fill="none" style={{ transition: 'transform 0.2s', transform: open ? 'rotate(180deg)' : 'none', flexShrink: 0 }}>
           <path d="M2 4l4 4 4-4" stroke="rgba(255,255,255,0.35)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
         </svg>
@@ -891,8 +896,8 @@ export default function BacktestingPage() {
   }), [allBets, sportFilter, compFilter, typeFilter]);
 
   const metrics    = useMemo(() => calcMetrics(filtered),       [filtered]);
-  const dd         = useMemo(() => calcDrawdown(filtered),      [filtered]);
-  const sig        = useMemo(() => calcSignificance(filtered),  [filtered]);
+  const dd         = useMemo(() => calcDrawdown(filtered),           [filtered]);
+  const sig        = useMemo(() => calcSignificance(filtered),        [filtered]);
   const cumPoints  = useMemo(() => buildCumPL(filtered),        [filtered]);
   const rollingWR  = useMemo(() => buildRollingWR(filtered),    [filtered]);
   const bkStats    = useMemo(() => byBookmaker(filtered),       [filtered]);
@@ -909,7 +914,29 @@ export default function BacktestingPage() {
     if (sportFilter === 'foot'   && b.sport2 !== 'foot')   return false;
     return true;
   }), [pinnacleAllBets, sportFilter]);
-  const pinMetrics = useMemo(() => calcMetrics(pinnacleFiltered), [pinnacleFiltered]);
+  const pinDd      = useMemo(() => calcDrawdown(pinnacleFiltered),    [pinnacleFiltered]);
+  const pinSig     = useMemo(() => calcSignificance(pinnacleFiltered),[pinnacleFiltered]);
+  const pinMetrics      = useMemo(() => calcMetrics(pinnacleFiltered),           [pinnacleFiltered]);
+  const pinCalib        = useMemo(() => calibrationBands(pinnacleFiltered),      [pinnacleFiltered]);
+  const pinTypeStats    = useMemo(() => byTypeStats(pinnacleFiltered),           [pinnacleFiltered]);
+  const pinRolling      = useMemo(() => pinnacleFiltered.filter(b => b.status !== 'void').slice(-ROLLING_N), [pinnacleFiltered]);
+  const pinRollingMetrics = useMemo(() => calcMetrics(pinRolling),               [pinRolling]);
+  const pinCumPoints    = useMemo(() => buildCumPL(pinnacleFiltered),            [pinnacleFiltered]);
+  const pinRollingWR    = useMemo(() => buildRollingWR(pinnacleFiltered),        [pinnacleFiltered]);
+
+  // ── Toggle vue Pinnacle ────────────────────────────────────────────────────
+  const [showPinnacle,    setShowPinnacle]    = useState(false);
+  const [sectionsFlipping, setSectionsFlipping] = useState(false);
+
+  const handlePinnacleToggle = () => {
+    setSectionsFlipping(true);
+    setTimeout(() => { setShowPinnacle(v => !v); setSectionsFlipping(false); }, 280);
+  };
+
+  // Données affichées selon le mode actif
+  const D = showPinnacle
+    ? { metrics: pinMetrics, calib: pinCalib, typeStats: pinTypeStats, rolling: pinRolling, rollingMetrics: pinRollingMetrics, cumPoints: pinCumPoints, rollingWR: pinRollingWR, bets: pinnacleFiltered }
+    : { metrics, calib, typeStats, rolling, rollingMetrics, cumPoints, rollingWR, bets: filtered };
 
   const roiColor = metrics.roi == null ? 'var(--text-dim)' : metrics.roi >= 0 ? '#4ade80' : '#f87171';
   const plColor  = metrics.pl === 0    ? 'var(--text-dim)' : metrics.pl >= 0  ? '#4ade80' : '#f87171';
@@ -959,6 +986,23 @@ export default function BacktestingPage() {
           <input type="number" min="1" value={stake} onChange={e => setStake(Math.max(1, +e.target.value || 10))}
             style={{ width: 72, background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 8, color: 'var(--text)', fontSize: 12, fontWeight: 600, padding: '5px 10px', outline: 'none' }} />
         </div>
+        {/* Toggle vue Pinnacle */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginLeft: 'auto' }}>
+          <span style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.09em', color: 'var(--text-dim)' }}>Vue</span>
+          <button
+            onClick={handlePinnacleToggle}
+            style={{
+              display: 'flex', alignItems: 'center', gap: '0.4rem',
+              padding: '5px 12px', borderRadius: 8, cursor: 'pointer', transition: 'all 0.15s',
+              background: showPinnacle ? 'rgba(96,165,250,0.18)' : 'rgba(255,255,255,0.05)',
+              border: `1px solid ${showPinnacle ? 'rgba(96,165,250,0.5)' : 'rgba(255,255,255,0.12)'}`,
+              color: showPinnacle ? '#60a5fa' : 'var(--text-dim)',
+              fontSize: 12, fontWeight: 700,
+            }}
+          >
+            💎 Pinnacle
+          </button>
+        </div>
       </div>
 
       {metrics.total === 0 ? (
@@ -969,44 +1013,49 @@ export default function BacktestingPage() {
         </div>
       ) : (<>
 
+        {/* Conteneur animé — flip au toggle Pinnacle */}
+        <div style={{ transition: 'transform 0.28s ease, opacity 0.28s ease', transform: sectionsFlipping ? 'scaleX(0)' : 'scaleX(1)', opacity: sectionsFlipping ? 0 : 1 }}>
+
         {/* KPIs ligne 1 — performance */}
         <div style={{ display: 'flex', gap: '0.6rem', flexWrap: 'wrap', marginBottom: '0.6rem' }}>
-          <KpiCard label="Paris résolus" value={metrics.total}   sub={`${metrics.won}W · ${metrics.lost}L`} />
-          <KpiCard label="Win Rate"  value={metrics.winRate != null ? `${metrics.winRate.toFixed(1)}%` : '—'} sub={`${metrics.won + metrics.lost} non-void`} color={wrColor} />
-          <KpiCard label="ROI"       value={metrics.roi != null ? `${metrics.roi >= 0 ? '+' : ''}${metrics.roi.toFixed(1)}%` : '—'} sub={`flat ${stake}€/pari`} color={roiColor} />
-          <KpiCard label="P&L"       value={`${metrics.pl >= 0 ? '+' : ''}${(metrics.pl * stake).toFixed(0)}€`} sub={`mise ${stake}€/alerte`} color={plColor} />
+          <KpiCard pinnacle={showPinnacle} label="Paris résolus" value={D.metrics.total} sub={`${D.metrics.won}W · ${D.metrics.lost}L`} />
+          <KpiCard pinnacle={showPinnacle} label="Win Rate"  value={D.metrics.winRate != null ? `${D.metrics.winRate.toFixed(1)}%` : '—'} sub={`${D.metrics.won + D.metrics.lost} non-void`} color={D.metrics.winRate == null ? 'var(--text-dim)' : D.metrics.winRate >= 50 ? '#4ade80' : '#f87171'} />
+          <KpiCard pinnacle={showPinnacle} label="ROI"       value={D.metrics.roi != null ? `${D.metrics.roi >= 0 ? '+' : ''}${D.metrics.roi.toFixed(1)}%` : '—'} sub={`flat ${stake}€/pari`} color={D.metrics.roi == null ? 'var(--text-dim)' : D.metrics.roi >= 0 ? '#4ade80' : '#f87171'} />
+          <KpiCard pinnacle={showPinnacle} label="P&L"       value={`${D.metrics.pl >= 0 ? '+' : ''}${(D.metrics.pl * stake).toFixed(0)}€`} sub={`mise ${stake}€/alerte`} color={D.metrics.pl >= 0 ? '#4ade80' : '#f87171'} />
         </div>
 
         {/* KPIs ligne 2 — risque + significativité */}
+        {(() => { const dD = showPinnacle ? pinDd : dd; const sG = showPinnacle ? pinSig : sig; return (
         <div style={{ display: 'flex', gap: '0.6rem', flexWrap: 'wrap', marginBottom: '1.25rem' }}>
-          <KpiCard small label="Drawdown max" value={`-${(dd.maxDD * stake).toFixed(0)}€`} sub="pire chute depuis un pic" color={dd.maxDD > 3 ? '#f87171' : dd.maxDD > 1 ? '#f59e0b' : '#4ade80'} />
-          <KpiCard small label="Meilleure série" value={`${dd.maxWin}W`} color="#4ade80" />
-          <KpiCard small label="Pire série"      value={`${dd.maxLoss}L`} color={dd.maxLoss >= 5 ? '#f87171' : '#f59e0b'} />
-          <SigBadge sig={sig} />
+          <KpiCard pinnacle={showPinnacle} small label="Drawdown max" value={`-${(dD.maxDD * stake).toFixed(0)}€`} sub="pire chute depuis un pic" color={dD.maxDD > 3 ? '#f87171' : dD.maxDD > 1 ? '#f59e0b' : '#4ade80'} />
+          <KpiCard pinnacle={showPinnacle} small label="Meilleure série" value={`${dD.maxWin}W`} color="#4ade80" />
+          <KpiCard pinnacle={showPinnacle} small label="Pire série"      value={`${dD.maxLoss}L`} color={dD.maxLoss >= 5 ? '#f87171' : '#f59e0b'} />
+          <SigBadge sig={sG} pinnacle={showPinnacle} />
         </div>
+        ); })()}
 
         {/* Ligne 1 : P&L cumulé + Win Rate glissant */}
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', marginBottom: '1.25rem' }}>
-          <Section title="P&L cumulé" mb={false}>
-            <PLChart points={cumPoints} />
+          <Section title="P&L cumulé" mb={false} pinnacle={showPinnacle}>
+            <PLChart points={D.cumPoints} />
           </Section>
-          <Section title={`Win Rate glissant (${ROLLING_N} paris)`} mb={false}>
-            <LineChart points={rollingWR} yKey="rate" color="#60a5fa" yFormat={v => `${v.toFixed(0)}%`} baseline={50} />
-            {rollingWR.length < 2 && <div style={{ fontSize: 11, color: 'var(--text-dim)', textAlign: 'center', marginTop: 4 }}>Besoin de {ROLLING_N}+ paris non-void</div>}
+          <Section title={`Win Rate glissant (${ROLLING_N} paris)`} mb={false} pinnacle={showPinnacle}>
+            <LineChart points={D.rollingWR} yKey="rate" color={showPinnacle ? '#60a5fa' : '#60a5fa'} yFormat={v => `${v.toFixed(0)}%`} baseline={50} />
+            {D.rollingWR.length < 2 && <div style={{ fontSize: 11, color: 'var(--text-dim)', textAlign: 'center', marginTop: 4 }}>Besoin de {ROLLING_N}+ paris non-void</div>}
           </Section>
         </div>
 
         {/* Ligne 2 : 20 derniers + Calibration */}
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', marginBottom: '1.25rem' }}>
-          <Section title={`${ROLLING_N} derniers paris`} mb={false}>
-            {rolling.length === 0
+          <Section title={`${ROLLING_N} derniers paris${showPinnacle ? ' · Pinnacle' : ''}`} mb={false} pinnacle={showPinnacle}>
+            {D.rolling.length === 0
               ? <div style={{ fontSize: 12, color: 'var(--text-dim)' }}>Pas assez de données</div>
               : <>
                   <div style={{ display: 'flex', gap: '1.25rem', marginBottom: '0.75rem' }}>
                     {[
-                      { lbl: 'Win Rate', val: rollingMetrics.winRate != null ? `${rollingMetrics.winRate.toFixed(0)}%` : '—', col: (rollingMetrics.winRate ?? 0) >= 50 ? '#4ade80' : '#f87171' },
-                      { lbl: 'P&L',      val: `${rollingMetrics.pl >= 0 ? '+' : ''}${(rollingMetrics.pl * stake).toFixed(0)}€`, col: rollingMetrics.pl >= 0 ? '#4ade80' : '#f87171' },
-                      { lbl: 'Bilan',    val: `${rollingMetrics.won}W/${rollingMetrics.lost}L`, col: 'var(--text)' },
+                      { lbl: 'Win Rate', val: D.rollingMetrics.winRate != null ? `${D.rollingMetrics.winRate.toFixed(0)}%` : '—', col: (D.rollingMetrics.winRate ?? 0) >= 50 ? '#4ade80' : '#f87171' },
+                      { lbl: 'P&L',      val: `${D.rollingMetrics.pl >= 0 ? '+' : ''}${(D.rollingMetrics.pl * stake).toFixed(0)}€`, col: D.rollingMetrics.pl >= 0 ? '#4ade80' : '#f87171' },
+                      { lbl: 'Bilan',    val: `${D.rollingMetrics.won}W/${D.rollingMetrics.lost}L`, col: 'var(--text)' },
                     ].map(({ lbl, val, col }) => (
                       <div key={lbl}>
                         <div style={{ fontSize: 9, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 2 }}>{lbl}</div>
@@ -1015,21 +1064,21 @@ export default function BacktestingPage() {
                     ))}
                   </div>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', maxHeight: 240, overflowY: 'auto' }}>
-                    {[...rolling].reverse().map((bet, i) => <BetRow key={i} bet={bet} rank={rolling.length - i} stake={stake} />)}
+                    {[...D.rolling].reverse().map((bet, i) => <BetRow key={i} bet={bet} rank={D.rolling.length - i} stake={stake} />)}
                   </div>
                 </>
             }
           </Section>
-          <Section title="Calibration modèle" mb={false}>
+          <Section title="Calibration modèle" mb={false} pinnacle={showPinnacle}>
             <div style={{ fontSize: 10, color: 'var(--text-dim)', marginBottom: '0.75rem' }}>Win rate réel vs probabilité estimée · pp = points de %</div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-              {calib.map(band => <CalibrationRow key={band.label} band={band} />)}
+              {D.calib.map(band => <CalibrationRow key={band.label} band={band} />)}
             </div>
           </Section>
         </div>
 
-        {/* Ligne 2b : Calibration par catégorie — foot sur une ligne, basket sur la suivante */}
-        {calibCats.length > 0 && (() => {
+        {/* Ligne 2b : Calibration par catégorie */}
+        {!showPinnacle && calibCats.length > 0 && (() => {
           const footCats   = calibCats.filter(g => g.key.startsWith('Foot ·'));
           const basketCats = calibCats.filter(g => !g.key.startsWith('Foot ·'));
           return (
@@ -1053,56 +1102,60 @@ export default function BacktestingPage() {
 
         {/* Ligne 3 : Répartition + Performance par type */}
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', marginBottom: '1.25rem', alignItems: 'start' }}>
-          <Section title="Répartition des résultats" mb={false}>
-            <DonutResults metrics={metrics} accepted={acceptedCount} />
+          <Section title="Répartition des résultats" mb={false} pinnacle={showPinnacle}>
+            <DonutResults metrics={D.metrics} accepted={showPinnacle ? D.metrics.total : acceptedCount} />
           </Section>
-          {typeStats.length > 0 && (
-            <Section title="Performance par type" mb={false}>
+          {D.typeStats.length > 0 && (
+            <Section title="Performance par type" mb={false} pinnacle={showPinnacle}>
               <div style={{ display: 'grid', gridTemplateColumns: '90px 40px 40px 1fr 60px 60px', gap: '0 0.75rem', padding: '0 0.75rem', marginBottom: '0.4rem' }}>
                 {['Type', 'Total', 'Won', '', 'Win%', 'ROI'].map((h, i) => (
                   <span key={i} style={{ fontSize: 10, color: 'var(--text-dim)', fontWeight: 600, textTransform: 'uppercase', textAlign: i >= 4 ? 'right' : i === 1 || i === 2 ? 'center' : 'left' }}>{h}</span>
                 ))}
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
-                {typeStats.map(g => <TypeStatsRow key={g.label} g={g} />)}
+                {D.typeStats.map(g => <TypeStatsRow key={g.label} g={g} />)}
               </div>
             </Section>
           )}
         </div>
 
         {/* Historique complet */}
-        <Section title="Historique complet" mb={false} defaultOpen={false}>
+        <Section title={`Historique complet${showPinnacle ? ' · Pinnacle' : ''}`} mb={false} defaultOpen={false} pinnacle={showPinnacle}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.75rem' }}>
-            <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>{filtered.length} pari{filtered.length > 1 ? 's' : ''}</span>
-            <button
-              onClick={() => exportCSV(filtered)}
-              style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', padding: '4px 12px', borderRadius: 7, border: '1px solid rgba(96,165,250,0.35)', background: 'rgba(96,165,250,0.08)', color: '#60a5fa', fontSize: 11, fontWeight: 700, cursor: 'pointer' }}
-              onMouseEnter={e => e.currentTarget.style.background = 'rgba(96,165,250,0.15)'}
-              onMouseLeave={e => e.currentTarget.style.background = 'rgba(96,165,250,0.08)'}
-            >
-              <svg width="12" height="12" viewBox="0 0 14 14" fill="none"><path d="M7 1v8M4 6l3 3 3-3M2 10v2a1 1 0 001 1h8a1 1 0 001-1v-2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
-              Export CSV
-            </button>
+            <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>{D.bets.length} pari{D.bets.length > 1 ? 's' : ''}</span>
+            {!showPinnacle && (
+              <button
+                onClick={() => exportCSV(filtered)}
+                style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', padding: '4px 12px', borderRadius: 7, border: '1px solid rgba(96,165,250,0.35)', background: 'rgba(96,165,250,0.08)', color: '#60a5fa', fontSize: 11, fontWeight: 700, cursor: 'pointer' }}
+                onMouseEnter={e => e.currentTarget.style.background = 'rgba(96,165,250,0.15)'}
+                onMouseLeave={e => e.currentTarget.style.background = 'rgba(96,165,250,0.08)'}
+              >
+                <svg width="12" height="12" viewBox="0 0 14 14" fill="none"><path d="M7 1v8M4 6l3 3 3-3M2 10v2a1 1 0 001 1h8a1 1 0 001-1v-2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                Export CSV
+              </button>
+            )}
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', maxHeight: 480, overflowY: 'auto' }}>
-            {[...filtered].reverse().map((bet, i) => <BetRow key={i} bet={bet} rank={filtered.length - i} stake={stake} />)}
+            {[...D.bets].reverse().map((bet, i) => <BetRow key={i} bet={bet} rank={D.bets.length - i} stake={stake} />)}
           </div>
         </Section>
+
+        </div>{/* fin conteneur animé */}
 
       </>)}
 
       {/* ── Encadré Alertes vs Pinnacle (hors bilan global) ────────────────── */}
       <div style={{
         marginTop: '2rem',
-        border: '1px solid rgba(139,92,246,0.35)',
+        border: '1px solid rgba(96,165,250,0.35)',
         borderRadius: 16,
         overflow: 'hidden',
-        background: 'rgba(139,92,246,0.04)',
+        background: 'rgba(96,165,250,0.04)',
       }}>
         {/* Header */}
-        <div style={{ padding: '1rem 1.25rem', borderBottom: '1px solid rgba(139,92,246,0.2)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.5rem' }}>
+        <div style={{ padding: '1rem 1.25rem', borderBottom: '1px solid rgba(96,165,250,0.2)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.5rem' }}>
           <div>
-            <span style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.09em', color: '#a78bfa' }}>
+            <span style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.09em', color: '#60a5fa' }}>
               💎 Alertes vs Pinnacle
             </span>
             <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 3 }}>
@@ -1125,8 +1178,8 @@ export default function BacktestingPage() {
                 { label: 'ROI',       value: pinMetrics.roi != null ? `${pinMetrics.roi >= 0 ? '+' : ''}${pinMetrics.roi.toFixed(1)}%` : '—', sub: `flat ${stake}€/pari`, color: pinMetrics.roi == null ? 'var(--text-dim)' : pinMetrics.roi >= 0 ? '#4ade80' : '#f87171' },
                 { label: 'P&L',       value: `${pinMetrics.pl >= 0 ? '+' : ''}${(pinMetrics.pl * stake).toFixed(0)}€`, sub: `mise ${stake}€/alerte`, color: pinMetrics.pl >= 0 ? '#4ade80' : '#f87171' },
               ].map(({ label, value, sub, color }) => (
-                <div key={label} style={{ flex: '1 1 100px', background: 'rgba(139,92,246,0.07)', border: '1px solid rgba(139,92,246,0.18)', borderRadius: 12, padding: '0.75rem 1rem' }}>
-                  <div style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.09em', color: '#a78bfa', marginBottom: 4 }}>{label}</div>
+                <div key={label} style={{ flex: '1 1 100px', background: 'rgba(96,165,250,0.07)', border: '1px solid rgba(96,165,250,0.18)', borderRadius: 12, padding: '0.75rem 1rem' }}>
+                  <div style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.09em', color: '#60a5fa', marginBottom: 4 }}>{label}</div>
                   <div style={{ fontSize: 22, fontWeight: 800, color, fontVariantNumeric: 'tabular-nums', lineHeight: 1.1 }}>{value}</div>
                   <div style={{ fontSize: 10, color: 'var(--text-dim)', marginTop: 2 }}>{sub}</div>
                 </div>

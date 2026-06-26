@@ -1,7 +1,11 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 
 const ALERT_KEY       = 'nba_prop_alerts';
 const GAME_TOTAL_KEY  = 'nba_game_total_alerts';
+const FB_BTTS_KEY     = 'fb_btts_alerts';
+const FB_TOTAL_KEY    = 'fb_total_alerts';
+const FB_RESULT_KEY   = 'fb_result_alerts';
+const BBALL_RESULT_KEY = 'basketball_result_alerts';
 
 // ── Widget : Countdown prochain match ────────────────────────────────────────
 const LIVE_WINDOW_MS  = 3 * 60 * 60 * 1000; // 3h — un match basket dure max ~3h
@@ -19,6 +23,10 @@ function CountdownWidget() {
       let local = [];
       try { local = JSON.parse(localStorage.getItem(ALERT_KEY) || '[]'); } catch {}
       try { local = [...local, ...JSON.parse(localStorage.getItem(GAME_TOTAL_KEY) || '[]')]; } catch {}
+      try { local = [...local, ...JSON.parse(localStorage.getItem(FB_BTTS_KEY) || '[]')]; } catch {}
+      try { local = [...local, ...JSON.parse(localStorage.getItem(FB_TOTAL_KEY) || '[]')]; } catch {}
+      try { local = [...local, ...JSON.parse(localStorage.getItem(FB_RESULT_KEY) || '[]')]; } catch {}
+      try { local = [...local, ...JSON.parse(localStorage.getItem(BBALL_RESULT_KEY) || '[]')]; } catch {}
 
       // Normalise l'ID : tronque après 'over'/'under' pour fusionner ancien format (avec ligne) et nouveau
       const normId = id => {
@@ -41,13 +49,15 @@ function CountdownWidget() {
         const ts = new Date(a.fixtureDate).getTime();
         if (ts < now - LIVE_WINDOW_MS) continue;
         if (ts > now + COUNT_WINDOW_MS) continue;
-        const matchKey = a.fixture || `${a.homeTeam}v${a.awayTeam}`;
-        if (!byKey[matchKey]) byKey[matchKey] = { fixture: matchKey, fixtureDate: a.fixtureDate, league: a.league || 'nba', ts, playerStats: new Set() };
-        // Déduplique par player+stat : un joueur ne peut pas avoir Over ET Under valides en même temps
-        byKey[matchKey].playerStats.add(`${a.player}|${a.stat}`);
+        // football : champs home/away ; basket : homeTeam/awayTeam ; certains ont fixture directement
+        const label = a.fixture || (a.home && a.away ? `${a.home} vs ${a.away}` : null) || (a.homeTeam && a.awayTeam ? `${a.homeTeam}v${a.awayTeam}` : null) || a.id;
+        const matchKey = a.fixtureId || a.eventId || label;
+        if (!byKey[matchKey]) byKey[matchKey] = { fixture: label, fixtureDate: a.fixtureDate, league: a.league || 'nba', ts, alertIds: new Set() };
+        // Déduplique les alertes par ID
+        byKey[matchKey].alertIds.add(a.id);
       }
       // Convertit le Set en count
-      Object.values(byKey).forEach(m => { m.count = m.playerStats.size; });
+      Object.values(byKey).forEach(m => { m.count = m.alertIds.size; });
       const list = Object.values(byKey).sort((a, b) => a.ts - b.ts);
       setMatches(list);
     };
@@ -93,7 +103,23 @@ function CountdownWidget() {
   };
 
   const orange = '#fb923c';
+  const green  = '#4ade80';
   const dim    = 'var(--text-dim)';
+
+  // Couleur décompte selon le sport du prochain match
+  const isFootball = l => ['cdm','ligue1','pl','laliga','bundes','seriea','foot'].includes(l?.toLowerCase());
+  const isBasket   = l => !isFootball(l);
+  const nextTs = next?.ts ?? null;
+  // Tous les matchs qui démarrent en même temps que le prochain (tolérance 1min)
+  const nextGroup = next ? upcoming.filter(m => Math.abs(m.ts - next.ts) < 60_000) : [];
+  const hasFoot   = nextGroup.some(m => isFootball(m.league));
+  const hasBasket = nextGroup.some(m => isBasket(m.league));
+  const countdownColor = hasFoot && hasBasket
+    ? 'transparent'
+    : hasFoot ? green : orange;
+  const countdownStyle = hasFoot && hasBasket
+    ? { background: `linear-gradient(90deg, ${orange}, ${green})`, WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }
+    : { color: countdownColor };
 
   const bgPct = bgHealth?.bgLastRun
     ? Math.min((Date.now() - bgHealth.bgLastRun) / BG_INTERVAL_MS, 1)
@@ -108,7 +134,7 @@ function CountdownWidget() {
       <div style={{ display: 'flex', alignItems: 'stretch' }}>
         {/* Section gauche — En cours */}
         <div style={{ padding: '0.25rem 0.75rem', display: 'flex', flexDirection: 'column', justifyContent: 'center', minWidth: 130 }}>
-          <div style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: dim, marginBottom: '0.25rem' }}>
+          <div style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--text-sub)', marginBottom: '0.25rem' }}>
             En cours
           </div>
           <div style={{ display: 'flex', alignItems: 'baseline', gap: '0.35rem' }}>
@@ -127,12 +153,12 @@ function CountdownWidget() {
         <div style={{ width: 1, background: 'var(--border)', flexShrink: 0 }} />
         {/* Section droite — Prochain match */}
         <div style={{ padding: '0.25rem 0.75rem', display: 'flex', flexDirection: 'column', justifyContent: 'center', minWidth: 160 }}>
-          <div style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: dim, marginBottom: '0.25rem' }}>
+          <div style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--text-sub)', marginBottom: '0.25rem' }}>
             Prochain match
           </div>
           {next ? (
             <>
-              <div style={{ fontSize: '1.4rem', fontWeight: 800, color: orange, letterSpacing: '-0.02em', fontVariantNumeric: 'tabular-nums', lineHeight: 1 }}>
+              <div style={{ fontSize: '1.4rem', fontWeight: 800, letterSpacing: '-0.02em', fontVariantNumeric: 'tabular-nums', lineHeight: 1, ...countdownStyle }}>
                 {fmt(msToNext)}
               </div>
               <div style={{ fontSize: 9, color: dim, marginTop: '0.2rem' }}>
@@ -147,7 +173,7 @@ function CountdownWidget() {
       {/* Bande bas — Cycle alertes */}
       <div style={{ borderTop: '1px solid var(--border)', padding: '0.35rem 0.75rem 0.4rem' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: '0.3rem' }}>
-          <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-sub)' }}>Cycle alertes</span>
+          <span style={{ fontSize: 9, fontWeight: 700, color: 'var(--text-sub)', textTransform: 'uppercase', letterSpacing: '0.1em' }}>Cycle alertes</span>
           <span style={{ fontSize: 9, color: dim }}>
             {bgHealth?.bgLastRun ? (bgRemMin != null ? `dans ${bgRemMin}min` : '—') : 'jamais'}
           </span>
@@ -164,20 +190,19 @@ function CountdownWidget() {
 const BG_INTERVAL_MS = 20 * 60 * 1000;
 
 // Icône signal futuriste WiFi-style — 3 niveaux d'arcs + point central
-function SignalIcon({ label, ts, ok, lastOk }) {
+function SignalIcon({ label, ts, ok, lastOk, greenMs = 10 * 60_000, yellowMs = 20 * 60_000 }) {
   const now       = Date.now();
   const ageMs     = ts ? now - ts : null;
   const fresh     = ageMs !== null && ageMs < BG_INTERVAL_MS + 2 * 60_000;
   const lastOkAge = lastOk ? now - lastOk : Infinity;
   const agoMin    = ageMs !== null ? Math.floor(ageMs / 60_000) : null;
 
-  // Vert si ok récent OU lastOk < 4h (scraper fonctionnel avant que le match parte en live)
   const lastOkMin = lastOk ? Math.floor(lastOkAge / 60_000) : null;
   let level, color, sub;
-  if (lastOkAge < 10 * 60_000) {
+  if (lastOkAge < greenMs) {
     level = 3; color = '#4ade80';
     sub = lastOkMin === 0 ? '<1min' : `${lastOkMin}min`;
-  } else if (lastOkAge < 20 * 60_000) {
+  } else if (lastOkAge < yellowMs) {
     level = 2; color = '#facc15';
     sub = `${lastOkMin}min`;
   } else {
@@ -277,52 +302,46 @@ function SystemHealthSection() {
 
   const sc = health?.scrapers ?? {};
 
+  // Combine foot + basket pour un bookmaker : ok seulement si les deux sont ok, ts = le plus ancien
+  const merge = (a, b) => {
+    if (!a && !b) return {};
+    if (!a) return b;
+    if (!b) return a;
+    const ok = !!(a.ok && b.ok);
+    const ts = (a.ts && b.ts) ? Math.max(a.ts, b.ts) : (a.ts || b.ts);
+    const lastOk = (a.lastOk && b.lastOk) ? Math.max(a.lastOk, b.lastOk) : (a.lastOk || b.lastOk);
+    return { ok, ts, lastOk };
+  };
+
+  const pinnacle = merge(sc.pinnacle_foot, sc.pinnacle_wnba);
+  const unibet   = merge(sc.unibet_foot,   sc.unibet);
+  const betclic  = merge(sc.betclic_foot,  sc.betclic);
+
   return (
-    <div style={{ position: 'relative', height: '100%' }}>
+    <div style={{ position: 'relative', height: '100%', justifySelf: 'start' }}>
     <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 16, display: 'flex', alignItems: 'stretch', height: '100%', boxSizing: 'border-box' }}>
 
-      {/* ── BASKET ── */}
-      <div style={{ padding: '0.25rem 0.75rem', display: 'flex', flexDirection: 'column', justifyContent: 'flex-start', gap: '0.4rem' }}>
-        <div style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--text)' }}>Basket</div>
-        <div style={{ display: 'flex', gap: '0', alignItems: 'flex-start' }}>
-          {/* Cotes basket */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem', paddingRight: '1rem' }}>
+      <div style={{ padding: '0.25rem 0.75rem', display: 'flex', flexDirection: 'column', justifyContent: 'flex-start', gap: '0.75rem' }}>
+        <div style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--text-sub)' }}>Cotes &amp; Données</div>
+
+        <div style={{ display: 'flex', alignItems: 'flex-end', gap: '0' }}>
+          {/* Cotes */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem', paddingRight: '1rem' }}>
             <div style={{ fontSize: 8, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-dim)' }}>Cotes</div>
             <div style={{ display: 'flex', gap: '0.9rem', alignItems: 'flex-end' }}>
-              <SignalIcon label="Unibet"  ts={sc.unibet?.ts}  ok={sc.unibet?.ok}  lastOk={sc.unibet?.lastOk}  />
-              <SignalIcon label="Betclic" ts={sc.betclic?.ts} ok={sc.betclic?.ok} lastOk={sc.betclic?.lastOk} />
-              <SignalIcon label="Pinnacle (WNBA)" ts={sc.pinnacle_wnba?.ts} ok={sc.pinnacle_wnba?.ok} lastOk={sc.pinnacle_wnba?.lastOk} />
+              <SignalIcon label="Pinnacle" ts={pinnacle.ts} ok={pinnacle.ok} lastOk={pinnacle.lastOk} greenMs={22 * 60_000} yellowMs={45 * 60_000} />
+              <SignalIcon label="Unibet"   ts={unibet.ts}   ok={unibet.ok}   lastOk={unibet.lastOk}   />
+              <SignalIcon label="Betclic"  ts={betclic.ts}  ok={betclic.ok}  lastOk={betclic.lastOk}  />
             </div>
           </div>
-          {/* Séparateur subtil */}
-          <div style={{ width: 1, background: 'rgba(255,255,255,0.06)', alignSelf: 'stretch', flexShrink: 0 }} />
-          {/* Données basket */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem', paddingLeft: '1rem' }}>
+          <div style={{ width: 1, background: 'rgba(255,255,255,0.08)', alignSelf: 'stretch', flexShrink: 0 }} />
+          {/* Données */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem', paddingLeft: '1rem' }}>
             <div style={{ fontSize: 8, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-dim)' }}>Données</div>
             <div style={{ display: 'flex', gap: '0.9rem', alignItems: 'flex-end' }}>
               <SignalIcon label="ESPN"     ts={sc.espn?.ts}     ok={sc.espn?.ok}     lastOk={sc.espn?.lastOk}     />
-              <SignalIcon label="ACB"      ts={sc.acb?.ts}      ok={sc.acb?.ok}      lastOk={sc.acb?.lastOk}      />
-              {/* Bzzoiro masqué — EuroLeague en pause jusqu'à octobre, remettre cette ligne à la reprise */}
               <SignalIcon label="RotoWire" ts={sc.rotowire?.ts} ok={sc.rotowire?.ok} lastOk={sc.rotowire?.lastOk} />
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div style={{ width: 1, background: 'var(--border)', flexShrink: 0 }} />
-
-      {/* ── FOOTBALL ── */}
-      <div style={{ padding: '0.25rem 0.75rem', display: 'flex', flexDirection: 'column', justifyContent: 'flex-start', gap: '0.4rem' }}>
-        <div style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--text)' }}>Football</div>
-        <div style={{ display: 'flex', gap: '0', alignItems: 'flex-start' }}>
-          {/* Cotes foot — pas de "Données" foot ici : football-data.org/API-Football sont des
-              APIs officielles (cf. "Requêtes restantes"), pas du scraping à surveiller comme Bzzoiro */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
-            <div style={{ fontSize: 8, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-dim)' }}>Cotes</div>
-            <div style={{ display: 'flex', gap: '0.9rem', alignItems: 'flex-end' }}>
-              <SignalIcon label="Unibet"   ts={sc.unibet_foot?.ts}   ok={sc.unibet_foot?.ok}   lastOk={sc.unibet_foot?.lastOk}   />
-              <SignalIcon label="Betclic"  ts={sc.betclic_foot?.ts}  ok={sc.betclic_foot?.ok}  lastOk={sc.betclic_foot?.lastOk}  />
-              <SignalIcon label="Pinnacle" ts={sc.pinnacle_foot?.ts} ok={sc.pinnacle_foot?.ok} lastOk={sc.pinnacle_foot?.lastOk} />
+              <SignalIcon label="ACB"      ts={sc.acb?.ts}      ok={sc.acb?.ok}      lastOk={sc.acb?.lastOk}      />
             </div>
           </div>
         </div>
@@ -397,11 +416,11 @@ function QuotasWidget() {
   ];
 
   return (
-    <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 16, display: 'flex', flexDirection: 'column', alignSelf: 'start' }}>
-      <div style={{ padding: '0.4rem 0.75rem 0.3rem', borderBottom: '1px solid var(--border)' }}>
-        <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-sub)', textTransform: 'uppercase', letterSpacing: '0.1em' }}>Requêtes restantes</span>
+    <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 16, display: 'flex', flexDirection: 'column' }}>
+      <div style={{ padding: '0.3rem 0.75rem', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center' }}>
+        <span style={{ fontSize: 9, fontWeight: 700, color: 'var(--text-sub)', textTransform: 'uppercase', letterSpacing: '0.1em' }}>Requêtes restantes</span>
       </div>
-      <div style={{ display: 'flex', alignItems: 'stretch' }}>
+      <div style={{ display: 'flex', alignItems: 'stretch', marginTop: 'auto', marginBottom: '0.6rem' }}>
         {cards.map((c, i) => (
           <div key={c.label} style={{ display: 'flex', alignItems: 'stretch' }}>
             {i > 0 && <div style={{ width: 1, background: 'var(--border)', flexShrink: 0 }} />}
@@ -822,6 +841,190 @@ function AlertsChart({ accepted, days: numDays = 30 }) {
   );
 }
 
+// ── Widget : Matchs à venir ──────────────────────────────────────────────────
+
+const FOOT_LEAGUES_SET = new Set(['ligue1','pl','laliga','bundes','seriea','cdm']);
+
+const LEAGUE_LABEL_MAP = {
+  nba:'NBA', wnba:'WNBA', cdm:'CDM', euroleague:'EL',
+  acb:'ACB', lnb:'LNB', bbl:'BBL', legaa:'LegA',
+  ligue1:'L1', pl:'PL', laliga:'Liga', bundes:'BL', seriea:'SA',
+};
+const LEAGUE_COLOR_MAP = {
+  nba:'#fb923c', wnba:'#fb923c', cdm:'#facc15', euroleague:'#c084fc',
+  acb:'#60a5fa', lnb:'#60a5fa', bbl:'#60a5fa', legaa:'#60a5fa',
+  ligue1:'#3b82f6', pl:'#a78bfa', laliga:'#f97316', bundes:'#e11d48', seriea:'#10b981',
+};
+
+function UpcomingMatchesWidget() {
+  const [games, setGames]   = useState([]);
+  const [filter, setFilter] = useState('all');
+  const [loading, setLoading] = useState(true);
+  const [open, setOpen]     = useState(false);
+
+  useEffect(() => {
+    const LIVE_MS = 3 * 3600_000;
+    const KEEP_MS = 48 * 3600_000;
+
+    const norm = (g, league) => ({
+      id:         String(g.id),
+      date:       g.date,
+      status:     g.status,
+      league,
+      sport:      FOOT_LEAGUES_SET.has(league) ? 'foot' : 'basket',
+      home:       FOOT_LEAGUES_SET.has(league) ? (g.home?.short || g.home?.name || '?') : (g.home?.name || '?'),
+      away:       FOOT_LEAGUES_SET.has(league) ? (g.away?.short || g.away?.name || '?') : (g.away?.name || '?'),
+      homeScore:  g.home?.score ?? null,
+      awayScore:  g.away?.score ?? null,
+    });
+
+    const load = async () => {
+      const EU_BASKET = ['acb','bbl','legaa'];
+      const EU_FOOT   = ['ligue1','pl','laliga','bundes','seriea'];
+
+      const results = await Promise.allSettled([
+        fetch('/api/nba/scoreboard').then(r=>r.json()).then(d=>(d.games||[]).map(g=>norm(g,'nba'))),
+        fetch('/api/wnba/scoreboard').then(r=>r.json()).then(d=>(d.games||[]).map(g=>norm(g,'wnba'))),
+        fetch('/api/fd/worldcup').then(r=>r.json()).then(d=>(d.games||[]).map(g=>norm({...g,id:`fdcdm_${g.id}`},'cdm'))),
+        ...EU_BASKET.map(l=>fetch(`/api/euro/${l}/scoreboard`).then(r=>r.json()).then(d=>(d.games||[]).map(g=>norm(g,l)))),
+        fetch('/api/football/matches').then(r=>r.json()).then(d=>
+          (d.fixtures||[])
+            .filter(f=>EU_FOOT.includes(f.league?.key)&&f.status==='STATUS_SCHEDULED')
+            .map(f=>norm({
+              id:f.id, date:f.date, status:f.status,
+              home:{name:f.homeTeam?.name, short:f.homeTeam?.shortName},
+              away:{name:f.awayTeam?.name, short:f.awayTeam?.shortName},
+            }, f.league?.key))
+        ),
+      ]);
+
+      const now = Date.now();
+      const all = results.flatMap(r => r.status === 'fulfilled' ? r.value : []);
+      const visible = all
+        .filter(g => {
+          const ts = new Date(g.date).getTime();
+          return ts > now - LIVE_MS && ts < now + KEEP_MS;
+        })
+        .sort((a,b) => new Date(a.date) - new Date(b.date));
+
+      setGames(visible);
+      setLoading(false);
+    };
+
+    load();
+    const id = setInterval(load, 60_000);
+    return () => clearInterval(id);
+  }, []);
+
+  // IDs des matchs qui ont au moins une alerte non rejetée
+  const alertedIds = useMemo(() => {
+    const ids = new Set();
+    const KEYS = ['nba_prop_alerts','nba_game_total_alerts','fb_btts_alerts','fb_total_alerts','fb_result_alerts','basketball_result_alerts'];
+    for (const key of KEYS) {
+      try {
+        JSON.parse(localStorage.getItem(key)||'[]')
+          .filter(a => a.status !== 'rejected')
+          .forEach(a => { if (a.fixtureId) ids.add(a.fixtureId); if (a.eventId) ids.add(String(a.eventId)); });
+      } catch {}
+    }
+    return ids;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [games]);
+
+  const now      = Date.now();
+  const LIVE_STATUSES = new Set(['STATUS_IN_PLAY','STATUS_IN_PROGRESS','STATUS_HALFTIME','STATUS_PAUSED','IN_PLAY','HALFTIME','PAUSED','IN_PROGRESS']);
+  const isLive   = g => LIVE_STATUSES.has(g.status);
+  const hasAlert = g => alertedIds.has(g.id);
+
+  const fmtTime = date => new Date(date).toLocaleTimeString('fr-FR', { hour:'2-digit', minute:'2-digit' });
+  const dayLabel = date => {
+    const d = new Date(date); const t = new Date();
+    if (d.toDateString() === t.toDateString()) return "Aujourd'hui";
+    const tm = new Date(t); tm.setDate(t.getDate()+1);
+    if (d.toDateString() === tm.toDateString()) return 'Demain';
+    return d.toLocaleDateString('fr-FR', { weekday:'short', day:'numeric', month:'short' });
+  };
+
+  const visible = filter === 'all' ? games : games.filter(g => g.sport === filter);
+
+  // Grouper par jour
+  const groups = [];
+  let curDay = null;
+  for (const g of visible) {
+    const day = new Date(g.date).toDateString();
+    if (day !== curDay) { curDay = day; groups.push({ label: dayLabel(g.date), games: [] }); }
+    groups[groups.length-1].games.push(g);
+  }
+
+  const dim = 'var(--text-dim)';
+
+  return (
+    <div style={{ background:'var(--bg-card)', border:'1px solid var(--border)', borderRadius:16, display:'flex', flexDirection:'column', alignSelf:'start', overflow:'hidden' }}>
+      {/* Header — clic partout pour ouvrir/fermer */}
+      <div onClick={()=>setOpen(o=>!o)} style={{ padding:'0.3rem 0.75rem', borderBottom: open ? '1px solid var(--border)' : 'none', display:'flex', alignItems:'center', justifyContent:'space-between', flexShrink:0, cursor:'pointer', userSelect:'none' }}>
+        <span style={{ fontSize:9, fontWeight:700, textTransform:'uppercase', letterSpacing:'0.1em', color:'var(--text-sub)' }}>Matchs à venir</span>
+        <div style={{ display:'flex', alignItems:'center', gap:'0.4rem' }}>
+          {open && [['all','Tous'],['foot','⚽'],['basket','🏀']].map(([k,l])=>(
+            <button key={k} onClick={e=>{e.stopPropagation();setFilter(k);}} style={{
+              fontSize:9, fontWeight:700, padding:'2px 7px', borderRadius:4, border:'none', cursor:'pointer',
+              background: filter===k ? 'rgba(96,165,250,0.2)' : 'transparent',
+              color:      filter===k ? '#60a5fa' : dim,
+            }}>{l}</button>
+          ))}
+          <svg style={{ transform: open ? 'rotate(180deg)' : 'none', transition:'transform 0.2s', color:dim }} width="10" height="10" viewBox="0 0 12 12" fill="none">
+            <path d="M2.5 4.5L6 8L9.5 4.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+          </svg>
+        </div>
+      </div>
+
+      {/* Liste — même format ouvert/fermé */}
+      <div style={{ overflowY: open ? 'auto' : 'hidden', maxHeight: open ? 280 : 'none', padding:'0.15rem 0' }}>
+        {loading ? (
+          <div style={{ padding:'0.5rem 0.75rem', fontSize:10, color:dim }}>Chargement…</div>
+        ) : visible.length === 0 ? (
+          <div style={{ padding:'0.5rem 0.75rem', fontSize:10, color:dim }}>Aucun match à venir</div>
+        ) : (open ? groups : [{ label: null, games: visible.slice(0, 3) }]).map((group, gi) => (
+          <div key={group.label || gi}>
+            {open && group.label && <div style={{ padding:'0.2rem 0.75rem 0.1rem', fontSize:8, fontWeight:700, textTransform:'uppercase', letterSpacing:'0.08em', color:'rgba(255,255,255,0.18)' }}>
+              {group.label}
+            </div>}
+            {group.games.map(g => {
+              const live  = isLive(g);
+              const alert = hasAlert(g);
+              const color = LEAGUE_COLOR_MAP[g.league] || '#94a3b8';
+              const lbl   = LEAGUE_LABEL_MAP[g.league] || g.league.toUpperCase();
+              return (
+                <div key={g.id} style={{ display:'flex', alignItems:'center', gap:'0.45rem', padding:'0.22rem 0.75rem', borderBottom:'1px solid rgba(255,255,255,0.03)' }}>
+                  {/* Heure */}
+                  <span style={{ fontSize:9, fontVariantNumeric:'tabular-nums', color: live ? '#f87171' : dim, width:28, flexShrink:0, fontWeight: live ? 700 : 400 }}>
+                    {fmtTime(g.date)}
+                  </span>
+                  {/* Badge ligue */}
+                  <span style={{ fontSize:7, fontWeight:700, color, background:`${color}18`, border:`1px solid ${color}30`, borderRadius:3, padding:'1px 4px', flexShrink:0, minWidth:22, textAlign:'center', letterSpacing:'0.04em' }}>
+                    {lbl}
+                  </span>
+                  {/* Équipes */}
+                  <span style={{ fontSize:10, color:'var(--text)', flex:1, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                    {g.home} <span style={{ color:dim }}>vs</span> {g.away}
+                  </span>
+                  {/* Score si live */}
+                  {live && g.homeScore !== null && (
+                    <span style={{ fontSize:9, fontWeight:700, color:'#f87171', fontVariantNumeric:'tabular-nums', flexShrink:0 }}>
+                      {g.homeScore}-{g.awayScore}
+                    </span>
+                  )}
+                  {/* Point d'alerte */}
+                  {alert && <span style={{ width:5, height:5, borderRadius:'50%', background:'#fb923c', flexShrink:0 }} title="Alerte active" />}
+                </div>
+              );
+            })}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 const PERIODS = [
   { label: '1 jour',   days: 1  },
   { label: '3 jours',  days: 3  },
@@ -926,6 +1129,7 @@ export default function DashboardPage() {
         <CountdownWidget />
         <SystemHealthSection />
         <QuotasWidget />
+        <UpcomingMatchesWidget />
       </div>
 
     </div>
