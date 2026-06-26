@@ -5556,9 +5556,13 @@ async function _fetchPinnacleLeagueOdds(leagueId, sportType) {
     fetch(`${PINNACLE_GUEST_API}/leagues/${leagueId}/matchups?withSpecials=false`, { headers, signal: AbortSignal.timeout(10000) }),
     fetch(`${PINNACLE_GUEST_API}/leagues/${leagueId}/markets/straight`,            { headers, signal: AbortSignal.timeout(10000) }),
   ]);
-  if (!matchupsResp.ok || !marketsResp.ok) return [];
+  if (!matchupsResp.ok || !marketsResp.ok) {
+    console.log(`[Pinnacle] League ${leagueId}: HTTP ${matchupsResp.status}/${marketsResp.status}`);
+    return [];
+  }
 
   const [matchups, markets] = await Promise.all([matchupsResp.json(), marketsResp.json()]);
+  console.log(`[Pinnacle] League ${leagueId}: ${Array.isArray(matchups) ? matchups.length : typeof matchups} matchups, ${Array.isArray(markets) ? markets.length : typeof markets} markets`);
 
   const mktsById = {};
   for (const mkt of markets) (mktsById[mkt.matchupId] ??= []).push(mkt);
