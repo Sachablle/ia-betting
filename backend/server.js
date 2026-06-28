@@ -637,11 +637,21 @@ const _mergeFootballBookmaker = (allMatches, sourceOdds, bkKey) => {
         if (!existing.markets.totals) existing.markets.totals = { bookmakers: {} };
         existing.markets.totals.bookmakers[bkKey] = s.totals;
       }
+      if (s.dcbtts) {
+        if (!existing.markets.dcbtts) existing.markets.dcbtts = { bookmakers: {} };
+        existing.markets.dcbtts.bookmakers[bkKey] = s.dcbtts;
+      }
+      if (s.dcou) {
+        if (!existing.markets.dcou) existing.markets.dcou = { bookmakers: {} };
+        existing.markets.dcou.bookmakers[bkKey] = s.dcou;
+      }
     } else {
       const markets = {};
-      if (s.h2h)   markets.h2h    = { bookmakers: { [bkKey]: s.h2h } };
-      if (s.btts)  markets.btts   = { bookmakers: { [bkKey]: s.btts } };
+      if (s.h2h)    markets.h2h    = { bookmakers: { [bkKey]: s.h2h } };
+      if (s.btts)   markets.btts   = { bookmakers: { [bkKey]: s.btts } };
       if (s.totals) markets.totals = { bookmakers: { [bkKey]: s.totals } };
+      if (s.dcbtts) markets.dcbtts = { bookmakers: { [bkKey]: s.dcbtts } };
+      if (s.dcou)   markets.dcou   = { bookmakers: { [bkKey]: s.dcou } };
       allMatches.push({
         id: `${bkKey}_${s.homeTeam}_${s.awayTeam}`.replace(/\s/g, '_'),
         sportKey: 'soccer',
@@ -4493,7 +4503,12 @@ app.get('/api/basketball/odds', async (req, res) => {
     if (snap?.data?.found) return res.json(snap.data);
   }
 
-  if (!refresh && cached && Date.now() - cached.ts < 5 * 60 * 1000) return res.json(cached.data);
+  if (!refresh && cached && Date.now() - cached.ts < 5 * 60 * 1000) {
+    const hasPinnacle = cached.data?.markets?.h2h?.bookmakers?.pinnacle || cached.data?.markets?.totals?.bookmakers?.pinnacle;
+    // Si Pinnacle est présent (ou que c'est une ligue EU sans Pinnacle basket en ce moment) → sert le cache
+    if (hasPinnacle || !['nba','wnba'].includes(league)) return res.json(cached.data);
+    // Pinnacle manquant sur NBA/WNBA → laisse tomber jusqu'au refresh background (ligne ~4530)
+  }
 
   const norm   = s => (s || '').toLowerCase().replace(/[^a-z]/g, '');
   const fuzzy  = (a, b) => { if (!a || !b) return false; const na = norm(a), nb = norm(b); return na.includes(nb) || nb.includes(na); };
@@ -6171,7 +6186,7 @@ function betclicExtrasRelease() {
   if (_betclicExtrasQueue.length > 0) _betclicExtrasQueue.shift()();
 }
 
-async function fetchBetclicFootballExtras(href) {
+async function fetchBetclicFootballExtras(href, homeTeam = '') {
   if (_betclicExtrasActive >= 4) await new Promise(res => _betclicExtrasQueue.push(res));
   _betclicExtrasActive++;
   try {
@@ -6182,17 +6197,32 @@ async function fetchBetclicFootballExtras(href) {
     const r = await fetchBk('betclic', `https://www.betclic.fr${href}`, { signal: AbortSignal.timeout(8000), headers: H });
     if (!r.ok) { _bgLog.push(`betclic extras HTTP ${r.status} — ${href}`); return null; }
     const html = await r.text();
-    const idx = html.indexOf('"markets":[{');
-    if (idx < 0) { _bgLog.push(`betclic extras: pas de bloc "markets" — ${href}`); return null; }
-    const pos = idx + '"markets":'.length;
-    let depth = 0, end = pos;
-    for (let i = 0; i < 500000; i++) {
-      const c = html[pos + i];
-      if (!c) break;
-      if (c === '[') depth++;
-      else if (c === ']') { depth--; if (depth === 0) { end = pos + i + 1; break; } }
+    // Betclic distribue les marchés sur plusieurs blocs "markets":[{...}] dans le HTML —
+    // DC simple dans le 1er, DC+BTTS et DC+buts dans des blocs ultérieurs. On merge tout.
+    const extractMktsBlock = (html, startIdx) => {
+      const idx = html.indexOf('"markets":[{', startIdx);
+      if (idx < 0) return { block: null, nextIdx: -1 };
+      const pos = idx + '"markets":'.length;
+      let depth = 0, end = pos;
+      for (let i = 0; i < 500000; i++) {
+        const c = html[pos + i];
+        if (!c) break;
+        if (c === '[') depth++;
+        else if (c === ']') { depth--; if (depth === 0) { end = pos + i + 1; break; } }
+      }
+      try { return { block: JSON.parse(html.slice(pos, end)), nextIdx: idx + 1 }; }
+      catch { return { block: null, nextIdx: idx + 1 }; }
+    };
+    const allMkts = [];
+    let searchIdx = 0;
+    for (let pass = 0; pass < 20; pass++) {
+      const { block, nextIdx } = extractMktsBlock(html, searchIdx);
+      if (!block || nextIdx < 0) break;
+      allMkts.push(...block);
+      searchIdx = nextIdx;
     }
-    const mkts = JSON.parse(html.slice(pos, end));
+    if (allMkts.length === 0) { _bgLog.push(`betclic extras: pas de bloc "markets" — ${href}`); return null; }
+    const mkts = allMkts;
 
     let btts = null;
     const bttsMkt = mkts.find(mk => {
@@ -6225,13 +6255,113 @@ async function fetchBetclicFootballExtras(href) {
       if (Object.keys(t).length) totals = t;
     }
 
-    // Diagnostic temporaire (24/06) — comprendre pourquoi certains matchs CDM n'ont pas
-    // BTTS/Buts Betclic alors que le 1X2 est bon. Log uniquement si un des deux marchés manque.
-    if (!bttsMkt || !totMkt) {
-      _bgLog.push(`betclic extras incomplet — ${href} | btts=${!!bttsMkt} totals=${!!totMkt} | marchés dispo: ${mkts.map(mk => mk.name).join(' / ')}`);
+    // Flatten toutes les sélections d'un marché (selectionMatrix 1D ou 2D)
+    const flatSels = mkt => {
+      if (!mkt) return [];
+      const out = [];
+      for (const row of mkt.selectionMatrix ?? []) {
+        for (const s of row.selections ?? []) out.push(s.selectionOneof?.selection ?? s);
+      }
+      return out;
+    };
+    const normTeamStr = t => (t ?? '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/[^a-z]/g,'');
+    const homeNorm4 = normTeamStr(homeTeam).slice(0, 4);
+    const dcKey = n => {
+      const low = (n ?? '').toLowerCase().trim();
+      if (/^1x$/.test(low)) return '1x';
+      if (/^x2$/.test(low)) return 'x2';
+      if (/^12$/.test(low)) return '12';
+      if (low.includes('dom') && low.includes('nul')) return '1x';
+      if (low.includes('ext') && low.includes('nul')) return 'x2';
+      if (low.includes('dom') && low.includes('ext')) return '12';
+      // Format équipe Betclic : "TeamA / Nul", "Nul / TeamB", "TeamA / TeamB"
+      if (low.includes('/')) {
+        const hasNul = /\bnul\b/.test(low);
+        if (!hasNul) return '12';
+        const before = normTeamStr(low.split('/')[0]);
+        if (before === 'nul') return 'x2';
+        // Si le nom avant "/" correspond à l'équipe à domicile → 1X, sinon X2
+        if (homeNorm4 && before.startsWith(homeNorm4)) return '1x';
+        return 'x2';
+      }
+      return null;
+    };
+
+    // Double Chance & Les 2 équipes marquent — branche "Oui" uniquement
+    let dcbtts = null;
+    const dcbttsMkt = mkts.find(mk => (mk.name ?? '').toLowerCase().includes('double chance') && (mk.name ?? '').toLowerCase().includes('marquent'));
+    if (dcbttsMkt) {
+      const t = {};
+      for (const s of flatSels(dcbttsMkt)) {
+        const n = (s.name ?? '').toLowerCase();
+        const k = dcKey(n.split(/[&+]/)[0].trim());
+        if (k && (n.includes('oui') || n.includes('yes')) && s.odds > 1) t[k] = s.odds;
+      }
+      if (Object.keys(t).length >= 1) dcbtts = t;
     }
 
-    return { btts, totals };
+    // Double Chance & Over 1.5 buts
+    let dcou = null;
+    const dcouMkt = mkts.find(mk => {
+      const n = (mk.name ?? '').toLowerCase();
+      return n.includes('double chance') && (n.includes('buts') || n.includes('plus') || n.includes('moins'));
+    });
+    if (dcouMkt) {
+      const t = {};
+      for (const s of flatSels(dcouMkt)) {
+        const n = (s.name ?? '').toLowerCase();
+        const k = dcKey(n.split(/[&+]/)[0].trim());
+        if (!k || !(s.odds > 1)) continue;
+        const isOver15 = n.includes('+ de 1') || n.includes('plus de 1') || n.includes('1,5') || n.includes('1.5');
+        if (isOver15) { t[k] = s.odds; }
+      }
+      if (Object.keys(t).length >= 1) dcou = t;
+    }
+
+    if (!bttsMkt || !totMkt) {
+      _bgLog.push(`betclic extras incomplet — ${href.slice(-40)} | btts=${!!bttsMkt} totals=${!!totMkt} | marchés: ${mkts.map(mk => mk.name).join(' / ')}`);
+    }
+
+    // DC combinés non disponibles dans le HTML — fetch via gRPC ca_ftb_rslt
+    const midM = href.match(/-m(\d+)$/);
+    if (midM) {
+      try {
+        const grpcMkts = await _betclicGrpcMarketNames(midM[1], 'ca_ftb_rslt');
+        // DC+BTTS
+        const dcbttsMktG = grpcMkts.find(m => {
+          const n = m.name.toLowerCase();
+          return n.includes('double chance') && n.includes('marquent') && !n.includes('mi-temps') && !n.includes('buteur');
+        });
+        if (dcbttsMktG) {
+          const t = {};
+          for (const s of dcbttsMktG.sels) {
+            const n = (s.name ?? '').toLowerCase();
+            const dcPart = n.split('&')[0].trim();
+            const k = dcKey(dcPart);
+            if (k && n.includes('& oui') && s.odds > 1) t[k] = s.odds;
+          }
+          if (Object.keys(t).length >= 1) dcbtts = t;
+        }
+        // DC+Over 1.5
+        const dcouMktG = grpcMkts.find(m => {
+          const n = m.name.toLowerCase();
+          return n === 'double chance & nombre de buts';
+        });
+        if (dcouMktG) {
+          const t = {};
+          for (const s of dcouMktG.sels) {
+            const n = (s.name ?? '').toLowerCase();
+            const dcPart = n.split('&')[0].trim();
+            const k = dcKey(dcPart);
+            if (!k || !(s.odds > 1)) continue;
+            if (n.includes('& + de 1,5') || n.includes('& + de 1.5')) t[k] = s.odds;
+          }
+          if (Object.keys(t).length >= 1) dcou = t;
+        }
+      } catch (eg) { _bgLog.push(`betclic gRPC DC error — ${href.slice(-40)} : ${eg.message}`); }
+    }
+
+    return { btts, totals, dcbtts, dcou };
   } catch (e) { _bgLog.push(`betclic extras error — ${href} : ${e.message}`); return null; }
   finally { betclicExtrasRelease(); }
 }
@@ -6312,11 +6442,13 @@ async function fetchBetclicOdds() {
 
   // Batch-fetch BTTS + Over/Under depuis les pages match individuelles
   const extrasArr = await Promise.all(results.map(r =>
-    r._href ? fetchBetclicFootballExtras(r._href).catch(() => null) : Promise.resolve(null)
+    r._href ? fetchBetclicFootballExtras(r._href, r.homeTeam).catch(() => null) : Promise.resolve(null)
   ));
   extrasArr.forEach((extras, i) => {
     if (extras?.btts)   results[i].btts   = extras.btts;
     if (extras?.totals) results[i].totals = extras.totals;
+    if (extras?.dcbtts) results[i].dcbtts = extras.dcbtts;
+    if (extras?.dcou)   results[i].dcou   = extras.dcou;
     delete results[i]._href;
   });
 
@@ -6492,6 +6624,69 @@ async function fetchUnibetFootballOdds() {
       if (Object.keys(totals).length) entry.totals = totals;
     }
 
+    // Unibet : helper clé DC — gère "1 / Nul", "Nul / 2", "1 / 2", "TeamA / Nul", etc.
+    const ubNormTeam = t => (t ?? '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/[^a-z]/g,'');
+    const ubHomeNorm4 = ubNormTeam(entry.homeTeam ?? '').slice(0, 4);
+    const ubDcKey = d => {
+      const low = (d ?? '').toLowerCase().trim();
+      if (/^1x$/.test(low)) return '1x';
+      if (/^x2$/.test(low)) return 'x2';
+      if (/^12$/.test(low)) return '12';
+      if (low.includes('/')) {
+        const hasNul = /\bnul\b/.test(low);
+        if (!hasNul) return '12';
+        const rawBefore = low.split('/')[0].trim();
+        if (rawBefore === 'nul' || rawBefore === 'x') return 'x2';
+        if (rawBefore === '1') return '1x'; // format Unibet numérique "1 / Nul"
+        const normBefore = ubNormTeam(rawBefore);
+        if (ubHomeNorm4 && normBefore.startsWith(ubHomeNorm4)) return '1x';
+        return 'x2';
+      }
+      return null;
+    };
+
+    // Double Chance & BTTS — branche "Oui" uniquement
+    const dcbttsGroup = gm.find(g => {
+      const d = (g.description ?? '').toLowerCase();
+      return d.includes('double chance') && (d.includes('marquent') || d.includes('btts'));
+    });
+    if (dcbttsGroup) {
+      const outs = (dcbttsGroup.markets ?? []).flatMap(m => m.outcomes ?? []);
+      const t = {};
+      for (const o of outs) {
+        const d = (o.description ?? '').toLowerCase();
+        // Unibet : "1 / Nul et Oui" — séparer sur " et " puis parser la partie DC
+        const etIdx = d.lastIndexOf(' et ');
+        const dcPart = etIdx >= 0 ? d.slice(0, etIdx).trim() : d.split(/[&/]/)[0].trim();
+        const bttsPart = etIdx >= 0 ? d.slice(etIdx + 4).trim() : '';
+        const k = ubDcKey(dcPart);
+        if (k && (bttsPart.includes('oui') || bttsPart.includes('yes') || d.includes('oui') || d.includes('yes'))) t[k] = price(o.price);
+      }
+      if (Object.keys(t).length >= 1) entry.dcbtts = t;
+    }
+
+    // Double Chance & Over 1.5
+    const dcouGroup = gm.find(g => {
+      const d = (g.description ?? '').toLowerCase();
+      return d.includes('double chance') && (d.includes('buts') || d.includes('plus') || d.includes('1.5') || d.includes('1,5'));
+    });
+    if (dcouGroup) {
+      const outs = (dcouGroup.markets ?? []).flatMap(m => m.outcomes ?? []);
+      const t = {};
+      for (const o of outs) {
+        const d = (o.description ?? '').toLowerCase();
+        // Unibet : "Afrique du Sud / Nul et Plus de 1.5 Buts" — séparer sur " et "
+        const etIdx = d.lastIndexOf(' et ');
+        const dcPart = etIdx >= 0 ? d.slice(0, etIdx).trim() : d.split(/[&/]/)[0].trim();
+        const ouPart = etIdx >= 0 ? d.slice(etIdx + 4).trim() : d;
+        const k = ubDcKey(dcPart);
+        if (!k) continue;
+        const isOver15 = ouPart.includes('plus de 1') || ouPart.includes('+ de 1') || ouPart.includes('1,5') || ouPart.includes('1.5');
+        if (isOver15) t[k] = price(o.price);
+      }
+      if (Object.keys(t).length >= 1) entry.dcou = t;
+    }
+
     results.push(entry);
   }
   return results;
@@ -6535,6 +6730,58 @@ function _pbFields(buf) {
     } else break;
   }
   return fields;
+}
+
+// Generic: returns [{name, sels:[{name,odds}]}] for any category — used for probing football DC
+async function _betclicGrpcMarketNames(matchIdStr, categoryId) {
+  const proto = Buffer.concat([_pbV64(1, BigInt(matchIdStr)), _pbLen(2,'fr'), _pbLen(3, categoryId)]);
+  let resp;
+  try {
+    resp = await fetch(
+      'https://offering.begmedia.com/web/offering.access.api/offering.access.api.MatchService/GetMatchWithNotification',
+      { method:'POST', headers:{ 'Content-Type':'application/grpc-web+proto', 'Accept':'application/grpc-web+proto', 'x-grpc-web':'1', 'X-BG-REGULATION':'FR', 'X-BG-Ref-Brand':'BETCLIC', 'X-BG-Ref-Regulator-Zone':'FR', 'X-BG-Ref-Platform':'DESKTOP', 'ngsw-bypass':'1', 'Origin':'https://www.betclic.fr', 'Referer':'https://www.betclic.fr/' }, body: _grpcFrame(proto), signal: AbortSignal.timeout(8000) }
+    );
+  } catch { return []; }
+  if (!resp.ok) return [];
+  const chunks = []; let totalLen = 0, frameLen = -1;
+  const tRead = setTimeout(() => { try { resp.body.destroy(); } catch {} }, 8000);
+  try {
+    for await (const value of resp.body) {
+      const buf = Buffer.isBuffer(value) ? value : Buffer.from(value);
+      chunks.push(buf); totalLen += buf.length;
+      if (frameLen < 0 && totalLen >= 5) frameLen = Buffer.concat(chunks).readUInt32BE(1) + 5;
+      if (frameLen > 0 && totalLen >= frameLen) break;
+    }
+  } catch {}
+  clearTimeout(tRead);
+  if (!chunks.length) return [];
+  const raw = Buffer.concat(chunks);
+  if (raw.length < 5) return [];
+  const payloadBuf = _pbFields(raw.subarray(5)).find(f => f.fn===1 && f.wt===2)?.v;
+  if (!payloadBuf) return [];
+  const matchBuf = _pbFields(payloadBuf).find(f => f.fn===1 && f.wt===2)?.v;
+  if (!matchBuf) return [];
+  const markets = [];
+  for (const scF of _pbFields(matchBuf).filter(f => f.fn===11 && f.wt===2)) {
+    for (const mkF of _pbFields(scF.v).filter(f => f.fn===3 && f.wt===2)) {
+      const mkF2 = _pbFields(mkF.v);
+      const name = mkF2.find(f => f.fn===2 && f.wt===2)?.v?.toString('utf8') ?? '';
+      const sels = [];
+      for (const nsWrap of mkF2.filter(f => f.fn===10 && f.wt===2)) {
+        for (const nsF of _pbFields(nsWrap.v).filter(f => f.fn===1 && f.wt===2)) {
+          const selBuf = _pbFields(nsF.v).find(f => f.fn===1 && f.wt===2)?.v;
+          if (!selBuf) continue;
+          const selF = _pbFields(selBuf);
+          const selName = selF.find(f => f.fn===10 && f.wt===2)?.v?.toString('utf8')
+                       ?? selF.find(f => f.fn===11 && f.wt===2)?.v?.toString('utf8') ?? '';
+          const odds = selF.find(f => f.fn===12 && f.wt===1)?.v;
+          sels.push({ name: selName, odds: odds ? +odds.toFixed(3) : null });
+        }
+      }
+      markets.push({ name, sels });
+    }
+  }
+  return markets;
 }
 
 async function _betclicGrpcCategory(matchIdStr, categoryId) {
@@ -10841,6 +11088,41 @@ app.post('/api/debug/calibration-dump', (req, res) => {
   res.json({ ok: true });
 });
 app.get('/api/debug/calibration-dump', (req, res) => res.json(_calibrationDump));
+
+// Probe gRPC Betclic foot — découverte des category IDs DC
+// Usage : GET /api/debug/betclic-matchids  → liste matchIds actuels
+//         GET /api/debug/betclic-dc-probe?matchId=XXXXX  → teste ~10 candidats
+app.get('/api/debug/betclic-matchids', (req, res) => {
+  const odds = _oddsCache?.football ?? [];
+  const hrefs = odds
+    .filter(m => m._href || m.href)
+    .map(m => { const h = m._href ?? m.href; const mid = h?.match(/-m(\d+)$/)?.[1]; return { home: m.homeTeam, away: m.awayTeam, matchId: mid, href: h }; })
+    .filter(m => m.matchId);
+  // Fallback : cherche dans le cache betclic brut
+  res.json({ count: hrefs.length, matches: hrefs.slice(0, 10) });
+});
+
+app.get('/api/debug/betclic-dc-probe', async (req, res) => {
+  const { matchId } = req.query;
+  if (!matchId) return res.status(400).json({ error: 'matchId requis' });
+  const candidates = [
+    'ca_ftb_dc', 'ca_ftb_mix', 'ca_ftb_combi', 'ca_ftb_comb',
+    'ca_ftb_dbl', 'ca_ftb_chance', 'ca_ftb_dcmix', 'ca_ftb_extras',
+    'ca_ftb_special', 'ca_ftb_both',
+  ];
+  const results = {};
+  // Séquentiel pour éviter de spammer
+  for (const catId of candidates) {
+    try {
+      const mts = await _betclicGrpcMarketNames(matchId, catId);
+      results[catId] = mts.length
+        ? mts.map(m => ({ name: m.name, sels: m.sels.slice(0, 4) }))
+        : null;
+    } catch (e) { results[catId] = { error: e.message }; }
+    await new Promise(r => setTimeout(r, 300)); // 300ms entre chaque appel
+  }
+  res.json({ matchId, results });
+});
 
 async function runAutoSettle() {
   const now = Date.now();

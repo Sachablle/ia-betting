@@ -313,8 +313,17 @@ function SystemHealthSection() {
       .then(setHealth)
       .catch(() => {})
       .finally(() => {
-        const remaining = 500 - (Date.now() - start);
-        setTimeout(() => setRefreshing(false), Math.max(0, remaining));
+        // Les scrapers tournent en arrière-plan — on refetch après 4s pour afficher leur résultat
+        setTimeout(() => {
+          fetch('/api/system/health')
+            .then(r => r.json())
+            .then(setHealth)
+            .catch(() => {})
+            .finally(() => {
+              const remaining = 500 - (Date.now() - start);
+              setTimeout(() => setRefreshing(false), Math.max(0, remaining));
+            });
+        }, 4000);
       });
   };
 

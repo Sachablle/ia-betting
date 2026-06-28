@@ -434,13 +434,22 @@ function FootballOddsBox({ markets, bttsResult, home, away, frozen, onRefresh, r
     return () => { window.removeEventListener('scroll', update, true); window.removeEventListener('resize', update); };
   }, [showLegend]);
 
-  const h2h  = markets?.h2h;
-  const tots = markets?.totals;
-  const btts = markets?.btts;
+  const h2h    = markets?.h2h;
+  const tots   = markets?.totals;
+  const btts   = markets?.btts;
+  const dcbtts = markets?.dcbtts;
+  const dcou   = markets?.dcou;
+
+  const hasDcBtts = !!(dcbtts?.bookmakers);
+  const hasDcOu   = !!(dcou?.bookmakers);
+  const hasDC = hasDcBtts || hasDcOu;
 
   const availBks = FB_BK_ORDER.filter(bk =>
     h2h?.bookmakers?.[bk] || tots?.bookmakers?.[bk] || btts?.bookmakers?.[bk]
   );
+  const availDcBks = bk => FB_BK_ORDER.filter(b =>
+    (bk === 'dc_btts' ? dcbtts?.bookmakers?.[b] : dcou?.bookmakers?.[b])
+  ).filter(b => b !== 'pinnacle');
 
   // Lignes O/U disponibles : union des clés de tous les bookmakers (Pinnacle peut avoir 2.75 etc.)
   const availTotalsLines = (() => {
@@ -457,14 +466,16 @@ function FootballOddsBox({ markets, bttsResult, home, away, frozen, onRefresh, r
     { id: 'result', label: 'Résultat' },
     { id: 'buts',   label: 'Buts'     },
     { id: 'btts',   label: 'BTTS'     },
+    ...(hasDcBtts ? [{ id: 'dc_btts', label: 'Double chance & BTTS' }] : []),
+    ...(hasDcOu   ? [{ id: 'dc_ou',   label: 'Double chance & Over 1,5' }] : []),
   ];
 
   const tabStyle = id => ({
     padding: '0.25rem 0.75rem', borderRadius: 5, border: '1px solid', cursor: 'pointer',
     fontSize: 10, fontWeight: 700, letterSpacing: '0.05em', textTransform: 'uppercase',
-    background: tab === id ? 'rgba(251,146,60,0.25)' : 'rgba(251,146,60,0.08)',
+    background: tab === id ? 'rgba(74,222,128,0.25)' : 'rgba(74,222,128,0.08)',
     color: '#ffffff',
-    borderColor: tab === id ? 'rgba(251,146,60,0.55)' : 'rgba(251,146,60,0.22)',
+    borderColor: tab === id ? 'rgba(74,222,128,0.55)' : 'rgba(74,222,128,0.22)',
     boxShadow: '0 0 0 1px rgba(255,255,255,0.22)',
     transition: 'background 0.15s, border-color 0.15s',
   });
@@ -619,11 +630,10 @@ function FootballOddsBox({ markets, bttsResult, home, away, frozen, onRefresh, r
         </div>
       )}
 
-      {availBks.map(bk => {
+      {tab !== 'dc' && availBks.map(bk => {
         const isPinnacle = bk === 'pinnacle';
         const color = isPinnacle ? undefined : FB_BK_COLORS[bk];
         const h = h2h?.bookmakers?.[bk];
-        // Pinnacle : affiche sa propre ligne disponible (indépendamment du toggle)
         const t = isPinnacle
           ? (pinTotLine ? pinTotsBk[pinTotLine] : undefined)
           : tots?.bookmakers?.[bk]?.[totalsLine];
@@ -658,9 +668,38 @@ function FootballOddsBox({ markets, bttsResult, home, away, frozen, onRefresh, r
         );
       })}
 
-      {availBks.length === 0 && (
+      {!['dc_btts','dc_ou'].includes(tab) && availBks.length === 0 && (
         <div style={{ textAlign: 'center', padding: '1rem 0', color: 'var(--text-dim)', fontSize: 12 }}>Cotes indisponibles</div>
       )}
+
+      {(tab === 'dc_btts' || tab === 'dc_ou') && (() => {
+        const bks = availDcBks(tab);
+        const mkt = tab === 'dc_btts' ? dcbtts : dcou;
+        const dcGridCols = `1fr${bks.map(() => ' 48px').join('')}`;
+        const DcRow = ({ label, vals }) => (
+          <div style={{ display: 'grid', gridTemplateColumns: dcGridCols, gap: '0 0.25rem', alignItems: 'center', padding: '0.28rem 0', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+            <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>{label}</span>
+            {bks.map(bk => (
+              <Cell key={bk} val={vals?.[bk]} edgeVal={null} isPinnacle={false} color={FB_BK_COLORS[bk]} />
+            ))}
+          </div>
+        );
+        if (!mkt?.bookmakers || bks.length === 0) {
+          return <div style={{ textAlign: 'center', padding: '1rem 0', color: 'var(--text-dim)', fontSize: 12 }}>Marchés DC indisponibles</div>;
+        }
+        const suffix = tab === 'dc_btts' ? 'BTTS' : 'Over 1,5';
+        return (
+          <>
+            <div style={{ display: 'grid', gridTemplateColumns: dcGridCols, gap: '0 0.25rem', paddingBottom: '0.3rem', borderBottom: '1px solid var(--border)', marginBottom: '0.2rem' }}>
+              <div />
+              {bks.map(bk => <div key={bk} style={ch}>{FB_BK_LABELS[bk]}</div>)}
+            </div>
+            <DcRow label={`${home?.name ?? '1X'} / Nul & ${suffix}`}  vals={Object.fromEntries(bks.map(bk => [bk, mkt.bookmakers[bk]?.['1x']]))} />
+            <DcRow label={`${away?.name ?? 'X2'} / Nul & ${suffix}`}  vals={Object.fromEntries(bks.map(bk => [bk, mkt.bookmakers[bk]?.['x2']]))} />
+            <DcRow label={`${home?.name ?? '12'} / ${away?.name ?? ''} & ${suffix}`} vals={Object.fromEntries(bks.map(bk => [bk, mkt.bookmakers[bk]?.['12']]))} />
+          </>
+        );
+      })()}
 
       {tab === 'buts' && ouResult && (() => {
         const { over, under, lambda_total } = ouResult;
