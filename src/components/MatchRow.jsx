@@ -1,5 +1,6 @@
 import { useNavigate } from 'react-router-dom';
 import { formatMatchDate, formatMatchTime } from '../utils/formatters';
+import { cachedFetch } from '../utils/fetchCache';
 
 const FINAL_STATUSES = new Set(['STATUS_FULL_TIME', 'STATUS_FINAL', 'STATUS_FT', 'STATUS_AFTER_EXTRA_TIME', 'STATUS_AFTER_PENALTIES']);
 
@@ -18,6 +19,14 @@ export default function MatchRow({ fixture }) {
 
   const homeColor = isLive ? '#c62828' : isFinal ? (homeWon ? '#2e7d32' : 'var(--text)') : null;
   const awayColor = isLive ? '#c62828' : isFinal ? (awayWon ? '#2e7d32' : 'var(--text)') : null;
+
+  const handleMouseEnter = () => {
+    import('../pages/MatchDetailPage').catch(() => {});
+    cachedFetch('/api/odds', 30_000).catch(() => {});
+    if (fixture.league !== 'cdm') {
+      cachedFetch(`/api/football/standings/${fixture.league}`, 30 * 60_000).catch(() => {});
+    }
+  };
 
   const handleClick = () => {
     sessionStorage.setItem(`league_open_${fixture.league}`, 'open');
@@ -39,7 +48,7 @@ export default function MatchRow({ fixture }) {
     : null;
 
   return (
-    <button className="match-row" onClick={handleClick}>
+    <button className="match-row" onClick={handleClick} onMouseEnter={handleMouseEnter}>
       <div className="match-row-date">
         {isLive ? (
           <span className="mrd-live">LIVE</span>

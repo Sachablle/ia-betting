@@ -625,6 +625,9 @@ export default function RunningPage() {
     // de résolution client séparée nécessaire, syncSettlements() ci-dessus suffit (BBALL_PINNACLE_KEY
     // est dans SETTLEABLE_KEYS).
 
+    const onCloudSynced = () => { reloadFromStorage(); reloadFootball(); };
+    window.addEventListener('cloud_synced', onCloudSynced);
+
     return () => {
       window.removeEventListener('nba_alerts_updated', reloadFromStorage);
       window.removeEventListener('fb_btts_alerts_updated', reloadFootball);
@@ -632,6 +635,7 @@ export default function RunningPage() {
       window.removeEventListener('fb_result_alerts_updated', reloadFootball);
       window.removeEventListener('fb_pinnacle_alerts_updated', reloadFootball);
       window.removeEventListener('bball_pinnacle_alerts_updated', reloadFromStorage);
+      window.removeEventListener('cloud_synced', onCloudSynced);
       clearInterval(syncTimer);
     };
   }, []);
@@ -737,9 +741,9 @@ export default function RunningPage() {
       ) : (() => {
         const isActive = (s, sd) => IN_GAME(s) || s === 'STATUS_FINAL'
           || (s === 'STATUS_SCHEDULED' && (sd?.homeScore > 0 || sd?.awayScore > 0));
-        // Avant que les scores chargent, tout s'affiche dans la zone principale (pas de saut)
-        const liveGroups    = scoresLoaded ? matchGroups.filter(m =>  isActive(scoreData[m.matchKey]?.status, scoreData[m.matchKey])) : matchGroups;
-        const scheduledGroups = scoresLoaded ? matchGroups.filter(m => !isActive(scoreData[m.matchKey]?.status, scoreData[m.matchKey])) : [];
+        // Par défaut tout va en bas ; les matchs confirmés live/terminés montent en haut
+        const liveGroups      = matchGroups.filter(m =>  scoresLoaded && isActive(scoreData[m.matchKey]?.status, scoreData[m.matchKey]));
+        const scheduledGroups = matchGroups.filter(m => !scoresLoaded || !isActive(scoreData[m.matchKey]?.status, scoreData[m.matchKey]));
         return (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
             {liveGroups.length > 0 && (

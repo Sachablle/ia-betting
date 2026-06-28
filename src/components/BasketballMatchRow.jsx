@@ -1,6 +1,26 @@
 import { useNavigate } from 'react-router-dom';
 import { startTransition } from 'react';
 import { formatMatchDate, formatMatchTime } from '../utils/formatters';
+import { cachedFetch } from '../utils/fetchCache';
+
+const ESPN_WNBA = {
+  'Atlanta Dream': 20, 'Chicago Sky': 19, 'Connecticut Sun': 18, 'Dallas Wings': 3,
+  'Golden State Valkyries': 129689, 'Indiana Fever': 5, 'Las Vegas Aces': 17,
+  'Los Angeles Sparks': 6, 'Minnesota Lynx': 8, 'New York Liberty': 9,
+  'Phoenix Mercury': 11, 'Portland Fire': 132052, 'Seattle Storm': 14,
+  'Toronto Tempo': 131935, 'Washington Mystics': 16,
+};
+const ESPN_NBA = {
+  'Atlanta Hawks': 1, 'Boston Celtics': 2, 'New Orleans Pelicans': 3, 'Chicago Bulls': 4,
+  'Cleveland Cavaliers': 5, 'Dallas Mavericks': 6, 'Denver Nuggets': 7, 'Detroit Pistons': 8,
+  'Golden State Warriors': 9, 'Houston Rockets': 10, 'Indiana Pacers': 11, 'LA Clippers': 12,
+  'Los Angeles Lakers': 13, 'Miami Heat': 14, 'Milwaukee Bucks': 15, 'Minnesota Timberwolves': 16,
+  'Brooklyn Nets': 17, 'New York Knicks': 18, 'Orlando Magic': 19, 'Philadelphia 76ers': 20,
+  'Phoenix Suns': 21, 'Portland Trail Blazers': 22, 'Sacramento Kings': 23, 'San Antonio Spurs': 24,
+  'Oklahoma City Thunder': 25, 'Utah Jazz': 26, 'Washington Wizards': 27, 'Toronto Raptors': 28,
+  'Memphis Grizzlies': 29, 'Charlotte Hornets': 30,
+};
+const EU_LEAGUES = new Set(['euroleague', 'acb', 'lnb', 'bbl', 'legaa']);
 
 const EL_LOGOS = {
   FEN: 'https://upload.wikimedia.org/wikipedia/en/thumb/0/0b/Fenerbah%C3%A7e_Men%27s_Basketball_logo.svg/120px-Fenerbah%C3%A7e_Men%27s_Basketball_logo.svg.png',
@@ -40,6 +60,21 @@ export default function BasketballMatchRow({ fixture }) {
   const [prefix, gameLabel] = note?.includes(' - ') ? note.split(' - ') : ['', note || ''];
   const hasDetail = note || seriesSummary;
 
+  const handleMouseEnter = () => {
+    import('../pages/BasketballDetailPage').catch(() => {});
+    if (fixture.league === 'wnba') {
+      const hId = ESPN_WNBA[fixture.home.name];
+      const aId = ESPN_WNBA[fixture.away.name];
+      if (hId) { cachedFetch(`/api/wnba/players/${hId}`, 3_600_000).catch(() => {}); cachedFetch(`/api/wnba/teamschedule/${hId}`, 300_000).catch(() => {}); }
+      if (aId) { cachedFetch(`/api/wnba/players/${aId}`, 3_600_000).catch(() => {}); cachedFetch(`/api/wnba/teamschedule/${aId}`, 300_000).catch(() => {}); }
+    } else if (!EU_LEAGUES.has(fixture.league)) {
+      const hId = ESPN_NBA[fixture.home.name];
+      const aId = ESPN_NBA[fixture.away.name];
+      if (hId) { cachedFetch(`/api/nba/players/${hId}`, 3_600_000).catch(() => {}); cachedFetch(`/api/nba/teamschedule/${hId}`, 300_000).catch(() => {}); }
+      if (aId) { cachedFetch(`/api/nba/players/${aId}`, 3_600_000).catch(() => {}); cachedFetch(`/api/nba/teamschedule/${aId}`, 300_000).catch(() => {}); }
+    }
+  };
+
   const handleClick = () => {
     const EURO = ['acb', 'lnb', 'bbl', 'legaa'];
     const leagueKey = isEL ? 'euroleague' : EURO.includes(fixture.league) ? fixture.league : fixture.league === 'wnba' ? 'wnba' : 'nba';
@@ -51,7 +86,7 @@ export default function BasketballMatchRow({ fixture }) {
   };
 
   return (
-    <button className="match-row" onClick={handleClick}>
+    <button className="match-row" onClick={handleClick} onMouseEnter={handleMouseEnter}>
       <div className="match-row-date">
         {isLive || isLiveStatic ? (
           <span className="mrd-live">LIVE</span>

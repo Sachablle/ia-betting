@@ -1,5 +1,6 @@
-import { useState, useEffect, useRef, useMemo } from 'react';
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { cachedFetch, getCached } from '../utils/fetchCache';
 
 const ALERT_KEY       = 'nba_prop_alerts';
 const GAME_TOTAL_KEY  = 'nba_game_total_alerts';
@@ -15,7 +16,7 @@ const COUNT_WINDOW_MS = 48 * 60 * 60 * 1000; // cherche jusqu'à J+2
 function CountdownWidget() {
   const [matches, setMatches] = useState([]);
   const [, setTick] = useState(0);
-  const [bgHealth, setBgHealth] = useState(null);
+  const [bgHealth, setBgHealth] = useState(() => getCached('/api/system/health', 60_000));
 
   // Fusionne alertes backend + localStorage → liste de matchs avec alertes
   useEffect(() => {
@@ -64,8 +65,7 @@ function CountdownWidget() {
     };
 
     const load = () =>
-      fetch('/api/nba/background-alerts')
-        .then(r => r.json())
+      cachedFetch('/api/nba/background-alerts', 30_000)
         .then(d => buildMatches(d.alerts || []))
         .catch(() => buildMatches([]));
 
@@ -75,7 +75,7 @@ function CountdownWidget() {
   }, []);
 
   useEffect(() => {
-    const loadH = () => fetch('/api/system/health').then(r => r.json()).then(setBgHealth).catch(() => {});
+    const loadH = () => cachedFetch('/api/system/health', 12_000).then(setBgHealth).catch(() => {});
     loadH();
     const id = setInterval(loadH, 15_000);
     return () => clearInterval(id);
@@ -279,7 +279,7 @@ function HealthBar({ label, lastRun, nextRun, intervalMs = BG_INTERVAL_MS }) {
 }
 
 function SystemHealthSection() {
-  const [health, setHealth] = useState(null);
+  const [health, setHealth] = useState(() => getCached('/api/system/health', 60_000));
   const [refreshing, setRefreshing] = useState(false);
   const cardRef = useRef(null);
   const [cardRect, setCardRect] = useState({ w: 420, h: 120 });
@@ -299,7 +299,7 @@ function SystemHealthSection() {
   }, []);
 
   useEffect(() => {
-    const load = () => fetch('/api/system/health').then(r => r.json()).then(setHealth).catch(() => {});
+    const load = () => cachedFetch('/api/system/health', 12_000).then(setHealth).catch(() => {});
     load();
     const id = setInterval(load, 15_000);
     return () => clearInterval(id);
@@ -389,11 +389,11 @@ function SystemHealthSection() {
 }
 
 function QuotasWidget() {
-  const [health, setHealth] = useState(null);
+  const [health, setHealth] = useState(() => getCached('/api/system/health', 60_000));
   const dim = 'var(--text-dim)';
 
   useEffect(() => {
-    const load = () => fetch('/api/system/health').then(r => r.json()).then(setHealth).catch(() => {});
+    const load = () => cachedFetch('/api/system/health', 12_000).then(setHealth).catch(() => {});
     load();
     const id = setInterval(load, 30_000);
     return () => clearInterval(id);
@@ -900,11 +900,11 @@ function UpcomingMatchesWidget() {
       const EU_FOOT   = ['ligue1','pl','laliga','bundes','seriea'];
 
       const results = await Promise.allSettled([
-        fetch('/api/nba/scoreboard').then(r=>r.json()).then(d=>(d.games||[]).map(g=>norm(g,'nba'))),
-        fetch('/api/wnba/scoreboard').then(r=>r.json()).then(d=>(d.games||[]).map(g=>norm(g,'wnba'))),
-        fetch('/api/fd/worldcup').then(r=>r.json()).then(d=>(d.games||[]).map(g=>norm({...g,id:`fdcdm_${g.id}`},'cdm'))),
-        ...EU_BASKET.map(l=>fetch(`/api/euro/${l}/scoreboard`).then(r=>r.json()).then(d=>(d.games||[]).map(g=>norm(g,l)))),
-        fetch('/api/football/matches').then(r=>r.json()).then(d=>
+        cachedFetch('/api/nba/scoreboard', 30_000).then(d=>(d.games||[]).map(g=>norm(g,'nba'))),
+        cachedFetch('/api/wnba/scoreboard', 30_000).then(d=>(d.games||[]).map(g=>norm(g,'wnba'))),
+        cachedFetch('/api/fd/worldcup', 30_000).then(d=>(d.games||[]).map(g=>norm({...g,id:`fdcdm_${g.id}`},'cdm'))),
+        ...EU_BASKET.map(l=>cachedFetch(`/api/euro/${l}/scoreboard`, 30_000).then(d=>(d.games||[]).map(g=>norm(g,l)))),
+        cachedFetch('/api/football/matches', 30_000).then(d=>
           (d.fixtures||[])
             .filter(f=>EU_FOOT.includes(f.league?.key)&&f.status==='STATUS_SCHEDULED')
             .map(f=>norm({

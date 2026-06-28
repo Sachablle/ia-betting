@@ -7,6 +7,7 @@ import { formatFullDate, formatMatchTime, formatCapacity } from '../utils/format
 import FormStrip from '../components/FormStrip';
 import StatBar from '../components/StatBar';
 import { OddsCell, EdgeBadge } from '../components/OddsCell';
+import { cachedFetch } from '../utils/fetchCache';
 
 // ── ESPN WNBA lookup (name → teamId) ─────────────────────────────────────────
 const ESPN_WNBA = {
@@ -1688,8 +1689,8 @@ function PropsSection({ fixture, homePlayers, awayPlayers, rosterLoading, isComp
       const awayId = ESPN_WNBA[fixture.away.name];
       if (!homeId || !awayId) { setSchedules({ home: [], away: [] }); return; }
       Promise.all([
-        fetch(`/api/wnba/teamschedule/${homeId}`).then(r => r.json()).catch(() => ({ games: [] })),
-        fetch(`/api/wnba/teamschedule/${awayId}`).then(r => r.json()).catch(() => ({ games: [] })),
+        cachedFetch(`/api/wnba/teamschedule/${homeId}`, 300_000).catch(() => ({ games: [] })),
+        cachedFetch(`/api/wnba/teamschedule/${awayId}`, 300_000).catch(() => ({ games: [] })),
       ]).then(([h, a]) => setSchedules({ home: h.games || [], away: a.games || [] }));
       return;
     }
@@ -1697,8 +1698,8 @@ function PropsSection({ fixture, homePlayers, awayPlayers, rosterLoading, isComp
     const awayId = ESPN_NBA[fixture.away.name];
     if (!homeId || !awayId) return;
     Promise.all([
-      fetch(`/api/nba/teamschedule/${homeId}`).then(r => r.json()).catch(() => ({ games: [] })),
-      fetch(`/api/nba/teamschedule/${awayId}`).then(r => r.json()).catch(() => ({ games: [] })),
+      cachedFetch(`/api/nba/teamschedule/${homeId}`, 300_000).catch(() => ({ games: [] })),
+      cachedFetch(`/api/nba/teamschedule/${awayId}`, 300_000).catch(() => ({ games: [] })),
     ]).then(([h, a]) => setSchedules({ home: h.games || [], away: a.games || [] }));
   }, [fixture.id]);
 
@@ -3286,8 +3287,8 @@ export default function BasketballDetailPage() {
     const awayId = ESPN_WNBA[fixture.away.name];
     if (!homeId || !awayId) return;
     Promise.all([
-      fetch(`/api/wnba/teamstats/${homeId}`).then(r => r.json()).catch(() => null),
-      fetch(`/api/wnba/teamstats/${awayId}`).then(r => r.json()).catch(() => null),
+      cachedFetch(`/api/wnba/teamstats/${homeId}`, 300_000).catch(() => null),
+      cachedFetch(`/api/wnba/teamstats/${awayId}`, 300_000).catch(() => null),
     ]).then(([h, a]) => setWnbaStats({ home: h, away: a }));
   }, [fixture?.id]);
 
@@ -3298,8 +3299,8 @@ export default function BasketballDetailPage() {
     const awayId = ESPN_NBA[fixture.away.name];
     if (!homeId || !awayId) return;
     Promise.all([
-      fetch(`/api/nba/teamstats/${homeId}`).then(r => r.json()).catch(() => null),
-      fetch(`/api/nba/teamstats/${awayId}`).then(r => r.json()).catch(() => null),
+      cachedFetch(`/api/nba/teamstats/${homeId}`, 300_000).catch(() => null),
+      cachedFetch(`/api/nba/teamstats/${awayId}`, 300_000).catch(() => null),
     ]).then(([h, a]) => setNbaStats({ home: h, away: a }));
   }, [fixture?.id]);
 
@@ -3307,8 +3308,7 @@ export default function BasketballDetailPage() {
     if (!isWNBA || !fixture) return;
     const homeId = ESPN_WNBA[fixture.home.name];
     if (!homeId) return;
-    fetch(`/api/wnba/h2h/${homeId}?home=${fixture.home.short}&away=${fixture.away.short}`)
-      .then(r => r.json())
+    cachedFetch(`/api/wnba/h2h/${homeId}?home=${fixture.home.short}&away=${fixture.away.short}`, 300_000)
       .then(d => setWnbaH2H(d.h2h || []))
       .catch(() => {});
   }, [fixture?.id]);
@@ -3317,8 +3317,7 @@ export default function BasketballDetailPage() {
     if (!fixture || isWNBA || isEuroleague) return;
     const homeId = ESPN_NBA[fixture.home.name];
     if (!homeId) return;
-    fetch(`/api/nba/h2h/${homeId}?home=${fixture.home.short}&away=${fixture.away.short}`)
-      .then(r => r.json())
+    cachedFetch(`/api/nba/h2h/${homeId}?home=${fixture.home.short}&away=${fixture.away.short}`, 300_000)
       .then(d => { if (d.h2h?.length) setNbaH2H(d.h2h); })
       .catch(() => {});
   }, [fixture?.id]);
@@ -3352,14 +3351,12 @@ export default function BasketballDetailPage() {
         } else if (isWNBA) {
           const teamId = ESPN_WNBA[name];
           if (!teamId) { setter([]); return; }
-          const r = await fetch(`/api/wnba/players/${teamId}`);
-          const d = await r.json();
+          const d = await cachedFetch(`/api/wnba/players/${teamId}`, 3_600_000);
           setter(d.players || []);
         } else {
           const teamId = ESPN_NBA[name];
           if (!teamId) { setter([]); return; }
-          const r = await fetch(`/api/nba/players/${teamId}`);
-          const d = await r.json();
+          const d = await cachedFetch(`/api/nba/players/${teamId}`, 3_600_000);
           setter(d.players || []);
         }
       } catch { setter([]); }

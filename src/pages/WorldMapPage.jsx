@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { ComposableMap, Geographies, Geography, Graticule } from 'react-simple-maps';
 import { useNavigate, useLocation } from 'react-router-dom';
+import { cachedFetch } from '../utils/fetchCache';
 
 import GEO_DATA from 'world-atlas/countries-110m.json';
 const GEO_URL = GEO_DATA;
@@ -22,6 +23,18 @@ const LEAGUE_META = {
 };
 
 const FOOTBALL_LEAGUES = new Set(['ligue1','laliga','bundes','seriea','pl','cdm']);
+
+const _ESPN_WNBA = { 'Atlanta Dream':20,'Chicago Sky':19,'Connecticut Sun':18,'Dallas Wings':3,'Golden State Valkyries':129689,'Indiana Fever':5,'Las Vegas Aces':17,'Los Angeles Sparks':6,'Minnesota Lynx':8,'New York Liberty':9,'Phoenix Mercury':11,'Portland Fire':132052,'Seattle Storm':14,'Toronto Tempo':131935,'Washington Mystics':16 };
+const _ESPN_NBA  = { 'Atlanta Hawks':1,'Boston Celtics':2,'New Orleans Pelicans':3,'Chicago Bulls':4,'Cleveland Cavaliers':5,'Dallas Mavericks':6,'Denver Nuggets':7,'Detroit Pistons':8,'Golden State Warriors':9,'Houston Rockets':10,'Indiana Pacers':11,'LA Clippers':12,'Los Angeles Lakers':13,'Miami Heat':14,'Milwaukee Bucks':15,'Minnesota Timberwolves':16,'Brooklyn Nets':17,'New York Knicks':18,'Orlando Magic':19,'Philadelphia 76ers':20,'Phoenix Suns':21,'Portland Trail Blazers':22,'Sacramento Kings':23,'San Antonio Spurs':24,'Oklahoma City Thunder':25,'Utah Jazz':26,'Washington Wizards':27,'Toronto Raptors':28,'Memphis Grizzlies':29,'Charlotte Hornets':30 };
+function _prefetchMatch(g, league) {
+  if (FOOTBALL_LEAGUES.has(league)) { import('./MatchDetailPage').catch(()=>{}); return; }
+  import('./BasketballDetailPage').catch(()=>{});
+  const map = league==='wnba' ? _ESPN_WNBA : _ESPN_NBA;
+  const api = league==='wnba' ? 'wnba' : 'nba';
+  const hId = map[g.home?.name]; const aId = map[g.away?.name];
+  if (hId) { cachedFetch(`/api/${api}/players/${hId}`,3_600_000).catch(()=>{}); cachedFetch(`/api/${api}/teamschedule/${hId}`,300_000).catch(()=>{}); }
+  if (aId) { cachedFetch(`/api/${api}/players/${aId}`,3_600_000).catch(()=>{}); cachedFetch(`/api/${api}/teamschedule/${aId}`,300_000).catch(()=>{}); }
+}
 
 
 const MONDE = { name: 'Monde', flag: '🌍', leagues: ['cdm','euroleague'], isMonde: true };
@@ -165,10 +178,10 @@ function Panel({ country, onClose, statsLeague, setStatsLeague }) {
         upcoming: games.filter(g=>g.status!=='STATUS_FINAL' && new Date(g.date).getTime()-Date.now() >= UPCOMING_MS),
         done:     games.filter(g=>g.status==='STATUS_FINAL'&&Date.now()-new Date(g.date).getTime()<KEEP_MS).slice(0,3),
       });
-      if (l === 'nba')  return fetch('/api/nba/scoreboard').then(r=>r.json()).then(d=>{const s=splitGames(d.games||[]);return{l,...s};});
-      if (l === 'wnba') return fetch('/api/wnba/scoreboard').then(r=>r.json()).then(d=>{const s=splitGames(d.games||[]);return{l,...s};});
-      if (l === 'euroleague') return fetch('/api/euroleague/scoreboard').then(r=>r.json()).then(d=>{const s=splitGames(d.games||[]);return{l,...s};});
-      if (FOOTBALL_LEAGUES.has(l) && l !== 'cdm') return fetch('/api/football/matches').then(r=>r.json()).then(d=>{
+      if (l === 'nba')  return cachedFetch('/api/nba/scoreboard', 20_000).then(d=>{const s=splitGames(d.games||[]);return{l,...s};});
+      if (l === 'wnba') return cachedFetch('/api/wnba/scoreboard', 20_000).then(d=>{const s=splitGames(d.games||[]);return{l,...s};});
+      if (l === 'euroleague') return cachedFetch('/api/euroleague/scoreboard', 20_000).then(d=>{const s=splitGames(d.games||[]);return{l,...s};});
+      if (FOOTBALL_LEAGUES.has(l) && l !== 'cdm') return cachedFetch('/api/football/matches', 30_000).then(d=>{
         const all=(d.fixtures||[]).filter(f=>f.league?.key===l).map(f=>({
           id:f.id,date:f.date,status:f.status==='STATUS_FULL_TIME'?'STATUS_FINAL':'STATUS_SCHEDULED',round:f.round,
           home:{name:f.homeTeam?.name,short:f.homeTeam?.shortName,logo:f.homeTeam?.crest,score:f.score?.home??null},
@@ -176,12 +189,12 @@ function Panel({ country, onClose, statsLeague, setStatsLeague }) {
         }));
         return{l,...splitGames(all)};
       });
-      if (l === 'cdm') return fetch('/api/fd/worldcup').then(r=>r.json()).then(d => {
+      if (l === 'cdm') return cachedFetch('/api/fd/worldcup', 30_000).then(d => {
         const games = (d.games || []).map(g => ({ ...g, id: `fdcdm_${g.id}` }));
         return {l, ...splitGames(games)};
       });
-      if (l === 'euroleague') return fetch('/api/euroleague/scoreboard').then(r=>r.json()).then(d=>({l,games:(d.games||[]).filter(g=>g.status!=='STATUS_FINAL').slice(0,5)}));
-      if (FOOTBALL_LEAGUES.has(l)) return fetch('/api/football/matches').then(r=>r.json()).then(d=>{
+      if (l === 'euroleague') return cachedFetch('/api/euroleague/scoreboard', 20_000).then(d=>({l,games:(d.games||[]).filter(g=>g.status!=='STATUS_FINAL').slice(0,5)}));
+      if (FOOTBALL_LEAGUES.has(l)) return cachedFetch('/api/football/matches', 30_000).then(d=>{
         const today = new Date(); today.setHours(0,0,0,0);
         const soon  = new Date(today); soon.setDate(soon.getDate()+7);
         const games = (d.fixtures||[]).filter(f=>f.league?.key===l&&f.status==='STATUS_SCHEDULED').map(f=>({
@@ -338,7 +351,7 @@ function Panel({ country, onClose, statsLeague, setStatsLeague }) {
                             setTimeout(()=>navigate(isFootball?`/football/${g.id}`:`/basketball/${g.id}${lp}`), 0);
                           }}
                             style={{width:'100%',background:'none',border:'none',borderTop:i>0?'1px solid rgba(255,255,255,0.04)':'none',padding:'0.65rem 0.5rem',cursor:'pointer',textAlign:'center',transition:'background .15s'}}
-                            onMouseEnter={e=>e.currentTarget.style.background='rgba(255,255,255,0.04)'}
+                            onMouseEnter={e=>{e.currentTarget.style.background='rgba(255,255,255,0.04)';_prefetchMatch(g,league);}}
                             onMouseLeave={e=>e.currentTarget.style.background='none'}>
                             <div style={{display:'flex',alignItems:'center',justifyContent:'center',gap:8,marginBottom:3}}>
                               {g.home?.logo&&<img src={g.home.logo} alt="" width={20} height={20} style={{objectFit:'contain',borderRadius:'50%'}} onError={e=>e.target.style.display='none'}/>}
@@ -376,7 +389,7 @@ function Panel({ country, onClose, statsLeague, setStatsLeague }) {
                       setTimeout(()=>navigate(isFootball?`/football/${g.id}`:`/basketball/${g.id}${lp2}`), 0);
                     }}
                       style={{width:'100%',background:'none',border:'none',borderTop:i>0?'1px solid rgba(255,255,255,0.04)':'none',padding:'0.55rem 0.5rem',cursor:'pointer',textAlign:'center',transition:'background .15s',opacity:0.6}}
-                      onMouseEnter={e=>{e.currentTarget.style.background='rgba(255,255,255,0.04)';e.currentTarget.style.opacity='1';}}
+                      onMouseEnter={e=>{e.currentTarget.style.background='rgba(255,255,255,0.04)';e.currentTarget.style.opacity='1';_prefetchMatch(g,league);}}
                       onMouseLeave={e=>{e.currentTarget.style.background='none';e.currentTarget.style.opacity='0.6';}}>
                       {(() => {
                         const hs = g.home?.score, as = g.away?.score;
@@ -417,10 +430,10 @@ function useTodayCount() {
     const tom   = new Date(today); tom.setDate(tom.getDate()+1);
     const inRange = g => { const t=new Date(g.date).getTime(); return g.status!=='STATUS_FINAL'&&t>=today.getTime()&&t<tom.getTime(); };
     Promise.all([
-      fetch('/api/nba/scoreboard').then(r=>r.json()).catch(()=>({games:[]})),
-      fetch('/api/wnba/scoreboard').then(r=>r.json()).catch(()=>({games:[]})),
-      ...['acb','lnb','bbl','legaa'].map(l=>fetch(`/api/euro/${l}/scoreboard`).then(r=>r.json()).catch(()=>({games:[]}))),
-      fetch('/api/fd/matches').then(r=>r.json()).catch(()=>({matches:[]})),
+      cachedFetch('/api/nba/scoreboard', 20_000).catch(()=>({games:[]})),
+      cachedFetch('/api/wnba/scoreboard', 20_000).catch(()=>({games:[]})),
+      ...['acb','lnb','bbl','legaa'].map(l=>cachedFetch(`/api/euro/${l}/scoreboard`, 20_000).catch(()=>({games:[]}))),
+      cachedFetch('/api/fd/matches', 30_000).catch(()=>({matches:[]})),
     ]).then(([nba,wnba,...rest]) => {
       const foot = rest.pop();
       const basket = [nba,wnba,...rest].flatMap(d=>d.games||[]).filter(inRange).length;
@@ -453,8 +466,8 @@ export default function WorldMapPage() {
     leagues.forEach(l => {
       const base = statsBase(l);
       Promise.all([
-        fetch(`${base}/standings`).then(r => r.json()),
-        fetch(`${base}/leaders`).then(r => r.json()),
+        cachedFetch(`${base}/standings`, 6 * 3600_000),
+        cachedFetch(`${base}/leaders`,   6 * 3600_000),
       ]).then(([standData, cats]) => {
         setPrefetch(p => ({ ...p, [l]: { standData, cats } }));
       }).catch(() => {});
@@ -472,7 +485,7 @@ export default function WorldMapPage() {
     let cancelled = false;
     Promise.all(leagues.map(async l => {
       try {
-        const d = await fetch(scoreboardUrl(l)).then(r => r.json());
+        const d = await cachedFetch(scoreboardUrl(l), 30_000);
         const hasActive = (d.games || []).some(g =>
           g.status !== 'STATUS_FINAL' || NOW - new Date(g.date).getTime() < 48 * 3600_000
         );
@@ -530,7 +543,7 @@ export default function WorldMapPage() {
   return (
     <div
       onClick={() => { if (statsLeague && !ignoreClicks.current) closeAll(); }}
-      style={{position:'fixed',top:0,left:180,right:0,bottom:0,overflow:'hidden',background:'transparent'}}
+      style={{position:'fixed',top:0,left:200,right:0,bottom:0,overflow:'hidden',background:'transparent'}}
     >
       <style>{`
         @keyframes panelIn{from{transform:translateX(100%);opacity:0}to{transform:translateX(0);opacity:1}}

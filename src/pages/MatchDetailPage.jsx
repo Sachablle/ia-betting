@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
+import { cachedFetch } from '../utils/fetchCache';
 import { createPortal } from 'react-dom';
 import { useParams, useNavigate } from 'react-router-dom';
 import { getFixtureById, getLeagueById } from '../utils/fixtures';
@@ -1190,8 +1191,7 @@ export default function MatchDetailPage() {
       return CDM_NAME_ALIASES[base] || base;
     };
     const fuzzy = (a, b) => { const na = norm(a), nb = norm(b); return na.includes(nb) || nb.includes(na); };
-    return fetch('/api/odds')
-      .then(r => r.json())
+    return cachedFetch('/api/odds', 30_000)
       .then(data => {
         const match = (data.matches || []).find(m =>
           fuzzy(m.homeTeam, fixture.home.name) &&
@@ -1222,8 +1222,7 @@ export default function MatchDetailPage() {
       const toForm = results => (results || []).slice(0, 5)
         .map(r => r.gf > r.ga ? 'W' : r.gf === r.ga ? 'D' : 'L');
       const fetchTeam = (name, setter) => {
-        fetch(`/api/football/cdm/teamstats/${encodeURIComponent(name)}`)
-          .then(r => r.json())
+        cachedFetch(`/api/football/cdm/teamstats/${encodeURIComponent(name)}`, 10 * 60_000)
           .then(d => {
             if (d.goalsFor == null) return;
             setter({ goalsFor: d.goalsFor, goalsAgainst: d.goalsAgainst, games: d.games, lastMatchDate: d.lastMatchDate, form: toForm(d.results) });
@@ -1232,17 +1231,16 @@ export default function MatchDetailPage() {
       };
       fetchTeam(fixture.home.name, setLiveHomeStats);
       fetchTeam(fixture.away.name, setLiveAwayStats);
-      fetch(`/api/football/cdm/poolavg?fixtureId=${encodeURIComponent(fixture.id)}`).then(r => r.json()).then(d => setCdmPoolAvg(d)).catch(() => {});
+      cachedFetch(`/api/football/cdm/poolavg?fixtureId=${encodeURIComponent(fixture.id)}`, 6 * 3600_000).then(d => setCdmPoolAvg(d)).catch(() => {});
       return;
     }
-    fetch(`/api/football/standings/${fixture.league}`)
-      .then(r => r.json())
+    cachedFetch(`/api/football/standings/${fixture.league}`, 30 * 60_000)
       .then(({ table }) => {
         if (!Array.isArray(table) || !table.length) return;
         const h = findInTable(table, fixture.home.name);
         const a = findInTable(table, fixture.away.name);
-        if (h) { setLiveHomeStats(h); fetch(`/api/football/teammatches/${h.id}`).then(r => r.json()).then(d => setHomeMatches(d.matches || [])).catch(() => {}); }
-        if (a) { setLiveAwayStats(a); fetch(`/api/football/teammatches/${a.id}`).then(r => r.json()).then(d => setAwayMatches(d.matches || [])).catch(() => {}); }
+        if (h) { setLiveHomeStats(h); cachedFetch(`/api/football/teammatches/${h.id}`, 30 * 60_000).then(d => setHomeMatches(d.matches || [])).catch(() => {}); }
+        if (a) { setLiveAwayStats(a); cachedFetch(`/api/football/teammatches/${a.id}`, 30 * 60_000).then(d => setAwayMatches(d.matches || [])).catch(() => {}); }
       })
       .catch(() => {});
   }, [fixture?.id]);
@@ -1253,8 +1251,7 @@ export default function MatchDetailPage() {
     async function fetchOne(name, setter) {
       if (fixture.league === 'cdm') {
         try {
-          const r = await fetch(`/api/football/cdm/squad/${encodeURIComponent(name)}`);
-          const d = await r.json();
+          const d = await cachedFetch(`/api/football/cdm/squad/${encodeURIComponent(name)}`, 6 * 3600_000);
           setter(d.players || []);
         } catch { setter([]); }
         return;
@@ -1262,8 +1259,7 @@ export default function MatchDetailPage() {
       const info = ESPN_FOOTBALL[name];
       if (!info) { setter([]); return; }
       try {
-        const r = await fetch(`/api/football/squad/${info.league}/${info.id}`);
-        const d = await r.json();
+        const d = await cachedFetch(`/api/football/squad/${info.league}/${info.id}`, 6 * 3600_000);
         setter(d.players || []);
       } catch { setter([]); }
     }

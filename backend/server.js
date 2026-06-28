@@ -796,37 +796,62 @@ app.get('/api/odds', async (req, res) => {
   }
 });
 
+function _buildMergedCompetitions(betclicData, pinnacleData, pmuData) {
+  const competitions = {};
+  for (const [key, comp] of Object.entries(betclicData || {})) {
+    const pinnMap = {};
+    for (const t of (pinnacleData[key] || [])) pinnMap[normPinnacleTeam(t.name)] = t.odds;
+    const pmuMap = {};
+    for (const t of (pmuData[key] || [])) pmuMap[normPmuTeam(t.name)] = t.odds;
+    competitions[key] = {
+      label: comp.label, sport: comp.sport, updatedAt: comp.updatedAt,
+      teams: comp.teams.map(t => {
+        const books = { betclic: t.odds };
+        const pinnOdds = pinnMap[normPinnacleTeam(t.name)];
+        const pmuOdds  = pmuMap[normPmuTeam(t.name)];
+        if (pinnOdds != null) books.pinnacle = pinnOdds;
+        if (pmuOdds  != null) books.pmu = pmuOdds;
+        return { name: t.name, books };
+      }),
+    };
+  }
+  return competitions;
+}
+
+let _outrightsRefreshing = false;
 app.get('/api/outrights', async (req, res) => {
-  try {
-    if (req.query.refresh === '1') { _outrightsCache.ts = 0; _pinnacleOutrightsCache.ts = 0; _pmuOutrightsCache.ts = 0; }
-    const [betclicData, pinnacleData, pmuData] = await Promise.all([getOutrights(), getPinnacleOutrights(), getPmuOutrights()]);
+  if (req.query.refresh === '1') { _outrightsCache.ts = 0; _pinnacleOutrightsCache.ts = 0; _pmuOutrightsCache.ts = 0; }
 
-    // Fusionne les trois sources par équipe — books.pinnacle/pmu absents si la compétition
-    // n'est pas couverte par cette source (Pinnacle : NBA seulement ; PMU : PL/Serie A/NBA/WNBA).
-    const competitions = {};
-    for (const [key, comp] of Object.entries(betclicData)) {
-      const pinnMap = {};
-      for (const t of (pinnacleData[key] || [])) pinnMap[normPinnacleTeam(t.name)] = t.odds;
-      const pmuMap = {};
-      for (const t of (pmuData[key] || [])) pmuMap[normPmuTeam(t.name)] = t.odds;
+  const hasCache = _outrightsCache.data && Object.keys(_outrightsCache.data).length > 0;
+  const cacheStale = Date.now() - _outrightsCache.ts > OUTRIGHTS_TTL;
 
-      competitions[key] = {
-        label: comp.label, sport: comp.sport, updatedAt: comp.updatedAt,
-        teams: comp.teams.map(t => {
-          const books = { betclic: t.odds };
-          const pinnOdds = pinnMap[normPinnacleTeam(t.name)];
-          const pmuOdds = pmuMap[normPmuTeam(t.name)];
-          if (pinnOdds != null) books.pinnacle = pinnOdds;
-          if (pmuOdds != null) books.pmu = pmuOdds;
-          return { name: t.name, books };
-        }),
-      };
+  // Répondre immédiatement avec le cache existant, refresh en arrière-plan si périmé
+  if (hasCache && req.query.refresh !== '1') {
+    const competitions = _buildMergedCompetitions(
+      _outrightsCache.data,
+      _pinnacleOutrightsCache.data || {},
+      _pmuOutrightsCache.data || {},
+    );
+    const blockedUntil = Date.now() < _scraperBlockedUntil.betclic ? _scraperBlockedUntil.betclic : null;
+    res.json({ competitions, blockedUntil, stale: cacheStale });
+
+    if (cacheStale && !_outrightsRefreshing) {
+      _outrightsRefreshing = true;
+      Promise.all([getOutrights(), getPinnacleOutrights(), getPmuOutrights()])
+        .catch(() => {})
+        .finally(() => { _outrightsRefreshing = false; });
     }
+    return;
+  }
 
+  // Pas de cache — attendre le scrape initial (1ère charge seulement)
+  try {
+    const [betclicData, pinnacleData, pmuData] = await Promise.all([getOutrights(), getPinnacleOutrights(), getPmuOutrights()]);
+    const competitions = _buildMergedCompetitions(betclicData, pinnacleData, pmuData);
     const blockedUntil = Date.now() < _scraperBlockedUntil.betclic ? _scraperBlockedUntil.betclic : null;
     res.json({ competitions, blockedUntil });
   } catch (err) {
-    res.json({ competitions: _outrightsCache.data || {}, blockedUntil: null });
+    res.json({ competitions: {}, blockedUntil: null });
   }
 });
 
@@ -2430,7 +2455,7 @@ const WNBA_TEAM_IDS = ['20','19','18','3','129689','5','17','6','8','9','11','13
 const _fetchJ = (url, ms = 8000) => { const ac = new AbortController(); const t = setTimeout(() => ac.abort(), ms); return fetch(url, { signal: ac.signal }).finally(() => clearTimeout(t)).then(r => r.json()); };
 let _wnbaStandingsCache = { data: null, ts: 0 };
 app.get('/api/wnba/standings', async (req, res) => {
-  if (_wnbaStandingsCache.data && Date.now() - _wnbaStandingsCache.ts < CACHE_30MIN)
+  if (_wnbaStandingsCache.data && Date.now() - _wnbaStandingsCache.ts < CACHE_6H)
     return res.json(_wnbaStandingsCache.data);
   try {
     const d = await _fetchJ(`${ESPN_WNBA_STANDING}`);
@@ -2471,7 +2496,7 @@ app.get('/api/wnba/standings', async (req, res) => {
 // Fetch all 15 rosters → all player stats in parallel batches → sort by PTS
 let _wnbaLeadersCache = { data: null, ts: 0 };
 app.get('/api/wnba/leaders', async (req, res) => {
-  if (_wnbaLeadersCache.data && Date.now() - _wnbaLeadersCache.ts < CACHE_30MIN)
+  if (_wnbaLeadersCache.data && Date.now() - _wnbaLeadersCache.ts < CACHE_6H)
     return res.json(_wnbaLeadersCache.data);
   try {
     const rosterResults = await Promise.all(
@@ -2562,7 +2587,7 @@ const NBA_TEAM_ABBR = {
 
 let _nbaStandingsCache = { data: null, ts: 0 };
 app.get('/api/nba/standings', async (req, res) => {
-  if (_nbaStandingsCache.data && Date.now() - _nbaStandingsCache.ts < CACHE_30MIN)
+  if (_nbaStandingsCache.data && Date.now() - _nbaStandingsCache.ts < CACHE_6H)
     return res.json(_nbaStandingsCache.data);
   try {
     const d = await _fetchJ(ESPN_NBA_STANDING_URL);
@@ -2601,7 +2626,7 @@ app.get('/api/nba/standings', async (req, res) => {
 
 let _nbaLeadersCache = { data: null, ts: 0 };
 app.get('/api/nba/leaders', async (req, res) => {
-  if (_nbaLeadersCache.data && Date.now() - _nbaLeadersCache.ts < CACHE_30MIN)
+  if (_nbaLeadersCache.data && Date.now() - _nbaLeadersCache.ts < CACHE_6H)
     return res.json(_nbaLeadersCache.data);
   try {
     // Scan complet de la ligue (30 équipes) plutôt que le top-5 curé par ESPN — même approche
@@ -10517,7 +10542,8 @@ app.get('/api/pinnacle/props/test', async (req, res) => {
 
 app.get('/api/system/health', async (req, res) => {
   if (req.query.refresh === '1') {
-    await Promise.all(Object.values(_manualHealthRefreshers).map(fn => fn().catch(() => {})));
+    // Fire-and-forget : les scrapers tournent en arrière-plan, la réponse revient immédiatement
+    Promise.all(Object.values(_manualHealthRefreshers).map(fn => fn().catch(() => {})));
   }
   const BG_INTERVAL_MS = 20 * 60 * 1000;
   res.json({

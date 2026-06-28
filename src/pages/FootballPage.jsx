@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { cachedFetch } from '../utils/fetchCache';
 import { LEAGUES } from '../utils/fixtures';
 import { useFootballFixtures } from '../utils/useFootballFixtures';
 import LeagueGroup from '../components/LeagueGroup';
@@ -60,8 +61,7 @@ export default function FootballPage() {
   useEffect(() => {
     let timer;
     const load = () => {
-      fetch('/api/football/scoreboard')
-        .then(r => r.json())
+      cachedFetch('/api/football/scoreboard', 20_000)
         .then(d => {
           const games = d.games || [];
           setFbScores(games);

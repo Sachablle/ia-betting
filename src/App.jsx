@@ -116,7 +116,7 @@ function useAlertCount() {
       syncFootballAlerts();
     };
 
-    const cloudSync = () => loadFromCloud().then(() => { refresh(); syncAll(); });
+    const cloudSync = () => loadFromCloud().then(() => { refresh(); syncAll(); window.dispatchEvent(new Event('cloud_synced')); });
     cloudSync();
 
     // SSE : dès qu'un autre appareil modifie MongoDB, on recharge immédiatement.
@@ -164,6 +164,7 @@ const SportsPage           = lazy(() => import('./pages/SportsPage'));
 if (typeof requestIdleCallback !== 'undefined') {
   requestIdleCallback(() => {
     importPlaceBet(); importRunning(); importBacktesting(); importWorldMap();
+    importEffectif(); importOutrights(); importMatchDetail(); importBasketballDetail();
   });
 }
 

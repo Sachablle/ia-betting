@@ -3,6 +3,7 @@ import { useFixtures } from '../utils/useFixtures';
 import USMap from '../components/USMap';
 import BasketballMatchRow from '../components/BasketballMatchRow';
 import BasketballLeagueGroup from '../components/BasketballLeagueGroup';
+import { cachedFetch } from '../utils/fetchCache';
 
 function WNBALeagueGroup({ games, loading }) {
   const [collapsed, setCollapsed] = useState(() => sessionStorage.getItem('league_open_wnba') !== 'open');
@@ -70,8 +71,7 @@ function useEuroGames(leagueId) {
   useEffect(() => {
     let timer;
     const load = () => {
-      fetch(`/api/euro/${leagueId}/scoreboard`)
-        .then(r => r.json())
+      cachedFetch(`/api/euro/${leagueId}/scoreboard`, 20_000)
         .then(d => {
           setGames(d.games || []);
           setLoading(false);
@@ -141,8 +141,7 @@ export default function BasketballPage() {
   useEffect(() => {
     let timer;
     const load = () => {
-      fetch('/api/nba/scoreboard')
-        .then(r => r.json())
+      cachedFetch('/api/nba/scoreboard', 20_000)
         .then(d => {
           const gs = d.games || [];
           setGames(gs);
@@ -160,8 +159,7 @@ export default function BasketballPage() {
   useEffect(() => {
     let timer;
     const load = () => {
-      fetch('/api/wnba/scoreboard')
-        .then(r => r.json())
+      cachedFetch('/api/wnba/scoreboard', 20_000)
         .then(d => {
           const gs = d.games || [];
           setWnbaGames(gs);
@@ -179,8 +177,7 @@ export default function BasketballPage() {
   useEffect(() => {
     let timer;
     const loadEl = () => {
-      fetch('/api/euroleague/scoreboard')
-        .then(r => r.json())
+      cachedFetch('/api/euroleague/scoreboard', 20_000)
         .then(d => {
           const map = {};
           for (const g of d.games || []) {

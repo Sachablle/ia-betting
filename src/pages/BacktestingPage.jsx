@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo } from 'react';
 import { syncSettlements, resolveCompletedFootballAlerts } from '../utils/syncAlerts';
+import { setItem as cloudSetItem } from '../utils/cloudStorage';
 
 const ROLLING_N = 20;
 const DEFAULT_ODDS = 1.9;
@@ -93,6 +94,7 @@ function loadAllResolved(periodDays, model = 'new') {
       date: a.fixtureDate, status: a.status, odds: getOdds(a),
       probability: a.acceptedProbability ?? a.probability, actual: a.actualStat, stat: a.stat,
       direction: a.direction, line: a.line, bookmaker: a.acceptedBookmaker, league: a.league || 'nba',
+      _sourceKey: 'nba_prop_alerts', _alertId: a.id,
     }));
 
   const totals = JSON.parse(localStorage.getItem('nba_game_total_alerts') || '[]')
@@ -106,6 +108,7 @@ function loadAllResolved(periodDays, model = 'new') {
             a.unibetOdds ?? a.betclicOdds ?? a.winamaxOdds ?? null,
       probability: a.acceptedProbability ?? a.prob, actual: a.actualTotal, line: a.line,
       direction: a.direction, bookmaker: a.acceptedBookmaker, league: a.league || 'nba',
+      _sourceKey: 'nba_game_total_alerts', _alertId: a.id,
     }));
 
   const btts = JSON.parse(localStorage.getItem('fb_btts_alerts') || '[]')
@@ -118,6 +121,7 @@ function loadAllResolved(periodDays, model = 'new') {
       probability: a.acceptedProbability ?? a.probability,
       actual: (a.actualHomeScore != null && a.actualAwayScore != null) ? `${a.actualHomeScore}-${a.actualAwayScore}` : null,
       league: a.league || 'football', bookmaker: a.acceptedBookmaker,
+      _sourceKey: 'fb_btts_alerts', _alertId: a.id,
     }));
 
   const fbTotals = JSON.parse(localStorage.getItem('fb_total_alerts') || '[]')
@@ -133,6 +137,7 @@ function loadAllResolved(periodDays, model = 'new') {
       actual: (a.actualHomeScore != null && a.actualAwayScore != null) ? a.actualHomeScore + a.actualAwayScore : null,
       line: a.line, direction: a.direction, league: a.league || 'football',
       bookmaker: a.acceptedBookmaker,
+      _sourceKey: 'fb_total_alerts', _alertId: a.id,
     }));
 
   const fbResults = JSON.parse(localStorage.getItem('fb_result_alerts') || '[]')
@@ -148,6 +153,7 @@ function loadAllResolved(periodDays, model = 'new') {
       actual: (a.actualHomeScore != null && a.actualAwayScore != null) ? `${a.actualHomeScore}-${a.actualAwayScore}` : null,
       direction: a.direction, league: a.league || 'football',
       bookmaker: a.acceptedBookmaker,
+      _sourceKey: 'fb_result_alerts', _alertId: a.id,
     }));
 
   const basketResults = JSON.parse(localStorage.getItem('basketball_result_alerts') || '[]')
@@ -160,6 +166,7 @@ function loadAllResolved(periodDays, model = 'new') {
       odds: a.acceptedUnibetOdds ?? a.acceptedBetclicOdds ?? a.odds ?? null,
       probability: a.acceptedProbability ?? a.probability,
       direction: a.direction, bookmaker: a.acceptedBookmaker ?? a.bookmaker, league: a.league || 'nba',
+      _sourceKey: 'basketball_result_alerts', _alertId: a.id,
     }));
 
   return [...props, ...totals, ...btts, ...fbTotals, ...fbResults, ...basketResults]
@@ -713,7 +720,16 @@ function BookmakerRow({ g }) {
   );
 }
 
-function BetRow({ bet, rank, stake = 10, compact = false }) {
+function _getBetNotes() { try { return JSON.parse(localStorage.getItem('bet_notes') || '{}'); } catch { return {}; } }
+function _saveBetNote(key, val) {
+  try {
+    const notes = _getBetNotes();
+    if (val.trim()) notes[key] = val.trim(); else delete notes[key];
+    localStorage.setItem('bet_notes', JSON.stringify(notes));
+  } catch {}
+}
+
+function BetRow({ bet, rank, stake = 10, compact = false, onDelete }) {
   const isWon  = bet.status === 'won';
   const isVoid = bet.status === 'void';
   const statusColor = isVoid ? '#94a3b8' : isWon ? '#4ade80' : '#f87171';
@@ -722,6 +738,17 @@ function BetRow({ bet, rank, stake = 10, compact = false }) {
   const plColor = pl == null ? '#94a3b8' : pl >= 0 ? '#4ade80' : '#f87171';
   const plStr = pl == null ? '—' : `${pl >= 0 ? '+' : ''}${pl.toFixed(0)}€`;
   const dateStr = new Date(bet.date).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' });
+
+  const betKey = `${bet.date}_${bet.label}_${bet.sub}`;
+  const [note, setNote] = useState(() => _getBetNotes()[betKey] || '');
+  const [editing, setEditing] = useState(false);
+  // Resync si le composant est réutilisé avec un autre pari (key=index en contexte compact)
+  useEffect(() => { setNote(_getBetNotes()[betKey] || ''); }, [betKey]);
+
+  const handleNoteBlur = (val) => {
+    setEditing(false);
+    _saveBetNote(betKey, val);
+  };
 
   if (compact) {
     return (
@@ -742,20 +769,19 @@ function BetRow({ bet, rank, stake = 10, compact = false }) {
             {bet.odds != null ? bet.odds.toFixed(2) : '—'}
           </span>
         </div>
+        {note && <div style={{ fontSize: 9, color: 'rgba(251,191,36,0.7)', fontStyle: 'italic', paddingLeft: 14 }}>💬 {note}</div>}
       </div>
     );
   }
 
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: '24px 1fr auto auto auto auto auto', alignItems: 'center', gap: '0 0.75rem', padding: '0.35rem 0.75rem', borderRadius: 7, background: 'rgba(255,255,255,0.02)', borderLeft: `3px solid ${statusColor}44`, fontSize: 12 }}>
+    <div style={{ display: 'grid', gridTemplateColumns: '24px 1fr auto auto auto auto auto 22px 18px', alignItems: 'center', gap: '0 0.5rem', padding: '0.35rem 0.75rem', borderRadius: 7, background: 'rgba(255,255,255,0.02)', borderLeft: `3px solid ${statusColor}44`, fontSize: 12 }}>
       <span style={{ fontSize: 10, color: 'var(--text-dim)', textAlign: 'center' }}>#{rank}</span>
       <div style={{ minWidth: 0 }}>
         <div style={{ fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{bet.label}</div>
         <div style={{ fontSize: 10, color: 'var(--text-dim)' }}>{bet.sub}</div>
       </div>
-      <span style={{ fontSize: 10, color: 'var(--text-dim)', whiteSpace: 'nowrap' }}>
-        {dateStr}
-      </span>
+      <span style={{ fontSize: 10, color: 'var(--text-dim)', whiteSpace: 'nowrap' }}>{dateStr}</span>
       <span style={{ fontSize: 11, fontWeight: 700, color: '#60a5fa', minWidth: 32, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
         {bet.probability != null ? `${bet.probability.toFixed(0)}%` : '—'}
       </span>
@@ -768,6 +794,38 @@ function BetRow({ bet, rank, stake = 10, compact = false }) {
       <span style={{ fontSize: 12, fontWeight: 800, color: plColor, minWidth: 52, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
         {plStr}
       </span>
+      <button
+        onClick={() => setEditing(e => !e)}
+        title="Ajouter une note"
+        style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 12, color: note ? 'rgba(251,191,36,0.8)' : 'rgba(255,255,255,0.18)', padding: 0, lineHeight: 1, alignSelf: 'center' }}
+      >✏</button>
+      {onDelete && (
+        <button
+          onClick={() => onDelete(bet)}
+          title="Supprimer ce pari de l'historique"
+          style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 11, color: 'rgba(255,255,255,0.15)', padding: 0, lineHeight: 1, alignSelf: 'center' }}
+          onMouseEnter={e => e.currentTarget.style.color = '#f87171'}
+          onMouseLeave={e => e.currentTarget.style.color = 'rgba(255,255,255,0.15)'}
+        >🗑</button>
+      )}
+      {(note || editing) && (
+        <div style={{ gridColumn: '1 / -1', paddingLeft: 26, paddingBottom: '0.3rem' }}>
+          {editing ? (
+            <input
+              autoFocus
+              type="text"
+              value={note}
+              onChange={e => setNote(e.target.value)}
+              onBlur={e => handleNoteBlur(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') e.target.blur(); if (e.key === 'Escape') { setEditing(false); setNote(_getBetNotes()[betKey] || ''); } }}
+              placeholder="Raison du résultat (ex: DNP coach, enjeu CDM…)"
+              style={{ width: '100%', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(251,191,36,0.3)', borderRadius: 4, color: '#fff', fontSize: 10, padding: '3px 7px', outline: 'none', boxSizing: 'border-box' }}
+            />
+          ) : (
+            <div style={{ fontSize: 10, color: 'rgba(251,191,36,0.7)', fontStyle: 'italic' }}>💬 {note}</div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -873,6 +931,7 @@ export default function BacktestingPage() {
   const [typeFilter,  setTypeFilter]  = useState('all');
   const [allBets,        setAllBets]        = useState([]);
   const [pinnacleAllBets, setPinnacleAllBets] = useState([]);
+  const [reloadKey,      setReloadKey]      = useState(0);
   const [stake,          setStake]          = useState(10);
 
   const handleModelChange = (m) => { setModel(m); setTimelineLabel('Tous'); setSportFilter('all'); setCompFilter('all'); setTypeFilter('all'); };
@@ -901,8 +960,28 @@ export default function BacktestingPage() {
     });
   }, []);
 
-  useEffect(() => { setAllBets(loadAllResolved(period, model)); }, [period, model]);
-  useEffect(() => { setPinnacleAllBets(loadPinnacleBets(period)); }, [period]);
+  useEffect(() => { setAllBets(loadAllResolved(period, model)); }, [period, model, reloadKey]);
+  useEffect(() => { setPinnacleAllBets(loadPinnacleBets(period)); }, [period, reloadKey]);
+
+  const handleDeleteBet = (bet) => {
+    if (!bet._sourceKey || !bet._alertId) return;
+    try {
+      const arr = JSON.parse(localStorage.getItem(bet._sourceKey) || '[]');
+      const updated = JSON.stringify(arr.filter(a => a.id !== bet._alertId));
+      cloudSetItem(bet._sourceKey, updated); // localStorage + MongoDB
+    } catch {}
+    setReloadKey(k => k + 1);
+  };
+
+  // Recharge quand le cloud sync termine (données MongoDB fraîches dans localStorage)
+  useEffect(() => {
+    const reload = () => {
+      setAllBets(loadAllResolved(period, model));
+      setPinnacleAllBets(loadPinnacleBets(period));
+    };
+    window.addEventListener('cloud_synced', reload);
+    return () => window.removeEventListener('cloud_synced', reload);
+  }, [period, model]);
 
   const filtered = useMemo(() => allBets.filter(b => {
     if (sportFilter === 'basket' && !BASKET_LEAGUES.has(b.sport)) return false;
@@ -1045,10 +1124,9 @@ export default function BacktestingPage() {
           <KpiCard pinnacle={showPinnacle} label="P&L"       value={`${D.metrics.pl >= 0 ? '+' : ''}${(D.metrics.pl * stake).toFixed(0)}€`} sub={`mise ${stake}€/alerte`} color={D.metrics.pl >= 0 ? '#4ade80' : '#f87171'} />
         </div>
 
-        {/* KPIs ligne 2 — risque + significativité */}
+        {/* KPIs ligne 2 — séries + significativité */}
         {(() => { const dD = showPinnacle ? pinDd : dd; const sG = showPinnacle ? pinSig : sig; return (
         <div style={{ display: 'flex', gap: '0.6rem', flexWrap: 'wrap', marginBottom: '1.25rem' }}>
-          <KpiCard pinnacle={showPinnacle} small label="Drawdown max" value={`-${(dD.maxDD * stake).toFixed(0)}€`} sub="pire chute depuis un pic" color={dD.maxDD > 3 ? '#f87171' : dD.maxDD > 1 ? '#f59e0b' : '#4ade80'} />
           <KpiCard pinnacle={showPinnacle} small label="Meilleure série" value={`${dD.maxWin}W`} color="#4ade80" />
           <KpiCard pinnacle={showPinnacle} small label="Pire série"      value={`${dD.maxLoss}L`} color={dD.maxLoss >= 5 ? '#f87171' : '#f59e0b'} />
           <SigBadge sig={sG} pinnacle={showPinnacle} />
@@ -1085,7 +1163,7 @@ export default function BacktestingPage() {
                     ))}
                   </div>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', maxHeight: 240, overflowY: 'auto' }}>
-                    {[...D.rolling].reverse().map((bet, i) => <BetRow key={i} bet={bet} rank={D.rolling.length - i} stake={stake} />)}
+                    {[...D.rolling].reverse().map((bet, i) => <BetRow key={`${bet.date}_${bet.label}_${bet.sub}`} bet={bet} rank={D.rolling.length - i} stake={stake} onDelete={handleDeleteBet} />)}
                   </div>
                 </>
             }
@@ -1157,7 +1235,7 @@ export default function BacktestingPage() {
             )}
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', maxHeight: 480, overflowY: 'auto' }}>
-            {[...D.bets].reverse().map((bet, i) => <BetRow key={i} bet={bet} rank={D.bets.length - i} stake={stake} />)}
+            {[...D.bets].reverse().map((bet, i) => <BetRow key={`${bet.date}_${bet.label}_${bet.sub}`} bet={bet} rank={D.bets.length - i} stake={stake} onDelete={handleDeleteBet} />)}
           </div>
         </Section>
 
@@ -1215,7 +1293,7 @@ export default function BacktestingPage() {
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', maxHeight: 360, overflowY: 'auto' }}>
               {[...pinnacleFiltered].reverse().map((bet, i) => (
-                <BetRow key={i} bet={bet} rank={pinnacleFiltered.length - i} stake={stake} />
+                <BetRow key={`${bet.date}_${bet.label}_${bet.sub}`} bet={bet} rank={pinnacleFiltered.length - i} stake={stake} onDelete={handleDeleteBet} />
               ))}
             </div>
           </>)}
