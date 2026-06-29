@@ -51,7 +51,7 @@ function purgeAlerts() {
   return false;
 }
 
-const FB_ALERT_KEYS = ['fb_btts_alerts', 'fb_total_alerts', 'fb_result_alerts'];
+const FB_ALERT_KEYS = ['fb_btts_alerts', 'fb_total_alerts', 'fb_result_alerts', 'fb_dc_btts_alerts', 'fb_dc_ou_alerts'];
 const FB_ALERT_EVENTS = ['fb_btts_alerts_updated', 'fb_total_alerts_updated', 'fb_result_alerts_updated'];
 
 function useAlertCount() {
