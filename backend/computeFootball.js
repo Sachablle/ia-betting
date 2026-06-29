@@ -127,11 +127,11 @@ function computeDCBTTSProbs(lambdaHome, lambdaAway, rho = DIXON_COLES_RHO) {
       if (i !== j) p12 += p; // no draw
     }
   }
-  return { p1x, px2, p12 };
+  return { '1x': p1x, 'x2': px2, '12': p12 };
 }
 
 // P(DC & Over "line" buts) pour les 3 combinaisons Double Chance — même grille Dixon-Coles
-// Retourne { p1x, px2, p12 }
+// Retourne { '1x', 'x2', '12' } — clés alignées avec les marchés bookmaker
 function computeDCOverProbs(lambdaHome, lambdaAway, line, rho = DIXON_COLES_RHO) {
   const kMax = 10;
   const grid = computeScoreGrid(lambdaHome, lambdaAway, rho, kMax);
@@ -146,7 +146,7 @@ function computeDCOverProbs(lambdaHome, lambdaAway, line, rho = DIXON_COLES_RHO)
       if (i !== j) p12 += p;
     }
   }
-  return { p1x, px2, p12 };
+  return { '1x': p1x, 'x2': px2, '12': p12 };
 }
 
 export { poissonPmf, computeLambdas, computeBTTSProb, computeOUProb, compute1X2Probs, computeScoreGrid, dixonColesTau, DIXON_COLES_RHO, computeDCBTTSProbs, computeDCOverProbs };
