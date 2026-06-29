@@ -1250,7 +1250,7 @@ function H2HRow({ match }) {
 export default function MatchDetailPage() {
   const { id } = useParams();
   const navigate = useNavigate();
-  const footballFixtures = useFootballFixtures();
+  const { fixtures: footballFixtures, loading: fixturesLoading } = useFootballFixtures();
   const fixture = footballFixtures.find(f => f.id === id) || getFixtureById(id);
   const [dropOpen, setDropOpen] = useState(false);
   const dropRef = useRef(null);
@@ -1428,6 +1428,7 @@ export default function MatchDetailPage() {
   }, [bttsResult?.prob, matchOdds]);
 
   if (!fixture) {
+    if (fixturesLoading) return <div className="page"><div className="empty-state">Chargement…</div></div>;
     return <div className="page"><div className="empty-state">Match introuvable.</div></div>;
   }
 

@@ -75,7 +75,7 @@ export default function FootballPage() {
   }, []);
 
   const now = new Date();
-  const FIXTURES = useFootballFixtures();
+  const { fixtures: FIXTURES } = useFootballFixtures();
 
   // Injecte les scores ESPN dans les fixtures statiques
   const enriched = FIXTURES.map(f => {

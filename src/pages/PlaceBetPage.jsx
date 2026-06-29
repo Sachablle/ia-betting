@@ -1969,6 +1969,8 @@ export default function PlaceBetPage() {
     loadFbTotalAlerts();
     loadFbResultAlerts();
     loadFbPinnacleAlerts();
+    loadDcBttsAlerts();
+    loadDcOuAlerts();
     loadBballPinnacleAlerts();
     fetchBackgroundAlerts();
     syncGameTotalAlerts();

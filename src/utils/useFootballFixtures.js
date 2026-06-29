@@ -4,6 +4,7 @@ import { FIXTURES } from './fixtures';
 // Module-level singleton — one fetch per app session, shared across all pages
 let _cdmFixtures = null;
 let _fetching = false;
+let _cdmLoaded = false;
 let _listeners = new Set();
 
 function notify() {
@@ -47,20 +48,23 @@ async function fetchAndApply() {
     _cdmFixtures = _cdmFixtures || [];
   }
   _fetching = false;
+  _cdmLoaded = true;
   notify();
 }
 
 function useCdmFixtures() {
   const [fixtures, setFixtures] = useState(_cdmFixtures || []);
+  const [loaded, setLoaded] = useState(_cdmLoaded);
 
   useEffect(() => {
-    _listeners.add(setFixtures);
-    if (_cdmFixtures) setFixtures(_cdmFixtures);
+    const update = (f) => { setFixtures(f); setLoaded(true); };
+    _listeners.add(update);
+    if (_cdmFixtures) { setFixtures(_cdmFixtures); setLoaded(true); }
     else if (!_fetching) fetchAndApply();
-    return () => _listeners.delete(setFixtures);
+    return () => _listeners.delete(update);
   }, []);
 
-  return fixtures;
+  return { fixtures, loaded };
 }
 
 // ── 5 grands championnats (live, football-data.org) ──────────────────────────
@@ -133,9 +137,9 @@ function useFdFixtures() {
 // Pour une ligue donnée, les fixtures live remplacent les statiques dès qu'elles
 // sont disponibles (sinon fallback statique, ex: hors-saison).
 export function useFootballFixtures() {
-  const cdm = useCdmFixtures();
+  const { fixtures: cdm, loaded: cdmLoaded } = useCdmFixtures();
   const fd = useFdFixtures();
   const liveLeagues = new Set(fd.map(f => f.league));
   const staticFixtures = FIXTURES.filter(f => !liveLeagues.has(f.league));
-  return [...staticFixtures, ...fd, ...cdm];
+  return { fixtures: [...staticFixtures, ...fd, ...cdm], loading: !cdmLoaded };
 }
