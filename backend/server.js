@@ -8808,7 +8808,7 @@ async function runEUPropsAlerts(newAlerts, PORT) {
                   } });
                 if (alt) newAlerts.push({ ...alertBase, line: alt.line, id:`${game.id}_eu_${rosterP.id}_${stat}_over_${alt.line}`, direction:'over', probability:Math.round(alt.p*100), unibetOdds: alt.book==='unibet'?capOdds(alt.odds):null, winamaxOdds:null, betclicOdds: alt.book==='betclic'?capOdds(alt.odds):null, lineSource:'ladder' });
               } else if (_euUnderOk && hasValidUnderOdds(ubLine?.under??null, wmLine?.under??null, bcLine?.under??null)) {
-                newAlerts.push({ ...alertBase, id:`${game.id}_eu_${rosterP.id}_${stat}_under_${refLine.line}`, direction:'under', probability:Math.round(pUnder*100), unibetOdds:capOdds(ubLine?.under??null), winamaxOdds:capOdds(wmLine?.under??null), betclicOdds:capOdds(bcLine?.under??null) });
+                newAlerts.push({ ...alertBase, id:`${game.id}_eu_${rosterP.id}_${stat}_under_${refLine.line}`, direction:'under', probability:Math.round(pUnder*100), unibetOdds:capUnderOdds(ubLine?.under??null), winamaxOdds:capUnderOdds(wmLine?.under??null), betclicOdds:capUnderOdds(bcLine?.under??null) });
               } else if (_euUnderOk) {
                 const alt = findLadderAlternative({ direction: 'under', refLineValue: refLine.line, bks: bkLines, stat,
                   computeProbAtLine: line => Math.max(0, probUnder(estVal, std, line, stat, deviation) + minVarianceAdj),
@@ -8816,7 +8816,7 @@ async function runEUPropsAlerts(newAlerts, PORT) {
                     const marginOk = _euSeasonAvg == null || _euSeasonAvg <= line - SEASON_MARGIN[stat];
                     return p >= floor && Math.abs(estVal - line) >= minEdgeFor(stat, 'under', _euSeasonAvg) && marginOk;
                   } });
-                if (alt) newAlerts.push({ ...alertBase, line: alt.line, id:`${game.id}_eu_${rosterP.id}_${stat}_under_${alt.line}`, direction:'under', probability:Math.round(alt.p*100), unibetOdds: alt.book==='unibet'?capOdds(alt.odds):null, winamaxOdds:null, betclicOdds: alt.book==='betclic'?capOdds(alt.odds):null, lineSource:'ladder' });
+                if (alt) newAlerts.push({ ...alertBase, line: alt.line, id:`${game.id}_eu_${rosterP.id}_${stat}_under_${alt.line}`, direction:'under', probability:Math.round(alt.p*100), unibetOdds: alt.book==='unibet'?capUnderOdds(alt.odds):null, winamaxOdds:null, betclicOdds: alt.book==='betclic'?capUnderOdds(alt.odds):null, lineSource:'ladder' });
               }
               else if (!_euMarginOverOk && pOver>=floor) { _bgLog.push(`block EU [${league}] ${stat} over ${rosterP.name}: moy saison ${(_euSeasonAvg??0).toFixed(1)} < ligne ${refLine.line} + marge ${SEASON_MARGIN[stat]}`); }
               else if (!_euTpmVolOk && pOver>=floor) { _bgLog.push(`block EU [${league}] tpm over ${rosterP.name}: moy saison ${(_euSeasonAvg??0).toFixed(1)} < ${TPM_MIN_SEASON_AVG}`); }
@@ -8858,9 +8858,10 @@ function displayProb(estVal, rawStd, fallbackStd, gamelog, refLineLine, stat, de
   return { pOver, pUnder: Math.max(0, 1 - pOver) };
 }
 
-const hasValidUnderOdds = (ub, wm, bc) => (ub != null && ub >= 1.60) || (bc != null && bc >= 1.60);
+const hasValidUnderOdds = (ub, wm, bc) => (ub != null && ub >= 1.50) || (bc != null && bc >= 1.50);
 const hasValidOverOdds  = (ub, wm, bc) => (ub != null && ub >= 1.60) || (bc != null && bc >= 1.60);
-const capOdds = o => (o != null && o >= 1.60) ? o : null;
+const capOdds      = o => (o != null && o >= 1.60) ? o : null;
+const capUnderOdds = o => (o != null && o >= 1.50) ? o : null;
 
 // Échelle de lignes alternative (PlayerLinesPage — betclicAllLines/unibetAllLines) : si la ligne
 // "de référence" a une proba suffisante mais une cote trop juste (<1.50 partout), cherche une ligne
@@ -9090,6 +9091,14 @@ async function generateBackgroundAlerts() {
       const roundStr    = isPlayoff ? 'game' : '';
       const hoursToGame = (new Date(game.date).getTime() - Date.now()) / 3600000;
 
+      // Implied prob domicile depuis les cotes h2h (Pinnacle > Unibet > Betclic) — pour getBlowoutFactor
+      const _nbaCacheKey = `bball_odds_nba_${game.home.name}_${game.away.name}`;
+      const _nbaH2HBks = _espnCache[_nbaCacheKey]?.data?.markets?.h2h?.bookmakers || {};
+      const _nbaH2H = _nbaH2HBks.pinnacle || _nbaH2HBks.unibet || _nbaH2HBks.betclic || null;
+      const nbaHomeImpliedProb = (_nbaH2H?.home && _nbaH2H?.away)
+        ? (1 / _nbaH2H.home) / (1 / _nbaH2H.home + 1 / _nbaH2H.away)
+        : null;
+
       // Injury gate — saison régulière ET playoffs (étendu 19 juin 2026, était playoffs-only),
       // s'active à ≤ 2h30 avant le match. Bloque par ÉQUIPE (pas par game) : l'équipe adverse
       // continue à générer des alertes.
@@ -9184,7 +9193,7 @@ async function generateBackgroundAlerts() {
           if (existingSnap && existingSnap._lastGame === lastGameStr) {
             // Backfill tpm sur les snapshots gelés avant l'ajout du 10 juin 2026 (pts/reb/ast restent figés)
             if (existingSnap.tpm == null) {
-              const tpmEst = computeEstimate(player, isHome, oppSchedule, mySchedule, gamelog, oppAbbr, game.date, roundStr, null, oppDefByPos, null, redistFactor);
+              const tpmEst = computeEstimate(player, isHome, oppSchedule, mySchedule, gamelog, oppAbbr, game.date, roundStr, null, oppDefByPos, nbaHomeImpliedProb, redistFactor);
               if (tpmEst?.tpm != null) {
                 existingSnap.tpm = tpmEst.tpm;
                 existingSnap.deviation = { ...(existingSnap.deviation || {}), tpm: tpmEst.deviation?.tpm ?? 0 };
@@ -9244,7 +9253,7 @@ async function generateBackgroundAlerts() {
               else {
                 const _frozenUnderOk = !teamQNames?.length && pUnder >= _frozenFloor && _frozenEdge >= minEdgeFor(stat, 'under', _frozenSeasonAvg) && _frozenMarginUnderOk;
                 if (_frozenUnderOk && hasValidUnderOdds(refLine.under??null, wmLine?.under??null, bcLine?.under??null)) {
-                  newAlerts.push({ ...baseAlert(player, game, isHome, stat, refLine.line, estVal, teamQNames), id:`${game.id}_${player.id}_${stat}_under_${refLine.line}`, direction:'under', probability:Math.round((disp?.pUnder ?? pUnder)*100), unibetOdds:capOdds(refLine.under??null), winamaxOdds:capOdds(wmLine?.under??null), betclicOdds:capOdds(bcLine?.under??null), ...(playerIsQ?{playerIsQ:true}:{}) });
+                  newAlerts.push({ ...baseAlert(player, game, isHome, stat, refLine.line, estVal, teamQNames), id:`${game.id}_${player.id}_${stat}_under_${refLine.line}`, direction:'under', probability:Math.round((disp?.pUnder ?? pUnder)*100), unibetOdds:capUnderOdds(refLine.under??null), winamaxOdds:capUnderOdds(wmLine?.under??null), betclicOdds:capUnderOdds(bcLine?.under??null), ...(playerIsQ?{playerIsQ:true}:{}) });
                 } else if (_frozenUnderOk) {
                   const alt = findLadderAlternative({ direction: 'under', refLineValue: refLine.line, bks, stat,
                     computeProbAtLine: line => displayProb(adjEstVal, std, null, gamelog, line, stat, deviation, game.date, lastGameStr)?.pUnder ?? Math.max(0, 1 - probAtLeast(adjEstVal, std, Math.floor(line) + 1, stat, deviation, false, gamelog.length)),
@@ -9252,14 +9261,14 @@ async function generateBackgroundAlerts() {
                       const marginOk = _frozenSeasonAvg == null || _frozenSeasonAvg <= line - SEASON_MARGIN[stat];
                       return p >= _frozenFloor && Math.abs(estVal - line) >= minEdgeFor(stat, 'under', _frozenSeasonAvg) && marginOk;
                     } });
-                  if (alt) newAlerts.push({ ...baseAlert(player, game, isHome, stat, alt.line, estVal, teamQNames), id:`${game.id}_${player.id}_${stat}_under_${alt.line}`, direction:'under', probability:Math.round(alt.p*100), unibetOdds: alt.book==='unibet'?capOdds(alt.odds):null, winamaxOdds:null, betclicOdds: alt.book==='betclic'?capOdds(alt.odds):null, lineSource:'ladder', ...(playerIsQ?{playerIsQ:true}:{}) });
+                  if (alt) newAlerts.push({ ...baseAlert(player, game, isHome, stat, alt.line, estVal, teamQNames), id:`${game.id}_${player.id}_${stat}_under_${alt.line}`, direction:'under', probability:Math.round(alt.p*100), unibetOdds: alt.book==='unibet'?capUnderOdds(alt.odds):null, winamaxOdds:null, betclicOdds: alt.book==='betclic'?capUnderOdds(alt.odds):null, lineSource:'ladder', ...(playerIsQ?{playerIsQ:true}:{}) });
                 } else if (!_frozenMarginUnderOk && pUnder>=_frozenFloor) { _bgLog.push(`block NBA ${stat} under ${player.name}: moy saison ${(_frozenSeasonAvg??0).toFixed(1)} > ligne ${refLine.line} - marge ${SEASON_MARGIN[stat]}`); }
               }
             }
             continue;
           }
 
-          const estimate = computeEstimate(player, isHome, oppSchedule, mySchedule, gamelog, oppAbbr, game.date, roundStr, null, oppDefByPos, null, redistFactor);
+          const estimate = computeEstimate(player, isHome, oppSchedule, mySchedule, gamelog, oppAbbr, game.date, roundStr, null, oppDefByPos, nbaHomeImpliedProb, redistFactor);
           if (!estimate) continue;
 
           // Snapshot : écrit le post-it UNE FOIS (ou si nouveau match de série joué)
@@ -9377,7 +9386,7 @@ async function generateBackgroundAlerts() {
             else {
               const _nbaUnderOk = pUnder >= _nbaFloor && !l2AboveLineNba && _nbaEdge >= minEdgeFor(stat, 'under', seasonAvgStat) && _nbaMarginUnderOk;
               if (_nbaUnderOk && hasValidUnderOdds(refLine.under??null, wmLine?.under??null, bcLine?.under??null)) {
-                newAlerts.push({ ...baseAlert, id: `${game.id}_${player.id}_${stat}_under_${refLine.line}`, direction: 'under', probability: Math.round((disp?.pUnder ?? pUnder) * 100), unibetOdds: capOdds(refLine.under ?? null), winamaxOdds: capOdds(wmLine?.under ?? null), betclicOdds: capOdds(bcLine?.under ?? null) });
+                newAlerts.push({ ...baseAlert, id: `${game.id}_${player.id}_${stat}_under_${refLine.line}`, direction: 'under', probability: Math.round((disp?.pUnder ?? pUnder) * 100), unibetOdds: capUnderOdds(refLine.under ?? null), winamaxOdds: capUnderOdds(wmLine?.under ?? null), betclicOdds: capUnderOdds(bcLine?.under ?? null) });
               } else if (_nbaUnderOk) {
                 const alt = findLadderAlternative({ direction: 'under', refLineValue: refLine.line, bks, stat,
                   computeProbAtLine: line => displayProb(estVal, std, null, gamelog, line, stat, deviation, game.date, lastGameStr)?.pUnder ?? Math.max(0, (1 - probAtLeast(adjEstVal, std, Math.floor(line) + 1, stat, deviation, false, gamelog.length)) + minVarianceAdj),
@@ -9386,7 +9395,7 @@ async function generateBackgroundAlerts() {
                     const marginOk = seasonAvgStat == null || seasonAvgStat <= line - SEASON_MARGIN[stat];
                     return p >= _nbaFloor && !l2AboveAtLine && marginOk && Math.abs(estVal - line) >= minEdgeFor(stat, 'under', seasonAvgStat);
                   } });
-                if (alt) newAlerts.push({ ...baseAlert, line: alt.line, id: `${game.id}_${player.id}_${stat}_under_${alt.line}`, direction: 'under', probability: Math.round(alt.p * 100), unibetOdds: alt.book==='unibet'?capOdds(alt.odds):null, winamaxOdds: null, betclicOdds: alt.book==='betclic'?capOdds(alt.odds):null, lineSource: 'ladder' });
+                if (alt) newAlerts.push({ ...baseAlert, line: alt.line, id: `${game.id}_${player.id}_${stat}_under_${alt.line}`, direction: 'under', probability: Math.round(alt.p * 100), unibetOdds: alt.book==='unibet'?capUnderOdds(alt.odds):null, winamaxOdds: null, betclicOdds: alt.book==='betclic'?capUnderOdds(alt.odds):null, lineSource: 'ladder' });
               } else if (pUnder >= _nbaFloor && l2AboveLineNba) _bgLog.push(`block Under ${player.name} ${stat}: L2 both above line ${refLine.line}`);
               else if (!_nbaMarginUnderOk && pUnder>=_nbaFloor) _bgLog.push(`block NBA ${stat} under ${player.name}: moy saison ${(seasonAvgStat??0).toFixed(1)} > ligne ${refLine.line} - marge ${SEASON_MARGIN[stat]}`);
               else if (pUnder >= _nbaFloor && _nbaEdge < minEdgeFor(stat, 'under', seasonAvgStat)) _bgLog.push(`block Under ${player.name} ${stat}: edge ${_nbaEdge.toFixed(1)} < ${minEdgeFor(stat, 'under', seasonAvgStat)}`);
@@ -9464,6 +9473,14 @@ async function generateBackgroundAlerts() {
         bgFetchWNBASchedule(homeId), bgFetchWNBASchedule(awayId),
       ]);
 
+      // Implied prob domicile depuis les cotes h2h — pour getBlowoutFactor
+      const _wnbaCacheKey = `bball_odds_wnba_${game.home.name}_${game.away.name}`;
+      const _wnbaH2HBks = _espnCache[_wnbaCacheKey]?.data?.markets?.h2h?.bookmakers || {};
+      const _wnbaH2H = _wnbaH2HBks.pinnacle || _wnbaH2HBks.unibet || _wnbaH2HBks.betclic || null;
+      const wnbaHomeImpliedProb = (_wnbaH2H?.home && _wnbaH2H?.away)
+        ? (1 / _wnbaH2H.home) / (1 / _wnbaH2H.home + 1 / _wnbaH2H.away)
+        : null;
+
       const homeScaled = scaleGames(homeSched, WNBA_SCALE);
       const awayScaled = scaleGames(awaySched, WNBA_SCALE);
 
@@ -9534,7 +9551,7 @@ async function generateBackgroundAlerts() {
             if (snap && snap._lastGame === lastGlDate && snap.pts != null) {
               // Backfill tpm sur les snapshots gelés avant l'ajout du 10 juin 2026 (pts/reb/ast restent figés)
               if (snap.tpm == null) {
-                const tpmEst = computeEstimate(player, isHome, oppScaled, myScaled, gamelog, oppAbbr, game.date, '', null, oppDefByPosWNBA, null, redistFactorWNBA, true);
+                const tpmEst = computeEstimate(player, isHome, oppScaled, myScaled, gamelog, oppAbbr, game.date, '', null, oppDefByPosWNBA, wnbaHomeImpliedProb, redistFactorWNBA, true);
                 if (tpmEst?.tpm != null) {
                   snap.tpm = tpmEst.tpm;
                   snap.deviation = { ...(snap.deviation || {}), tpm: tpmEst.deviation?.tpm ?? 0 };
@@ -9585,7 +9602,7 @@ async function generateBackgroundAlerts() {
                   else if (!_wnbaFrozenMarginOverOk && pOver>=_wnbaFrozenFloor) _bgLog.push(`block WNBA ${stat} over ${player.name}: moy saison ${(_wnbaFrozenSeasonAvg??0).toFixed(1)} < ligne ${refLine.line} + marge ${WNBA_SEASON_MARGIN[stat]}`);
                   else if (!_wnbaFrozenTpmVolOk && pOver>=_wnbaFrozenFloor) _bgLog.push(`block WNBA tpm over ${player.name}: moy saison ${(_wnbaFrozenSeasonAvg??0).toFixed(1)} < ${WNBA_TPM_MIN_SEASON_AVG}`);
                   else if (_wnbaFrozenUnderOk && hasValidUnderOdds(refLine.under??null,wmLine?.under??null,bcLine?.under??null)) {
-                    newAlerts.push({...base, id:`${game.id}_${player.id}_${stat}_under_${refLine.line}`, direction:'under', probability:Math.round((disp?.pUnder ?? pUnder)*100), unibetOdds:capOdds(refLine.under??null), winamaxOdds:capOdds(wmLine?.under??null), betclicOdds:capOdds(bcLine?.under??null)});
+                    newAlerts.push({...base, id:`${game.id}_${player.id}_${stat}_under_${refLine.line}`, direction:'under', probability:Math.round((disp?.pUnder ?? pUnder)*100), unibetOdds:capUnderOdds(refLine.under??null), winamaxOdds:capUnderOdds(wmLine?.under??null), betclicOdds:capUnderOdds(bcLine?.under??null)});
                   } else if (_wnbaFrozenUnderOk) {
                     const alt = findLadderAlternative({ direction:'under', refLineValue: refLine.line, bks, stat,
                       computeProbAtLine: line => displayProb(adjEstValW, std, null, gamelog, line, stat, 0, game.date, lastGlDate, true)?.pUnder ?? Math.max(0, 1 - probAtLeast(adjEstValW, std, Math.floor(line) + 1, stat, 0, true, gamelog.length)),
@@ -9593,7 +9610,7 @@ async function generateBackgroundAlerts() {
                         const marginOk = _wnbaFrozenSeasonAvg == null || _wnbaFrozenSeasonAvg <= line - WNBA_SEASON_MARGIN[stat];
                         return p >= _wnbaFrozenFloor && marginOk && Math.abs(estVal - line) >= minEdgeFor(stat, 'under', _wnbaFrozenSeasonAvg);
                       } });
-                    if (alt) newAlerts.push({...base, line: alt.line, id:`${game.id}_${player.id}_${stat}_under_${alt.line}`, direction:'under', probability:Math.round(alt.p*100), unibetOdds: alt.book==='unibet'?capOdds(alt.odds):null, winamaxOdds:null, betclicOdds: alt.book==='betclic'?capOdds(alt.odds):null, lineSource:'ladder'});
+                    if (alt) newAlerts.push({...base, line: alt.line, id:`${game.id}_${player.id}_${stat}_under_${alt.line}`, direction:'under', probability:Math.round(alt.p*100), unibetOdds: alt.book==='unibet'?capUnderOdds(alt.odds):null, winamaxOdds:null, betclicOdds: alt.book==='betclic'?capUnderOdds(alt.odds):null, lineSource:'ladder'});
                   }
                   else if (!_wnbaFrozenMarginUnderOk && pUnder>=_wnbaFrozenFloor) _bgLog.push(`block WNBA ${stat} under ${player.name}: moy saison ${(_wnbaFrozenSeasonAvg??0).toFixed(1)} > ligne ${refLine.line} - marge ${WNBA_SEASON_MARGIN[stat]}`);
                 }
@@ -9602,7 +9619,7 @@ async function generateBackgroundAlerts() {
             }
           }
 
-          const estimate = computeEstimate(player, isHome, oppScaled, myScaled, gamelog, oppAbbr, game.date, '', null, oppDefByPosWNBA, null, redistFactorWNBA, true);
+          const estimate = computeEstimate(player, isHome, oppScaled, myScaled, gamelog, oppAbbr, game.date, '', null, oppDefByPosWNBA, wnbaHomeImpliedProb, redistFactorWNBA, true);
           if (!estimate) continue;
 
           if (new Date(game.date) > Date.now()) {
@@ -9718,7 +9735,7 @@ async function generateBackgroundAlerts() {
             else {
               const _wnbaUnderOk = (disp?.pUnder ?? pUnder) >= alertFloor && !l2AboveLine && _wnbaMarginUnderOk && _wnbaEdge >= minEdgeFor(stat, 'under', _wnbaSeasonAvg);
               if (_wnbaUnderOk && hasValidUnderOdds(refLine.under??null, wmLine?.under??null, bcLine?.under??null)) {
-                newAlerts.push({ ...baseAlert, id: `${game.id}_${player.id}_${stat}_under_${refLine.line}`, direction: 'under', probability: Math.round((disp?.pUnder ?? pUnder) * 100), unibetOdds: capOdds(refLine.under ?? null), winamaxOdds: capOdds(wmLine?.under ?? null), betclicOdds: capOdds(bcLine?.under ?? null) });
+                newAlerts.push({ ...baseAlert, id: `${game.id}_${player.id}_${stat}_under_${refLine.line}`, direction: 'under', probability: Math.round((disp?.pUnder ?? pUnder) * 100), unibetOdds: capUnderOdds(refLine.under ?? null), winamaxOdds: capUnderOdds(wmLine?.under ?? null), betclicOdds: capUnderOdds(bcLine?.under ?? null) });
               } else if (_wnbaUnderOk) {
                 const alt = findLadderAlternative({ direction: 'under', refLineValue: refLine.line, bks, stat,
                   computeProbAtLine: line => displayProb(adjEstValW2, rawStd, fallbackStd, gamelog, line, stat, deviation, game.date, lastGlDate, true)?.pUnder ?? Math.max(0, (1 - probAtLeast(adjEstValW2, std, Math.floor(line) + 1, stat, deviation, true, gamelog.length)) + minVarianceAdj),
@@ -9727,7 +9744,7 @@ async function generateBackgroundAlerts() {
                     const l2AboveAtLine = l2Clean.length >= 2 && l2Clean.every(g => g[stat] > line);
                     return p >= alertFloor && !l2AboveAtLine && marginOk && Math.abs(estVal - line) >= minEdgeFor(stat, 'under', _wnbaSeasonAvg);
                   } });
-                if (alt) newAlerts.push({ ...baseAlert, line: alt.line, id: `${game.id}_${player.id}_${stat}_under_${alt.line}`, direction: 'under', probability: Math.round(alt.p * 100), unibetOdds: alt.book==='unibet'?capOdds(alt.odds):null, winamaxOdds: null, betclicOdds: alt.book==='betclic'?capOdds(alt.odds):null, lineSource: 'ladder' });
+                if (alt) newAlerts.push({ ...baseAlert, line: alt.line, id: `${game.id}_${player.id}_${stat}_under_${alt.line}`, direction: 'under', probability: Math.round(alt.p * 100), unibetOdds: alt.book==='unibet'?capUnderOdds(alt.odds):null, winamaxOdds: null, betclicOdds: alt.book==='betclic'?capUnderOdds(alt.odds):null, lineSource: 'ladder' });
               } else if (!_wnbaMarginUnderOk && pUnder>=alertFloor) _bgLog.push(`block WNBA ${stat} under ${player.name}: moy saison ${(_wnbaSeasonAvg??0).toFixed(1)} > ligne ${refLine.line} - marge ${WNBA_SEASON_MARGIN[stat]}`);
               else if (pUnder >= alertFloor && l2AboveLine) _bgLog.push(`block Under ${player.name} ${stat}: L2 both above line ${refLine.line}`);
               else if (pUnder >= alertFloor && _wnbaEdge < minEdgeFor(stat, 'under', _wnbaSeasonAvg)) _bgLog.push(`block Under ${player.name} ${stat}: edge ${_wnbaEdge.toFixed(1)} < ${minEdgeFor(stat, 'under', _wnbaSeasonAvg)}`);

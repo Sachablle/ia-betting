@@ -281,6 +281,7 @@ function HealthBar({ label, lastRun, nextRun, intervalMs = BG_INTERVAL_MS }) {
 function SystemHealthSection() {
   const [health, setHealth] = useState(() => getCached('/api/system/health', 60_000));
   const [refreshing, setRefreshing] = useState(false);
+  const [lastRefreshed, setLastRefreshed] = useState(null);
   const cardRef = useRef(null);
   const [cardRect, setCardRect] = useState({ w: 420, h: 120 });
 
@@ -321,7 +322,7 @@ function SystemHealthSection() {
             .catch(() => {})
             .finally(() => {
               const remaining = 500 - (Date.now() - start);
-              setTimeout(() => setRefreshing(false), Math.max(0, remaining));
+              setTimeout(() => { setRefreshing(false); setLastRefreshed(new Date()); }, Math.max(0, remaining));
             });
         }, 4000);
       });
@@ -351,13 +352,20 @@ function SystemHealthSection() {
       <div style={{ padding: '0.3rem 0.75rem', display: 'flex', flexDirection: 'column', justifyContent: 'flex-start', gap: '0.75rem' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid var(--border)', paddingBottom: '0.3rem', marginBottom: '0' }}>
           <span style={{ fontSize: 8, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--text-sub)' }}>Cotes &amp; Données</span>
-          <button
-            className={`icon-refresh-btn${refreshing ? ' spinning' : ''}`}
-            onClick={handleRefresh}
-            disabled={refreshing}
-            title="Rafraîchir"
-            style={{ width: 16, height: 16, fontSize: 11, lineHeight: 1, padding: 0, flexShrink: 0 }}
-          >↻</button>
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 2 }}>
+            <button
+              className={`icon-refresh-btn${refreshing ? ' spinning' : ''}`}
+              onClick={handleRefresh}
+              disabled={refreshing}
+              title="Rafraîchir"
+              style={{ width: 16, height: 16, fontSize: 11, lineHeight: 1, padding: 0, flexShrink: 0 }}
+            >↻</button>
+            {lastRefreshed && (
+              <span style={{ fontSize: 8, color: 'var(--text-dim)' }}>
+                {lastRefreshed.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
+              </span>
+            )}
+          </div>
         </div>
 
         <div style={{ display: 'flex', alignItems: 'flex-start', gap: '0' }}>
@@ -1025,18 +1033,18 @@ function UpcomingMatchesWidget() {
                 <div key={g.id} onClick={() => goToMatch(g)} style={{
                   display:'flex', alignItems:'center', gap:'0.5rem',
                   padding:'0.28rem 0.75rem 0.28rem 0.65rem',
-                  borderLeft: `2px solid ${live ? '#f87171' : color}55`,
+                  borderLeft: `2px solid #60a5fa55`,
                   marginLeft: 2,
-                  background: live ? 'rgba(248,113,113,0.04)' : alert ? 'rgba(251,146,60,0.03)' : 'transparent',
+                  background: alert && !live ? 'rgba(251,146,60,0.03)' : 'transparent',
                   transition:'background 0.15s', cursor:'pointer',
                 }}
                 onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.04)'}
-                onMouseLeave={e => e.currentTarget.style.background = live ? 'rgba(248,113,113,0.04)' : alert ? 'rgba(251,146,60,0.03)' : 'transparent'}
+                onMouseLeave={e => e.currentTarget.style.background = alert && !live ? 'rgba(251,146,60,0.03)' : 'transparent'}
                 >
                   {/* Live dot ou heure */}
                   {live ? (
                     <span style={{ display:'flex', alignItems:'center', gap:3, width:36, flexShrink:0 }}>
-                      <span style={{ width:5, height:5, borderRadius:'50%', background:'#f87171', flexShrink:0, boxShadow:'0 0 4px #f87171' }} />
+                      <span style={{ width:5, height:5, borderRadius:'50%', background:'#60a5fa', flexShrink:0, boxShadow:'0 0 4px #60a5fa' }} />
                       <span style={{ fontSize:9, fontWeight:700, color:'#f87171', fontVariantNumeric:'tabular-nums' }}>{fmtTime(g.date)}</span>
                     </span>
                   ) : (
@@ -1057,14 +1065,14 @@ function UpcomingMatchesWidget() {
                     </span>
                   )}
                   {/* Équipes */}
-                  <span style={{ fontSize:10, color:'var(--text)', flex:1, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', fontWeight: live ? 600 : 400 }}>
+                  <span style={{ fontSize:10, color: live ? '#f87171' : 'var(--text)', flex:1, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', fontWeight: live ? 600 : 400 }}>
                     {g.home}
                     <span style={{ color:'rgba(255,255,255,0.2)', margin:'0 4px', fontSize:8 }}>·</span>
                     {g.away}
                   </span>
                   {/* Score live */}
                   {live && g.homeScore !== null && (
-                    <span style={{ fontSize:10, fontWeight:700, color:'#f87171', fontVariantNumeric:'tabular-nums', flexShrink:0, background:'rgba(248,113,113,0.1)', padding:'1px 5px', borderRadius:4 }}>
+                    <span style={{ fontSize:10, fontWeight:700, color:'var(--text)', fontVariantNumeric:'tabular-nums', flexShrink:0, background:'rgba(255,255,255,0.07)', padding:'1px 5px', borderRadius:4 }}>
                       {g.homeScore}–{g.awayScore}
                     </span>
                   )}

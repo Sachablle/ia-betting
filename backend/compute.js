@@ -265,12 +265,15 @@ function getHomeAwaySplitFactor(gamelogs, isHome, isPlayoff = false) {
   return { val: Math.min(1 + maxSplit, Math.max(1 - maxSplit, raw)) };
 }
 
-function getBlowoutFactor(homeImpliedProb) {
+function getBlowoutFactor(homeImpliedProb, isHome = null) {
   if (homeImpliedProb == null) return { val: 1.0 };
   const dominant = Math.max(homeImpliedProb, 1 - homeImpliedProb);
-  if (dominant > 0.82) return { val: 0.92 };
-  if (dominant > 0.74) return { val: 0.96 };
-  return { val: 1.0 };
+  if (dominant <= 0.74) return { val: 1.0 };
+  // Détermine si le joueur est du côté outsider (perd plus de minutes en garbage time)
+  const homeFavored = homeImpliedProb > 0.5;
+  const isUnderdog = isHome !== null ? (homeFavored ? !isHome : isHome) : false;
+  if (dominant > 0.82) return { val: isUnderdog ? 0.86 : 0.94 };
+  return { val: isUnderdog ? 0.92 : 0.97 };
 }
 
 function getInjuryReturnFactor(player, gamelogs, gameDate) {
@@ -448,7 +451,7 @@ function computeEstimate(player, isHome, oppGames, myGames, gamelogs, oppAbbr, g
   const loc     = getHomeAwaySplitFactor(g, isHome, inPO);
 
   const vegas   = getVegasTotalFactor(gameTotal, inPO);
-  const blowout = getBlowoutFactor(homeImpliedProb);
+  const blowout = getBlowoutFactor(homeImpliedProb, isHome);
   const tsF     = getTSFactor(g, inPO);
   const shotVol = getShotVolumeFactor(g);
   const ftRate  = getFTRateFactor(g);

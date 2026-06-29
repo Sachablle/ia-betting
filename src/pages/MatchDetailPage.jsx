@@ -384,7 +384,7 @@ const FB_BK_COLORS = { unibet: '#1db954', betclic: '#e0292e' };
 // affiché avec le style "REF" déjà prévu dans le rendu ci-dessous (isPinnacle).
 const FB_BK_ORDER  = ['pinnacle', 'unibet', 'betclic'];
 
-function FootballOddsBox({ markets, bttsResult, home, away, frozen, onRefresh, refreshing }) {
+function FootballOddsBox({ markets, bttsResult, home, away, frozen, onRefresh, refreshing, lastRefreshed }) {
   const [tab, setTab] = useState('result');
   const [totalsLine, setTotalsLine] = useState('2.5');
   const [showLegend, setShowLegend] = useState(false);
@@ -566,13 +566,19 @@ function FootballOddsBox({ markets, bttsResult, home, away, frozen, onRefresh, r
             ))}
           </div>
         )}
-        <button
-          className={`icon-refresh-btn${refreshing ? ' spinning' : ''}`}
-          onClick={onRefresh}
-          disabled={refreshing}
-          title="Rafraîchir les cotes"
-          style={{ marginLeft: tab === 'buts' ? '0.3rem' : 'auto' }}
-        >↻</button>
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2, marginLeft: tab === 'buts' ? '0.3rem' : 'auto' }}>
+          <button
+            className={`icon-refresh-btn${refreshing ? ' spinning' : ''}`}
+            onClick={onRefresh}
+            disabled={refreshing}
+            title="Rafraîchir les cotes"
+          >↻</button>
+          {lastRefreshed && (
+            <span style={{ fontSize: 8, color: 'var(--text-dim)' }}>
+              {lastRefreshed.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
+            </span>
+          )}
+        </div>
         <span
           ref={legendBtnRef}
           onClick={() => setShowLegend(v => !v)}
@@ -630,7 +636,7 @@ function FootballOddsBox({ markets, bttsResult, home, away, frozen, onRefresh, r
         </div>
       )}
 
-      {tab !== 'dc' && availBks.map(bk => {
+      {!['dc','dc_btts','dc_ou'].includes(tab) && availBks.map(bk => {
         const isPinnacle = bk === 'pinnacle';
         const color = isPinnacle ? undefined : FB_BK_COLORS[bk];
         const h = h2h?.bookmakers?.[bk];
@@ -1210,6 +1216,7 @@ export default function MatchDetailPage() {
   const [matchOddsFrozen, setMatchOddsFrozen] = useState(false);
   const [showOddsDropdown, setShowOddsDropdown] = useState(false);
   const [refreshingOdds, setRefreshingOdds] = useState(false);
+  const [lastRefreshedOdds, setLastRefreshedOdds] = useState(null);
   const [liveHomeStats, setLiveHomeStats] = useState(null);
   const [liveAwayStats, setLiveAwayStats] = useState(null);
   const [cdmPoolAvg,   setCdmPoolAvg]    = useState(null);
@@ -1251,7 +1258,7 @@ export default function MatchDetailPage() {
     // le bouton clignote trop vite pour être perceptible et donne l'impression de ne rien faire.
     loadOdds().finally(() => {
       const remaining = 500 - (Date.now() - start);
-      setTimeout(() => setRefreshingOdds(false), Math.max(0, remaining));
+      setTimeout(() => { setRefreshingOdds(false); setLastRefreshedOdds(new Date()); }, Math.max(0, remaining));
     });
   };
 
@@ -1490,7 +1497,7 @@ export default function MatchDetailPage() {
 
       {showOddsDropdown && matchOdds && Object.keys(matchOdds).length > 0 && (
         <section className="detail-card compact-card" style={{ marginBottom: '0.5rem' }}>
-          <FootballOddsBox markets={matchOdds} bttsResult={bttsResult} home={home} away={away} frozen={matchOddsFrozen} onRefresh={handleRefreshOdds} refreshing={refreshingOdds} />
+          <FootballOddsBox markets={matchOdds} bttsResult={bttsResult} home={home} away={away} frozen={matchOddsFrozen} onRefresh={handleRefreshOdds} refreshing={refreshingOdds} lastRefreshed={lastRefreshedOdds} />
         </section>
       )}
 
