@@ -114,4 +114,39 @@ function compute1X2Probs(lambdaHome, lambdaAway, kMax = 10, rho = DIXON_COLES_RH
   return { pHome, pDraw, pAway };
 }
 
-export { poissonPmf, computeLambdas, computeBTTSProb, computeOUProb, compute1X2Probs, computeScoreGrid, dixonColesTau, DIXON_COLES_RHO };
+// P(DC & BTTS "Oui") pour les 3 combinaisons Double Chance — même grille Dixon-Coles
+// Retourne { p1x, px2, p12 } : proba que la DC ET les deux équipes marquent
+function computeDCBTTSProbs(lambdaHome, lambdaAway, rho = DIXON_COLES_RHO) {
+  const grid = computeScoreGrid(lambdaHome, lambdaAway, rho);
+  let p1x = 0, px2 = 0, p12 = 0;
+  for (let i = 1; i < grid.length; i++) {
+    for (let j = 1; j < grid.length; j++) {
+      const p = grid[i][j];
+      if (i >= j) p1x += p; // home win or draw
+      if (i <= j) px2 += p; // draw or away win
+      if (i !== j) p12 += p; // no draw
+    }
+  }
+  return { p1x, px2, p12 };
+}
+
+// P(DC & Over "line" buts) pour les 3 combinaisons Double Chance — même grille Dixon-Coles
+// Retourne { p1x, px2, p12 }
+function computeDCOverProbs(lambdaHome, lambdaAway, line, rho = DIXON_COLES_RHO) {
+  const kMax = 10;
+  const grid = computeScoreGrid(lambdaHome, lambdaAway, rho, kMax);
+  const threshold = Math.floor(line); // 1.5 → 1
+  let p1x = 0, px2 = 0, p12 = 0;
+  for (let i = 0; i <= kMax; i++) {
+    for (let j = 0; j <= kMax; j++) {
+      if (i + j <= threshold) continue;
+      const p = grid[i][j];
+      if (i >= j) p1x += p;
+      if (i <= j) px2 += p;
+      if (i !== j) p12 += p;
+    }
+  }
+  return { p1x, px2, p12 };
+}
+
+export { poissonPmf, computeLambdas, computeBTTSProb, computeOUProb, compute1X2Probs, computeScoreGrid, dixonColesTau, DIXON_COLES_RHO, computeDCBTTSProbs, computeDCOverProbs };

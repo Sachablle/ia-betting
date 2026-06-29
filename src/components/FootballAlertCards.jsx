@@ -392,3 +392,94 @@ export function PinnacleEdgeCard({ alert, onAccept, onReject, onDismiss }) {
     </div>
   );
 }
+
+const DC_DIR_LABEL = { '1x': '1X', 'x2': 'X2', '12': '12' };
+const DC_DIR_DESC  = { '1x': 'Dom. ou Nul', 'x2': 'Nul ou Ext.', '12': 'Dom. ou Ext.' };
+const DC_ACCENT    = '#f59e0b'; // orange ambré
+
+function DCBaseCard({ alert, suffix, onAccept, onReject, onDismiss }) {
+  const navigate = useNavigate();
+  const meta     = FB_LEAGUE_META[alert.league] || { name: alert.league, flag: '⚽' };
+  const isPending  = alert.status === 'pending';
+  const isAccepted = alert.status === 'accepted';
+  const dir        = alert.direction || '1x';
+  const now        = Date.now();
+  const msLeft     = new Date(alert.fixtureDate).getTime() - now;
+  const hoursLeft  = msLeft / 3_600_000;
+  const daysLeft   = Math.floor(hoursLeft / 24);
+  const hRem       = Math.floor(hoursLeft % 24);
+  const mRem       = Math.floor((msLeft % 3_600_000) / 60_000);
+  const timeLabel  = msLeft <= 0 ? 'Imminent' : daysLeft > 0 ? `${daysLeft}j ${hRem}h` : hoursLeft >= 1 ? `${Math.floor(hoursLeft)}h ${mRem}m` : `${mRem}m`;
+  const barPct     = Math.min(Math.max(msLeft / (7 * 24 * 3_600_000) * 100, 0), 100);
+
+  return (
+    <div
+      className="bet-card"
+      style={{ position: 'relative', '--league-accent': DC_ACCENT, borderColor: 'rgba(245,158,11,0.25)', cursor: alert.fixtureId ? 'pointer' : 'default' }}
+      onClick={() => { if (alert.fixtureId) navigate(`/football/${alert.fixtureId}`); }}
+    >
+      {isPending
+        ? <button onClick={e => { e.stopPropagation(); onReject(alert.id); }} style={{ position: 'absolute', top: 8, right: 10, background: 'none', border: 'none', cursor: 'pointer', padding: 0, lineHeight: 1 }}><svg width="14" height="14" viewBox="0 0 18 18" fill="none"><circle cx="9" cy="9" r="7.5" stroke="#ef4444" strokeWidth="1.5"/><path d="M6 6l6 6M12 6l-6 6" stroke="#ef4444" strokeWidth="1.75" strokeLinecap="round"/></svg></button>
+        : <button onClick={e => { e.stopPropagation(); onDismiss(alert.id); }} style={{ position: 'absolute', top: 8, right: 10, background: 'none', border: 'none', color: 'var(--text-dim)', cursor: 'pointer', fontSize: 16, lineHeight: 1, padding: 0 }}>×</button>
+      }
+      <div className="bc-header">
+        <span className="bc-flag">{meta.flag}</span>
+        <span className="bc-league">{meta.name}</span>
+        {!isPending && (
+          <span style={{ marginLeft: 'auto', marginRight: 24, fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 10, color: isAccepted ? '#4ade80' : '#f87171', background: isAccepted ? 'rgba(74,222,128,0.12)' : 'rgba(248,113,113,0.1)' }}>
+            {isAccepted ? '✓ Accepté' : '✗ Rejeté'}
+          </span>
+        )}
+      </div>
+
+      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginTop: '0.4rem', paddingRight: '4px' }}>
+        <span className="bc-team bc-team-home">{alert.home ?? alert.fixture} <span style={{ color: 'var(--text-dim)', fontWeight: 400 }}>vs</span> {alert.away}</span>
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '0.15rem', flexShrink: 0 }}>
+          <span className={`bc-edge-badge ${alert.probability >= 75 ? 'high' : 'mid'}`}>{alert.probability}%</span>
+          <span style={{ fontSize: 10, color: 'var(--text-dim)' }}>
+            {new Date(alert.fixtureDate).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}{alert.round ? ` · ${alert.round}` : ''}
+          </span>
+        </div>
+      </div>
+
+      <div style={{ margin: '0.4rem 0 0', padding: '0.45rem 0.6rem', borderRadius: 6, background: 'rgba(245,158,11,0.07)' }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: DC_ACCENT }}>
+          {DC_DIR_LABEL[dir]} ({DC_DIR_DESC[dir]}) &amp; {suffix}
+        </div>
+      </div>
+
+      <div className="bc-stats" style={{ margin: '0.35rem 0 0.25rem' }}>
+        <div className="bc-prob">
+          <div className="bc-prob-bar-track">
+            <div className="bc-prob-bar-fill" style={{ width: `${barPct}%`, background: DC_ACCENT }} />
+          </div>
+          <span className="bc-prob-pct" style={{ color: '#60a5fa', fontSize: 10 }}>{timeLabel}</span>
+        </div>
+      </div>
+
+      <div style={{ display: 'flex', gap: '0.5rem' }}>
+        {[{ label: 'Unibet', odds: alert.unibetOdds, color: '#1db954' }, { label: 'Betclic', odds: alert.betclicOdds, color: '#e0292e' }]
+          .filter(b => b.odds)
+          .map(({ label, odds, color }) => (
+            <div key={label}
+              onClick={isPending ? e => { e.stopPropagation(); onAccept(alert.id, label.toLowerCase(), odds); } : undefined}
+              style={{ flex: 1, textAlign: 'center', background: 'rgba(255,255,255,0.04)', borderRadius: 6, padding: '0.3rem', cursor: isPending ? 'pointer' : 'default', transition: 'background 0.15s' }}
+              onMouseEnter={isPending ? e => e.currentTarget.style.background = 'rgba(255,255,255,0.1)' : undefined}
+              onMouseLeave={isPending ? e => e.currentTarget.style.background = 'rgba(255,255,255,0.04)' : undefined}
+            >
+              <div style={{ fontSize: 9, color: 'var(--text-dim)', marginBottom: 2 }}>{label}</div>
+              <div style={{ fontSize: 13, fontWeight: 700, color, fontVariantNumeric: 'tabular-nums' }}>{odds.toFixed(2)}</div>
+            </div>
+          ))}
+      </div>
+    </div>
+  );
+}
+
+export function DCBTTSAlertCard({ alert, onAccept, onReject, onDismiss }) {
+  return <DCBaseCard alert={alert} suffix="BTTS Oui" onAccept={onAccept} onReject={onReject} onDismiss={onDismiss} />;
+}
+
+export function DCOUAlertCard({ alert, onAccept, onReject, onDismiss }) {
+  return <DCBaseCard alert={alert} suffix={`+${alert.line ?? 1.5} buts`} onAccept={onAccept} onReject={onReject} onDismiss={onDismiss} />;
+}

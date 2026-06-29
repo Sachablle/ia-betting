@@ -259,7 +259,7 @@ P(Over) = 1 - studentT4CDF((line - estimated) / std)</div>
 </div>
 
 <div class="alert-box">
-<h3>Système 4 — Football BTTS / Over-Under / Résultat (background, toutes les 20 min)</h3>
+<h3>Système 4 — Football BTTS / Over-Under / Résultat / DC combinés (background, toutes les 20 min)</h3>
 <p>Modèle Poisson <code>computeLambdas</code> (attaque/défense normalisées, λ rescalé par la moyenne de buts de la ligue × avantage domicile). Scope : 5 grands championnats (Ligue 1, PL, Liga, Bundesliga, Serie A) + Coupe du Monde (CDM, avgGF/avgGA recalculés dynamiquement sur le pool d'équipes qualifiées).</p>
 <table>
 <thead><tr><th>Alerte</th><th>Calcul</th><th>Seuil</th></tr></thead>
@@ -267,6 +267,8 @@ P(Over) = 1 - studentT4CDF((line - estimated) / std)</div>
 <tr><td><strong>BTTS</strong></td><td>Somme de la grille jointe (corrélée, voir ci-dessous) sur les cases i≥1 et j≥1</td><td>≥ 70% (<code>FB_BTTS_ALERT_PROB</code>) · cote ≥ 1.60</td></tr>
 <tr><td><strong>Total O/U</strong></td><td>Somme de la grille jointe sur les cases i+j ≤ ligne, ligne 2.5 puis fallback 1.5</td><td>≥ 70% (<code>FB_OU_ALERT_PROB</code>) · cote ≥ 1.60</td></tr>
 <tr><td><strong>Résultat 1X2</strong> (15 juin 2026)</td><td><code>compute1X2Probs</code> — même grille jointe, somme par i&gt;j (dom), i=j (nul), i&lt;j (ext)</td><td>≥ 70% par issue (<code>FB_RESULT_ALERT_PROB</code>) · cote ≥ 1.50</td></tr>
+<tr><td><strong>DC &amp; BTTS</strong> (29 juin 2026)</td><td><code>computeDCBTTSProbs</code> — même grille, somme des cases (DC ET BTTS) pour 1X / X2 / 12</td><td>≥ 50% (<code>FB_DC_BTTS_ALERT_PROB</code>) · cote ≥ 1.45</td></tr>
+<tr><td><strong>DC &amp; Over 1.5</strong> (29 juin 2026)</td><td><code>computeDCOverProbs</code> — même grille, somme des cases (DC ET i+j&gt;1.5) pour 1X / X2 / 12</td><td>≥ 55% (<code>FB_DC_OU_ALERT_PROB</code>) · cote ≥ 1.45</td></tr>
 </tbody>
 </table>
 <p><strong>Corrélation Dixon-Coles (25 juin 2026)</strong> : la grille jointe P(i buts dom., j buts ext.) n'est plus un simple produit de deux lois Poisson indépendantes. Les 4 cases de score bas (0-0, 1-0, 0-1, 1-1) sont corrigées par un facteur τ (ρ=0.10, valeur de référence de la littérature — Dixon &amp; Coles 1997, pas calibrée sur nos propres données) puis la grille entière est renormalisée. BTTS/Total/Résultat dérivent tous de cette même grille (cohérence interne). Avec ρ=0, le calcul redonne exactement l'ancien résultat (indépendance pure).</p>
@@ -974,23 +976,28 @@ export default function UtilisationPage() {
         </p>
       </Accordion>}
 
-      {isFoot && <Accordion title="Alertes — BTTS / Over-Under / Résultat (background, toutes les 20 min)">
+      {isFoot && <Accordion title="Alertes — BTTS / Over-Under / Résultat / DC combinés (background, toutes les 20 min)">
         <p className="util-intro">
           Générées automatiquement par le serveur, aucune action nécessaire. Couverture : <strong>Ligue 1, Premier League, La Liga, Bundesliga, Serie A</strong> et <strong>Coupe du Monde</strong>. Modèle de Poisson sur les buts attendus (<code>computeLambdas</code>) — attaque/défense de chaque équipe normalisées, λ rescalé par la moyenne de buts de la ligue et l'avantage du terrain.
         </p>
 
         <div className="util-subsection">
-          <h3 className="util-subsection-title">Les 3 alertes</h3>
+          <h3 className="util-subsection-title">Les 5 alertes</h3>
           <table className="util-table">
-            <thead><tr><th>Alerte</th><th>Calcul</th><th>Seuil de confiance</th></tr></thead>
+            <thead><tr><th>Alerte</th><th>Calcul</th><th>Seuil</th><th>Cote min</th></tr></thead>
             <tbody>
-              <tr><td><strong>BTTS</strong></td><td>Grille de score (corrélée, voir ci-dessous) — somme des cases où les deux équipes marquent</td><td>≥ 68%</td></tr>
-              <tr><td><strong>Over/Under</strong></td><td>Ligne 2.5 testée d'abord, repli sur 1.5 si elle ne qualifie pas</td><td>≥ 65%</td></tr>
-              <tr><td><strong>Résultat (1X2)</strong></td><td>Même grille de score — domicile/nul/extérieur traités comme 3 paris oui/non indépendants, pas une sélection exclusive</td><td>≥ 65% par issue</td></tr>
+              <tr><td><strong>BTTS</strong></td><td>Grille jointe Dixon-Coles — somme des cases i≥1 et j≥1</td><td>≥ 70%</td><td>1,60</td></tr>
+              <tr><td><strong>Over/Under</strong></td><td>Ligne 2.5 testée d'abord, repli sur 1.5</td><td>≥ 70%</td><td>1,60</td></tr>
+              <tr><td><strong>Résultat (1X2)</strong></td><td>Même grille — domicile/nul/extérieur traités comme 3 paris oui/non indépendants</td><td>≥ 70% par issue</td><td>1,50</td></tr>
+              <tr><td><strong>DC &amp; BTTS</strong> (29 juin 2026)</td><td><code>computeDCBTTSProbs</code> — même grille, somme des cases où DC ET BTTS sont vérifiés (3 combinaisons : 1X/X2/12)</td><td>≥ 50%</td><td>1,45</td></tr>
+              <tr><td><strong>DC &amp; Over 1,5</strong> (29 juin 2026)</td><td><code>computeDCOverProbs</code> — même grille, somme des cases où DC ET total &gt; 1,5 buts</td><td>≥ 55%</td><td>1,45</td></tr>
             </tbody>
           </table>
           <p className="util-intro" style={{ marginTop: '0.5rem' }}>
-            Cote minimum : 1.50, meilleure cote Unibet/Betclic sur le sens proposé (<strong>Winamax exclu du calcul depuis le 22 juin 2026</strong> — il était déjà bloqué côté scraping depuis le 11 juin, désormais explicitement écarté aussi du calcul, comme pour toutes les alertes basket). Une alerte par match et par catégorie.
+            Cotes comparées : Unibet/Betclic uniquement (<strong>Winamax exclu</strong>). Une alerte par match et par catégorie. Les DC combinés sont des marchés scrappés via gRPC Betclic (<code>ca_ftb_rslt</code>) + HTML Unibet — les probabilités modèle sont aussi affichées directement dans les onglets "Double chance &amp; BTTS" / "Double chance &amp; Over 1,5" de chaque page match.
+          </p>
+          <p className="util-intro" style={{ marginTop: '0.4rem' }}>
+            <strong>Pourquoi des seuils plus bas pour DC ?</strong> C'est un pari combiné : même pour un fort favori offensif (λh=1.9, λa=1.3), DC &amp; BTTS plafonne à ~46% sur la meilleure combinaison. Les seuils 50%/55% restent sélectifs par rapport à ce plafond naturel.
           </p>
         </div>
 
@@ -1024,7 +1031,7 @@ export default function UtilisationPage() {
         <div className="util-subsection">
           <h3 className="util-subsection-title">Stockage et affichage</h3>
           <p className="util-intro">
-            localStorage : <code>fb_btts_alerts</code> / <code>fb_total_alerts</code> / <code>fb_result_alerts</code>. Affichées dans Alertes (pending), puis converties en groupe compact dans Running une fois acceptées (logo, badge de ligue, équipes, heure du match, nombre d'alertes).
+            localStorage : <code>fb_btts_alerts</code> / <code>fb_total_alerts</code> / <code>fb_result_alerts</code> / <code>fb_dc_btts_alerts</code> / <code>fb_dc_ou_alerts</code>. Affichées dans Alertes (pending), puis converties en groupe compact dans Running une fois acceptées (logo, badge de ligue, équipes, heure du match, nombre d'alertes). Règlement des DC uniquement au coup de sifflet final (<code>STATUS_FINAL</code>) — les deux conditions (DC + BTTS/Over) ne peuvent être actées que lorsque le score est définitif.
           </p>
         </div>
       </Accordion>}

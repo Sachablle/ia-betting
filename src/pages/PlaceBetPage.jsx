@@ -1,8 +1,8 @@
 import { useState, useEffect, useRef, Fragment, startTransition } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { BBALL_FIXTURES } from '../utils/basketball';
-import { syncBackgroundAlerts, syncGameTotalAlerts, syncBasketballResultAlerts, syncBballPinnacleAlerts, syncBballPinnaclePropsAlerts, loadBballPinnaclePropsAlerts, saveBballPinnaclePropsAlerts, syncOddsDrift, syncFootballAlerts, resolveCompletedFootballAlerts, postAcceptedAlertReliably } from '../utils/syncAlerts';
-import { BTTSAlertCard, FootballTotalCard, FootballResultCard, PinnacleEdgeCard } from '../components/FootballAlertCards';
+import { syncBackgroundAlerts, syncGameTotalAlerts, syncBasketballResultAlerts, syncBballPinnacleAlerts, syncBballPinnaclePropsAlerts, loadBballPinnaclePropsAlerts, saveBballPinnaclePropsAlerts, syncOddsDrift, syncFootballAlerts, resolveCompletedFootballAlerts, postAcceptedAlertReliably, FB_DC_BTTS_KEY, FB_DC_OU_KEY } from '../utils/syncAlerts';
+import { BTTSAlertCard, FootballTotalCard, FootballResultCard, PinnacleEdgeCard, DCBTTSAlertCard, DCOUAlertCard } from '../components/FootballAlertCards';
 import { setItem as cloudSet } from '../utils/cloudStorage';
 
 const ALERT_KEY        = 'nba_prop_alerts';
@@ -1234,6 +1234,8 @@ export default function PlaceBetPage() {
   const [fbTotalAlerts, setFbTotalAlerts]       = useState([]);
   const [fbResultAlerts, setFbResultAlerts]     = useState([]);
   const [fbPinnacleAlerts, setFbPinnacleAlerts] = useState([]);
+  const [dcBttsAlerts, setDcBttsAlerts]         = useState([]);
+  const [dcOuAlerts, setDcOuAlerts]             = useState([]);
   // historyExists : true dès qu'une alerte a été acceptée/rejetée, ne repasse jamais à false
   const [historyExists, setHistoryExists] = useState(() => {
     try {
@@ -1459,6 +1461,64 @@ export default function PlaceBetPage() {
     saveFbPinnacleAlerts(fbPinnacleAlerts.filter(a => a.id !== id));
     window.dispatchEvent(new Event('fb_pinnacle_alerts_updated'));
   };
+
+  const loadDcBttsAlerts = () => {
+    try {
+      const now = Date.now();
+      const raw = JSON.parse(localStorage.getItem(FB_DC_BTTS_KEY) || '[]');
+      const valid = raw.filter(a => {
+        const t = new Date(a.fixtureDate).getTime();
+        if (isNaN(t)) return false;
+        if (['accepted', 'rejected', 'won', 'lost'].includes(a.status)) return true;
+        return t > now;
+      });
+      if (valid.length !== raw.length) cloudSet(FB_DC_BTTS_KEY, JSON.stringify(valid));
+      setDcBttsAlerts(valid);
+      resolveCompletedFootballAlerts(valid, a => { cloudSet(FB_DC_BTTS_KEY, JSON.stringify(a)); setDcBttsAlerts(a); });
+    } catch { setDcBttsAlerts([]); }
+  };
+
+  const saveDcBttsAlerts = (alerts) => { cloudSet(FB_DC_BTTS_KEY, JSON.stringify(alerts)); setDcBttsAlerts(alerts); };
+
+  const updateDcBttsStatus = (id, status, bk = null, odds = null) => {
+    if (status === 'rejected') { saveDcBttsAlerts(dcBttsAlerts.map(a => a.id === id ? { ...a, status: 'rejected', rejectedAt: Date.now() } : a)); window.dispatchEvent(new Event('fb_dc_btts_alerts_updated')); return; }
+    const now = Date.now();
+    const updated = dcBttsAlerts.map(a => a.id === id ? { ...a, status, ...(status === 'accepted' && !a.acceptedAt ? { acceptedAt: now, acceptedProbability: a.probability, acceptedBookmaker: bk ?? null, acceptedUnibetOdds: bk === 'unibet' ? (odds ?? a.unibetOdds) : null, acceptedBetclicOdds: bk === 'betclic' ? (odds ?? a.betclicOdds) : null } : {}) } : a);
+    saveDcBttsAlerts(updated);
+    if (status === 'accepted') { const a = updated.find(x => x.id === id); if (a) postAcceptedAlertReliably(a); }
+    window.dispatchEvent(new Event('fb_dc_btts_alerts_updated'));
+  };
+
+  const dismissDcBtts = (id) => { saveDcBttsAlerts(dcBttsAlerts.filter(a => a.id !== id)); window.dispatchEvent(new Event('fb_dc_btts_alerts_updated')); };
+
+  const loadDcOuAlerts = () => {
+    try {
+      const now = Date.now();
+      const raw = JSON.parse(localStorage.getItem(FB_DC_OU_KEY) || '[]');
+      const valid = raw.filter(a => {
+        const t = new Date(a.fixtureDate).getTime();
+        if (isNaN(t)) return false;
+        if (['accepted', 'rejected', 'won', 'lost'].includes(a.status)) return true;
+        return t > now;
+      });
+      if (valid.length !== raw.length) cloudSet(FB_DC_OU_KEY, JSON.stringify(valid));
+      setDcOuAlerts(valid);
+      resolveCompletedFootballAlerts(valid, a => { cloudSet(FB_DC_OU_KEY, JSON.stringify(a)); setDcOuAlerts(a); });
+    } catch { setDcOuAlerts([]); }
+  };
+
+  const saveDcOuAlerts = (alerts) => { cloudSet(FB_DC_OU_KEY, JSON.stringify(alerts)); setDcOuAlerts(alerts); };
+
+  const updateDcOuStatus = (id, status, bk = null, odds = null) => {
+    if (status === 'rejected') { saveDcOuAlerts(dcOuAlerts.map(a => a.id === id ? { ...a, status: 'rejected', rejectedAt: Date.now() } : a)); window.dispatchEvent(new Event('fb_dc_ou_alerts_updated')); return; }
+    const now = Date.now();
+    const updated = dcOuAlerts.map(a => a.id === id ? { ...a, status, ...(status === 'accepted' && !a.acceptedAt ? { acceptedAt: now, acceptedProbability: a.probability, acceptedBookmaker: bk ?? null, acceptedUnibetOdds: bk === 'unibet' ? (odds ?? a.unibetOdds) : null, acceptedBetclicOdds: bk === 'betclic' ? (odds ?? a.betclicOdds) : null } : {}) } : a);
+    saveDcOuAlerts(updated);
+    if (status === 'accepted') { const a = updated.find(x => x.id === id); if (a) postAcceptedAlertReliably(a); }
+    window.dispatchEvent(new Event('fb_dc_ou_alerts_updated'));
+  };
+
+  const dismissDcOu = (id) => { saveDcOuAlerts(dcOuAlerts.filter(a => a.id !== id)); window.dispatchEvent(new Event('fb_dc_ou_alerts_updated')); };
 
   const saveAlerts = (alerts) => {
     try {
@@ -1928,7 +1988,7 @@ export default function PlaceBetPage() {
         const stored = JSON.parse(localStorage.getItem(key) || '[]');
         stored.filter(a => a.status === 'accepted').forEach(a => postAcceptedAlertReliably({ ...a, fixtureDate: a.fixtureDate || a.date }));
       });
-      [FB_BTTS_KEY, FB_TOTAL_KEY, FB_RESULT_KEY, FB_PINNACLE_KEY, BBALL_PINNACLE_KEY].forEach(key => {
+      [FB_BTTS_KEY, FB_TOTAL_KEY, FB_RESULT_KEY, FB_PINNACLE_KEY, BBALL_PINNACLE_KEY, FB_DC_BTTS_KEY, FB_DC_OU_KEY].forEach(key => {
         const fbExisting = JSON.parse(localStorage.getItem(key) || '[]');
         fbExisting.filter(a => ['accepted', 'won', 'lost'].includes(a.status)).forEach(a => postAcceptedAlertReliably(a));
         fbExisting.filter(a => ['won', 'lost'].includes(a.status)).forEach(a =>
@@ -1943,6 +2003,8 @@ export default function PlaceBetPage() {
     window.addEventListener('fb_total_alerts_updated', loadFbTotalAlerts);
     window.addEventListener('fb_result_alerts_updated', loadFbResultAlerts);
     window.addEventListener('fb_pinnacle_alerts_updated', loadFbPinnacleAlerts);
+    window.addEventListener('fb_dc_btts_alerts_updated', loadDcBttsAlerts);
+    window.addEventListener('fb_dc_ou_alerts_updated', loadDcOuAlerts);
     window.addEventListener('bball_pinnacle_alerts_updated', loadBballPinnacleAlerts);
     window.addEventListener('bball_pinnacle_props_alerts_updated', loadBballPinnaclePropsAlertsState);
     // Refresh cotes toutes les 2 min (mouvements de cotes sur alertes en jeu)
@@ -1959,6 +2021,8 @@ export default function PlaceBetPage() {
       window.removeEventListener('fb_total_alerts_updated', loadFbTotalAlerts);
       window.removeEventListener('fb_result_alerts_updated', loadFbResultAlerts);
       window.removeEventListener('fb_pinnacle_alerts_updated', loadFbPinnacleAlerts);
+      window.removeEventListener('fb_dc_btts_alerts_updated', loadDcBttsAlerts);
+      window.removeEventListener('fb_dc_ou_alerts_updated', loadDcOuAlerts);
       window.removeEventListener('bball_pinnacle_alerts_updated', loadBballPinnacleAlerts);
       window.removeEventListener('bball_pinnacle_props_alerts_updated', loadBballPinnaclePropsAlertsState);
       clearInterval(timer);
@@ -2070,6 +2134,8 @@ export default function PlaceBetPage() {
     ...fbTotalAlerts.filter(a => a.status === 'pending').map(a => ({ type: 'fbtotal',  key: a.id,   date: a.fixtureDate,  data: a })),
     ...fbResultAlerts.filter(a => a.status === 'pending').map(a => ({ type: 'fbresult', key: a.id,   date: a.fixtureDate,  data: a })),
     ...fbPinnacleAlerts.filter(a => a.status === 'pending').map(a => ({ type: 'fbpinnacle', key: a.id, date: a.fixtureDate, data: a })),
+    ...dcBttsAlerts.filter(a => a.status === 'pending').map(a => ({ type: 'dc_btts', key: a.id, date: a.fixtureDate, data: a })),
+    ...dcOuAlerts.filter(a => a.status === 'pending').map(a => ({ type: 'dc_ou', key: a.id, date: a.fixtureDate, data: a })),
     ...bballPinnacleAlerts.filter(a => a.status === 'pending').map(a => ({ type: 'bballpinnacle', key: a.id, date: a.date, data: a })),
     ...bballPinnaclePropsAlerts.filter(a => a.status === 'pending').map(a => ({ type: 'bballpinnacleprops', key: a.id, date: a.date, data: a })),
   ].sort((a, b) => new Date(a.date || 0) - new Date(b.date || 0));
@@ -2190,6 +2256,8 @@ export default function PlaceBetPage() {
             if (item.type === 'fbtotal')  return <FootballTotalCard key={item.key} alert={item.data} onAccept={(id, bk, odds) => updateFbTotalStatus(id, 'accepted', bk, odds)} onReject={id => updateFbTotalStatus(id, 'rejected')} onDismiss={dismissFbTotal} />;
             if (item.type === 'fbresult') return <FootballResultCard key={item.key} alert={item.data} onAccept={(id, bk, odds) => updateFbResultStatus(id, 'accepted', bk, odds)} onReject={id => updateFbResultStatus(id, 'rejected')} onDismiss={dismissFbResult} />;
             if (item.type === 'fbpinnacle') return <PinnacleEdgeCard key={item.key} alert={item.data} onAccept={(id, bk, odds) => updateFbPinnacleStatus(id, 'accepted', bk, odds)} onReject={id => updateFbPinnacleStatus(id, 'rejected')} onDismiss={dismissFbPinnacle} />;
+            if (item.type === 'dc_btts')   return <DCBTTSAlertCard key={item.key} alert={item.data} onAccept={(id, bk, odds) => updateDcBttsStatus(id, 'accepted', bk, odds)} onReject={id => updateDcBttsStatus(id, 'rejected')} onDismiss={dismissDcBtts} />;
+            if (item.type === 'dc_ou')     return <DCOUAlertCard   key={item.key} alert={item.data} onAccept={(id, bk, odds) => updateDcOuStatus(id, 'accepted', bk, odds)}   onReject={id => updateDcOuStatus(id, 'rejected')}   onDismiss={dismissDcOu} />;
             if (item.type === 'bballpinnacle') return <BasketballPinnacleEdgeCard key={item.key} alert={item.data} onAccept={(id, bk, odds) => updateBballPinnacleStatus(id, 'accepted', bk, odds)} onReject={id => updateBballPinnacleStatus(id, 'rejected')} onDismiss={dismissBballPinnacle} />;
             if (item.type === 'bballpinnacleprops') return <BasketballPinnaclePropsCard key={item.key} alert={item.data} onAccept={(id, bk, odds) => updateBballPinnaclePropsStatus(id, 'accepted', bk, odds)} onReject={id => updateBballPinnaclePropsStatus(id, 'rejected')} onDismiss={dismissBballPinnacleProps} />;
             return null;

@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { BBALL_FIXTURES } from '../utils/basketball';
-import { syncBackgroundAlerts, syncSettlements, syncGameTotalAlerts, syncBballPinnacleAlerts, syncOddsDrift, syncFootballAlerts, resolveCompletedFootballAlerts, postAcceptedAlertReliably } from '../utils/syncAlerts';
+import { syncBackgroundAlerts, syncSettlements, syncGameTotalAlerts, syncBballPinnacleAlerts, syncOddsDrift, syncFootballAlerts, resolveCompletedFootballAlerts, postAcceptedAlertReliably, FB_DC_BTTS_KEY, FB_DC_OU_KEY } from '../utils/syncAlerts';
 import { setItem as cloudSet } from '../utils/cloudStorage';
 
 const ALERT_KEY      = 'nba_prop_alerts';
@@ -11,7 +11,7 @@ const FB_BTTS_KEY    = 'fb_btts_alerts';
 const FB_TOTAL_KEY   = 'fb_total_alerts';
 const FB_RESULT_KEY  = 'fb_result_alerts';
 const FB_PINNACLE_KEY = 'fb_pinnacle_alerts';
-const STAT_LABEL     = { pts: 'Pts', reb: 'Reb', ast: 'Ast', total: 'Total', btts: 'BTTS', result: 'Résultat', pinnacle_edge: 'Pinnacle' };
+const STAT_LABEL     = { pts: 'Pts', reb: 'Reb', ast: 'Ast', total: 'Total', btts: 'BTTS', result: 'Résultat', pinnacle_edge: 'Pinnacle', dc_btts: 'DC+BTTS', dc_ou: 'DC+1.5' };
 
 // Ligues football — affichées dans les mêmes "MatchGroup" compacts que le basket
 const FB_LEAGUES = new Set(['cdm', 'ligue1', 'pl', 'laliga', 'bundes', 'seriea']);
@@ -108,11 +108,15 @@ function footballAlertToGroup(a) {
   const isBtts          = a.type === 'football_btts';
   const isResult        = a.type === 'football_result';
   const isPinnacle      = a.type === 'football_pinnacle_edge';
+  const isDcBtts        = a.type === 'football_dc_btts';
+  const isDcOu          = a.type === 'football_dc_ou';
   const isPinnacleTotal = isPinnacle && a.market === 'totals';
-  const isLineless = isBtts || isResult || (isPinnacle && !isPinnacleTotal);
+  const isLineless = isBtts || isResult || isDcBtts || (isPinnacle && !isPinnacleTotal);
+  const DC_DIR = { '1x': '1X', 'x2': 'X2', '12': '12' };
   return {
     key: `fb__${a.id}`, type: a.type,
-    player: isBtts ? 'Les deux équipes marquent' : isResult ? 'Résultat 1X2' : isPinnacle ? 'Value Bet vs Pinnacle' : 'Total buts',
+    player: isBtts ? 'Les deux équipes marquent' : isResult ? 'Résultat 1X2' : isPinnacle ? 'Value Bet vs Pinnacle'
+      : isDcBtts ? `DC ${DC_DIR[a.direction] ?? a.direction} & BTTS` : isDcOu ? `DC ${DC_DIR[a.direction] ?? a.direction} & +1.5` : 'Total buts',
     team: null, fixture: isBtts ? a.fixture : `${a.home} vs ${a.away}`,
     fixtureDate: a.fixtureDate,
     homeTeam: isBtts ? a.homeTeam : a.home, awayTeam: isBtts ? a.awayTeam : a.away,
@@ -121,7 +125,7 @@ function footballAlertToGroup(a) {
     eventId: a.fixtureId || a.eventId || null,
     league: a.league || 'cdm',
     stats: [{
-      stat: isBtts ? 'btts' : isResult ? 'result' : isPinnacle ? 'pinnacle_edge' : 'total',
+      stat: isBtts ? 'btts' : isResult ? 'result' : isPinnacle ? 'pinnacle_edge' : isDcBtts ? 'dc_btts' : isDcOu ? 'dc_ou' : 'total',
       market: isPinnacle ? (a.market || 'h2h') : null,
       direction: isBtts ? 'yes' : a.direction,
       line: isLineless ? null : a.line,
@@ -564,6 +568,12 @@ export default function RunningPage() {
   const [fbPinnacleAlerts, setFbPinnacleAlerts] = useState(() => {
     try { return JSON.parse(localStorage.getItem(FB_PINNACLE_KEY) || '[]'); } catch { return []; }
   });
+  const [dcBttsAlerts, setDcBttsAlerts] = useState(() => {
+    try { return JSON.parse(localStorage.getItem(FB_DC_BTTS_KEY) || '[]'); } catch { return []; }
+  });
+  const [dcOuAlerts, setDcOuAlerts] = useState(() => {
+    try { return JSON.parse(localStorage.getItem(FB_DC_OU_KEY) || '[]'); } catch { return []; }
+  });
   const [bballPinnacleAlerts, setBballPinnacleAlerts] = useState(() => {
     try { return JSON.parse(localStorage.getItem(BBALL_PINNACLE_KEY) || '[]'); } catch { return []; }
   });
@@ -582,12 +592,16 @@ export default function RunningPage() {
       try { setFbTotalAlerts(JSON.parse(localStorage.getItem(FB_TOTAL_KEY) || '[]')); } catch {}
       try { setFbResultAlerts(JSON.parse(localStorage.getItem(FB_RESULT_KEY) || '[]')); } catch {}
       try { setFbPinnacleAlerts(JSON.parse(localStorage.getItem(FB_PINNACLE_KEY) || '[]')); } catch {}
+      try { setDcBttsAlerts(JSON.parse(localStorage.getItem(FB_DC_BTTS_KEY) || '[]')); } catch {}
+      try { setDcOuAlerts(JSON.parse(localStorage.getItem(FB_DC_OU_KEY) || '[]')); } catch {}
     };
     window.addEventListener('nba_alerts_updated', reloadFromStorage);
     window.addEventListener('fb_btts_alerts_updated', reloadFootball);
     window.addEventListener('fb_total_alerts_updated', reloadFootball);
     window.addEventListener('fb_result_alerts_updated', reloadFootball);
     window.addEventListener('fb_pinnacle_alerts_updated', reloadFootball);
+    window.addEventListener('fb_dc_btts_alerts_updated', reloadFootball);
+    window.addEventListener('fb_dc_ou_alerts_updated', reloadFootball);
     window.addEventListener('bball_pinnacle_alerts_updated', reloadFromStorage);
     syncBackgroundAlerts().then(reloadFromStorage);
     syncGameTotalAlerts().then(reloadFromStorage);
@@ -620,6 +634,10 @@ export default function RunningPage() {
       resolveCompletedFootballAlerts(fbResult, alerts => { cloudSet(FB_RESULT_KEY, JSON.stringify(alerts)); setFbResultAlerts(alerts); });
       const fbPinnacle = JSON.parse(localStorage.getItem(FB_PINNACLE_KEY) || '[]');
       resolveCompletedFootballAlerts(fbPinnacle, alerts => { cloudSet(FB_PINNACLE_KEY, JSON.stringify(alerts)); setFbPinnacleAlerts(alerts); });
+      const dcBtts = JSON.parse(localStorage.getItem(FB_DC_BTTS_KEY) || '[]');
+      resolveCompletedFootballAlerts(dcBtts, alerts => { cloudSet(FB_DC_BTTS_KEY, JSON.stringify(alerts)); setDcBttsAlerts(alerts); });
+      const dcOu = JSON.parse(localStorage.getItem(FB_DC_OU_KEY) || '[]');
+      resolveCompletedFootballAlerts(dcOu, alerts => { cloudSet(FB_DC_OU_KEY, JSON.stringify(alerts)); setDcOuAlerts(alerts); });
     } catch {}
     // basketball_pinnacle_edge (WNBA) se règle côté serveur (runAutoSettle, totalsToCheck) — pas
     // de résolution client séparée nécessaire, syncSettlements() ci-dessus suffit (BBALL_PINNACLE_KEY
@@ -634,6 +652,8 @@ export default function RunningPage() {
       window.removeEventListener('fb_total_alerts_updated', reloadFootball);
       window.removeEventListener('fb_result_alerts_updated', reloadFootball);
       window.removeEventListener('fb_pinnacle_alerts_updated', reloadFootball);
+      window.removeEventListener('fb_dc_btts_alerts_updated', reloadFootball);
+      window.removeEventListener('fb_dc_ou_alerts_updated', reloadFootball);
       window.removeEventListener('bball_pinnacle_alerts_updated', reloadFromStorage);
       window.removeEventListener('cloud_synced', onCloudSynced);
       clearInterval(syncTimer);
@@ -648,7 +668,9 @@ export default function RunningPage() {
   const acceptedFbTotal = fbTotalAlerts.filter(a => a.status === 'accepted');
   const acceptedFbResult = fbResultAlerts.filter(a => a.status === 'accepted');
   const acceptedFbPinnacle = fbPinnacleAlerts.filter(a => a.status === 'accepted');
-  const footballGroups = [...acceptedBtts.map(footballAlertToGroup), ...acceptedFbTotal.map(footballAlertToGroup), ...acceptedFbResult.map(footballAlertToGroup), ...acceptedFbPinnacle.map(footballAlertToGroup)];
+  const acceptedDcBtts = dcBttsAlerts.filter(a => a.status === 'accepted');
+  const acceptedDcOu   = dcOuAlerts.filter(a => a.status === 'accepted');
+  const footballGroups = [...acceptedBtts.map(footballAlertToGroup), ...acceptedFbTotal.map(footballAlertToGroup), ...acceptedFbResult.map(footballAlertToGroup), ...acceptedFbPinnacle.map(footballAlertToGroup), ...acceptedDcBtts.map(footballAlertToGroup), ...acceptedDcOu.map(footballAlertToGroup)];
   const allAcceptedGroups = [...acceptedGroups, ...acceptedTotalGroups, ...acceptedBballPinnacle, ...footballGroups];
   const matchGroups = groupByMatch(allAcceptedGroups);
   const liveStats = useLiveBoxscore(acceptedGroups);
@@ -674,6 +696,8 @@ export default function RunningPage() {
     if (group?.type === 'football_total') { dismissFbTotal(group.ids[0]); return; }
     if (group?.type === 'football_result') { dismissFbResult(group.ids[0]); return; }
     if (group?.type === 'football_pinnacle_edge') { dismissFbPinnacle(group.ids[0]); return; }
+    if (group?.type === 'football_dc_btts') { dismissDcBtts(group.ids[0]); return; }
+    if (group?.type === 'football_dc_ou')   { dismissDcOu(group.ids[0]);   return; }
     if (group?.type === 'basketball_pinnacle_edge') { dismissBballPinnacle(group.ids[0]); return; }
     const idSet = new Set(ids);
     const gTime = group?.fixtureDate ? new Date(group.fixtureDate).getTime() : null;
@@ -716,6 +740,16 @@ export default function RunningPage() {
     const updated = bballPinnacleAlerts.filter(a => a.id !== id);
     try { cloudSet(BBALL_PINNACLE_KEY, JSON.stringify(updated)); } catch {}
     setBballPinnacleAlerts(updated);
+  };
+  const dismissDcBtts = (id) => {
+    const updated = dcBttsAlerts.filter(a => a.id !== id);
+    try { cloudSet(FB_DC_BTTS_KEY, JSON.stringify(updated)); } catch {}
+    setDcBttsAlerts(updated);
+  };
+  const dismissDcOu = (id) => {
+    const updated = dcOuAlerts.filter(a => a.id !== id);
+    try { cloudSet(FB_DC_OU_KEY, JSON.stringify(updated)); } catch {}
+    setDcOuAlerts(updated);
   };
 
   const total = allAcceptedGroups.length;

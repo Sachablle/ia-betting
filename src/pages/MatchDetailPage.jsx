@@ -270,6 +270,40 @@ function computeOU(lambda_home, lambda_away, line, rho = 0) {
   return { lambda_total: +lambda_total.toFixed(2), over: Math.round(pOver * 100), under: Math.round(pUnder * 100) };
 }
 
+// P(DC & BTTS) et P(DC & Over line) — même grille Dixon-Coles que les autres calculs CDM
+function computeDCBTTS(lambda_home, lambda_away, rho = 0) {
+  if (lambda_home == null || lambda_away == null) return null;
+  const grid = computeScoreGrid(lambda_home, lambda_away, rho);
+  let p1x = 0, px2 = 0, p12 = 0;
+  for (let i = 1; i < grid.length; i++) {
+    for (let j = 1; j < grid.length; j++) {
+      const p = grid[i][j];
+      if (i >= j) p1x += p;
+      if (i <= j) px2 += p;
+      if (i !== j) p12 += p;
+    }
+  }
+  return { p1x: Math.round(p1x * 100), px2: Math.round(px2 * 100), p12: Math.round(p12 * 100) };
+}
+
+function computeDCOver(lambda_home, lambda_away, line, rho = 0) {
+  if (lambda_home == null || lambda_away == null) return null;
+  const kMax = 10;
+  const grid = computeScoreGrid(lambda_home, lambda_away, rho, kMax);
+  const threshold = Math.floor(line);
+  let p1x = 0, px2 = 0, p12 = 0;
+  for (let i = 0; i <= kMax; i++) {
+    for (let j = 0; j <= kMax; j++) {
+      if (i + j <= threshold) continue;
+      const p = grid[i][j];
+      if (i >= j) p1x += p;
+      if (i <= j) px2 += p;
+      if (i !== j) p12 += p;
+    }
+  }
+  return { p1x: Math.round(p1x * 100), px2: Math.round(px2 * 100), p12: Math.round(p12 * 100) };
+}
+
 // P(victoire dom. / nul / victoire ext.) — grille Poisson (Dixon-Coles si rho>0, même base que compute1X2Probs backend)
 function compute1X2(lambda_home, lambda_away, kMax = 10, rho = 0) {
   if (lambda_home == null || lambda_away == null) return null;
@@ -507,6 +541,8 @@ function FootballOddsBox({ markets, bttsResult, home, away, frozen, onRefresh, r
   const cdmRho = bttsResult?.isCdm ? DIXON_COLES_RHO : 0;
   const ouResult = bttsResult ? computeOU(bttsResult.lambda_home, bttsResult.lambda_away, parseFloat(totalsLine), cdmRho) : null;
   const result1X2 = bttsResult ? compute1X2(bttsResult.lambda_home, bttsResult.lambda_away, 10, cdmRho) : null;
+  const dcBttsResult = bttsResult ? computeDCBTTS(bttsResult.lambda_home, bttsResult.lambda_away, cdmRho) : null;
+  const dcOuResult   = bttsResult ? computeDCOver(bttsResult.lambda_home, bttsResult.lambda_away, 1.5, cdmRho) : null;
 
   // Fair 1X2 marché — parcourt availBks dans l'ordre (Pinnacle en tête depuis le 25 juin 2026,
   // CDM uniquement) et prend le 1er bookmaker avec les 3 cotes h2h complètes ; repli naturel sur
@@ -603,15 +639,17 @@ function FootballOddsBox({ markets, bttsResult, home, away, frozen, onRefresh, r
             <div style={{ fontSize: 9.5, lineHeight: 1.55, color: 'var(--text-dim)' }}>
               Un modèle de Poisson estime les buts attendus de chaque équipe à partir de leurs stats récentes.
               <br /><br />
-              <b style={{ color: '#00ff80' }}>BTTS Oui</b> : alerte si probabilité ≥ 68%.
+              <b style={{ color: '#00ff80' }}>BTTS Oui</b> : alerte si probabilité ≥ 70% · cote ≥ 1,60.
               <br />
-              <b style={{ color: '#00ff80' }}>Total Over/Under</b> : alerte si probabilité ≥ 65% (ligne 2,5, sinon 1,5).
+              <b style={{ color: '#00ff80' }}>Total Over/Under</b> : alerte si probabilité ≥ 70% (ligne 2,5, sinon 1,5) · cote ≥ 1,60.
               <br />
-              <b style={{ color: '#00ff80' }}>Résultat 1X2</b> : alerte si probabilité ≥ 65% sur une issue (domicile/nul/extérieur), chacune traitée indépendamment — au plus une alerte par match.
+              <b style={{ color: '#00ff80' }}>Résultat 1X2</b> : alerte si probabilité ≥ 70% sur une issue (domicile/nul/extérieur), chacune traitée indépendamment — au plus une alerte par match · cote ≥ 1,50.
+              <br />
+              <b style={{ color: '#f59e0b' }}>DC & BTTS</b> : Double Chance (1X/X2/12) ET les deux équipes marquent. Alerte si probabilité ≥ 50% · cote ≥ 1,45. Les % du modèle sont affichés directement dans les onglets "Double chance & BTTS" et "Double chance & Over 1,5".
+              <br />
+              <b style={{ color: '#f59e0b' }}>DC & Over 1,5</b> : Double Chance ET plus de 1,5 buts. Alerte si probabilité ≥ 55% · cote ≥ 1,45.
               <br /><br />
-              Dans les trois cas, il faut aussi une cote ≥ 1,60 chez Unibet ou Betclic sur l'issue concernée (1,50 pour le Résultat 1X2).
-              <br /><br />
-              Une seule alerte par match et par type (BTTS / Total / Résultat), générée automatiquement toutes les 20 min — pas besoin d'ouvrir cette page.
+              Cotes comparées : Unibet/Betclic uniquement (Winamax exclu). Générées automatiquement toutes les 20 min — pas besoin d'ouvrir cette page.
               <br /><br />
               Dans le widget <b>Modèle 1X2</b>, le <span style={{ color: '#4ade80', fontWeight: 700 }}>+Xpt</span>/<span style={{ color: '#f87171', fontWeight: 700 }}>−Xpt</span> indique l'écart entre la probabilité du modèle et celle du marché (cotes bookmaker, marge retirée) pour cette issue — rien à voir avec les flèches ▲▼ de tendance de cote vues ailleurs sur cette page.
             </div>
@@ -700,9 +738,21 @@ function FootballOddsBox({ markets, bttsResult, home, away, frozen, onRefresh, r
               <div />
               {bks.map(bk => <div key={bk} style={ch}>{FB_BK_LABELS[bk]}</div>)}
             </div>
-            <DcRow label={`${home?.name ?? '1X'} / Nul & ${suffix}`}  vals={Object.fromEntries(bks.map(bk => [bk, mkt.bookmakers[bk]?.['1x']]))} />
-            <DcRow label={`${away?.name ?? 'X2'} / Nul & ${suffix}`}  vals={Object.fromEntries(bks.map(bk => [bk, mkt.bookmakers[bk]?.['x2']]))} />
-            <DcRow label={`${home?.name ?? '12'} / ${away?.name ?? ''} & ${suffix}`} vals={Object.fromEntries(bks.map(bk => [bk, mkt.bookmakers[bk]?.['12']]))} />
+            {[
+              { key: '1x', label: `${home?.name ?? '1X'} / Nul & ${suffix}`, prob: tab === 'dc_btts' ? dcBttsResult?.p1x : dcOuResult?.p1x },
+              { key: 'x2', label: `${away?.name ?? 'X2'} / Nul & ${suffix}`, prob: tab === 'dc_btts' ? dcBttsResult?.px2 : dcOuResult?.px2 },
+              { key: '12', label: `${home?.name ?? '12'} / ${away?.name ?? ''} & ${suffix}`, prob: tab === 'dc_btts' ? dcBttsResult?.p12 : dcOuResult?.p12 },
+            ].map(({ key, label, prob }) => (
+              <div key={key} style={{ display: 'grid', gridTemplateColumns: `1fr${bks.map(() => ' 48px').join('')}`, gap: '0 0.25rem', alignItems: 'center', padding: '0.28rem 0', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>{label}</span>
+                  {prob != null && <span style={{ fontSize: 10, fontWeight: 700, color: prob >= 65 ? '#4ade80' : prob >= 55 ? '#f59e0b' : 'var(--text-dim)', background: 'rgba(255,255,255,0.06)', borderRadius: 4, padding: '1px 5px' }}>{prob}%</span>}
+                </div>
+                {bks.map(bk => (
+                  <Cell key={bk} val={mkt.bookmakers[bk]?.[key]} edgeVal={null} isPinnacle={false} color={FB_BK_COLORS[bk]} />
+                ))}
+              </div>
+            ))}
           </>
         );
       })()}

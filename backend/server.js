@@ -7,7 +7,7 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { MongoClient } from 'mongodb';
 import { computeEstimate, calcStd, isConsistentStat, winsorizeRecent, getShotVolumeAnchor, probAtLeast, tCDF4, getRestFactor, getScheduleDensityFactor, isPlayoffRound, toDefCat } from './compute.js';
-import { computeLambdas, computeBTTSProb, computeOUProb, compute1X2Probs } from './computeFootball.js';
+import { computeLambdas, computeBTTSProb, computeOUProb, compute1X2Probs, computeDCBTTSProbs, computeDCOverProbs } from './computeFootball.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const CACHE_DIR   = join(__dirname, 'cache');
@@ -225,6 +225,9 @@ const FB_RESULT_ALERT_PROB = 0.70; // par issue (home/draw/away) — chaque issu
 const FB_RESULT_MAX_PROB   = 0.80; // plafond de confiance 1X2 — le modèle Poisson sur stats qualifs/amicaux surestime les favoris
 const FB_BTTS_OU_MIN_ODDS  = 1.60; // cote mini BTTS/O-U (unibet/betclic — winamax exclu)
 const FB_RESULT_MIN_ODDS   = 1.50; // cote mini Résultat 1X2 (unibet/betclic — winamax exclu)
+const FB_DC_BTTS_ALERT_PROB = 0.50; // proba mini DC & BTTS (combiné — plafond ~50% pour les matchs les plus forts)
+const FB_DC_OU_ALERT_PROB   = 0.55; // proba mini DC & Over 1.5
+const FB_DC_MIN_ODDS        = 1.45; // cote mini DC combinés
 
 // ── football-data.org (TEST) ──────────────────────────────────────────────────
 const FD_KEY  = process.env.FD_API_KEY;
@@ -10715,6 +10718,64 @@ async function generateBackgroundAlerts() {
             });
             _bgLog.push(`football O/U alert: ${f.home.name} v ${f.away.name} [${f.league}] ${direction} ${line} prob=${Math.round(bestP * 100)}%`);
             break; // une seule ligne par match
+          }
+
+          // DC & BTTS — 3 combinaisons (1X, X2, 12), une alerte par combinaison si seuil atteint
+          const dcBttsBk = oddsMatch?.markets?.dcbtts?.bookmakers || {};
+          const dcBttsProbs = computeDCBTTSProbs(lambdaHome, lambdaAway);
+          for (const [key, prob] of Object.entries(dcBttsProbs)) {
+            if (prob < FB_DC_BTTS_ALERT_PROB) continue;
+            const bestBk = FB_BOOKS.find(bk => (dcBttsBk[bk]?.[key] ?? 0) >= FB_DC_MIN_ODDS);
+            if (!bestBk) continue;
+            const odds = dcBttsBk[bestBk][key];
+            newAlerts.push({
+              id: `${f.fixtureId}_dc_btts_${key}`,
+              type: 'football_dc_btts',
+              fixtureId: f.fixtureId,
+              league: f.league,
+              eventId: f.fixtureId,
+              home: f.home.name,
+              away: f.away.name,
+              homeShort: f.home.short,
+              awayShort: f.away.short,
+              fixtureDate: f.date,
+              round: f.round || '',
+              direction: key,
+              probability: Math.round(prob * 100),
+              unibetOdds: dcBttsBk.unibet?.[key] ?? null,
+              betclicOdds: dcBttsBk.betclic?.[key] ?? null,
+              savedAt: Date.now(),
+            });
+            _bgLog.push(`football DC&BTTS alert: ${f.home.name} v ${f.away.name} [${f.league}] ${key} prob=${Math.round(prob * 100)}%`);
+          }
+
+          // DC & Over 1.5 — même structure
+          const dcOuBk = oddsMatch?.markets?.dcou?.bookmakers || {};
+          const dcOuProbs = computeDCOverProbs(lambdaHome, lambdaAway, 1.5);
+          for (const [key, prob] of Object.entries(dcOuProbs)) {
+            if (prob < FB_DC_OU_ALERT_PROB) continue;
+            const bestBk = FB_BOOKS.find(bk => (dcOuBk[bk]?.[key] ?? 0) >= FB_DC_MIN_ODDS);
+            if (!bestBk) continue;
+            newAlerts.push({
+              id: `${f.fixtureId}_dc_ou_${key}`,
+              type: 'football_dc_ou',
+              fixtureId: f.fixtureId,
+              league: f.league,
+              eventId: f.fixtureId,
+              home: f.home.name,
+              away: f.away.name,
+              homeShort: f.home.short,
+              awayShort: f.away.short,
+              fixtureDate: f.date,
+              round: f.round || '',
+              direction: key,
+              line: 1.5,
+              probability: Math.round(prob * 100),
+              unibetOdds: dcOuBk.unibet?.[key] ?? null,
+              betclicOdds: dcOuBk.betclic?.[key] ?? null,
+              savedAt: Date.now(),
+            });
+            _bgLog.push(`football DC&OU alert: ${f.home.name} v ${f.away.name} [${f.league}] ${key} +1.5 prob=${Math.round(prob * 100)}%`);
           }
         } catch { /* skip fixture */ }
       }

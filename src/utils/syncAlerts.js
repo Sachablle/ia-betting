@@ -14,6 +14,8 @@ const FB_BTTS_KEY   = 'fb_btts_alerts';
 const FB_TOTAL_KEY  = 'fb_total_alerts';
 const FB_RESULT_KEY = 'fb_result_alerts';
 const FB_PINNACLE_KEY = 'fb_pinnacle_alerts';
+const FB_DC_BTTS_KEY = 'fb_dc_btts_alerts';
+const FB_DC_OU_KEY   = 'fb_dc_ou_alerts';
 const BBALL_PINNACLE_KEY = 'bball_pinnacle_alerts';
 const PURGE_PLAYERS = ['Justin Bean', 'Jack Kayil', 'Leandro Bolmaro'];
 
@@ -21,7 +23,7 @@ const PURGE_PLAYERS = ['Justin Bean', 'Jack Kayil', 'Leandro Bolmaro'];
 // quelle page. Boucle sur toutes les clés d'alertes connues (props, total, résultat équipe, foot)
 // pour que chaque type bénéficie du même règlement serveur — un seul endroit à étendre pour un
 // futur type d'alerte (22 juin 2026, avant ça seul ALERT_KEY/props était couvert ici).
-const SETTLEABLE_KEYS = [ALERT_KEY, GAME_TOTAL_KEY, BASKETBALL_RESULT_KEY, FB_BTTS_KEY, FB_TOTAL_KEY, FB_RESULT_KEY, FB_PINNACLE_KEY, BBALL_PINNACLE_KEY];
+const SETTLEABLE_KEYS = [ALERT_KEY, GAME_TOTAL_KEY, BASKETBALL_RESULT_KEY, FB_BTTS_KEY, FB_TOTAL_KEY, FB_RESULT_KEY, FB_PINNACLE_KEY, BBALL_PINNACLE_KEY, FB_DC_BTTS_KEY, FB_DC_OU_KEY];
 
 const PENDING_SYNC_KEY = 'pending_alert_sync';
 const readPendingSync  = () => { try { return JSON.parse(localStorage.getItem(PENDING_SYNC_KEY) || '[]'); } catch { return []; } };
@@ -814,8 +816,62 @@ export async function syncFootballAlerts() {
         window.dispatchEvent(new Event('fb_pinnacle_alerts_updated'));
       }
     }
+
+    // DC & BTTS
+    const dcBttsAlerts = bgAlerts.filter(a => a.type === 'football_dc_btts' && a.probability > 0);
+    if (dcBttsAlerts.length) {
+      const existing = JSON.parse(localStorage.getItem(FB_DC_BTTS_KEY) || '[]');
+      let changed = false;
+      const result = [...existing];
+      const liveIds = new Set(dcBttsAlerts.map(a => a.id));
+      dcBttsAlerts.forEach(a => {
+        const idx = result.findIndex(p => p.id === a.id);
+        if (idx === -1) { result.push({ ...a, status: 'pending' }); changed = true; return; }
+        const prev = result[idx];
+        if ((prev.status || 'pending') !== 'pending') return;
+        if (prev.probability !== a.probability || prev.unibetOdds !== a.unibetOdds || prev.betclicOdds !== a.betclicOdds) {
+          result[idx] = { ...prev, probability: a.probability, unibetOdds: a.unibetOdds ?? prev.unibetOdds, betclicOdds: a.betclicOdds ?? prev.betclicOdds };
+          changed = true;
+        }
+      });
+      const purged = result.filter(a => {
+        if ((a.status || 'pending') !== 'pending') return true;
+        if (Date.now() - (a.savedAt || 0) < ORPHAN_GRACE_MS) return true;
+        return liveIds.has(a.id);
+      });
+      if (purged.length !== result.length) changed = true;
+      if (changed) { cloudSet(FB_DC_BTTS_KEY, JSON.stringify(purged)); window.dispatchEvent(new Event('fb_dc_btts_alerts_updated')); }
+    }
+
+    // DC & Over 1.5
+    const dcOuAlerts = bgAlerts.filter(a => a.type === 'football_dc_ou' && a.probability > 0);
+    if (dcOuAlerts.length) {
+      const existing = JSON.parse(localStorage.getItem(FB_DC_OU_KEY) || '[]');
+      let changed = false;
+      const result = [...existing];
+      const liveIds = new Set(dcOuAlerts.map(a => a.id));
+      dcOuAlerts.forEach(a => {
+        const idx = result.findIndex(p => p.id === a.id);
+        if (idx === -1) { result.push({ ...a, status: 'pending' }); changed = true; return; }
+        const prev = result[idx];
+        if ((prev.status || 'pending') !== 'pending') return;
+        if (prev.probability !== a.probability || prev.unibetOdds !== a.unibetOdds || prev.betclicOdds !== a.betclicOdds) {
+          result[idx] = { ...prev, probability: a.probability, unibetOdds: a.unibetOdds ?? prev.unibetOdds, betclicOdds: a.betclicOdds ?? prev.betclicOdds };
+          changed = true;
+        }
+      });
+      const purged = result.filter(a => {
+        if ((a.status || 'pending') !== 'pending') return true;
+        if (Date.now() - (a.savedAt || 0) < ORPHAN_GRACE_MS) return true;
+        return liveIds.has(a.id);
+      });
+      if (purged.length !== result.length) changed = true;
+      if (changed) { cloudSet(FB_DC_OU_KEY, JSON.stringify(purged)); window.dispatchEvent(new Event('fb_dc_ou_alerts_updated')); }
+    }
   } catch {}
 }
+
+export { FB_DC_BTTS_KEY, FB_DC_OU_KEY };
 
 // Règlement BTTS/O-U football — uniquement CDM pour l'instant (seule source avec scores
 // disponibles via /api/fd/worldcup, home.score/away.score). Les 5 grands championnats ne
@@ -831,6 +887,18 @@ export function resolveFootballAlertResult(a, game) {
   if (a.type === 'football_btts') {
     if (hs > 0 && as_ > 0) return 'won';
     return isFinal ? 'lost' : null;
+  }
+  if (a.type === 'football_dc_btts') {
+    if (!isFinal) return null;
+    const bttsOk = hs > 0 && as_ > 0;
+    const dcOk = a.direction === '1x' ? hs >= as_ : a.direction === 'x2' ? as_ >= hs : hs !== as_;
+    return bttsOk && dcOk ? 'won' : 'lost';
+  }
+  if (a.type === 'football_dc_ou') {
+    if (!isFinal) return null;
+    const ouOk = hs + as_ > (a.line ?? 1.5);
+    const dcOk = a.direction === '1x' ? hs >= as_ : a.direction === 'x2' ? as_ >= hs : hs !== as_;
+    return ouOk && dcOk ? 'won' : 'lost';
   }
   if (a.type === 'football_result' || (a.type === 'football_pinnacle_edge' && a.market !== 'totals')) {
     // Le résultat 1X2 peut s'inverser jusqu'au coup de sifflet final — pas de règlement "live"
