@@ -307,25 +307,35 @@ function SystemHealthSection() {
   }, []);
 
   const handleRefresh = () => {
+    if (refreshing) return;
     setRefreshing(true);
-    const start = Date.now();
-    fetch('/api/system/health?refresh=1')
-      .then(r => r.json())
-      .then(setHealth)
-      .catch(() => {})
-      .finally(() => {
-        // Les scrapers tournent en arrière-plan — on refetch après 4s pour afficher leur résultat
-        setTimeout(() => {
-          fetch('/api/system/health')
-            .then(r => r.json())
-            .then(setHealth)
-            .catch(() => {})
-            .finally(() => {
-              const remaining = 500 - (Date.now() - start);
-              setTimeout(() => { setRefreshing(false); setLastRefreshed(new Date()); }, Math.max(0, remaining));
-            });
-        }, 4000);
-      });
+    const triggerTs = Date.now();
+    const TIMEOUT_MS = 25_000;
+    const POLL_MS    = 2_000;
+    let timer = null;
+
+    // Déclenche le scraping
+    fetch('/api/system/health?refresh=1').catch(() => {});
+
+    const poll = () => {
+      fetch('/api/system/health')
+        .then(r => r.json())
+        .then(data => {
+          const scrapers = data?.scrapers ?? {};
+          // Considère le refresh terminé quand TOUS les scrapers connus ont un ts postérieur au clic
+          const allDone = Object.values(scrapers).every(s => !s || (s.ts ?? 0) >= triggerTs);
+          const timedOut = Date.now() - triggerTs >= TIMEOUT_MS;
+          if (allDone || timedOut) {
+            setHealth(data);
+            setRefreshing(false);
+            setLastRefreshed(new Date());
+          } else {
+            timer = setTimeout(poll, POLL_MS);
+          }
+        })
+        .catch(() => { timer = setTimeout(poll, POLL_MS); });
+    };
+    timer = setTimeout(poll, POLL_MS);
   };
 
   const sc = health?.scrapers ?? {};
@@ -1045,7 +1055,7 @@ function UpcomingMatchesWidget() {
                   {live ? (
                     <span style={{ display:'flex', alignItems:'center', gap:3, width:36, flexShrink:0 }}>
                       <span style={{ width:5, height:5, borderRadius:'50%', background:'#60a5fa', flexShrink:0, boxShadow:'0 0 4px #60a5fa' }} />
-                      <span style={{ fontSize:9, fontWeight:700, color:'#f87171', fontVariantNumeric:'tabular-nums' }}>{fmtTime(g.date)}</span>
+                      <span style={{ fontSize:9, fontWeight:700, color:'#60a5fa', fontVariantNumeric:'tabular-nums' }}>{fmtTime(g.date)}</span>
                     </span>
                   ) : (
                     <span style={{ fontSize:9, color:dim, width:36, flexShrink:0, fontVariantNumeric:'tabular-nums' }}>{fmtTime(g.date)}</span>
@@ -1065,15 +1075,18 @@ function UpcomingMatchesWidget() {
                     </span>
                   )}
                   {/* Équipes */}
-                  <span style={{ fontSize:10, color: live ? '#f87171' : 'var(--text)', flex:1, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', fontWeight: live ? 600 : 400 }}>
+                  <span style={{ fontSize:10, color: live ? '#60a5fa' : 'var(--text)', flex:1, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', fontWeight: live ? 600 : 400 }}>
                     {g.home}
                     <span style={{ color:'rgba(255,255,255,0.2)', margin:'0 4px', fontSize:8 }}>·</span>
                     {g.away}
                   </span>
                   {/* Score live */}
                   {live && g.homeScore !== null && (
-                    <span style={{ fontSize:10, fontWeight:700, color:'var(--text)', fontVariantNumeric:'tabular-nums', flexShrink:0, background:'rgba(255,255,255,0.07)', padding:'1px 5px', borderRadius:4 }}>
-                      {g.homeScore}–{g.awayScore}
+                    <span style={{ display:'flex', alignItems:'center', gap:4, flexShrink:0 }}>
+                      <span style={{ fontSize:8, fontWeight:800, color:'#60a5fa', background:'rgba(96,165,250,0.12)', border:'1px solid rgba(96,165,250,0.3)', padding:'1px 5px', borderRadius:4, letterSpacing:'0.05em' }}>LIVE</span>
+                      <span style={{ fontSize:10, fontWeight:700, color:'var(--text)', fontVariantNumeric:'tabular-nums', background:'rgba(255,255,255,0.07)', padding:'1px 5px', borderRadius:4 }}>
+                        {g.homeScore}–{g.awayScore}
+                      </span>
                     </span>
                   )}
                   {/* Alerte */}

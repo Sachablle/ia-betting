@@ -1487,7 +1487,7 @@ function PropsSection({ fixture, homePlayers, awayPlayers, rosterLoading, isComp
     if (rankLeaders?._league === fixture.league) return;
     setRankLoading(true);
     try {
-      const d = await fetch(`/api/${fixture.league}/leaders`).then(r => r.ok ? r.json() : null);
+      const d = await cachedFetch(`/api/${fixture.league}/leaders`, 6 * 3_600_000).catch(() => null);
       setRankLeaders(d ? { ...d, _league: fixture.league } : null);
     } catch { setRankLeaders(null); }
     setRankLoading(false);
@@ -1638,8 +1638,7 @@ function PropsSection({ fixture, homePlayers, awayPlayers, rosterLoading, isComp
   useEffect(() => {
     if (isCompleted || fixture.league === 'euroleague' || EURO_LEAGUES_IDS.includes(fixture.league)) return;
     const injBase = fixture.league === 'wnba' ? '/api/wnba' : '/api/nba';
-    fetch(`${injBase}/injuries`)
-      .then(r => r.ok ? r.json() : {})
+    cachedFetch(`${injBase}/injuries`, 10 * 60_000)
       .then(d => setInjuryData(d || {}))
       .catch(() => {});
   }, [fixture.id]);
@@ -1651,8 +1650,8 @@ function PropsSection({ fixture, homePlayers, awayPlayers, rosterLoading, isComp
     const EU_OUT_BENCH_LEAGUES = ['acb', 'lnb', 'bbl'];
     if (isCompleted || !EU_OUT_BENCH_LEAGUES.includes(fixture.league) || !fixture.home?.id || !fixture.away?.id) return;
     Promise.all([
-      fetch(`/api/euro/${fixture.league}/team-lineup/${fixture.home.id}`).then(r => r.json()).catch(() => null),
-      fetch(`/api/euro/${fixture.league}/team-lineup/${fixture.away.id}`).then(r => r.json()).catch(() => null),
+      cachedFetch(`/api/euro/${fixture.league}/team-lineup/${fixture.home.id}`, 5 * 60_000).catch(() => null),
+      cachedFetch(`/api/euro/${fixture.league}/team-lineup/${fixture.away.id}`, 5 * 60_000).catch(() => null),
     ]).then(([homeRes, awayRes]) => {
       const out = {};
       for (const res of [homeRes, awayRes]) {
@@ -1672,15 +1671,15 @@ function PropsSection({ fixture, homePlayers, awayPlayers, rosterLoading, isComp
     const EURO_L = ['acb','lnb','bbl','legaa'];
     if (EURO_L.includes(fixture.league)) {
       Promise.all([
-        fetch(`/api/euro/${fixture.league}/teamschedule/${fixture.home.id}`).then(r => r.json()).catch(() => ({ games: [] })),
-        fetch(`/api/euro/${fixture.league}/teamschedule/${fixture.away.id}`).then(r => r.json()).catch(() => ({ games: [] })),
+        cachedFetch(`/api/euro/${fixture.league}/teamschedule/${fixture.home.id}`, 30 * 60_000).catch(() => ({ games: [] })),
+        cachedFetch(`/api/euro/${fixture.league}/teamschedule/${fixture.away.id}`, 30 * 60_000).catch(() => ({ games: [] })),
       ]).then(([h, a]) => setSchedules({ home: h.games || [], away: a.games || [] }));
       return;
     }
     if (fixture.league === 'euroleague') {
       Promise.all([
-        fetch(`/api/euroleague/teamschedule/${fixture.home.short}`).then(r => r.json()).catch(() => ({ games: [] })),
-        fetch(`/api/euroleague/teamschedule/${fixture.away.short}`).then(r => r.json()).catch(() => ({ games: [] })),
+        cachedFetch(`/api/euroleague/teamschedule/${fixture.home.short}`, 30 * 60_000).catch(() => ({ games: [] })),
+        cachedFetch(`/api/euroleague/teamschedule/${fixture.away.short}`, 30 * 60_000).catch(() => ({ games: [] })),
       ]).then(([h, a]) => setSchedules({ home: h.games || [], away: a.games || [] }));
       return;
     }
@@ -3099,8 +3098,7 @@ export default function BasketballDetailPage() {
   useEffect(() => {
     if (staticFixture?.league === 'euroleague') return;
     const injBase = isWNBA ? '/api/wnba' : '/api/nba';
-    fetch(`${injBase}/injuries`)
-      .then(r => r.ok ? r.json() : {})
+    cachedFetch(`${injBase}/injuries`, 10 * 60_000)
       .then(d => setOuterInjuryData(d || {}))
       .catch(() => {});
   }, [staticFixture?.id]);
@@ -3108,8 +3106,7 @@ export default function BasketballDetailPage() {
   // Fetch match européen depuis api-sports.io si pas de fixture statique
   useEffect(() => {
     if (!isEuro) return;
-    fetch(`/api/euro/${euroLeague}/game/${id}`)
-      .then(r => r.json())
+    cachedFetch(`/api/euro/${euroLeague}/game/${id}`, 60_000)
       .then(d => { if (d.id) setEuroFixture({ ...d, league: euroLeague, h2h: [], markets: {} }); })
       .catch(() => {})
       .finally(() => setLoadingLive(false));
@@ -3118,8 +3115,7 @@ export default function BasketballDetailPage() {
   // Fetch tous les matchs de la ligue EU (pour dropdown)
   useEffect(() => {
     if (!isEuro) return;
-    fetch(`/api/euro/${euroLeague}/scoreboard`)
-      .then(r => r.json())
+    cachedFetch(`/api/euro/${euroLeague}/scoreboard`, 20_000)
       .then(d => setEuroLeagueGames(d.games || []))
       .catch(() => {});
   }, [isEuro, euroLeague]);
@@ -3153,16 +3149,14 @@ export default function BasketballDetailPage() {
   // Fetch H2H et stats équipe saison pour les ligues EU
   useEffect(() => {
     if (!isEuro || !euroFixture) return;
-    fetch(`/api/euro/${euroLeague}/h2h/${euroFixture.home.id}/${euroFixture.away.id}`)
-      .then(r => r.json())
+    cachedFetch(`/api/euro/${euroLeague}/h2h/${euroFixture.home.id}/${euroFixture.away.id}`, 60 * 60_000)
       .then(d => setEuroH2H(d.games || []))
       .catch(() => {});
   }, [euroFixture?.id, isEuro]);
 
   useEffect(() => {
     if (!isEuro || !euroFixture) return;
-    fetch(`/api/euro/${euroLeague}/standings`)
-      .then(r => r.json())
+    cachedFetch(`/api/euro/${euroLeague}/standings`, 30 * 60_000)
       .then(d => {
         const findTeam = tid => (d.teams || []).find(t => t.id === tid) || null;
         setEuroTeamStats({ home: findTeam(euroFixture.home.id), away: findTeam(euroFixture.away.id) });
@@ -3177,8 +3171,7 @@ export default function BasketballDetailPage() {
     const elapsedNow = staticFixture ? Date.now() - new Date(staticFixture.date).getTime() : 0;
     if (staticFixture && elapsedNow >= 3 * 60 * 60 * 1000) { setLoadingLive(false); return; }
     const sbUrl = isWNBA ? '/api/wnba/scoreboard' : '/api/nba/scoreboard';
-    fetch(sbUrl)
-      .then(r => r.json())
+    cachedFetch(sbUrl, 20_000)
       .then(d => {
         const games = d.games || [];
         if (isWNBA) setAllLiveGames(games);
@@ -3363,8 +3356,8 @@ export default function BasketballDetailPage() {
     }
     if (isEuro) {
       Promise.all([
-        fetch(`/api/euro/${euroLeague}/players/${fixture.home.id}`).then(r => r.json()).then(d => setHomePlayers(d.players || [])).catch(() => setHomePlayers([])),
-        fetch(`/api/euro/${euroLeague}/players/${fixture.away.id}`).then(r => r.json()).then(d => setAwayPlayers(d.players || [])).catch(() => setAwayPlayers([])),
+        cachedFetch(`/api/euro/${euroLeague}/players/${fixture.home.id}`, 3_600_000).then(d => setHomePlayers(d.players || [])).catch(() => setHomePlayers([])),
+        cachedFetch(`/api/euro/${euroLeague}/players/${fixture.away.id}`, 3_600_000).then(d => setAwayPlayers(d.players || [])).catch(() => setAwayPlayers([])),
       ]).finally(() => setRosterLoading(false));
     } else {
       Promise.all([
@@ -3451,8 +3444,8 @@ export default function BasketballDetailPage() {
     const awayId = fixture.away?.id;
     if (!homeId || !awayId) return;
     Promise.all([
-      fetch(`/api/euro/${euroLeague}/team-lineup/${homeId}`).then(r=>r.json()).catch(()=>null),
-      fetch(`/api/euro/${euroLeague}/team-lineup/${awayId}`).then(r=>r.json()).catch(()=>null),
+      cachedFetch(`/api/euro/${euroLeague}/team-lineup/${homeId}`, 5 * 60_000).catch(()=>null),
+      cachedFetch(`/api/euro/${euroLeague}/team-lineup/${awayId}`, 5 * 60_000).catch(()=>null),
     ]).then(([homeRes, awayRes]) => {
       savedLineupLoaded.current = true;
       const homeStarters = homeRes?.found && homeRes.starters?.length ? homeRes.starters : [];
@@ -3469,15 +3462,15 @@ export default function BasketballDetailPage() {
     if (!fixture || isCompleted) return;
     if (isEuro) {
       Promise.all([
-        fetch(`/api/euro/${euroLeague}/teamschedule/${fixture.home.id}`).then(r => r.json()).catch(() => ({ games: [] })),
-        fetch(`/api/euro/${euroLeague}/teamschedule/${fixture.away.id}`).then(r => r.json()).catch(() => ({ games: [] })),
+        cachedFetch(`/api/euro/${euroLeague}/teamschedule/${fixture.home.id}`, 30 * 60_000).catch(() => ({ games: [] })),
+        cachedFetch(`/api/euro/${euroLeague}/teamschedule/${fixture.away.id}`, 30 * 60_000).catch(() => ({ games: [] })),
       ]).then(([h, a]) => setGameSchedules({ home: h.games || [], away: a.games || [] }));
       return;
     }
     if (isEuroleague) {
       Promise.all([
-        fetch(`/api/euroleague/teamschedule/${fixture.home.short}`).then(r => r.json()).catch(() => ({ games: [] })),
-        fetch(`/api/euroleague/teamschedule/${fixture.away.short}`).then(r => r.json()).catch(() => ({ games: [] })),
+        cachedFetch(`/api/euroleague/teamschedule/${fixture.home.short}`, 30 * 60_000).catch(() => ({ games: [] })),
+        cachedFetch(`/api/euroleague/teamschedule/${fixture.away.short}`, 30 * 60_000).catch(() => ({ games: [] })),
       ]).then(([h, a]) => setGameSchedules({ home: h.games || [], away: a.games || [] }));
       return;
     }

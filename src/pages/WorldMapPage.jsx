@@ -35,6 +35,33 @@ function _prefetchMatch(g, league) {
   if (hId) { cachedFetch(`/api/${api}/players/${hId}`,3_600_000).catch(()=>{}); cachedFetch(`/api/${api}/teamschedule/${hId}`,300_000).catch(()=>{}); }
   if (aId) { cachedFetch(`/api/${api}/players/${aId}`,3_600_000).catch(()=>{}); cachedFetch(`/api/${api}/teamschedule/${aId}`,300_000).catch(()=>{}); }
 }
+const _prefetchedCountries = new Set();
+function _prefetchCountry(country) {
+  if (!country) return;
+  const key = country.name;
+  if (_prefetchedCountries.has(key)) return;
+  _prefetchedCountries.add(key);
+  for (const l of country.leagues) {
+    if (l === 'nba' || l === 'wnba') {
+      const base = `/api/${l}`;
+      cachedFetch(`${base}/scoreboard`, 20_000).catch(()=>{});
+      cachedFetch(`${base}/standings`,  6*3_600_000).catch(()=>{});
+      cachedFetch(`${base}/leaders`,    6*3_600_000).catch(()=>{});
+    } else if (l === 'acb') {
+      cachedFetch('/api/euro/acb/scoreboard', 20_000).catch(()=>{});
+      cachedFetch('/api/acb/standings', 6*3_600_000).catch(()=>{});
+      cachedFetch('/api/acb/leaders',   6*3_600_000).catch(()=>{});
+    } else if (l === 'cdm') {
+      cachedFetch('/api/fd/worldcup', 30_000).catch(()=>{});
+    } else if (l === 'euroleague') {
+      cachedFetch('/api/euroleague/scoreboard', 20_000).catch(()=>{});
+    } else if (FOOTBALL_LEAGUES.has(l)) {
+      cachedFetch('/api/football/matches', 30_000).catch(()=>{});
+    } else {
+      cachedFetch(`/api/euro/${l}/scoreboard`, 20_000).catch(()=>{});
+    }
+  }
+}
 
 
 const MONDE = { name: 'Monde', flag: '🌍', leagues: ['cdm','euroleague'], isMonde: true };
@@ -169,7 +196,9 @@ function Panel({ country, onClose, statsLeague, setStatsLeague }) {
 
   useEffect(() => {
     if (!country) return;
-    setLoading(true);
+    // Ne montrer le spinner qu'après 120ms — évite le flash quand les données sont déjà en cache
+    let cancelled = false;
+    const loadTimer = setTimeout(() => { if (!cancelled) setLoading(true); }, 120);
     const fetchLeague = l => {
       const KEEP_MS = 48*3600_000;
       const UPCOMING_MS = 30*3600_000; // page principale = matchs imminents (<30h) ; onglet "À venir" = matchs programmés à 30h ou plus
@@ -204,19 +233,26 @@ function Panel({ country, onClose, statsLeague, setStatsLeague }) {
         })).slice(0,4);
         return {l, games};
       });
-      return fetch(`/api/euro/${l}/scoreboard`).then(r=>r.json()).then(d=>{const s=splitGames(d.games||[]);return{l,...s};});
+      return cachedFetch(`/api/euro/${l}/scoreboard`, 20_000).then(d=>{const s=splitGames(d.games||[]);return{l,...s};});
     };
-    const load = () => Promise.all(country.leagues.map(l => fetchLeague(l).catch(()=>({l,soon:[],upcoming:[],done:[]})))).then(res => {
+    const load = (first=false) => Promise.all(country.leagues.map(l => fetchLeague(l).catch(()=>({l,soon:[],upcoming:[],done:[]})))).then(res => {
+      if (cancelled) return;
       const m={};
       res.forEach(({l,soon=[],upcoming=[],done=[]})=>{m[l]={soon,upcoming,done};});
       setMatches(m);
-      setLoading(false);
+      if (first) {
+        clearTimeout(loadTimer); setLoading(false);
+        // Pré-charge les données de tous les matchs visibles dès l'ouverture du panneau
+        Object.entries(m).forEach(([l, { soon=[], upcoming=[] }]) => {
+          [...soon, ...upcoming].forEach(g => _prefetchMatch(g, l));
+        });
+      } else setLoading(false);
     });
-    load();
+    load(true);
     // Rafraîchit régulièrement pour faire passer un match terminé de "À venir" à "Terminés"
     // sans devoir fermer/réouvrir le panneau (settlement plus rapide pour la CDM).
-    const t = setInterval(load, 60_000);
-    return () => clearInterval(t);
+    const t = setInterval(() => load(false), 60_000);
+    return () => { cancelled = true; clearTimeout(loadTimer); clearInterval(t); };
   }, [country?.name]);
 
   const hasFootball   = country.leagues.some(l => FOOTBALL_LEAGUES.has(l));
@@ -303,7 +339,7 @@ function Panel({ country, onClose, statsLeague, setStatsLeague }) {
                         background: statsLeague===league?'rgba(96,165,250,0.15)':'transparent',
                         display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer',padding:0,transition:'all .15s'}}>
                       <svg width="7" height="6" viewBox="0 0 9 9" fill="none">
-                        <rect x="1" y="6" width="1.5" height="2.5" fill="#ef4444"/>
+                        <rect x="1" y="6" width="1.5" height="2.5" fill="#60a5fa"/>
                         <rect x="3.75" y="3.5" width="1.5" height="5" fill="#4ade80"/>
                         <rect x="6.5" y="1" width="1.5" height="7.5" fill="#60a5fa"/>
                       </svg>
@@ -357,7 +393,7 @@ function Panel({ country, onClose, statsLeague, setStatsLeague }) {
                               {g.home?.logo&&<img src={g.home.logo} alt="" width={20} height={20} style={{objectFit:'contain',borderRadius:'50%'}} onError={e=>e.target.style.display='none'}/>}
                               <span style={{fontSize:12,fontWeight:700,color:'#fff'}}>{g.home?.name||g.home?.short}</span>
                               {live&&g.home?.score!=null
-                                ? <span style={{fontSize:13,fontWeight:800,color:'#ef4444',fontFamily:'monospace',margin:'0 4px'}}>{g.home.score} – {g.away.score}</span>
+                                ? <span style={{fontSize:13,fontWeight:800,color:'#60a5fa',fontFamily:'monospace',margin:'0 4px'}}>{g.home.score} – {g.away.score}</span>
                                 : <span style={{fontSize:10,color:'rgba(255,255,255,0.25)',margin:'0 5px'}}>vs</span>
                               }
                               <span style={{fontSize:12,fontWeight:700,color:'#fff'}}>{g.away?.name||g.away?.short}</span>
@@ -365,7 +401,7 @@ function Panel({ country, onClose, statsLeague, setStatsLeague }) {
                             </div>
                             <div style={{display:'flex',alignItems:'center',justifyContent:'center',gap:6}}>
                               {live
-                                ? <span style={{fontSize:8,color:'#ef4444',fontFamily:'monospace',fontWeight:800}}>● EN COURS</span>
+                                ? <span style={{fontSize:8,color:'#60a5fa',fontFamily:'monospace',fontWeight:800}}>● EN COURS</span>
                                 : <>
                                     {g.round&&<span style={{fontSize:9,color:'rgba(255,255,255,0.3)',fontStyle:'italic'}}>{g.round}</span>}
                                     <span style={{fontSize:9,color:'rgba(255,255,255,0.4)'}}>{new Date(g.date).toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'})}</span>
@@ -550,7 +586,7 @@ export default function WorldMapPage() {
         @keyframes mapGlide{from{transform:translateX(0)}to{transform:translateX(-180px)}}
         @keyframes fadeCountry{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:translateY(0)}}
         @keyframes scanLine{0%{top:-2px;opacity:1}90%{opacity:0.8}100%{top:100%;opacity:0;visibility:hidden}}
-        @keyframes dotBlink{0%,100%{opacity:1;box-shadow:0 0 6px #ef4444}50%{opacity:0.2;box-shadow:none}}
+        @keyframes dotBlink{0%,100%{opacity:1;box-shadow:0 0 6px #60a5fa}50%{opacity:0.2;box-shadow:none}}
         @keyframes mapReveal{
           0%   { opacity: 0; transform: scale(0.96); }
           100% { opacity: 1; transform: scale(1); }
@@ -573,7 +609,7 @@ export default function WorldMapPage() {
             onMouseEnter={e=>e.currentTarget.style.borderColor='rgba(255,255,255,0.22)'}
             onMouseLeave={e=>e.currentTarget.style.borderColor='rgba(255,255,255,0.1)'}
           >
-            <div style={{ width:6, height:6, borderRadius:'50%', background:'#ef4444', flexShrink:0, animation: todayCount.total > 0 ? 'dotBlink 1.4s ease-in-out infinite' : 'none' }}/>
+            <div style={{ width:6, height:6, borderRadius:'50%', background:'#60a5fa', flexShrink:0, animation: todayCount.total > 0 ? 'dotBlink 1.4s ease-in-out infinite' : 'none' }}/>
             <span style={{ fontSize:11, fontWeight:600, color:'rgba(255,255,255,0.7)' }}>Matchs à venir</span>
           </button>
 
@@ -630,7 +666,7 @@ export default function WorldMapPage() {
                   key={geo.rsmKey}
                   geography={geo}
                   onClick={(e)=>{e.stopPropagation();if(c){const desel=selected===c;setSelected(desel?null:c);setSelectedGeoId(desel?null:geo.id);setTooltip(null);}}}
-                  onMouseEnter={e=>{if(c){setHovered(geo.id);setTooltip({name:c.name,flag:c.flag,x:e.clientX,y:e.clientY});}}}
+                  onMouseEnter={e=>{if(c){setHovered(geo.id);setTooltip({name:c.name,flag:c.flag,x:e.clientX,y:e.clientY});_prefetchCountry(c);}}}
                   onMouseMove={e=>{if(c)setTooltip(t=>t?{...t,x:e.clientX,y:e.clientY}:null);}}
                   onMouseLeave={()=>{setHovered(null);setTooltip(null);}}
                   style={{
@@ -680,7 +716,7 @@ export default function WorldMapPage() {
           {[...Object.values(COVERED), MONDE].map((c, i) => (
             <button key={i} onClick={() => { const desel=c===selected; setSelected(desel?null:c); if(desel) setStatsLeague(null); }} title={c.leagues.map(l => LEAGUE_META[l]).join(' · ')}
               style={{ display:'flex', alignItems:'center', gap:4, background:'none', border:'none', borderRadius:6, padding:'2px 6px', cursor:'pointer', transition:'opacity .15s', opacity: selected===c ? 1 : 0.55 }}
-              onMouseEnter={e => e.currentTarget.style.opacity='1'}
+              onMouseEnter={e => { e.currentTarget.style.opacity='1'; _prefetchCountry(c); }}
               onMouseLeave={e => e.currentTarget.style.opacity = selected===c ? '1' : '0.55'}
             >
               <span style={{ fontSize:13 }}>{c.flag}</span>

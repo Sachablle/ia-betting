@@ -169,7 +169,36 @@ function loadAllResolved(periodDays, model = 'new') {
       _sourceKey: 'basketball_result_alerts', _alertId: a.id,
     }));
 
-  return [...props, ...totals, ...btts, ...fbTotals, ...fbResults, ...basketResults]
+  const DC_DIR = { '1x': '1X', 'x2': 'X2', '12': '12' };
+  const dcBtts = JSON.parse(localStorage.getItem('fb_dc_btts_alerts') || '[]')
+    .filter(a => ['won', 'lost'].includes(a.status))
+    .map(a => ({
+      type: 'btts', sport: 'football',
+      label: `${a.homeShort || a.home} vs ${a.awayShort || a.away}`,
+      sub: `DC ${DC_DIR[a.direction] ?? a.direction} & BTTS`,
+      date: a.fixtureDate, status: a.status,
+      odds: a.acceptedUnibetOdds ?? a.acceptedBetclicOdds ?? a.unibetOdds ?? a.betclicOdds ?? null,
+      probability: a.acceptedProbability ?? a.probability,
+      actual: (a.actualHomeScore != null && a.actualAwayScore != null) ? `${a.actualHomeScore}-${a.actualAwayScore}` : null,
+      league: a.league || 'cdm', bookmaker: a.acceptedBookmaker,
+      _sourceKey: 'fb_dc_btts_alerts', _alertId: a.id,
+    }));
+
+  const dcOu = JSON.parse(localStorage.getItem('fb_dc_ou_alerts') || '[]')
+    .filter(a => ['won', 'lost'].includes(a.status))
+    .map(a => ({
+      type: 'total', sport: 'football',
+      label: `${a.homeShort || a.home} vs ${a.awayShort || a.away}`,
+      sub: `DC ${DC_DIR[a.direction] ?? a.direction} & +${a.line ?? 1.5} buts`,
+      date: a.fixtureDate, status: a.status,
+      odds: a.acceptedUnibetOdds ?? a.acceptedBetclicOdds ?? a.unibetOdds ?? a.betclicOdds ?? null,
+      probability: a.acceptedProbability ?? a.probability,
+      actual: (a.actualHomeScore != null && a.actualAwayScore != null) ? a.actualHomeScore + a.actualAwayScore : null,
+      line: a.line ?? 1.5, direction: 'over', league: a.league || 'cdm', bookmaker: a.acceptedBookmaker,
+      _sourceKey: 'fb_dc_ou_alerts', _alertId: a.id,
+    }));
+
+  return [...props, ...totals, ...btts, ...fbTotals, ...fbResults, ...basketResults, ...dcBtts, ...dcOu]
     .filter(a => { const t = new Date(a.date).getTime(); return !isNaN(t) && t >= cutoff && t < endCutoff; })
     .sort((a, b) => new Date(a.date) - new Date(b.date));
 }
@@ -933,6 +962,7 @@ export default function BacktestingPage() {
   const [pinnacleAllBets, setPinnacleAllBets] = useState([]);
   const [reloadKey,      setReloadKey]      = useState(0);
   const [stake,          setStake]          = useState(10);
+  const [refreshing,     setRefreshing]     = useState(false);
 
   const handleModelChange = (m) => { setModel(m); setTimelineLabel('Tous'); setSportFilter('all'); setCompFilter('all'); setTypeFilter('all'); };
   const handleSportChange = (v) => { setSportFilter(v); setCompFilter('all'); setTypeFilter('all'); };
@@ -943,7 +973,12 @@ export default function BacktestingPage() {
 
   const acceptedCount = useMemo(() => countAccepted(period, sportFilter, typeFilter, model), [period, sportFilter, typeFilter, model]);
 
-  // Sync settlements au mount (won/lost depuis le backend) puis recharge les données
+  const loadData = (p, m) => {
+    setAllBets(loadAllResolved(p, m));
+    setPinnacleAllBets(loadPinnacleBets(p));
+  };
+
+  // Sync settlements au mount uniquement — pas de rechargement automatique ensuite
   useEffect(() => {
     const resolveFootball = async (key) => {
       const alerts = JSON.parse(localStorage.getItem(key) || '[]');
@@ -953,15 +988,34 @@ export default function BacktestingPage() {
       syncSettlements(),
       resolveFootball('fb_btts_alerts'),
       resolveFootball('fb_total_alerts'),
+      resolveFootball('fb_result_alerts'),
       resolveFootball('fb_pinnacle_alerts'),
-    ]).then(() => {
-      setAllBets(loadAllResolved(period, model));
-      setPinnacleAllBets(loadPinnacleBets(period));
-    });
+      resolveFootball('fb_dc_btts_alerts'),
+      resolveFootball('fb_dc_ou_alerts'),
+    ]).then(() => loadData(period, model));
   }, []);
 
-  useEffect(() => { setAllBets(loadAllResolved(period, model)); }, [period, model, reloadKey]);
-  useEffect(() => { setPinnacleAllBets(loadPinnacleBets(period)); }, [period, reloadKey]);
+  // Rechargement quand les filtres période/modèle changent ou après suppression
+  useEffect(() => { loadData(period, model); }, [period, model, reloadKey]);
+
+  const handleRefresh = async () => {
+    setRefreshing(true);
+    const resolveFootball = async (key) => {
+      const alerts = JSON.parse(localStorage.getItem(key) || '[]');
+      await resolveCompletedFootballAlerts(alerts, updated => localStorage.setItem(key, JSON.stringify(updated)));
+    };
+    await Promise.all([
+      syncSettlements(),
+      resolveFootball('fb_btts_alerts'),
+      resolveFootball('fb_total_alerts'),
+      resolveFootball('fb_result_alerts'),
+      resolveFootball('fb_pinnacle_alerts'),
+      resolveFootball('fb_dc_btts_alerts'),
+      resolveFootball('fb_dc_ou_alerts'),
+    ]);
+    loadData(period, model);
+    setRefreshing(false);
+  };
 
   const handleDeleteBet = (bet) => {
     if (!bet._sourceKey || !bet._alertId) return;
@@ -972,16 +1026,6 @@ export default function BacktestingPage() {
     } catch {}
     setReloadKey(k => k + 1);
   };
-
-  // Recharge quand le cloud sync termine (données MongoDB fraîches dans localStorage)
-  useEffect(() => {
-    const reload = () => {
-      setAllBets(loadAllResolved(period, model));
-      setPinnacleAllBets(loadPinnacleBets(period));
-    };
-    window.addEventListener('cloud_synced', reload);
-    return () => window.removeEventListener('cloud_synced', reload);
-  }, [period, model]);
 
   const filtered = useMemo(() => allBets.filter(b => {
     if (sportFilter === 'basket' && !BASKET_LEAGUES.has(b.sport)) return false;
@@ -1085,6 +1129,20 @@ export default function BacktestingPage() {
           <span style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.09em', color: 'var(--text-dim)' }}>Mise (€)</span>
           <input type="number" min="1" value={stake} onChange={e => setStake(Math.max(1, +e.target.value || 10))}
             style={{ width: 72, background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 8, color: 'var(--text)', fontSize: 12, fontWeight: 600, padding: '5px 10px', outline: 'none' }} />
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+          <span style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.09em', color: 'var(--text-dim)' }}>Données</span>
+          <button
+            onClick={handleRefresh}
+            disabled={refreshing}
+            style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', padding: '5px 12px', borderRadius: 8, cursor: refreshing ? 'default' : 'pointer', border: '1px solid rgba(255,255,255,0.12)', background: 'rgba(255,255,255,0.05)', color: refreshing ? 'var(--text-dim)' : 'var(--text)', fontSize: 12, fontWeight: 700, opacity: refreshing ? 0.6 : 1 }}
+          >
+            <svg width="12" height="12" viewBox="0 0 14 14" fill="none" style={{ animation: refreshing ? 'spin 0.8s linear infinite' : 'none' }}>
+              <path d="M12 7A5 5 0 1 1 7 2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+              <path d="M7 2l2-2M7 2l2 2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+            </svg>
+            {refreshing ? 'Sync…' : 'Rafraîchir'}
+          </button>
         </div>
         {/* Toggle vue Pinnacle */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginLeft: 'auto' }}>

@@ -283,7 +283,7 @@ function computeDCBTTS(lambda_home, lambda_away, rho = 0) {
       if (i !== j) p12 += p;
     }
   }
-  return { p1x: Math.round(p1x * 100), px2: Math.round(px2 * 100), p12: Math.round(p12 * 100) };
+  return { p1x: +(p1x * 100).toFixed(1), px2: +(px2 * 100).toFixed(1), p12: +(p12 * 100).toFixed(1) };
 }
 
 function computeDCOver(lambda_home, lambda_away, line, rho = 0) {
@@ -301,7 +301,7 @@ function computeDCOver(lambda_home, lambda_away, line, rho = 0) {
       if (i !== j) p12 += p;
     }
   }
-  return { p1x: Math.round(p1x * 100), px2: Math.round(px2 * 100), p12: Math.round(p12 * 100) };
+  return { p1x: +(p1x * 100).toFixed(1), px2: +(px2 * 100).toFixed(1), p12: +(p12 * 100).toFixed(1) };
 }
 
 // P(victoire dom. / nul / victoire ext.) — grille Poisson (Dixon-Coles si rho>0, même base que compute1X2Probs backend)
@@ -745,7 +745,7 @@ function FootballOddsBox({ markets, bttsResult, home, away, frozen, onRefresh, r
             ].map(({ key, label, prob }) => (
               <div key={key} style={{ display: 'grid', gridTemplateColumns: `1fr${bks.map(() => ' 48px').join('')}`, gap: '0 0.25rem', alignItems: 'center', padding: '0.28rem 0', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                  <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>{label}</span>
+                  <span style={{ fontSize: 9, color: '#fff' }}>{label}</span>
                   {prob != null && <span style={{ fontSize: 10, fontWeight: 700, color: prob >= 65 ? '#4ade80' : prob >= 55 ? '#f59e0b' : 'var(--text-dim)', background: 'rgba(255,255,255,0.06)', borderRadius: 4, padding: '1px 5px' }}>{prob}%</span>}
                 </div>
                 {bks.map(bk => (

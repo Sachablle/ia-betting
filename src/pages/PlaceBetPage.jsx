@@ -1,9 +1,10 @@
-import { useState, useEffect, useRef, Fragment, startTransition } from 'react';
+import { useState, useEffect, useRef, Fragment } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { BBALL_FIXTURES } from '../utils/basketball';
 import { syncBackgroundAlerts, syncGameTotalAlerts, syncBasketballResultAlerts, syncBballPinnacleAlerts, syncBballPinnaclePropsAlerts, loadBballPinnaclePropsAlerts, saveBballPinnaclePropsAlerts, syncOddsDrift, syncFootballAlerts, resolveCompletedFootballAlerts, postAcceptedAlertReliably, FB_DC_BTTS_KEY, FB_DC_OU_KEY } from '../utils/syncAlerts';
-import { BTTSAlertCard, FootballTotalCard, FootballResultCard, PinnacleEdgeCard, DCBTTSAlertCard, DCOUAlertCard } from '../components/FootballAlertCards';
+import { BTTSAlertCard, FootballTotalCard, FootballResultCard, PinnacleEdgeCard, DCBTTSAlertCard, DCOUAlertCard, FootballGroupCard } from '../components/FootballAlertCards';
 import { setItem as cloudSet } from '../utils/cloudStorage';
+import { cachedFetch } from '../utils/fetchCache';
 
 const ALERT_KEY        = 'nba_prop_alerts';
 const HISTORY_KEY      = 'nba_bet_history';
@@ -18,6 +19,42 @@ const BBALL_PINNACLE_KEY = 'bball_pinnacle_alerts';
 const PURGE_PLAYERS    = ['Justin Bean', 'Jack Kayil', 'Leandro Bolmaro'];
 
 const ESPN_SHORT = { SA: 'SAS', NY: 'NYK', GS: 'GSW', NO: 'NOP', UT: 'UTA' };
+
+// Prefetch au hover des cartes basket — même logique que BasketballMatchRow
+const _PB_ESPN_NBA = {
+  'Atlanta Hawks':1,'Boston Celtics':2,'New Orleans Pelicans':3,'Chicago Bulls':4,
+  'Cleveland Cavaliers':5,'Dallas Mavericks':6,'Denver Nuggets':7,'Detroit Pistons':8,
+  'Golden State Warriors':9,'Houston Rockets':10,'Indiana Pacers':11,'LA Clippers':12,
+  'Los Angeles Lakers':13,'Miami Heat':14,'Milwaukee Bucks':15,'Minnesota Timberwolves':16,
+  'Brooklyn Nets':17,'New York Knicks':18,'Orlando Magic':19,'Philadelphia 76ers':20,
+  'Phoenix Suns':21,'Portland Trail Blazers':22,'Sacramento Kings':23,'San Antonio Spurs':24,
+  'Oklahoma City Thunder':25,'Utah Jazz':26,'Washington Wizards':27,'Toronto Raptors':28,
+  'Memphis Grizzlies':29,'Charlotte Hornets':30,
+};
+const _PB_ESPN_WNBA = {
+  'Atlanta Dream':20,'Chicago Sky':19,'Connecticut Sun':18,'Dallas Wings':3,
+  'Golden State Valkyries':129689,'Indiana Fever':5,'Las Vegas Aces':17,
+  'Los Angeles Sparks':6,'Minnesota Lynx':8,'New York Liberty':9,
+  'Phoenix Mercury':11,'Portland Fire':132052,'Seattle Storm':14,
+  'Toronto Tempo':131935,'Washington Mystics':16,
+};
+const _EU_BBALL = new Set(['acb','lnb','bbl','legaa','euroleague']);
+const _prefetchedPB = new Set();
+function _prefetchBballCard(homeTeam, awayTeam, league) {
+  const key = `${league}__${homeTeam}__${awayTeam}`;
+  if (_prefetchedPB.has(key)) return;
+  _prefetchedPB.add(key);
+  import('./BasketballDetailPage').catch(() => {});
+  if (league === 'wnba') {
+    const hId = _PB_ESPN_WNBA[homeTeam], aId = _PB_ESPN_WNBA[awayTeam];
+    if (hId) { cachedFetch(`/api/wnba/players/${hId}`, 3_600_000).catch(() => {}); cachedFetch(`/api/wnba/teamschedule/${hId}`, 300_000).catch(() => {}); }
+    if (aId) { cachedFetch(`/api/wnba/players/${aId}`, 3_600_000).catch(() => {}); cachedFetch(`/api/wnba/teamschedule/${aId}`, 300_000).catch(() => {}); }
+  } else if (!_EU_BBALL.has(league)) {
+    const hId = _PB_ESPN_NBA[homeTeam], aId = _PB_ESPN_NBA[awayTeam];
+    if (hId) { cachedFetch(`/api/nba/players/${hId}`, 3_600_000).catch(() => {}); cachedFetch(`/api/nba/teamschedule/${hId}`, 300_000).catch(() => {}); }
+    if (aId) { cachedFetch(`/api/nba/players/${aId}`, 3_600_000).catch(() => {}); cachedFetch(`/api/nba/teamschedule/${aId}`, 300_000).catch(() => {}); }
+  }
+}
 const normAbbr = a => ESPN_SHORT[a?.toUpperCase()] || a?.toUpperCase() || '';
 const lastName = n => n?.split(' ').slice(-1)[0]?.toLowerCase();
 
@@ -372,7 +409,7 @@ function CompactAcceptedCard({ group, onDismiss, onVoid, variant = 'accepted' })
     const path = id.includes('?')
       ? `/basketball/${id}&props=1`
       : `/basketball/${id}?props=1`;
-    startTransition(() => navigate(path));
+    navigate(path);
   };
 
   return (
@@ -463,6 +500,7 @@ function CompactAcceptedCard({ group, onDismiss, onVoid, variant = 'accepted' })
         <span style={{ fontSize: 10, fontWeight: 800, color: '#60a5fa', minWidth: 28, textAlign: 'right', marginTop: 1 }}>{maxProb}%</span>
         <button
           onMouseDown={() => { dismissingRef.current = true; }}
+          onMouseUp={() => { setTimeout(() => { dismissingRef.current = false; }, 0); }}
           onClick={e => { e.stopPropagation(); onDismiss(ids); }}
           style={{ background: 'none', border: 'none', color: 'var(--text-dim)', cursor: 'pointer', fontSize: 15, padding: '0 0 0 4px', lineHeight: 1 }}
         >×</button>
@@ -488,7 +526,7 @@ function CompactAcceptedTotalCard({ alert, onDismiss, variant = 'accepted' }) {
 
   return (
     <div
-      onClick={() => fixtureId && startTransition(() => navigate(`/basketball/${fixtureId}${leagueParam}`))}
+      onClick={() => fixtureId && navigate(`/basketball/${fixtureId}${leagueParam}`)}
       style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem', padding: '0.45rem 0.75rem', borderRadius: 7, border: `1px solid ${colors.border}`, background: colors.bg, cursor: fixtureId ? 'pointer' : 'default', transition: 'background 0.15s' }}
       onMouseEnter={e => e.currentTarget.style.background = colors.bgHover}
       onMouseLeave={e => e.currentTarget.style.background = colors.bg}
@@ -543,7 +581,8 @@ function GameTotalCard({ alert, onAccept, onReject, onDismiss }) {
     <div
       className="bet-card"
       style={{ position: 'relative', '--league-accent': '#f47c20', cursor: fixtureId ? 'pointer' : 'default' }}
-      onClick={() => fixtureId && startTransition(() => navigate(`/basketball/${fixtureId}${leagueParam}`))}
+      onClick={() => fixtureId && navigate(`/basketball/${fixtureId}${leagueParam}`)}
+      onMouseEnter={() => _prefetchBballCard(home, away, league)}
     >
       {isPending
         ? <button onClick={e => { e.stopPropagation(); onReject(id); }} style={{ position: 'absolute', top: 8, right: 10, background: 'none', border: 'none', cursor: 'pointer', padding: 0, lineHeight: 1 }}><svg width="14" height="14" viewBox="0 0 18 18" fill="none"><circle cx="9" cy="9" r="7.5" stroke="#ef4444" strokeWidth="1.5"/><path d="M6 6l6 6M12 6l-6 6" stroke="#ef4444" strokeWidth="1.75" strokeLinecap="round"/></svg></button>
@@ -642,7 +681,8 @@ function BasketballPinnacleEdgeCard({ alert, onAccept, onReject, onDismiss }) {
     <div
       className="bet-card"
       style={{ position: 'relative', '--league-accent': accent, borderColor: 'rgba(34,211,238,0.25)', cursor: eventId ? 'pointer' : 'default' }}
-      onClick={() => eventId && startTransition(() => navigate(`/basketball/${eventId}${leagueParam}`))}
+      onClick={() => eventId && navigate(`/basketball/${eventId}${leagueParam}`)}
+      onMouseEnter={() => _prefetchBballCard(home, away, league)}
     >
       {isPending
         ? <button onClick={e => { e.stopPropagation(); onReject(id); }} style={{ position: 'absolute', top: 8, right: 10, background: 'none', border: 'none', cursor: 'pointer', padding: 0, lineHeight: 1 }}><svg width="14" height="14" viewBox="0 0 18 18" fill="none"><circle cx="9" cy="9" r="7.5" stroke="#ef4444" strokeWidth="1.5"/><path d="M6 6l6 6M12 6l-6 6" stroke="#ef4444" strokeWidth="1.75" strokeLinecap="round"/></svg></button>
@@ -749,7 +789,8 @@ function BasketballPinnaclePropsCard({ alert, onAccept, onReject, onDismiss }) {
     <div
       className="bet-card"
       style={{ position: 'relative', '--league-accent': accent, borderColor: 'rgba(34,211,238,0.25)', cursor: eventId ? 'pointer' : 'default' }}
-      onClick={() => eventId && startTransition(() => navigate(`/basketball/${eventId}${leagueParam}`))}
+      onClick={() => eventId && navigate(`/basketball/${eventId}${leagueParam}`)}
+      onMouseEnter={() => _prefetchBballCard(home, away, league)}
     >
       {isPending
         ? <button onClick={e => { e.stopPropagation(); onReject(id); }} style={{ position: 'absolute', top: 8, right: 10, background: 'none', border: 'none', cursor: 'pointer', padding: 0, lineHeight: 1 }}><svg width="14" height="14" viewBox="0 0 18 18" fill="none"><circle cx="9" cy="9" r="7.5" stroke="#ef4444" strokeWidth="1.5"/><path d="M6 6l6 6M12 6l-6 6" stroke="#ef4444" strokeWidth="1.75" strokeLinecap="round"/></svg></button>
@@ -835,7 +876,8 @@ function BasketballResultCard({ alert, onAccept, onReject, onDismiss }) {
     <div
       className="bet-card"
       style={{ position: 'relative', '--league-accent': '#fbbf24', cursor: eventId ? 'pointer' : 'default' }}
-      onClick={() => eventId && startTransition(() => navigate(`/basketball/${eventId}${leagueParam}`))}
+      onClick={() => eventId && navigate(`/basketball/${eventId}${leagueParam}`)}
+      onMouseEnter={() => _prefetchBballCard(home, away, league)}
     >
       {!isPending && (
         <button onClick={e => { e.stopPropagation(); onDismiss(id); }} style={{ position: 'absolute', top: 8, right: 10, background: 'none', border: 'none', color: 'var(--text-dim)', cursor: 'pointer', fontSize: 16, lineHeight: 1, padding: 0 }}>×</button>
@@ -965,7 +1007,7 @@ function PropAlertCard({ group, onDismiss, onAccept, onReject }) {
     const id = resolveMatchId(group);
     if (!id) return;
     const path = id.includes('?') ? `/basketball/${id}&props=1` : `/basketball/${id}?props=1`;
-    startTransition(() => navigate(path));
+    navigate(path);
   };
   const isPending  = status === 'pending';
   const isAccepted = status === 'accepted';
@@ -983,7 +1025,7 @@ function PropAlertCard({ group, onDismiss, onAccept, onReject }) {
   const barColor  = primaryIsOver ? '#4ade80' : '#f87171';
 
   return (
-    <div className="bet-card" style={{ position: 'relative', cursor: 'pointer', '--league-accent': '#f47c20' }} onClick={goToMatch}>
+    <div className="bet-card" style={{ position: 'relative', cursor: 'pointer', '--league-accent': '#f47c20' }} onClick={goToMatch} onMouseEnter={() => _prefetchBballCard(group.homeTeam, group.awayTeam, group.league)}>
       {isPending
         ? <button onClick={e => { e.stopPropagation(); onReject(ids); }} style={{ position: 'absolute', top: 8, right: 10, background: 'none', border: 'none', cursor: 'pointer', padding: 0, lineHeight: 1 }}><svg width="14" height="14" viewBox="0 0 18 18" fill="none"><circle cx="9" cy="9" r="7.5" stroke="#ef4444" strokeWidth="1.5"/><path d="M6 6l6 6M12 6l-6 6" stroke="#ef4444" strokeWidth="1.75" strokeLinecap="round"/></svg></button>
         : <button onClick={e => { e.stopPropagation(); onDismiss(ids); }} style={{ position: 'absolute', top: 8, right: 10, background: 'none', border: 'none', color: 'var(--text-dim)', cursor: 'pointer', fontSize: 16, lineHeight: 1, padding: 0 }}>×</button>
@@ -2127,17 +2169,51 @@ export default function PlaceBetPage() {
   const pendingResultAlerts  = rawResultAlerts.filter(a => a.status === 'pending');
   const acceptedResultAlerts = rawResultAlerts.filter(a => a.status === 'accepted');
   const totalGroups           = groups.filter(g => g.status !== 'rejected').length + rawTotalAlerts.filter(a => a.status !== 'rejected').length + rawResultAlerts.filter(a => a.status !== 'rejected').length;
+  // Grouper toutes les alertes foot (pending + accepted) par fixtureId — une carte par match
+  // La carte apparaît si ≥1 alerte est encore pending, mais montre aussi les accepted en lecture seule
+  const _allFoot = [
+    ...bttsAlerts.filter(a => a.status === 'pending' || a.status === 'accepted'),
+    ...fbTotalAlerts.filter(a => a.status === 'pending' || a.status === 'accepted'),
+    ...fbResultAlerts.filter(a => a.status === 'pending' || a.status === 'accepted'),
+    ...fbPinnacleAlerts.filter(a => a.status === 'pending' || a.status === 'accepted'),
+    ...dcBttsAlerts.filter(a => a.status === 'pending' || a.status === 'accepted'),
+    ...dcOuAlerts.filter(a => a.status === 'pending' || a.status === 'accepted'),
+  ];
+  const footballGroups = Object.values(
+    _allFoot.reduce((acc, a) => {
+      const k = a.fixtureId || a.eventId;
+      if (!acc[k]) acc[k] = { fixtureId: k, fixtureDate: a.fixtureDate, alerts: [] };
+      acc[k].alerts.push(a);
+      return acc;
+    }, {})
+  ).filter(g => g.alerts.some(a => a.status === 'pending'));
+
+  const handleFootballAccept = (alert, bk, odds) => {
+    if (alert.type === 'football_btts')          updateBttsStatus(alert.id, 'accepted', bk, odds);
+    else if (alert.type === 'football_total')    updateFbTotalStatus(alert.id, 'accepted', bk, odds);
+    else if (alert.type === 'football_result')   updateFbResultStatus(alert.id, 'accepted', bk, odds);
+    else if (alert.type === 'football_pinnacle_edge') updateFbPinnacleStatus(alert.id, 'accepted', bk, odds);
+    else if (alert.type === 'football_dc_btts')  updateDcBttsStatus(alert.id, 'accepted', bk, odds);
+    else if (alert.type === 'football_dc_ou')    updateDcOuStatus(alert.id, 'accepted', bk, odds);
+  };
+  const handleFootballReject = (alert) => {
+    if (alert.type === 'football_btts')          updateBttsStatus(alert.id, 'rejected');
+    else if (alert.type === 'football_total')    updateFbTotalStatus(alert.id, 'rejected');
+    else if (alert.type === 'football_result')   updateFbResultStatus(alert.id, 'rejected');
+    else if (alert.type === 'football_pinnacle_edge') updateFbPinnacleStatus(alert.id, 'rejected');
+    else if (alert.type === 'football_dc_btts')  updateDcBttsStatus(alert.id, 'rejected');
+    else if (alert.type === 'football_dc_ou')    updateDcOuStatus(alert.id, 'rejected');
+  };
+  const handleFootballDismissAll = (alerts) => {
+    alerts.forEach(a => handleFootballReject(a));
+  };
+
   // Liste unifiée triée par date (foot + basket mélangés)
   const allPendingItems = [
     ...pendingGroups.map(g => ({ type: 'prop',     key: g.key,  date: g.fixtureDate,  data: g })),
     ...pendingTotalAlerts.map(a => ({ type: 'total',    key: a.id,   date: a.fixtureDate,  data: a })),
     ...pendingResultAlerts.map(a => ({ type: 'basketresult', key: a.id, date: a.date,      data: a })),
-    ...bttsAlerts.filter(a => a.status === 'pending').map(a => ({ type: 'btts',     key: a.id,   date: a.fixtureDate,  data: a })),
-    ...fbTotalAlerts.filter(a => a.status === 'pending').map(a => ({ type: 'fbtotal',  key: a.id,   date: a.fixtureDate,  data: a })),
-    ...fbResultAlerts.filter(a => a.status === 'pending').map(a => ({ type: 'fbresult', key: a.id,   date: a.fixtureDate,  data: a })),
-    ...fbPinnacleAlerts.filter(a => a.status === 'pending').map(a => ({ type: 'fbpinnacle', key: a.id, date: a.fixtureDate, data: a })),
-    ...dcBttsAlerts.filter(a => a.status === 'pending').map(a => ({ type: 'dc_btts', key: a.id, date: a.fixtureDate, data: a })),
-    ...dcOuAlerts.filter(a => a.status === 'pending').map(a => ({ type: 'dc_ou', key: a.id, date: a.fixtureDate, data: a })),
+    ...footballGroups.map(g => ({ type: 'fbgroup', key: g.fixtureId, date: g.fixtureDate, data: g })),
     ...bballPinnacleAlerts.filter(a => a.status === 'pending').map(a => ({ type: 'bballpinnacle', key: a.id, date: a.date, data: a })),
     ...bballPinnaclePropsAlerts.filter(a => a.status === 'pending').map(a => ({ type: 'bballpinnacleprops', key: a.id, date: a.date, data: a })),
   ].sort((a, b) => new Date(a.date || 0) - new Date(b.date || 0));
@@ -2254,12 +2330,7 @@ export default function PlaceBetPage() {
             if (item.type === 'prop')     return <PropAlertCard key={item.key} group={item.data} onDismiss={dismiss} onAccept={(ids, bk, odds) => updateStatus(ids, 'accepted', bk, odds)} onReject={ids => updateStatus(ids, 'rejected')} />;
             if (item.type === 'total')    return <GameTotalCard key={item.key} alert={item.data} onAccept={(id, bk, odds) => updateTotalStatus(id, 'accepted', bk, odds)} onReject={id => updateTotalStatus(id, 'rejected')} onDismiss={dismissTotal} />;
             if (item.type === 'basketresult') return <BasketballResultCard key={item.key} alert={item.data} onAccept={id => updateResultStatus(id, 'accepted')} onReject={id => updateResultStatus(id, 'rejected')} onDismiss={dismissResult} />;
-            if (item.type === 'btts')     return <BTTSAlertCard key={item.key} alert={item.data} onAccept={(id, bk, odds) => updateBttsStatus(id, 'accepted', bk, odds)} onReject={id => updateBttsStatus(id, 'rejected')} onDismiss={dismissBtts} />;
-            if (item.type === 'fbtotal')  return <FootballTotalCard key={item.key} alert={item.data} onAccept={(id, bk, odds) => updateFbTotalStatus(id, 'accepted', bk, odds)} onReject={id => updateFbTotalStatus(id, 'rejected')} onDismiss={dismissFbTotal} />;
-            if (item.type === 'fbresult') return <FootballResultCard key={item.key} alert={item.data} onAccept={(id, bk, odds) => updateFbResultStatus(id, 'accepted', bk, odds)} onReject={id => updateFbResultStatus(id, 'rejected')} onDismiss={dismissFbResult} />;
-            if (item.type === 'fbpinnacle') return <PinnacleEdgeCard key={item.key} alert={item.data} onAccept={(id, bk, odds) => updateFbPinnacleStatus(id, 'accepted', bk, odds)} onReject={id => updateFbPinnacleStatus(id, 'rejected')} onDismiss={dismissFbPinnacle} />;
-            if (item.type === 'dc_btts')   return <DCBTTSAlertCard key={item.key} alert={item.data} onAccept={(id, bk, odds) => updateDcBttsStatus(id, 'accepted', bk, odds)} onReject={id => updateDcBttsStatus(id, 'rejected')} onDismiss={dismissDcBtts} />;
-            if (item.type === 'dc_ou')     return <DCOUAlertCard   key={item.key} alert={item.data} onAccept={(id, bk, odds) => updateDcOuStatus(id, 'accepted', bk, odds)}   onReject={id => updateDcOuStatus(id, 'rejected')}   onDismiss={dismissDcOu} />;
+            if (item.type === 'fbgroup') return <FootballGroupCard key={item.key} group={item.data} onAccept={handleFootballAccept} onReject={handleFootballReject} onDismissAll={handleFootballDismissAll} />;
             if (item.type === 'bballpinnacle') return <BasketballPinnacleEdgeCard key={item.key} alert={item.data} onAccept={(id, bk, odds) => updateBballPinnacleStatus(id, 'accepted', bk, odds)} onReject={id => updateBballPinnacleStatus(id, 'rejected')} onDismiss={dismissBballPinnacle} />;
             if (item.type === 'bballpinnacleprops') return <BasketballPinnaclePropsCard key={item.key} alert={item.data} onAccept={(id, bk, odds) => updateBballPinnaclePropsStatus(id, 'accepted', bk, odds)} onReject={id => updateBballPinnaclePropsStatus(id, 'rejected')} onDismiss={dismissBballPinnacleProps} />;
             return null;

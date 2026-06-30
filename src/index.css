@@ -10,6 +10,11 @@
   to   { opacity: 1; }
 }
 
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
 :root {
   --bg:           #07090f;
   --bg-card:      rgba(13,17,23,0.75);
@@ -1108,7 +1113,7 @@ body {
 
 .bet-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
   gap: 1.25rem;
   margin-top: 0.5rem;
 }
@@ -1155,7 +1160,7 @@ body {
   justify-content: space-between;
   gap: 0.5rem;
 }
-.bc-team { font-size: 13px; font-weight: 700; color: var(--text); flex: 1; }
+.bc-team { font-size: 13px; font-weight: 700; color: #fff; flex: 1; }
 .bc-team-home { text-align: left; }
 .bc-team-away { text-align: right; }
 .bc-vs { font-size: 10px; color: var(--text-dim); flex-shrink: 0; }

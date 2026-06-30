@@ -5,6 +5,7 @@ import StarField from './components/StarField';
 import DashboardPage from './pages/DashboardPage';
 import { syncSettlements, syncBackgroundAlerts, syncGameTotalAlerts, syncBasketballResultAlerts, syncFootballAlerts } from './utils/syncAlerts';
 import { loadFromCloud } from './utils/cloudStorage';
+import { cachedFetch } from './utils/fetchCache';
 
 const ALERT_KEY = 'nba_prop_alerts';
 
@@ -95,7 +96,8 @@ function useAlertCount() {
         foot += raw.filter(a => {
           if ((a.status || 'pending') !== 'pending') return false;
           const t = new Date(a.fixtureDate).getTime();
-          return isNaN(t) || t > now;
+          if (isNaN(t)) return false;
+          return t > now;
         }).length;
       });
     } catch {}
@@ -192,7 +194,11 @@ export function preloadPage(path) {
 }
 
 function PageLoader() {
-  return <div className="page" style={{ opacity: 0 }} />;
+  return (
+    <div className="page" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '50vh' }}>
+      <div style={{ width: 28, height: 28, border: '3px solid rgba(255,255,255,0.08)', borderTopColor: '#60a5fa', borderRadius: '50%', animation: 'spin 0.75s linear infinite' }} />
+    </div>
+  );
 }
 
 function StatsHolo() {
@@ -274,8 +280,25 @@ function ScrollToTop() {
   return null;
 }
 
+// Warm-up backend au démarrage — déclenche les premiers fetches en parallèle
+// pour que les caches backend soient chauds avant le 1er clic utilisateur.
+const _STARTUP_WARMED = { done: false };
+function _warmupOnStartup() {
+  if (_STARTUP_WARMED.done) return;
+  _STARTUP_WARMED.done = true;
+  // Endpoints les plus demandés — ne consomme pas de quotas API (ESPN + foot-data.org cachés 30min)
+  cachedFetch('/api/nba/scoreboard', 20_000).catch(() => {});
+  cachedFetch('/api/wnba/scoreboard', 20_000).catch(() => {});
+  cachedFetch('/api/fd/worldcup', 30_000).catch(() => {});
+  cachedFetch('/api/football/matches', 30_000).catch(() => {});
+  cachedFetch('/api/odds', 30_000).catch(() => {});
+  cachedFetch('/api/nba/standings', 6 * 3_600_000).catch(() => {});
+  cachedFetch('/api/wnba/standings', 6 * 3_600_000).catch(() => {});
+}
+
 export default function App() {
   const alertCounts = useAlertCount();
+  useEffect(() => { _warmupOnStartup(); }, []);
   return (
     <BrowserRouter>
       <ScrollToTop />

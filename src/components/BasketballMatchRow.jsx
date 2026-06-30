@@ -1,5 +1,4 @@
 import { useNavigate } from 'react-router-dom';
-import { startTransition } from 'react';
 import { formatMatchDate, formatMatchTime } from '../utils/formatters';
 import { cachedFetch } from '../utils/fetchCache';
 
@@ -82,7 +81,7 @@ export default function BasketballMatchRow({ fixture }) {
     sessionStorage.setItem('sports_active', 'basketball');
     sessionStorage.setItem('scroll_sports', window.scrollY);
     const qs = EURO.includes(fixture.league) ? `?league=${fixture.league}` : fixture.league === 'wnba' ? '?league=wnba' : '';
-    startTransition(() => navigate(`/basketball/${fixture.id}${qs}`));
+    navigate(`/basketball/${fixture.id}${qs}`);
   };
 
   return (

@@ -818,19 +818,28 @@ export async function syncFootballAlerts() {
     }
 
     // DC & BTTS
+    // Clé logique pour détecter les doublons même si fixtureId change entre cycles
+    const dcLogicalKey = a => `${(a.home||'').toLowerCase()}__${(a.away||'').toLowerCase()}__${(a.fixtureDate||'').slice(0,10)}__${a.direction}`;
+
     const dcBttsAlerts = bgAlerts.filter(a => a.type === 'football_dc_btts' && a.probability > 0);
     if (dcBttsAlerts.length) {
       const existing = JSON.parse(localStorage.getItem(FB_DC_BTTS_KEY) || '[]');
-      let changed = false;
-      const result = [...existing];
+      // Nettoyer les doublons logiques déjà en stock (garde le plus récent / non-pending en priorité)
+      const deduped = [];
+      const seenKeys = new Set();
+      for (const a of [...existing].sort((x, y) => (x.status !== 'pending' ? -1 : 1))) {
+        const k = dcLogicalKey(a); if (seenKeys.has(k)) continue; seenKeys.add(k); deduped.push(a);
+      }
+      let changed = deduped.length !== existing.length;
+      const result = deduped;
       const liveIds = new Set(dcBttsAlerts.map(a => a.id));
       dcBttsAlerts.forEach(a => {
-        const idx = result.findIndex(p => p.id === a.id);
+        const idx = result.findIndex(p => p.id === a.id || dcLogicalKey(p) === dcLogicalKey(a));
         if (idx === -1) { result.push({ ...a, status: 'pending' }); changed = true; return; }
         const prev = result[idx];
         if ((prev.status || 'pending') !== 'pending') return;
         if (prev.probability !== a.probability || prev.unibetOdds !== a.unibetOdds || prev.betclicOdds !== a.betclicOdds) {
-          result[idx] = { ...prev, probability: a.probability, unibetOdds: a.unibetOdds ?? prev.unibetOdds, betclicOdds: a.betclicOdds ?? prev.betclicOdds };
+          result[idx] = { ...prev, id: a.id, probability: a.probability, unibetOdds: a.unibetOdds ?? prev.unibetOdds, betclicOdds: a.betclicOdds ?? prev.betclicOdds };
           changed = true;
         }
       });
@@ -847,16 +856,21 @@ export async function syncFootballAlerts() {
     const dcOuAlerts = bgAlerts.filter(a => a.type === 'football_dc_ou' && a.probability > 0);
     if (dcOuAlerts.length) {
       const existing = JSON.parse(localStorage.getItem(FB_DC_OU_KEY) || '[]');
-      let changed = false;
-      const result = [...existing];
+      const deduped2 = [];
+      const seenKeys2 = new Set();
+      for (const a of [...existing].sort((x, y) => (x.status !== 'pending' ? -1 : 1))) {
+        const k = dcLogicalKey(a); if (seenKeys2.has(k)) continue; seenKeys2.add(k); deduped2.push(a);
+      }
+      let changed = deduped2.length !== existing.length;
+      const result = deduped2;
       const liveIds = new Set(dcOuAlerts.map(a => a.id));
       dcOuAlerts.forEach(a => {
-        const idx = result.findIndex(p => p.id === a.id);
+        const idx = result.findIndex(p => p.id === a.id || dcLogicalKey(p) === dcLogicalKey(a));
         if (idx === -1) { result.push({ ...a, status: 'pending' }); changed = true; return; }
         const prev = result[idx];
         if ((prev.status || 'pending') !== 'pending') return;
         if (prev.probability !== a.probability || prev.unibetOdds !== a.unibetOdds || prev.betclicOdds !== a.betclicOdds) {
-          result[idx] = { ...prev, probability: a.probability, unibetOdds: a.unibetOdds ?? prev.unibetOdds, betclicOdds: a.betclicOdds ?? prev.betclicOdds };
+          result[idx] = { ...prev, id: a.id, probability: a.probability, unibetOdds: a.unibetOdds ?? prev.unibetOdds, betclicOdds: a.betclicOdds ?? prev.betclicOdds };
           changed = true;
         }
       });

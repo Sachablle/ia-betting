@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { BBALL_FIXTURES } from '../utils/basketball';
 import { syncBackgroundAlerts, syncSettlements, syncGameTotalAlerts, syncBballPinnacleAlerts, syncOddsDrift, syncFootballAlerts, resolveCompletedFootballAlerts, postAcceptedAlertReliably, FB_DC_BTTS_KEY, FB_DC_OU_KEY } from '../utils/syncAlerts';
 import { setItem as cloudSet } from '../utils/cloudStorage';
+import { cachedFetch } from '../utils/fetchCache';
 
 const ALERT_KEY      = 'nba_prop_alerts';
 const GAME_TOTAL_KEY = 'nba_game_total_alerts';
@@ -18,6 +19,49 @@ const FB_LEAGUES = new Set(['cdm', 'ligue1', 'pl', 'laliga', 'bundes', 'seriea']
 const FB_LEAGUE_LABEL = { cdm: 'CDM', ligue1: 'L1', pl: 'PL', laliga: 'Liga', bundes: 'BL', seriea: 'SA' };
 
 const IN_GAME = s => s === 'STATUS_IN_PROGRESS' || s === 'STATUS_END_PERIOD' || s === 'STATUS_HALFTIME' || s === 'STATUS_END_OF_PERIOD';
+
+// ── Prefetch au hover (même logique que BasketballMatchRow / MatchRow) ────────
+const _EU_LEAGUES = new Set(['acb','lnb','bbl','legaa','euroleague']);
+const _ESPN_NBA_RUN = {
+  'Atlanta Hawks':1,'Boston Celtics':2,'New Orleans Pelicans':3,'Chicago Bulls':4,
+  'Cleveland Cavaliers':5,'Dallas Mavericks':6,'Denver Nuggets':7,'Detroit Pistons':8,
+  'Golden State Warriors':9,'Houston Rockets':10,'Indiana Pacers':11,'LA Clippers':12,
+  'Los Angeles Lakers':13,'Miami Heat':14,'Milwaukee Bucks':15,'Minnesota Timberwolves':16,
+  'Brooklyn Nets':17,'New York Knicks':18,'Orlando Magic':19,'Philadelphia 76ers':20,
+  'Phoenix Suns':21,'Portland Trail Blazers':22,'Sacramento Kings':23,'San Antonio Spurs':24,
+  'Oklahoma City Thunder':25,'Utah Jazz':26,'Washington Wizards':27,'Toronto Raptors':28,
+  'Memphis Grizzlies':29,'Charlotte Hornets':30,
+};
+const _ESPN_WNBA_RUN = {
+  'Atlanta Dream':20,'Chicago Sky':19,'Connecticut Sun':18,'Dallas Wings':3,
+  'Golden State Valkyries':129689,'Indiana Fever':5,'Las Vegas Aces':17,
+  'Los Angeles Sparks':6,'Minnesota Lynx':8,'New York Liberty':9,
+  'Phoenix Mercury':11,'Portland Fire':132052,'Seattle Storm':14,
+  'Toronto Tempo':131935,'Washington Mystics':16,
+};
+const _prefetchedRunning = new Set();
+function _prefetchMatchData(league, homeTeam, awayTeam) {
+  const key = `${league}__${homeTeam}__${awayTeam}`;
+  if (_prefetchedRunning.has(key)) return;
+  _prefetchedRunning.add(key);
+  if (FB_LEAGUES.has(league)) {
+    import('./MatchDetailPage').catch(() => {});
+    cachedFetch('/api/odds', 30_000).catch(() => {});
+    if (league === 'cdm') cachedFetch('/api/fd/worldcup', 30_000).catch(() => {});
+    else cachedFetch(`/api/football/standings/${league}`, 30 * 60_000).catch(() => {});
+  } else {
+    import('./BasketballDetailPage').catch(() => {});
+    if (league === 'wnba') {
+      const hId = _ESPN_WNBA_RUN[homeTeam], aId = _ESPN_WNBA_RUN[awayTeam];
+      if (hId) { cachedFetch(`/api/wnba/players/${hId}`, 3_600_000).catch(() => {}); cachedFetch(`/api/wnba/teamschedule/${hId}`, 300_000).catch(() => {}); }
+      if (aId) { cachedFetch(`/api/wnba/players/${aId}`, 3_600_000).catch(() => {}); cachedFetch(`/api/wnba/teamschedule/${aId}`, 300_000).catch(() => {}); }
+    } else if (!_EU_LEAGUES.has(league)) {
+      const hId = _ESPN_NBA_RUN[homeTeam], aId = _ESPN_NBA_RUN[awayTeam];
+      if (hId) { cachedFetch(`/api/nba/players/${hId}`, 3_600_000).catch(() => {}); cachedFetch(`/api/nba/teamschedule/${hId}`, 300_000).catch(() => {}); }
+      if (aId) { cachedFetch(`/api/nba/players/${aId}`, 3_600_000).catch(() => {}); cachedFetch(`/api/nba/teamschedule/${aId}`, 300_000).catch(() => {}); }
+    }
+  }
+}
 
 // ── Groupement alertes ────────────────────────────────────────────────────────
 function groupAlerts(raw) {
@@ -403,7 +447,7 @@ function AlertCard({ group, playerStats, onDismiss }) {
     <div
       onClick={goToMatch}
       style={{ background: 'rgba(255,255,255,0.03)', borderRadius: 6, cursor: 'pointer', overflow: 'hidden', transition: 'background 0.15s' }}
-      onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.06)'}
+      onMouseEnter={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.06)'; _prefetchMatchData(group.league, group.homeTeam, group.awayTeam); }}
       onMouseLeave={e => e.currentTarget.style.background = 'rgba(255,255,255,0.03)'}
     >
       <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.4rem 0.75rem' }}>
@@ -492,6 +536,7 @@ function MatchGroup({ match, scoreData, liveStats, onDismiss }) {
       <div style={{ borderRadius: 10, border: `1px solid ${sportBorder}`, overflow: 'hidden', background: sportBg }}>
         <button
           onClick={() => setOpen(o => !o)}
+          onMouseEnter={() => _prefetchMatchData(league, homeTeam, awayTeam)}
           style={{ width: '100%', display: 'flex', alignItems: 'center', gap: '0.6rem', padding: '0.5rem 0.75rem', background: 'none', border: 'none', cursor: 'pointer' }}
         >
           <TeamLogo logo={scoreData?.homeLogo} short={normShort(homeShort)} name={homeTeam} size={28} league={league} />
@@ -668,8 +713,9 @@ export default function RunningPage() {
   const acceptedFbTotal = fbTotalAlerts.filter(a => a.status === 'accepted');
   const acceptedFbResult = fbResultAlerts.filter(a => a.status === 'accepted');
   const acceptedFbPinnacle = fbPinnacleAlerts.filter(a => a.status === 'accepted');
-  const acceptedDcBtts = dcBttsAlerts.filter(a => a.status === 'accepted');
-  const acceptedDcOu   = dcOuAlerts.filter(a => a.status === 'accepted');
+  const dedupFootballDC = arr => { const seen = new Set(); return arr.filter(a => { const k = `${(a.fixtureDate||'').slice(0,10)}__${(a.home||'').toLowerCase()}__${(a.away||'').toLowerCase()}__${a.type}__${a.direction}`; if (seen.has(k)) return false; seen.add(k); return true; }); };
+  const acceptedDcBtts = dedupFootballDC(dcBttsAlerts.filter(a => a.status === 'accepted'));
+  const acceptedDcOu   = dedupFootballDC(dcOuAlerts.filter(a => a.status === 'accepted'));
   const footballGroups = [...acceptedBtts.map(footballAlertToGroup), ...acceptedFbTotal.map(footballAlertToGroup), ...acceptedFbResult.map(footballAlertToGroup), ...acceptedFbPinnacle.map(footballAlertToGroup), ...acceptedDcBtts.map(footballAlertToGroup), ...acceptedDcOu.map(footballAlertToGroup)];
   const allAcceptedGroups = [...acceptedGroups, ...acceptedTotalGroups, ...acceptedBballPinnacle, ...footballGroups];
   const matchGroups = groupByMatch(allAcceptedGroups);

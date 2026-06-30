@@ -20,11 +20,47 @@ const FD_MATCHES_CACHE_FILE = join(CACHE_DIR, 'fd_matches.json');
 const GAMELOGS_CACHE_FILE  = join(CACHE_DIR, 'gamelogs_cache.json');
 const SCRAPER_BLOCK_FILE   = join(CACHE_DIR, 'scraper_blocks.json');
 const OUTRIGHTS_CACHE_FILE = join(CACHE_DIR, 'outrights.json');
-const OUTRIGHT_ATTEMPTS_FILE = join(CACHE_DIR, 'outright_attempts.json');
+const OUTRIGHT_ATTEMPTS_FILE   = join(CACHE_DIR, 'outright_attempts.json');
+const WNBA_STANDINGS_CACHE_FILE = join(CACHE_DIR, 'wnba_standings.json');
+const WNBA_LEADERS_CACHE_FILE   = join(CACHE_DIR, 'wnba_leaders.json');
+const NBA_STANDINGS_CACHE_FILE  = join(CACHE_DIR, 'nba_standings.json');
+const NBA_LEADERS_CACHE_FILE    = join(CACHE_DIR, 'nba_leaders.json');
+const ESPN_PLAYERS_CACHE_FILE   = join(CACHE_DIR, 'espn_players_cache.json');
 
 // Cache persistant gamelogs — survit aux redémarrages, jamais remplacé par moins de données
 let _glPersist = {};
 try { if (existsSync(GAMELOGS_CACHE_FILE)) _glPersist = JSON.parse(readFileSync(GAMELOGS_CACHE_FILE, 'utf8')); } catch {}
+
+// Cache persistant rosters ESPN (NBA + WNBA) — clés numériques + sched_* + wnba_roster_* + wnba_sched_*
+// Chargé immédiatement au démarrage → zéro latence dès le 1er clic, même après un restart Render
+const ESPN_PLAYER_KEY = /^(\d+|sched_\d+|wnba_roster_\d+|wnba_sched_\d+)$/;
+let _espnPlayersDiskLoaded = false;
+function _loadEspnPlayersFromDisk() {
+  try {
+    if (!existsSync(ESPN_PLAYERS_CACHE_FILE)) return;
+    const saved = JSON.parse(readFileSync(ESPN_PLAYERS_CACHE_FILE, 'utf8'));
+    let count = 0;
+    for (const [k, v] of Object.entries(saved)) {
+      if (ESPN_PLAYER_KEY.test(k) && v?.ts && Date.now() - v.ts < CACHE_6H * 2) {
+        _espnCache[k] = v;
+        count++;
+      }
+    }
+    if (count) console.log(`[espn-cache] ${count} entrées chargées depuis le disque`);
+  } catch {}
+  _espnPlayersDiskLoaded = true;
+}
+let _espnSaveTimer = null;
+function _saveEspnPlayersToDisk() {
+  if (_espnSaveTimer) clearTimeout(_espnSaveTimer);
+  _espnSaveTimer = setTimeout(() => {
+    const toSave = {};
+    for (const [k, v] of Object.entries(_espnCache)) {
+      if (ESPN_PLAYER_KEY.test(k)) toSave[k] = v;
+    }
+    writeFile(ESPN_PLAYERS_CACHE_FILE, JSON.stringify(toSave), 'utf8', () => {});
+  }, 2000);
+}
 let _glSaveTimer = null;
 function _saveGlPersist() {
   if (_glSaveTimer) clearTimeout(_glSaveTimer);
@@ -128,7 +164,6 @@ function _refreshInBackground(key, refreshFn) {
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-const THRESHOLD     = parseFloat(process.env.VALUE_THRESHOLD || '2') / 100;
 const PINNACLE_EDGE_THRESHOLD = 0.20; // Seuil alertes diff Pinnacle — erreur de cote franche uniquement
 const PINNACLE_MIN_ODDS = 1.60;       // Cote bookmaker minimum pour alertes Pinnacle
 const BOOKMAKERS    = 'pinnacle,betfair_ex_eu,unibet_fr,betclic';
@@ -868,33 +903,6 @@ app.get('/api/outrights', async (req, res) => {
   }
 });
 
-// The Odds API : alertes value bets
-app.get('/api/alerts', async (req, res) => {
-  const threshold = parseFloat(req.query.threshold) / 100 || PINNACLE_EDGE_THRESHOLD;
-  const oddsResp = await fetch(`http://localhost:${PORT}/api/odds`);
-  if (!oddsResp.ok) return res.status(503).json({ error: 'Could not fetch odds' });
-  const { matches } = await oddsResp.json();
-  const alerts = [];
-  for (const match of matches) {
-    for (const [marketType, market] of Object.entries(match.markets)) {
-      if (!market?.bookmakers?.pinnacle) continue;
-      const fairProbs = removeVig(market.bookmakers.pinnacle, marketType);
-      if (!fairProbs) continue;
-      for (const [bookie, odds] of Object.entries(market.bookmakers)) {
-        if (bookie === 'pinnacle') continue;
-        for (const outcome of Object.keys(fairProbs)) {
-          if (!odds?.[outcome]) continue;
-          const edge = odds[outcome] * fairProbs[outcome] - 1;
-          if (edge >= threshold && odds[outcome] >= PINNACLE_MIN_ODDS) {
-            alerts.push({ matchId: match.id, homeTeam: match.homeTeam, awayTeam: match.awayTeam, league: match.league, commenceTime: match.commenceTime, bookmaker: bookie, market: marketType, outcome, odds: odds[outcome], fairOdds: +(1 / fairProbs[outcome]).toFixed(2), fairProb: +(fairProbs[outcome] * 100).toFixed(1), edge: +(edge * 100).toFixed(1) });
-          }
-        }
-      }
-    }
-  }
-  alerts.sort((a, b) => b.edge - a.edge);
-  res.json({ alerts, count: alerts.length });
-});
 
 // ── ESPN (NBA) — aucune clé requise ──────────────────────────────────────────
 const ESPN_NBA        = 'https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams';
@@ -913,6 +921,8 @@ const ESPN_SEASON = now.getMonth() >= 9 ? now.getFullYear() + 1 : now.getFullYea
 const _espnCache    = {};
 const _ubMatchUrlCache = {};   // { `${league}_${normHome}_${normAway}` → matchPath }
 const CACHE_6H      = 6 * 60 * 60 * 1000;
+// Charge les rosters NBA/WNBA depuis le disque dès que _espnCache + CACHE_6H sont disponibles
+_loadEspnPlayersFromDisk();
 const CACHE_30MIN   = 30 * 60 * 1000;
 const CACHE_5MIN    = 5 * 60 * 1000;
 
@@ -1215,6 +1225,7 @@ app.get('/api/nba/players/:teamId', async (req, res) => {
 
     const result = { teamId, players };
     _espnCache[teamId] = { data: result, ts: Date.now() };
+    _saveEspnPlayersToDisk();
     res.json(result);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1459,6 +1470,7 @@ app.get('/api/nba/teamschedule/:teamId', async (req, res) => {
     games.sort((a, b) => new Date(b.date) - new Date(a.date));
     const result = { teamId, games: games.slice(0, 30) };
     _espnCache[cacheKey] = { data: result, ts: Date.now() };
+    _saveEspnPlayersToDisk();
     res.json(result);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1989,6 +2001,7 @@ app.get('/api/wnba/players/:teamId', async (req, res) => {
     })).sort((a, b) => (b.stats?.pts ?? -1) - (a.stats?.pts ?? -1));
     const result = { teamId, players };
     _espnCache[cacheKey] = { data: result, ts: Date.now() };
+    _saveEspnPlayersToDisk();
     res.json(result);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -2020,6 +2033,7 @@ app.get('/api/wnba/teamschedule/:teamId', async (req, res) => {
     games.sort((a, b) => new Date(b.date) - new Date(a.date));
     const result = { teamId, games: games.slice(0, 30) };
     _espnCache[cacheKey] = { data: result, ts: Date.now() };
+    _saveEspnPlayersToDisk();
     res.json(result);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -2467,6 +2481,7 @@ app.get('/api/euro/:league/projections-snapshot/:gameId', (req, res) => {
 const WNBA_TEAM_IDS = ['20','19','18','3','129689','5','17','6','8','9','11','132052','14','131935','16'];
 const _fetchJ = (url, ms = 8000) => { const ac = new AbortController(); const t = setTimeout(() => ac.abort(), ms); return fetch(url, { signal: ac.signal }).finally(() => clearTimeout(t)).then(r => r.json()); };
 let _wnbaStandingsCache = { data: null, ts: 0 };
+try { if (existsSync(WNBA_STANDINGS_CACHE_FILE)) { const p = JSON.parse(readFileSync(WNBA_STANDINGS_CACHE_FILE, 'utf8')); if (p?.data) _wnbaStandingsCache = p; } } catch {}
 app.get('/api/wnba/standings', async (req, res) => {
   if (_wnbaStandingsCache.data && Date.now() - _wnbaStandingsCache.ts < CACHE_6H)
     return res.json(_wnbaStandingsCache.data);
@@ -2498,6 +2513,7 @@ app.get('/api/wnba/standings', async (req, res) => {
       .map((t, i) => ({ ...t, rank: i + 1 }));
     const result = { standings, conferences };
     _wnbaStandingsCache = { data: result, ts: Date.now() };
+    writeFile(WNBA_STANDINGS_CACHE_FILE, JSON.stringify(_wnbaStandingsCache), 'utf8', () => {});
     res.json(result);
   } catch (err) {
     if (_wnbaStandingsCache.data) return res.json(_wnbaStandingsCache.data);
@@ -2508,6 +2524,7 @@ app.get('/api/wnba/standings', async (req, res) => {
 // ── WNBA scoring leaders ──────────────────────────────────────────────────────
 // Fetch all 15 rosters → all player stats in parallel batches → sort by PTS
 let _wnbaLeadersCache = { data: null, ts: 0 };
+try { if (existsSync(WNBA_LEADERS_CACHE_FILE)) { const p = JSON.parse(readFileSync(WNBA_LEADERS_CACHE_FILE, 'utf8')); if (p?.data) _wnbaLeadersCache = p; } } catch {}
 app.get('/api/wnba/leaders', async (req, res) => {
   if (_wnbaLeadersCache.data && Date.now() - _wnbaLeadersCache.ts < CACHE_6H)
     return res.json(_wnbaLeadersCache.data);
@@ -2579,6 +2596,7 @@ app.get('/api/wnba/leaders', async (req, res) => {
       },
     };
     _wnbaLeadersCache = { data: result, ts: Date.now() };
+    writeFile(WNBA_LEADERS_CACHE_FILE, JSON.stringify(_wnbaLeadersCache), 'utf8', () => {});
     res.json(result);
   } catch (err) {
     if (_wnbaLeadersCache.data) return res.json(_wnbaLeadersCache.data);
@@ -2599,6 +2617,7 @@ const NBA_TEAM_ABBR = {
 };
 
 let _nbaStandingsCache = { data: null, ts: 0 };
+try { if (existsSync(NBA_STANDINGS_CACHE_FILE)) { const p = JSON.parse(readFileSync(NBA_STANDINGS_CACHE_FILE, 'utf8')); if (p?.data) _nbaStandingsCache = p; } } catch {}
 app.get('/api/nba/standings', async (req, res) => {
   if (_nbaStandingsCache.data && Date.now() - _nbaStandingsCache.ts < CACHE_6H)
     return res.json(_nbaStandingsCache.data);
@@ -2630,6 +2649,7 @@ app.get('/api/nba/standings', async (req, res) => {
       .map((t, i) => ({ ...t, rank: i + 1 }));
     const result = { standings, conferences };
     _nbaStandingsCache = { data: result, ts: Date.now() };
+    writeFile(NBA_STANDINGS_CACHE_FILE, JSON.stringify(_nbaStandingsCache), 'utf8', () => {});
     res.json(result);
   } catch (err) {
     if (_nbaStandingsCache.data) return res.json(_nbaStandingsCache.data);
@@ -2638,6 +2658,7 @@ app.get('/api/nba/standings', async (req, res) => {
 });
 
 let _nbaLeadersCache = { data: null, ts: 0 };
+try { if (existsSync(NBA_LEADERS_CACHE_FILE)) { const p = JSON.parse(readFileSync(NBA_LEADERS_CACHE_FILE, 'utf8')); if (p?.data) _nbaLeadersCache = p; } } catch {}
 app.get('/api/nba/leaders', async (req, res) => {
   if (_nbaLeadersCache.data && Date.now() - _nbaLeadersCache.ts < CACHE_6H)
     return res.json(_nbaLeadersCache.data);
@@ -2678,6 +2699,7 @@ app.get('/api/nba/leaders', async (req, res) => {
       full: { pts: toFullList(withStats, 'pts'), reb: toFullList(withStats, 'reb'), ast: toFullList(withStats, 'ast'), tpm: toFullList(withStats, 'tpm') },
     };
     _nbaLeadersCache = { data: result, ts: Date.now() };
+    writeFile(NBA_LEADERS_CACHE_FILE, JSON.stringify(_nbaLeadersCache), 'utf8', () => {});
     res.json(result);
   } catch (err) {
     if (_nbaLeadersCache.data) return res.json(_nbaLeadersCache.data);
@@ -11492,6 +11514,14 @@ app.listen(PORT, () => {
     }
   }, 5000);
 
+  // Keep-alive — évite le cold start Render (spin-down après inactivité)
+  // Ping toutes les 9 min sur /api/health (léger, aucun quota consommé)
+  if (process.env.RENDER) {
+    const selfUrl = `https://${process.env.RENDER_EXTERNAL_HOSTNAME}/api/health`;
+    setInterval(() => fetch(selfUrl).catch(() => {}), 9 * 60 * 1000);
+    console.log(`Keep-alive actif → ${selfUrl}`);
+  }
+
   // Start background alert job: first run after 2s, then every 20min
   setTimeout(generateBackgroundAlerts, 2_000);
   setInterval(generateBackgroundAlerts, 20 * 60 * 1000);
@@ -11648,19 +11678,21 @@ app.listen(PORT, () => {
     const base = `http://localhost:${PORT}`;
     console.log('[roster-refresh] Start daily roster pre-warm…');
 
-    // NBA — 30 équipes (IDs ESPN 1-30, bdlId)
-    const NBA_IDS = [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30];
-    for (const id of NBA_IDS) {
-      try { await fetchWithTimeout(`${base}/api/nba/players/${id}?refresh=1`, 12000).catch(() => {}); } catch {}
-      await new Promise(r => setTimeout(r, 300));
-    }
-
-    // WNBA — 15 équipes
-    const WNBA_IDS = [20, 19, 18, 3, 129689, 5, 17, 6, 8, 9, 11, 132052, 14, 131935, 16];
-    for (const id of WNBA_IDS) {
-      try { await fetchWithTimeout(`${base}/api/wnba/players/${id}?refresh=1`, 12000).catch(() => {}); } catch {}
-      await new Promise(r => setTimeout(r, 300));
-    }
+    // NBA + WNBA en parallèle par lots de 5 — réduit le temps de ~14s à ~3s
+    const NBA_IDS  = [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30];
+    const WNBA_IDS = [20,19,18,3,129689,5,17,6,8,9,11,132052,14,131935,16];
+    const fetchTeam = (api, id) => fetchWithTimeout(`${base}/api/${api}/players/${id}?refresh=1`, 12000).catch(() => {});
+    const batchFetch = async (pairs, batchSize = 5) => {
+      for (let i = 0; i < pairs.length; i += batchSize) {
+        await Promise.all(pairs.slice(i, i + batchSize).map(([api, id]) => fetchTeam(api, id)));
+        if (i + batchSize < pairs.length) await new Promise(r => setTimeout(r, 200));
+      }
+    };
+    const allPairs = [
+      ...NBA_IDS.map(id => ['nba', id]),
+      ...WNBA_IDS.map(id => ['wnba', id]),
+    ];
+    await batchFetch(allPairs);
 
     // ACB — 18 équipes via scraping acb.com
     for (const id of Object.keys(ACB_TEAM_MAP)) {
@@ -11668,12 +11700,13 @@ app.listen(PORT, () => {
       await new Promise(r => setTimeout(r, 800));
     }
 
-    console.log('[roster-refresh] Done.');
+    // Persiste le cache joueurs sur disque — disponible immédiatement au prochain restart
+    _saveEspnPlayersToDisk();
+    console.log('[roster-refresh] Done — cache disque mis à jour.');
   }
 
-  // Premier run 2 min après démarrage, puis toutes les 24h
-  setTimeout(() => {
-    dailyRosterRefresh().catch(() => {});
-    setInterval(() => dailyRosterRefresh().catch(() => {}), 24 * 60 * 60 * 1000);
-  }, 2 * 60 * 1000);
+  // Démarre immédiatement — le cache disque est déjà chargé en mémoire si disponible,
+  // donc les premières requêtes utilisateur n'attendent pas la fin du warmup.
+  dailyRosterRefresh().catch(() => {});
+  setInterval(() => dailyRosterRefresh().catch(() => {}), 24 * 60 * 60 * 1000);
 });
