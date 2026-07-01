@@ -128,6 +128,26 @@ function MidnightVioletBackground() {
   );
 }
 
+// ── 6. Océan abyssal ─────────────────────────────────────────────────────────
+// Même formule que "Profondeurs océan" mais nettement plus sombre — quasi noir en surface,
+// rayons et bulles beaucoup plus discrets.
+function AbyssalOceanBackground() {
+  return (
+    <Wrap bg="linear-gradient(180deg, #051018 0%, #030a10 70%, #01050a 100%)">
+      <style>{`
+        @keyframes rayDrift1 { 0%,100% { transform: translateX(-4%) rotate(8deg); opacity: 0.3; } 50% { transform: translateX(4%) rotate(8deg); opacity: 0.5; } }
+        @keyframes rayDrift2 { 0%,100% { transform: translateX(4%) rotate(-6deg); opacity: 0.22; } 50% { transform: translateX(-4%) rotate(-6deg); opacity: 0.4; } }
+        @keyframes riseUp  { 0% { transform: translateY(10vh); opacity: 0.6; } 100% { transform: translateY(-30vh); opacity: 0; } }
+        @keyframes riseUp2 { 0% { transform: translateY(15vh); opacity: 0.55; } 100% { transform: translateY(-35vh); opacity: 0; } }
+      `}</style>
+      <div style={{ position: 'absolute', top: '-20%', left: '15%', width: '25vw', height: '120vh', background: 'linear-gradient(180deg, rgba(56,189,248,0.08), transparent 75%)', filter: 'blur(40px)', animation: 'rayDrift1 14s ease-in-out infinite', willChange: 'transform' }} />
+      <div style={{ position: 'absolute', top: '-20%', left: '55%', width: '30vw', height: '120vh', background: 'linear-gradient(180deg, rgba(34,211,238,0.06), transparent 75%)', filter: 'blur(40px)', animation: 'rayDrift2 18s ease-in-out infinite', willChange: 'transform' }} />
+      <div style={{ position: 'absolute', top: 0, left: 0, width: '1px', height: '1px', borderRadius: '50%', boxShadow: BUBBLES, animation: 'riseUp 16s linear infinite', opacity: 0.5 }} />
+      <div style={{ position: 'absolute', top: 0, left: 0, width: '1px', height: '1px', borderRadius: '50%', boxShadow: BUBBLES_2, animation: 'riseUp2 22s linear infinite', animationDelay: '-8s', opacity: 0.5 }} />
+    </Wrap>
+  );
+}
+
 // ── Switcher ─────────────────────────────────────────────────────────────────
 const VARIANTS = [
   { name: 'Nébuleuse spatiale', Comp: NebulaBackground },
@@ -135,6 +155,7 @@ const VARIANTS = [
   { name: 'Aurora boréale',     Comp: AuroraBackground },
   { name: 'Braises rouges',     Comp: EmberBackground },
   { name: 'Minuit violet',      Comp: MidnightVioletBackground },
+  { name: 'Océan abyssal',      Comp: AbyssalOceanBackground },
 ];
 
 export default function StarField() {

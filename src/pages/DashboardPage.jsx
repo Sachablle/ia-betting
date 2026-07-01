@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { cachedFetch, getCached } from '../utils/fetchCache';
+import { groupAlerts } from '../utils/groupAlerts';
 
 const ALERT_KEY       = 'nba_prop_alerts';
 const GAME_TOTAL_KEY  = 'nba_game_total_alerts';
@@ -1116,6 +1117,7 @@ const PERIODS = [
 export default function DashboardPage() {
   const [alerts, setAlerts]           = useState([]);
   const [totalAlerts, setTotalAlerts] = useState([]);
+  const [resultAlerts, setResultAlerts] = useState([]);
   const [period, setPeriod]           = useState(5);
 
 
@@ -1129,6 +1131,8 @@ export default function DashboardPage() {
     catch { setAlerts([]); }
     try { setTotalAlerts((JSON.parse(localStorage.getItem(GAME_TOTAL_KEY) || '[]')).map(backfill)); }
     catch { setTotalAlerts([]); }
+    try { setResultAlerts(JSON.parse(localStorage.getItem(BBALL_RESULT_KEY) || '[]')); }
+    catch { setResultAlerts([]); }
   };
 
   useEffect(() => {
@@ -1155,6 +1159,21 @@ export default function DashboardPage() {
   const accepted        = dedupAlerts(alerts.filter(a => RESOLVED.includes(a.status)));
   const acceptedTotals  = totalAlerts.filter(a => RESOLVED.includes(a.status));
   const allDedupAlerts  = dedupAlerts(alerts);
+
+  // ── KPI strip (déplacé depuis la page Alertes le 1 juil. 2026) — même source (groupAlerts)
+  // que PlaceBetPage pour ne jamais afficher un chiffre différent entre les deux pages.
+  const kpiGroups         = groupAlerts(alerts);
+  const kpiPendingGroups  = kpiGroups.filter(g => g.status === 'pending');
+  const kpiAcceptedGroups = kpiGroups.filter(g => g.status === 'accepted');
+  const kpiPendingTotals  = totalAlerts.filter(a => a.status === 'pending');
+  const kpiAcceptedTotals = totalAlerts.filter(a => a.status === 'accepted');
+  const kpiTotalGroups    = kpiGroups.filter(g => g.status !== 'rejected').length + totalAlerts.filter(a => a.status !== 'rejected').length + resultAlerts.filter(a => a.status !== 'rejected').length;
+  const kpiTotalAccepted  = kpiAcceptedGroups.length + kpiAcceptedTotals.length;
+  const kpiAcceptRate     = kpiTotalGroups > 0 ? Math.round(kpiTotalAccepted / kpiTotalGroups * 100) : null;
+  const kpiAvgProb        = kpiAcceptedGroups.length > 0
+    ? Math.round(kpiAcceptedGroups.reduce((s, g) => s + (g.maxProb || 0), 0) / kpiAcceptedGroups.length)
+    : null;
+  const kpiPendingCount   = kpiPendingGroups.length + kpiPendingTotals.length;
 
   return (
     <div style={{ padding: '0.9rem 2.5rem 2rem' }}>
@@ -1209,6 +1228,31 @@ export default function DashboardPage() {
         <SystemHealthSection />
         <QuotasWidget />
         <UpcomingMatchesWidget />
+      </div>
+
+      {/* KPI strip — Alertes générées / En attente / Paris pris / Proba moyenne */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '0.75rem', marginBottom: '1.5rem' }}>
+        {[
+          { icon: '📨', label: 'Alertes générées', value: kpiTotalGroups, color: '#3b82f6' },
+          { icon: '⏳', label: 'En attente',        value: kpiPendingCount, color: '#f59e0b' },
+          { icon: '✅', label: 'Paris pris',         value: kpiTotalAccepted, color: '#10b981', sub: kpiAcceptRate != null ? `${kpiAcceptRate}% du total` : null },
+          { icon: '🎯', label: 'Proba moyenne',      value: kpiAvgProb != null ? `${kpiAvgProb}%` : '—', color: '#8b5cf6', sub: kpiTotalAccepted > 0 ? `sur ${kpiTotalAccepted} pari${kpiTotalAccepted > 1 ? 's' : ''}` : null },
+        ].map(({ icon, label, value, color, sub }) => (
+          <div key={label} style={{
+            background: 'var(--bg-card)', border: '1px solid var(--border)',
+            borderRadius: 12, padding: '0.85rem 1rem',
+            display: 'flex', alignItems: 'center', gap: '0.85rem',
+            position: 'relative', overflow: 'hidden',
+          }}>
+            <div style={{ position: 'absolute', top: 0, left: 0, right: 0, height: 2, background: `linear-gradient(90deg, ${color} 0%, transparent 100%)` }} />
+            <div style={{ width: 34, height: 34, borderRadius: 9, background: `${color}18`, border: `1px solid ${color}30`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16, flexShrink: 0 }}>{icon}</div>
+            <div>
+              <div style={{ fontSize: '1.5rem', fontWeight: 800, color: 'var(--text)', lineHeight: 1, letterSpacing: '-0.03em' }}>{value}</div>
+              <div style={{ fontSize: 11, color: 'var(--text-sub)', fontWeight: 500, marginTop: 2 }}>{label}</div>
+              {sub && <div style={{ fontSize: 10, color, fontWeight: 600, marginTop: 1 }}>{sub}</div>}
+            </div>
+          </div>
+        ))}
       </div>
 
     </div>

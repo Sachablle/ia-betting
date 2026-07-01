@@ -50,36 +50,36 @@ export function BTTSAlertCard({ alert, onAccept, onReject, onDismiss }) {
       <div className="bc-header">
         <span className="bc-flag">{meta.flag}</span>
         <span className="bc-league">{meta.name}</span>
-        {!isPending && (
-          <span style={{ marginLeft: 'auto', marginRight: 24, fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 10, color: isAccepted ? '#4ade80' : '#f87171', background: isAccepted ? 'rgba(74,222,128,0.12)' : 'rgba(248,113,113,0.1)' }}>
-            {isAccepted ? '✓ Accepté' : '✗ Rejeté'}
-          </span>
-        )}
-      </div>
-
-      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginTop: '0.4rem', paddingRight: '4px' }}>
-        <span className="bc-team bc-team-home">{alert.fixture}</span>
-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '0.15rem', flexShrink: 0 }}>
+        <div style={{ marginLeft: 'auto', marginRight: 24, display: 'flex', alignItems: 'center', gap: 6 }}>
           <span className={`bc-edge-badge ${alert.probability >= 85 ? 'high' : 'mid'}`}>{alert.probability}%</span>
-          <span style={{ fontSize: 10, color: 'var(--text-dim)' }}>
-            {new Date(alert.fixtureDate).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}{alert.round ? ` · ${alert.round}` : ''}
-          </span>
+          {!isPending && (
+            <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 10, color: isAccepted ? '#4ade80' : '#f87171', background: isAccepted ? 'rgba(74,222,128,0.12)' : 'rgba(248,113,113,0.1)' }}>
+              {isAccepted ? '✓ Accepté' : '✗ Rejeté'}
+            </span>
+          )}
         </div>
       </div>
 
-      <div style={{ margin: '0.4rem 0 0', padding: '0.45rem 0.6rem', borderRadius: 6, background: 'rgba(16,185,129,0.06)' }}>
-        <div style={{ fontSize: 13, fontWeight: 700, color: '#10b981' }}>✓ Les deux équipes marquent</div>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem', marginTop: '0.35rem', minWidth: 0 }}>
+        <span className="bc-team bc-team-home" style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{alert.fixture}</span>
+        <span style={{ fontSize: 10, color: 'var(--text-dim)', flexShrink: 0, whiteSpace: 'nowrap' }}>
+          {new Date(alert.fixtureDate).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}{alert.round ? ` · ${alert.round}` : ''}
+        </span>
+      </div>
+
+      <div style={{ margin: '0.3rem 0', display: 'flex', alignItems: 'center', gap: 6 }}>
+        <span style={{ fontSize: 12, fontWeight: 700, color: '#10b981', background: 'rgba(16,185,129,0.1)', padding: '0.25rem 0.5rem', borderRadius: 6 }}>✓ Les deux équipes marquent</span>
         {alert.edge != null && (
-          <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 3 }}>
-            Edge vs Pinnacle : <b style={{ color: alert.edge >= 3 ? '#10b981' : 'var(--text-dim)' }}>{alert.edge >= 0 ? '+' : ''}{alert.edge}%</b>
-          </div>
+          <span style={{ marginLeft: 'auto', fontSize: 10, color: 'var(--text-dim)', flexShrink: 0 }}>
+            edge <b style={{ color: alert.edge >= 3 ? '#10b981' : 'var(--text-dim)' }}>{alert.edge >= 0 ? '+' : ''}{alert.edge}%</b>
+          </span>
         )}
       </div>
 
-      <div className="bc-stats" style={{ margin: '0.35rem 0 0.25rem' }}>
+      <div className="bc-stats" style={{ margin: '0 0 0.35rem' }}>
         <div className="bc-prob">
           <div className="bc-prob-bar-track">
-            <div className="bc-prob-bar-fill" style={{ width: `${barPct}%`, background: '#10b981' }} />
+            <div className="bc-prob-bar-fill" style={{ width: `${barPct}%`, background: '#60a5fa' }} />
           </div>
           <span className="bc-prob-pct" style={{ color: '#60a5fa', fontSize: 10 }}>{timeLabel}</span>
         </div>
@@ -135,41 +135,41 @@ export function FootballTotalCard({ alert, onAccept, onReject, onDismiss }) {
       <div className="bc-header">
         <span className="bc-flag">{meta.flag}</span>
         <span className="bc-league">{meta.name}</span>
-        {!isPending && (
-          <span style={{ marginLeft: 'auto', marginRight: 24, fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 10, color: isAccepted ? '#4ade80' : '#f87171', background: isAccepted ? 'rgba(74,222,128,0.12)' : 'rgba(248,113,113,0.1)' }}>
-            {isAccepted ? '✓ Accepté' : '✗ Rejeté'}
-          </span>
-        )}
-      </div>
-
-      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginTop: '0.4rem', paddingRight: '4px' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
-          <span className="bc-team bc-team-home">{alert.homeShort || alert.home}</span>
-          <span className="bc-vs">vs</span>
-          <span className="bc-team bc-team-away">{alert.awayShort || alert.away}</span>
-        </div>
-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '0.15rem', flexShrink: 0 }}>
+        <div style={{ marginLeft: 'auto', marginRight: 24, display: 'flex', alignItems: 'center', gap: 6 }}>
           <span className={`bc-edge-badge ${alert.probability >= 85 ? 'high' : 'mid'}`}>{alert.probability}%</span>
-          <span style={{ fontSize: 10, color: 'var(--text-dim)' }}>
-            {new Date(alert.fixtureDate).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}{alert.round ? ` · ${alert.round}` : ''}
-          </span>
+          {!isPending && (
+            <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 10, color: isAccepted ? '#4ade80' : '#f87171', background: isAccepted ? 'rgba(74,222,128,0.12)' : 'rgba(248,113,113,0.1)' }}>
+              {isAccepted ? '✓ Accepté' : '✗ Rejeté'}
+            </span>
+          )}
         </div>
       </div>
 
-      <div style={{ margin: '0.6rem 0', padding: '0.45rem 0.6rem', borderRadius: 6, background: isOver ? 'rgba(74,222,128,0.06)' : 'rgba(248,113,113,0.06)' }}>
-        <div style={{ fontSize: 13, fontWeight: 700, color: accent }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem', marginTop: '0.35rem', minWidth: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', minWidth: 0, overflow: 'hidden' }}>
+          <span className="bc-team bc-team-home" style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{alert.homeShort || alert.home}</span>
+          <span className="bc-vs">vs</span>
+          <span className="bc-team bc-team-away" style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{alert.awayShort || alert.away}</span>
+        </div>
+        <span style={{ fontSize: 10, color: 'var(--text-dim)', flexShrink: 0, whiteSpace: 'nowrap' }}>
+          {new Date(alert.fixtureDate).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}{alert.round ? ` · ${alert.round}` : ''}
+        </span>
+      </div>
+
+      <div style={{ margin: '0.3rem 0', display: 'flex', alignItems: 'center', gap: 6 }}>
+        <span style={{ fontSize: 12, fontWeight: 700, color: accent, background: isOver ? 'rgba(74,222,128,0.1)' : 'rgba(248,113,113,0.1)', padding: '0.25rem 0.5rem', borderRadius: 6, whiteSpace: 'nowrap' }}>
           {isOver ? '▲ Plus' : '▼ Moins'} de {alert.line} buts
-        </div>
-        <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 3 }}>
-          Modèle : <b style={{ color: 'var(--text)' }}>{alert.estimated}</b> buts attendus
-          {alert.edge != null && <span> · Edge <b style={{ color: accent }}>{alert.edge >= 0 ? '+' : ''}{alert.edge}%</b></span>}
-        </div>
+        </span>
+        <span style={{ marginLeft: 'auto', fontSize: 10, color: 'var(--text-dim)', flexShrink: 0, whiteSpace: 'nowrap' }}>
+          modèle <b style={{ color: 'var(--text)' }}>{alert.estimated}</b>
+          {alert.edge != null && <> · <b style={{ color: accent }}>{alert.edge >= 0 ? '+' : ''}{alert.edge}%</b></>}
+        </span>
       </div>
 
-      <div className="bc-stats" style={{ margin: '0.35rem 0 0.25rem' }}>
+      <div className="bc-stats" style={{ margin: '0 0 0.35rem' }}>
         <div className="bc-prob">
           <div className="bc-prob-bar-track">
-            <div className="bc-prob-bar-fill" style={{ width: `${barPct}%`, background: accent }} />
+            <div className="bc-prob-bar-fill" style={{ width: `${barPct}%`, background: '#60a5fa' }} />
           </div>
           <span className="bc-prob-pct" style={{ color: '#60a5fa', fontSize: 10 }}>{timeLabel}</span>
         </div>
@@ -232,42 +232,42 @@ export function FootballResultCard({ alert, onAccept, onReject, onDismiss }) {
       <div className="bc-header">
         <span className="bc-flag">{meta.flag}</span>
         <span className="bc-league">{meta.name}</span>
-        {!isPending && (
-          <span style={{ marginLeft: 'auto', marginRight: 24, fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 10, color: isAccepted ? '#4ade80' : '#f87171', background: isAccepted ? 'rgba(74,222,128,0.12)' : 'rgba(248,113,113,0.1)' }}>
-            {isAccepted ? '✓ Accepté' : '✗ Rejeté'}
-          </span>
-        )}
-      </div>
-
-      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginTop: '0.4rem', paddingRight: '4px' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
-          <span className="bc-team bc-team-home">{alert.homeShort || alert.home}</span>
-          <span className="bc-vs">vs</span>
-          <span className="bc-team bc-team-away">{alert.awayShort || alert.away}</span>
-        </div>
-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '0.15rem', flexShrink: 0 }}>
+        <div style={{ marginLeft: 'auto', marginRight: 24, display: 'flex', alignItems: 'center', gap: 6 }}>
           <span className={`bc-edge-badge ${alert.probability >= 85 ? 'high' : 'mid'}`}>{alert.probability}%</span>
-          <span style={{ fontSize: 10, color: 'var(--text-dim)' }}>
-            {new Date(alert.fixtureDate).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}{alert.round ? ` · ${alert.round}` : ''}
-          </span>
+          {!isPending && (
+            <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 10, color: isAccepted ? '#4ade80' : '#f87171', background: isAccepted ? 'rgba(74,222,128,0.12)' : 'rgba(248,113,113,0.1)' }}>
+              {isAccepted ? '✓ Accepté' : '✗ Rejeté'}
+            </span>
+          )}
         </div>
       </div>
 
-      <div style={{ margin: '0.6rem 0', padding: '0.45rem 0.6rem', borderRadius: 6, background: 'rgba(251,191,36,0.06)' }}>
-        <div style={{ fontSize: 13, fontWeight: 700, color: accent }}>
-          🏆 {resultLabel}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem', marginTop: '0.35rem', minWidth: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', minWidth: 0, overflow: 'hidden' }}>
+          <span className="bc-team bc-team-home" style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{alert.homeShort || alert.home}</span>
+          <span className="bc-vs">vs</span>
+          <span className="bc-team bc-team-away" style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{alert.awayShort || alert.away}</span>
         </div>
+        <span style={{ fontSize: 10, color: 'var(--text-dim)', flexShrink: 0, whiteSpace: 'nowrap' }}>
+          {new Date(alert.fixtureDate).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}{alert.round ? ` · ${alert.round}` : ''}
+        </span>
+      </div>
+
+      <div style={{ margin: '0.3rem 0', display: 'flex', alignItems: 'center', gap: 6 }}>
+        <span style={{ fontSize: 12, fontWeight: 700, color: accent, background: 'rgba(251,191,36,0.1)', padding: '0.25rem 0.5rem', borderRadius: 6, whiteSpace: 'nowrap' }}>
+          🏆 {resultLabel}
+        </span>
         {alert.edge != null && (
-          <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 3 }}>
-            Edge : <b style={{ color: accent }}>{alert.edge >= 0 ? '+' : ''}{alert.edge}%</b>
-          </div>
+          <span style={{ marginLeft: 'auto', fontSize: 10, color: 'var(--text-dim)', flexShrink: 0 }}>
+            edge <b style={{ color: accent }}>{alert.edge >= 0 ? '+' : ''}{alert.edge}%</b>
+          </span>
         )}
       </div>
 
-      <div className="bc-stats" style={{ margin: '0.35rem 0 0.25rem' }}>
+      <div className="bc-stats" style={{ margin: '0 0 0.35rem' }}>
         <div className="bc-prob">
           <div className="bc-prob-bar-track">
-            <div className="bc-prob-bar-fill" style={{ width: `${barPct}%`, background: accent }} />
+            <div className="bc-prob-bar-fill" style={{ width: `${barPct}%`, background: '#60a5fa' }} />
           </div>
           <span className="bc-prob-pct" style={{ color: '#60a5fa', fontSize: 10 }}>{timeLabel}</span>
         </div>
@@ -338,42 +338,42 @@ export function PinnacleEdgeCard({ alert, onAccept, onReject, onDismiss }) {
         <span className="bc-flag">{meta.flag}</span>
         <span className="bc-league">{meta.name}</span>
         <span style={{ fontSize: 8, fontWeight: 700, color: accent, border: `1px solid ${accent}55`, background: 'rgba(34,211,238,0.1)', borderRadius: 4, padding: '1px 5px', marginLeft: 6 }}>VS PINNACLE</span>
-        {!isPending && (
-          <span style={{ marginLeft: 'auto', marginRight: 24, fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 10, color: isAccepted ? '#4ade80' : '#f87171', background: isAccepted ? 'rgba(74,222,128,0.12)' : 'rgba(248,113,113,0.1)' }}>
-            {isAccepted ? '✓ Accepté' : '✗ Rejeté'}
-          </span>
-        )}
-      </div>
-
-      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginTop: '0.4rem', paddingRight: '4px' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
-          <span className="bc-team bc-team-home">{alert.homeShort || alert.home}</span>
-          <span className="bc-vs">vs</span>
-          <span className="bc-team bc-team-away">{alert.awayShort || alert.away}</span>
-        </div>
-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '0.15rem', flexShrink: 0 }}>
+        <div style={{ marginLeft: 'auto', marginRight: 24, display: 'flex', alignItems: 'center', gap: 6 }}>
           <span className={`bc-edge-badge ${alert.probability >= 85 ? 'high' : 'mid'}`}>{alert.probability}%</span>
-          <span style={{ fontSize: 10, color: 'var(--text-dim)' }}>
-            {new Date(alert.fixtureDate).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}{alert.round ? ` · ${alert.round}` : ''}
-          </span>
+          {!isPending && (
+            <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 10, color: isAccepted ? '#4ade80' : '#f87171', background: isAccepted ? 'rgba(74,222,128,0.12)' : 'rgba(248,113,113,0.1)' }}>
+              {isAccepted ? '✓ Accepté' : '✗ Rejeté'}
+            </span>
+          )}
         </div>
       </div>
 
-      <div style={{ margin: '0.6rem 0', padding: '0.45rem 0.6rem', borderRadius: 6, background: 'rgba(34,211,238,0.06)' }}>
-        <div style={{ fontSize: 13, fontWeight: 700, color: accent }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem', marginTop: '0.35rem', minWidth: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', minWidth: 0, overflow: 'hidden' }}>
+          <span className="bc-team bc-team-home" style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{alert.homeShort || alert.home}</span>
+          <span className="bc-vs">vs</span>
+          <span className="bc-team bc-team-away" style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{alert.awayShort || alert.away}</span>
+        </div>
+        <span style={{ fontSize: 10, color: 'var(--text-dim)', flexShrink: 0, whiteSpace: 'nowrap' }}>
+          {new Date(alert.fixtureDate).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}{alert.round ? ` · ${alert.round}` : ''}
+        </span>
+      </div>
+
+      <div style={{ margin: '0.3rem 0' }}>
+        <span style={{ fontSize: 12, fontWeight: 700, color: accent, background: 'rgba(34,211,238,0.1)', padding: '0.25rem 0.5rem', borderRadius: 6, display: 'inline-block' }}>
           💎 {resultLabel}
-        </div>
-        <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 3 }}>
-          Pinnacle : <b style={{ color: 'var(--text)' }}>{alert.pinnacleOdds?.toFixed(2)}</b>
-          {' '}vs {alert.bookmaker} : <b style={{ color: accent }}>{(alert[`${alert.bookmaker}Odds`])?.toFixed(2)}</b>
-          {alert.edge != null && <span> · Edge <b style={{ color: accent }}>{alert.edge >= 0 ? '+' : ''}{alert.edge}%</b></span>}
+        </span>
+        <div style={{ fontSize: 10, color: 'var(--text-dim)', marginTop: 3 }}>
+          Pinnacle <b style={{ color: 'var(--text)' }}>{alert.pinnacleOdds?.toFixed(2)}</b>
+          {' '}vs {alert.bookmaker} <b style={{ color: accent }}>{(alert[`${alert.bookmaker}Odds`])?.toFixed(2)}</b>
+          {alert.edge != null && <> · <b style={{ color: accent }}>{alert.edge >= 0 ? '+' : ''}{alert.edge}%</b></>}
         </div>
       </div>
 
-      <div className="bc-stats" style={{ margin: '0.35rem 0 0.25rem' }}>
+      <div className="bc-stats" style={{ margin: '0.3rem 0 0.35rem' }}>
         <div className="bc-prob">
           <div className="bc-prob-bar-track">
-            <div className="bc-prob-bar-fill" style={{ width: `${barPct}%`, background: accent }} />
+            <div className="bc-prob-bar-fill" style={{ width: `${barPct}%`, background: '#60a5fa' }} />
           </div>
           <span className="bc-prob-pct" style={{ color: '#60a5fa', fontSize: 10 }}>{timeLabel}</span>
         </div>
@@ -442,33 +442,33 @@ function DCBaseCard({ alert, suffix, onAccept, onReject, onDismiss }) {
       <div className="bc-header">
         <span className="bc-flag">{meta.flag}</span>
         <span className="bc-league">{meta.name}</span>
-        {!isPending && (
-          <span style={{ marginLeft: 'auto', marginRight: 24, fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 10, color: isAccepted ? '#4ade80' : '#f87171', background: isAccepted ? 'rgba(74,222,128,0.12)' : 'rgba(248,113,113,0.1)' }}>
-            {isAccepted ? '✓ Accepté' : '✗ Rejeté'}
-          </span>
-        )}
-      </div>
-
-      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginTop: '0.4rem', paddingRight: '4px' }}>
-        <span className="bc-team bc-team-home">{alert.home ?? alert.fixture} <span style={{ color: 'var(--text-dim)', fontWeight: 400 }}>vs</span> {alert.away}</span>
-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '0.15rem', flexShrink: 0 }}>
+        <div style={{ marginLeft: 'auto', marginRight: 24, display: 'flex', alignItems: 'center', gap: 6 }}>
           <span className={`bc-edge-badge ${alert.probability >= 75 ? 'high' : 'mid'}`}>{alert.probability}%</span>
-          <span style={{ fontSize: 10, color: 'var(--text-dim)' }}>
-            {new Date(alert.fixtureDate).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}{alert.round ? ` · ${alert.round}` : ''}
-          </span>
+          {!isPending && (
+            <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 10, color: isAccepted ? '#4ade80' : '#f87171', background: isAccepted ? 'rgba(74,222,128,0.12)' : 'rgba(248,113,113,0.1)' }}>
+              {isAccepted ? '✓ Accepté' : '✗ Rejeté'}
+            </span>
+          )}
         </div>
       </div>
 
-      <div style={{ margin: '0.4rem 0 0', padding: '0.45rem 0.6rem', borderRadius: 6, background: 'rgba(245,158,11,0.07)' }}>
-        <div style={{ fontSize: 13, fontWeight: 700, color: DC_ACCENT }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem', marginTop: '0.35rem', minWidth: 0 }}>
+        <span className="bc-team bc-team-home" style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{alert.home ?? alert.fixture} <span style={{ color: 'var(--text-dim)', fontWeight: 400 }}>vs</span> {alert.away}</span>
+        <span style={{ fontSize: 10, color: 'var(--text-dim)', flexShrink: 0, whiteSpace: 'nowrap' }}>
+          {new Date(alert.fixtureDate).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}{alert.round ? ` · ${alert.round}` : ''}
+        </span>
+      </div>
+
+      <div style={{ margin: '0.3rem 0' }}>
+        <span style={{ fontSize: 12, fontWeight: 700, color: DC_ACCENT, background: 'rgba(245,158,11,0.1)', padding: '0.25rem 0.5rem', borderRadius: 6, display: 'inline-block' }}>
           {DC_DIR_LABEL[dir]} ({DC_DIR_DESC[dir]}) &amp; {suffix}
-        </div>
+        </span>
       </div>
 
-      <div className="bc-stats" style={{ margin: '0.35rem 0 0.25rem' }}>
+      <div className="bc-stats" style={{ margin: '0 0 0.35rem' }}>
         <div className="bc-prob">
           <div className="bc-prob-bar-track">
-            <div className="bc-prob-bar-fill" style={{ width: `${barPct}%`, background: DC_ACCENT }} />
+            <div className="bc-prob-bar-fill" style={{ width: `${barPct}%`, background: '#60a5fa' }} />
           </div>
           <span className="bc-prob-pct" style={{ color: '#60a5fa', fontSize: 10 }}>{timeLabel}</span>
         </div>
@@ -616,7 +616,7 @@ export function FootballGroupCard({ group, onAccept, onReject, onDismissAll }) {
   return (
     <div
       className="bet-card"
-      style={{ position: 'relative', cursor: fixtureId ? 'pointer' : 'default', borderColor: 'var(--border)' }}
+      style={{ position: 'relative', cursor: fixtureId ? 'pointer' : 'default', '--league-accent': '#10b981', borderColor: 'rgba(16,185,129,0.35)' }}
       onClick={() => { if (fixtureId) navigate(`/football/${fixtureId}`); }}
       onMouseEnter={fixtureId ? () => { import('../pages/MatchDetailPage').catch(()=>{}); cachedFetch('/api/odds',30_000).catch(()=>{}); } : undefined}
     >
@@ -636,18 +636,18 @@ export function FootballGroupCard({ group, onAccept, onReject, onDismissAll }) {
       </div>
 
       {/* Match + temps */}
-      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', paddingRight: 18, marginBottom: '0.5rem' }}>
-        <div style={{ fontSize: 13, fontWeight: 500, color: '#fff' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem', paddingRight: 18, marginBottom: '0.4rem', minWidth: 0 }}>
+        <div style={{ fontSize: 13, fontWeight: 500, color: '#fff', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {homeLabel} <span style={{ color: 'var(--text-dim)', fontWeight: 400, fontSize: 11 }}>vs</span> {awayLabel}
         </div>
-        <div style={{ fontSize: 10, color: 'var(--text-dim)', flexShrink: 0, marginLeft: '0.5rem' }}>
+        <div style={{ fontSize: 10, color: 'var(--text-dim)', flexShrink: 0, whiteSpace: 'nowrap' }}>
           {new Date(fixtureDate).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
           {msLeft > 0 && <span style={{ color: '#60a5fa', marginLeft: 4 }}>· {timeLabel}</span>}
         </div>
       </div>
 
       {/* Séparateur fin */}
-      <div style={{ height: 1, background: 'var(--border)', marginBottom: '0.45rem', opacity: 0.5 }} />
+      <div style={{ height: 1, background: 'var(--border)', marginBottom: '0.35rem', opacity: 0.5 }} />
 
       {/* Lignes alertes */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>

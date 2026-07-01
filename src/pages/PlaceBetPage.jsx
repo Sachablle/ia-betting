@@ -5,6 +5,7 @@ import { syncBackgroundAlerts, syncGameTotalAlerts, syncBasketballResultAlerts, 
 import { BTTSAlertCard, FootballTotalCard, FootballResultCard, PinnacleEdgeCard, DCBTTSAlertCard, DCOUAlertCard, FootballGroupCard } from '../components/FootballAlertCards';
 import { setItem as cloudSet } from '../utils/cloudStorage';
 import { cachedFetch } from '../utils/fetchCache';
+import { groupAlerts } from '../utils/groupAlerts';
 
 const ALERT_KEY        = 'nba_prop_alerts';
 const HISTORY_KEY      = 'nba_bet_history';
@@ -125,68 +126,6 @@ async function resolveCompletedBets(alerts, save) {
   }
 
   if (changed) save(alerts.filter(a => !a._delete));
-}
-
-function groupAlerts(alerts) {
-  const map = {};
-  for (const a of alerts) {
-    if (!['over','under'].includes(a.direction)) continue;
-    const dateKey = new Date(a.fixtureDate).toISOString().slice(0, 10); // normalise YYYY-MM-DD
-    const key = `${a.player}__${dateKey}__${a.stat}__${a.direction}`;
-    if (!map[key]) {
-      map[key] = {
-        key,
-        player:      a.player,
-        team:        a.team,
-        fixture:     a.fixture,
-        round:       a.round,
-        fixtureDate: a.fixtureDate,
-        homeTeam:    a.homeTeam || null,
-        awayTeam:    a.awayTeam || null,
-        eventId:     a.eventId  || null,
-        league:      a.league || 'nba',
-        stats:       [],
-        maxProb:     0,
-        ids:         [],
-        status:           a.status || 'pending',
-        injury:           a.injury || null,
-        acceptedAt:       0,
-        acceptedBookmaker: a.acceptedBookmaker || null,
-      };
-    }
-    // Priorité statut : accepted > rejected > pending
-    const STATUS_RANK = { accepted: 2, rejected: 1, pending: 0 };
-    const rank = s => STATUS_RANK[s] ?? 0;
-    if (rank(a.status) > rank(map[key].status)) map[key].status = a.status;
-    // Déduplique par stat+direction : garde l'alerte la plus récente (sinon une vieille valeur figée
-    // avec un % plus haut masquerait pour toujours la projection à jour — bug constaté le 8 juin)
-    const statKey = `${a.stat}__${a.direction}`;
-    const existing = map[key].stats.findIndex(s => `${s.stat}__${s.direction}` === statKey);
-    const entry = { stat: a.stat, direction: a.direction, line: a.line, unibetLine: a.unibetLine, betclicLine: a.betclicLine, winamaxLine: a.winamaxLine, estimate: a.estimate, probability: a.probability, pinnacleOdds: a.pinnacleOdds, unibetOdds: a.unibetOdds, betclicOdds: a.betclicOdds, winamaxOdds: a.winamaxOdds, acceptedUnibetOdds: a.acceptedUnibetOdds ?? null, acceptedBetclicOdds: a.acceptedBetclicOdds ?? null, acceptedWinamaxOdds: a.acceptedWinamaxOdds ?? null, oddsAlert: a.oddsAlert || null, directionFlip: a.directionFlip || null, obsolete: a.obsolete || false, savedAt: a.savedAt || 0 };
-    if (existing === -1) map[key].stats.push(entry);
-    else if ((a.savedAt || 0) > (map[key].stats[existing].savedAt || 0)) map[key].stats[existing] = entry;
-    if (a.injuryAlert) map[key].hasInjuryAlert = true;
-    if (a.playerIsQ) map[key].playerIsQ = true;
-    if (a.teamHasQ?.length) map[key].teamHasQ = a.teamHasQ;
-    map[key].ids.push(a.id);
-    if (a.acceptedAt) map[key].acceptedAt = Math.max(map[key].acceptedAt, a.acceptedAt);
-    if (a.acceptedBookmaker && !map[key].acceptedBookmaker) map[key].acceptedBookmaker = a.acceptedBookmaker;
-  }
-  // maxProb calculé APRÈS dédup, à partir des stats retenues (la plus récente par stat+direction)
-  // — sinon une vieille entrée dupliquée avec un % plus haut faussait l'affichage pour toujours
-  // hasOddsAlert dérivé des stats réellement affichées (post-dédup) — sinon un vieux doublon
-  // avec un mouvement de cote périmé affichait le badge "!" sans aucun détail visible
-  Object.values(map).forEach(g => {
-    g.maxProb = g.stats.reduce((m, s) => Math.max(m, s.probability), 0);
-    g.hasOddsAlert = g.stats.some(s => s.oddsAlert);
-    g.hasDirectionFlip = g.stats.some(s => s.directionFlip);
-  });
-  return Object.values(map).sort((a, b) => {
-    if (a.acceptedAt && b.acceptedAt) return b.acceptedAt - a.acceptedAt;
-    const dateDiff = new Date(a.fixtureDate) - new Date(b.fixtureDate);
-    if (dateDiff !== 0) return dateDiff;
-    return b.maxProb - a.maxProb;
-  });
 }
 
 function groupResultAlerts(alerts) {
@@ -580,7 +519,7 @@ function GameTotalCard({ alert, onAccept, onReject, onDismiss }) {
   return (
     <div
       className="bet-card"
-      style={{ position: 'relative', '--league-accent': '#f47c20', cursor: fixtureId ? 'pointer' : 'default' }}
+      style={{ position: 'relative', '--league-accent': '#f47c20', borderColor: 'rgba(244,124,32,0.3)', cursor: fixtureId ? 'pointer' : 'default' }}
       onClick={() => fixtureId && navigate(`/basketball/${fixtureId}${leagueParam}`)}
       onMouseEnter={() => _prefetchBballCard(home, away, league)}
     >
@@ -591,43 +530,41 @@ function GameTotalCard({ alert, onAccept, onReject, onDismiss }) {
       <div className="bc-header">
         <span className="bc-flag">🏀</span>
         <span className="bc-league">{leagueLabel}</span>
-        {!isPending && (
-          <span style={{ marginLeft: 'auto', marginRight: 24, fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 10, color: isAccepted ? '#4ade80' : '#f87171', background: isAccepted ? 'rgba(74,222,128,0.12)' : 'rgba(248,113,113,0.1)' }}>
-            {isAccepted ? '✓ Accepté' : '✗ Rejeté'}
-          </span>
-        )}
-      </div>
-
-      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginTop: '0.4rem', paddingRight: '4px' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
-          <span className="bc-team bc-team-home">{homeShort || home}</span>
-          <span className="bc-vs">vs</span>
-          <span className="bc-team bc-team-away">{awayShort || away}</span>
-        </div>
-        {prob != null && (
-          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '0.15rem', flexShrink: 0 }}>
-            <span className={`bc-edge-badge ${prob >= 90 ? 'high' : 'mid'}`}>{prob}%</span>
-            <span style={{ fontSize: 10, color: 'var(--text-dim)' }}>
-              {new Date(date).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
+        <div style={{ marginLeft: 'auto', marginRight: 24, display: 'flex', alignItems: 'center', gap: 6 }}>
+          {prob != null && <span className={`bc-edge-badge ${prob >= 90 ? 'high' : 'mid'}`}>{prob}%</span>}
+          {!isPending && (
+            <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 10, color: isAccepted ? '#4ade80' : '#f87171', background: isAccepted ? 'rgba(74,222,128,0.12)' : 'rgba(248,113,113,0.1)' }}>
+              {isAccepted ? '✓ Accepté' : '✗ Rejeté'}
             </span>
-          </div>
-        )}
+          )}
+        </div>
       </div>
 
-      <div style={{ margin: '0.6rem 0', padding: '0.45rem 0.6rem', borderRadius: 6, background: isOver ? 'rgba(74,222,128,0.06)' : 'rgba(248,113,113,0.06)' }}>
-        <div style={{ fontSize: 13, fontWeight: 700, color: accent }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem', marginTop: '0.35rem', minWidth: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', minWidth: 0, overflow: 'hidden' }}>
+          <span className="bc-team bc-team-home" style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{homeShort || home}</span>
+          <span className="bc-vs">vs</span>
+          <span className="bc-team bc-team-away" style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{awayShort || away}</span>
+        </div>
+        <span style={{ fontSize: 10, color: 'var(--text-dim)', flexShrink: 0, whiteSpace: 'nowrap' }}>
+          {new Date(date).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
+        </span>
+      </div>
+
+      <div style={{ margin: '0.3rem 0', display: 'flex', alignItems: 'center', gap: 6 }}>
+        <span style={{ fontSize: 12, fontWeight: 700, color: accent, background: isOver ? 'rgba(74,222,128,0.1)' : 'rgba(248,113,113,0.1)', padding: '0.25rem 0.5rem', borderRadius: 6, whiteSpace: 'nowrap' }}>
           {isOver ? '▲ Over' : '▼ Under'} {line}
-        </div>
-        <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 3 }}>
-          Modèle : <b style={{ color: 'var(--text)' }}>{estimated}</b> pts
-          {edge != null && <span> · Edge <b style={{ color: accent }}>{edge > 0 ? '+' : ''}{edge}%</b></span>}
-        </div>
+        </span>
+        <span style={{ marginLeft: 'auto', fontSize: 10, color: 'var(--text-dim)', flexShrink: 0, whiteSpace: 'nowrap' }}>
+          modèle <b style={{ color: 'var(--text)' }}>{estimated}</b>
+          {edge != null && <> · <b style={{ color: accent }}>{edge > 0 ? '+' : ''}{edge}%</b></>}
+        </span>
       </div>
 
-      <div className="bc-stats" style={{ margin: '0.35rem 0 0.25rem' }}>
+      <div className="bc-stats" style={{ margin: '0 0 0.35rem' }}>
         <div className="bc-prob">
           <div className="bc-prob-bar-track">
-            <div className="bc-prob-bar-fill" style={{ width: `${barPct}%`, background: accent }} />
+            <div className="bc-prob-bar-fill" style={{ width: `${barPct}%`, background: '#60a5fa' }} />
           </div>
           <span className="bc-prob-pct" style={{ color: '#60a5fa', fontSize: 10 }}>{timeLabel}</span>
         </div>
@@ -692,46 +629,44 @@ function BasketballPinnacleEdgeCard({ alert, onAccept, onReject, onDismiss }) {
         <span className="bc-flag">🏀</span>
         <span className="bc-league">{leagueLabel}</span>
         <span style={{ fontSize: 8, fontWeight: 700, color: accent, border: `1px solid ${accent}55`, background: 'rgba(34,211,238,0.1)', borderRadius: 4, padding: '1px 5px', marginLeft: 6 }}>VS PINNACLE</span>
-        {!isPending && (
-          <span style={{ marginLeft: 'auto', marginRight: 24, fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 10, color: isAccepted ? '#4ade80' : '#f87171', background: isAccepted ? 'rgba(74,222,128,0.12)' : 'rgba(248,113,113,0.1)' }}>
-            {isAccepted ? '✓ Accepté' : '✗ Rejeté'}
-          </span>
-        )}
-      </div>
-
-      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginTop: '0.4rem', paddingRight: '4px' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
-          <span className="bc-team bc-team-home">{homeShort || home}</span>
-          <span className="bc-vs">vs</span>
-          <span className="bc-team bc-team-away">{awayShort || away}</span>
-        </div>
-        {prob != null && (
-          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '0.15rem', flexShrink: 0 }}>
-            <span className={`bc-edge-badge ${prob >= 90 ? 'high' : 'mid'}`}>{prob}%</span>
-            <span style={{ fontSize: 10, color: 'var(--text-dim)' }}>
-              {new Date(date).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
+        <div style={{ marginLeft: 'auto', marginRight: 24, display: 'flex', alignItems: 'center', gap: 6 }}>
+          {prob != null && <span className={`bc-edge-badge ${prob >= 90 ? 'high' : 'mid'}`}>{prob}%</span>}
+          {!isPending && (
+            <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 10, color: isAccepted ? '#4ade80' : '#f87171', background: isAccepted ? 'rgba(74,222,128,0.12)' : 'rgba(248,113,113,0.1)' }}>
+              {isAccepted ? '✓ Accepté' : '✗ Rejeté'}
             </span>
-          </div>
-        )}
+          )}
+        </div>
       </div>
 
-      <div style={{ margin: '0.6rem 0', padding: '0.45rem 0.6rem', borderRadius: 6, background: 'rgba(34,211,238,0.06)' }}>
-        <div style={{ fontSize: 13, fontWeight: 700, color: accent }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem', marginTop: '0.35rem', minWidth: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', minWidth: 0, overflow: 'hidden' }}>
+          <span className="bc-team bc-team-home" style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{homeShort || home}</span>
+          <span className="bc-vs">vs</span>
+          <span className="bc-team bc-team-away" style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{awayShort || away}</span>
+        </div>
+        <span style={{ fontSize: 10, color: 'var(--text-dim)', flexShrink: 0, whiteSpace: 'nowrap' }}>
+          {new Date(date).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
+        </span>
+      </div>
+
+      <div style={{ margin: '0.3rem 0' }}>
+        <span style={{ fontSize: 12, fontWeight: 700, color: accent, background: 'rgba(34,211,238,0.1)', padding: '0.25rem 0.5rem', borderRadius: 6, display: 'inline-block' }}>
           {alert.market === 'h2h'
             ? `💎 Victoire ${direction === 'home' ? (homeShort || home) : (awayShort || away)}`
             : `💎 ${isOver ? '▲ Plus' : '▼ Moins'} de ${line} pts`}
-        </div>
-        <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 3 }}>
-          Pinnacle : <b style={{ color: 'var(--text)' }}>{pinnacleOdds?.toFixed(2)}</b>
-          {bookmaker && <> vs {bookmaker} : <b style={{ color: accent }}>{(bookmaker === 'unibet' ? unibetOdds : betclicOdds)?.toFixed(2)}</b></>}
-          {edge != null && <span> · Edge <b style={{ color: accent }}>{edge >= 0 ? '+' : ''}{edge}%</b></span>}
+        </span>
+        <div style={{ fontSize: 10, color: 'var(--text-dim)', marginTop: 3 }}>
+          Pinnacle <b style={{ color: 'var(--text)' }}>{pinnacleOdds?.toFixed(2)}</b>
+          {bookmaker && <> vs {bookmaker} <b style={{ color: accent }}>{(bookmaker === 'unibet' ? unibetOdds : betclicOdds)?.toFixed(2)}</b></>}
+          {edge != null && <> · <b style={{ color: accent }}>{edge >= 0 ? '+' : ''}{edge}%</b></>}
         </div>
       </div>
 
-      <div className="bc-stats" style={{ margin: '0.35rem 0 0.25rem' }}>
+      <div className="bc-stats" style={{ margin: '0.3rem 0 0.35rem' }}>
         <div className="bc-prob">
           <div className="bc-prob-bar-track">
-            <div className="bc-prob-bar-fill" style={{ width: `${barPct}%`, background: accent }} />
+            <div className="bc-prob-bar-fill" style={{ width: `${barPct}%`, background: '#60a5fa' }} />
           </div>
           <span className="bc-prob-pct" style={{ color: '#60a5fa', fontSize: 10 }}>{timeLabel}</span>
         </div>
@@ -806,27 +741,27 @@ function BasketballPinnaclePropsCard({ alert, onAccept, onReject, onDismiss }) {
           </span>
         )}
       </div>
-      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginTop: '0.4rem', paddingRight: '4px' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
-          <span className="bc-team bc-team-home">{homeShort || home}</span>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem', marginTop: '0.35rem', minWidth: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', minWidth: 0, overflow: 'hidden' }}>
+          <span className="bc-team bc-team-home" style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{homeShort || home}</span>
           <span className="bc-vs">vs</span>
-          <span className="bc-team bc-team-away">{awayShort || away}</span>
+          <span className="bc-team bc-team-away" style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{awayShort || away}</span>
         </div>
-        <span style={{ fontSize: 10, color: 'var(--text-dim)' }}>
-          {new Date(date).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
+        <span style={{ fontSize: 10, color: 'var(--text-dim)', flexShrink: 0, whiteSpace: 'nowrap' }}>
+          {new Date(date).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })} · <span style={{ color: '#60a5fa' }}>{timeLabel}</span>
         </span>
       </div>
-      <div style={{ margin: '0.6rem 0', padding: '0.45rem 0.6rem', borderRadius: 6, background: 'rgba(34,211,238,0.06)' }}>
-        <div style={{ fontSize: 13, fontWeight: 700, color: accent }}>
+      <div style={{ margin: '0.3rem 0' }}>
+        <span style={{ fontSize: 12, fontWeight: 700, color: accent, background: 'rgba(34,211,238,0.1)', padding: '0.25rem 0.5rem', borderRadius: 6, display: 'inline-block', maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           💎 {player} — {isOver ? '▲ Plus' : '▼ Moins'} de {line} {STAT_LABELS[stat] ?? stat}
-        </div>
-        <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 3 }}>
-          Pinnacle : <b style={{ color: 'var(--text)' }}>{pinnacleOdds?.toFixed(2)}</b>
-          {bookmaker && <> vs {bookmaker} : <b style={{ color: accent }}>{(bookmaker === 'unibet' ? unibetOdds : betclicOdds)?.toFixed(2)}</b></>}
-          {edge != null && <span> · Edge <b style={{ color: accent }}>{edge >= 0 ? '+' : ''}{edge}%</b></span>}
+        </span>
+        <div style={{ fontSize: 10, color: 'var(--text-dim)', marginTop: 3 }}>
+          Pinnacle <b style={{ color: 'var(--text)' }}>{pinnacleOdds?.toFixed(2)}</b>
+          {bookmaker && <> vs {bookmaker} <b style={{ color: accent }}>{(bookmaker === 'unibet' ? unibetOdds : betclicOdds)?.toFixed(2)}</b></>}
+          {edge != null && <> · <b style={{ color: accent }}>{edge >= 0 ? '+' : ''}{edge}%</b></>}
         </div>
       </div>
-      <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.4rem' }}>
+      <div style={{ display: 'flex', gap: '0.5rem' }}>
         {[
           { label: 'Pinnacle', odds: pinnacleOdds, color: 'var(--text)', ref: true },
           { label: 'Unibet',   odds: unibetOdds,   color: '#1db954' },
@@ -849,7 +784,6 @@ function BasketballPinnaclePropsCard({ alert, onAccept, onReject, onDismiss }) {
           );
         })}
       </div>
-      <div style={{ fontSize: 9, color: '#60a5fa' }}>{timeLabel} avant le match</div>
     </div>
   );
 }
@@ -875,7 +809,7 @@ function BasketballResultCard({ alert, onAccept, onReject, onDismiss }) {
   return (
     <div
       className="bet-card"
-      style={{ position: 'relative', '--league-accent': '#fbbf24', cursor: eventId ? 'pointer' : 'default' }}
+      style={{ position: 'relative', '--league-accent': '#fbbf24', borderColor: 'rgba(244,124,32,0.3)', cursor: eventId ? 'pointer' : 'default' }}
       onClick={() => eventId && navigate(`/basketball/${eventId}${leagueParam}`)}
       onMouseEnter={() => _prefetchBballCard(home, away, league)}
     >
@@ -885,42 +819,45 @@ function BasketballResultCard({ alert, onAccept, onReject, onDismiss }) {
       <div className="bc-header">
         <span className="bc-flag">🏆</span>
         <span className="bc-league">{leagueLabel}</span>
-        {!isPending && (
-          <span style={{ marginLeft: 'auto', marginRight: 24, fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 10, color: isAccepted ? '#4ade80' : '#f87171', background: isAccepted ? 'rgba(74,222,128,0.12)' : 'rgba(248,113,113,0.1)' }}>
-            {isAccepted ? '✓ Accepté' : '✗ Rejeté'}
-          </span>
-        )}
-      </div>
-      <div className="bc-matchup" style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: '0.1rem', marginTop: '0.5rem', paddingRight: '52px' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
-          <span className="bc-team bc-team-home">{homeShort || home}</span>
-          <span className="bc-vs">vs</span>
-          <span className="bc-team bc-team-away">{awayShort || away}</span>
+        <div style={{ marginLeft: 'auto', marginRight: 24, display: 'flex', alignItems: 'center', gap: 6 }}>
+          <span className={`bc-edge-badge ${probability >= 90 ? 'high' : 'mid'}`}>{probability}%</span>
+          {!isPending && (
+            <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 10, color: isAccepted ? '#4ade80' : '#f87171', background: isAccepted ? 'rgba(74,222,128,0.12)' : 'rgba(248,113,113,0.1)' }}>
+              {isAccepted ? '✓ Accepté' : '✗ Rejeté'}
+            </span>
+          )}
         </div>
-        <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>
-          · {new Date(date).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem', marginTop: '0.35rem', minWidth: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', minWidth: 0, overflow: 'hidden' }}>
+          <span className="bc-team bc-team-home" style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{homeShort || home}</span>
+          <span className="bc-vs">vs</span>
+          <span className="bc-team bc-team-away" style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{awayShort || away}</span>
+        </div>
+        <span style={{ fontSize: 10, color: 'var(--text-dim)', flexShrink: 0, whiteSpace: 'nowrap' }}>
+          {new Date(date).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
         </span>
       </div>
-      <div style={{ margin: '0.6rem 0', padding: '0.45rem 0.6rem', borderRadius: 6, background: 'rgba(251,191,36,0.08)' }}>
-        <div style={{ fontSize: 13, fontWeight: 700, color: '#fbbf24' }}>
+      <div style={{ margin: '0.3rem 0' }}>
+        <span style={{ fontSize: 12, fontWeight: 700, color: '#fbbf24', background: 'rgba(251,191,36,0.12)', padding: '0.25rem 0.5rem', borderRadius: 6, display: 'inline-block', maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           🏆 Victoire {teamShort || teamName}
-        </div>
-        <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 3 }}>
+        </span>
+        <div style={{ fontSize: 10, color: 'var(--text-dim)', marginTop: 3 }}>
           P(victoire) <b style={{ color: 'var(--text)' }}>{probability}%</b>
-          {edge != null && <span> · Edge <b style={{ color: '#fbbf24' }}>{edge > 0 ? '+' : ''}{edge}%</b></span>}
+          {edge != null && <> · <b style={{ color: '#fbbf24' }}>{edge > 0 ? '+' : ''}{edge}%</b></>}
         </div>
       </div>
-      <div className="bc-stats" style={{ marginBottom: isPending ? '0.5rem' : '0.6rem' }}>
+      <div className="bc-stats" style={{ margin: '0.3rem 0' }}>
         <div className="bc-prob">
           <div className="bc-prob-bar-track">
-            <div className="bc-prob-bar-fill" style={{ width: `${barPct}%`, background: '#fbbf24' }} />
+            <div className="bc-prob-bar-fill" style={{ width: `${barPct}%`, background: '#60a5fa' }} />
           </div>
           <span className="bc-prob-pct" style={{ color: '#60a5fa', fontSize: 10 }}>{timeLabel}</span>
         </div>
       </div>
       {odds && (
-        <div style={{ marginBottom: '0.5rem' }}>
-          <div style={{ textAlign: 'center', background: 'rgba(255,255,255,0.04)', borderRadius: 6, padding: '0.3rem' }}>
+        <div style={{ marginBottom: isPending ? '0.4rem' : 0 }}>
+          <div style={{ textAlign: 'center', background: 'rgba(255,255,255,0.04)', borderRadius: 6, padding: '0.25rem' }}>
             <div style={{ fontSize: 9, color: 'var(--text-dim)', marginBottom: 2, textTransform: 'capitalize' }}>{bookmaker}</div>
             <div style={{ fontSize: 13, fontWeight: 700, color: bkColor, fontVariantNumeric: 'tabular-nums' }}>{odds.toFixed(2)}</div>
           </div>
@@ -1025,7 +962,7 @@ function PropAlertCard({ group, onDismiss, onAccept, onReject }) {
   const barColor  = primaryIsOver ? '#4ade80' : '#f87171';
 
   return (
-    <div className="bet-card" style={{ position: 'relative', cursor: 'pointer', '--league-accent': '#f47c20' }} onClick={goToMatch} onMouseEnter={() => _prefetchBballCard(group.homeTeam, group.awayTeam, group.league)}>
+    <div className="bet-card" style={{ position: 'relative', cursor: 'pointer', '--league-accent': '#f47c20', borderColor: 'rgba(244,124,32,0.3)' }} onClick={goToMatch} onMouseEnter={() => _prefetchBballCard(group.homeTeam, group.awayTeam, group.league)}>
       {isPending
         ? <button onClick={e => { e.stopPropagation(); onReject(ids); }} style={{ position: 'absolute', top: 8, right: 10, background: 'none', border: 'none', cursor: 'pointer', padding: 0, lineHeight: 1 }}><svg width="14" height="14" viewBox="0 0 18 18" fill="none"><circle cx="9" cy="9" r="7.5" stroke="#ef4444" strokeWidth="1.5"/><path d="M6 6l6 6M12 6l-6 6" stroke="#ef4444" strokeWidth="1.75" strokeLinecap="round"/></svg></button>
         : <button onClick={e => { e.stopPropagation(); onDismiss(ids); }} style={{ position: 'absolute', top: 8, right: 10, background: 'none', border: 'none', color: 'var(--text-dim)', cursor: 'pointer', fontSize: 16, lineHeight: 1, padding: 0 }}>×</button>
@@ -1037,26 +974,26 @@ function PropAlertCard({ group, onDismiss, onAccept, onReject }) {
       <div className="bc-header">
         <span className="bc-flag">🏀</span>
         <span className="bc-league">{leagueLabel}</span>
-        {!isPending && (
-          <span style={{ marginLeft: 'auto', marginRight: 24, fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 10, color: isAccepted ? '#4ade80' : '#f87171', background: isAccepted ? 'rgba(74,222,128,0.12)' : 'rgba(248,113,113,0.1)' }}>
-            {isAccepted ? '✓ Accepté' : '✗ Rejeté'}
-          </span>
-        )}
+        <div style={{ marginLeft: 'auto', marginRight: 24, display: 'flex', alignItems: 'center', gap: 6 }}>
+          <span className={`bc-edge-badge ${propBadgeClass(primaryStat?.stat, league, maxProb)}`}>{maxProb}%</span>
+          {!isPending && (
+            <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 10, color: isAccepted ? '#4ade80' : '#f87171', background: isAccepted ? 'rgba(74,222,128,0.12)' : 'rgba(248,113,113,0.1)' }}>
+              {isAccepted ? '✓ Accepté' : '✗ Rejeté'}
+            </span>
+          )}
+        </div>
       </div>
 
-      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginTop: '0.4rem' }}>
-        <span className="bc-team bc-team-home">{player}</span>
-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '0.15rem', flexShrink: 0 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-            {group.hasInjuryAlert && <span style={{ fontSize: 9, fontWeight: 800, padding: '2px 6px', borderRadius: 4, background: 'rgba(245,158,11,0.15)', color: '#f59e0b', border: '1px solid rgba(245,158,11,0.4)' }}>OUT</span>}
-            {!group.hasInjuryAlert && (playerIsQ || injury === 'Questionable') && <span title="Joueur incertain — Under autorisé, Over bloqué" style={{ fontSize: 9, fontWeight: 800, padding: '2px 6px', borderRadius: 4, background: 'rgba(251,146,60,0.18)', color: '#fb923c', border: '1px solid rgba(251,146,60,0.5)' }}>⚠️ Q</span>}
-            {teamHasQ?.length > 0 && <span title={`Coéquipier(s) incertain(s) : ${teamHasQ.join(', ')}`} style={{ fontSize: 9, fontWeight: 800, padding: '2px 6px', borderRadius: 4, background: 'rgba(251,146,60,0.10)', color: '#fb923c', border: '1px dashed rgba(251,146,60,0.4)' }}>Coéq. Q</span>}
-            <span className={`bc-edge-badge ${propBadgeClass(primaryStat?.stat, league, maxProb)}`}>{maxProb}%</span>
-          </div>
-          <span style={{ fontSize: 9, color: 'var(--text-dim)', textAlign: 'right', whiteSpace: 'nowrap' }}>
-            {new Date(fixtureDate).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
-          </span>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem', marginTop: '0.35rem', minWidth: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 4, minWidth: 0, overflow: 'hidden' }}>
+          <span className="bc-team bc-team-home" style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{player}</span>
+          {group.hasInjuryAlert && <span style={{ fontSize: 9, fontWeight: 800, padding: '2px 6px', borderRadius: 4, background: 'rgba(245,158,11,0.15)', color: '#f59e0b', border: '1px solid rgba(245,158,11,0.4)', flexShrink: 0 }}>OUT</span>}
+          {!group.hasInjuryAlert && (playerIsQ || injury === 'Questionable') && <span title="Joueur incertain — Under autorisé, Over bloqué" style={{ fontSize: 9, fontWeight: 800, padding: '2px 6px', borderRadius: 4, background: 'rgba(251,146,60,0.18)', color: '#fb923c', border: '1px solid rgba(251,146,60,0.5)', flexShrink: 0 }}>⚠️ Q</span>}
+          {teamHasQ?.length > 0 && <span title={`Coéquipier(s) incertain(s) : ${teamHasQ.join(', ')}`} style={{ fontSize: 9, fontWeight: 800, padding: '2px 6px', borderRadius: 4, background: 'rgba(251,146,60,0.10)', color: '#fb923c', border: '1px dashed rgba(251,146,60,0.4)', flexShrink: 0 }}>Coéq. Q</span>}
         </div>
+        <span style={{ fontSize: 10, color: 'var(--text-dim)', flexShrink: 0, whiteSpace: 'nowrap' }}>
+          {new Date(fixtureDate).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
+        </span>
       </div>
 
       {stats.map(({ stat, direction, line, estimate, unibetOdds, betclicOdds, winamaxOdds, oddsAlert, obsolete }) => {
@@ -1066,28 +1003,27 @@ function PropAlertCard({ group, onDismiss, onAccept, onReject }) {
         return (
           <Fragment key={stat}>
             {/* Boîte ligne */}
-            <div style={{ margin: '0.4rem 0 0', padding: '0.45rem 0.6rem', borderRadius: 6, background: oddsAlert ? 'rgba(239,68,68,0.08)' : bg }}>
-              <div style={{ fontSize: 13, fontWeight: 700, color: clr, display: 'flex', alignItems: 'center', gap: 6 }}>
+            <div style={{ margin: '0.3rem 0', display: 'flex', alignItems: 'center', gap: 6 }}>
+              <span style={{ fontSize: 12, fontWeight: 700, color: oddsAlert ? '#ef4444' : clr, background: oddsAlert ? 'rgba(239,68,68,0.12)' : bg.replace('0.06', '0.12'), padding: '0.25rem 0.5rem', borderRadius: 6, whiteSpace: 'nowrap' }}>
                 {isO ? '▲ Over' : '▼ Under'} {line} {STAT_LABEL[stat] ?? stat}
-                {isPending && obsolete && <span style={{ fontSize: 9, fontWeight: 800, padding: '2px 6px', borderRadius: 4, background: 'rgba(148,163,184,0.15)', color: '#94a3b8', border: '1px solid rgba(148,163,184,0.4)' }}>OBSOLÈTE</span>}
-              </div>
+              </span>
+              {isPending && obsolete && <span style={{ fontSize: 9, fontWeight: 800, padding: '2px 6px', borderRadius: 4, background: 'rgba(148,163,184,0.15)', color: '#94a3b8', border: '1px solid rgba(148,163,184,0.4)', flexShrink: 0 }}>OBSOLÈTE</span>}
               {estimate != null && (
-                <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 3 }}>
-                  Proj. <b style={{ color: 'var(--text)' }}>{estimate.toFixed(1)}</b>
-                </div>
-              )}
-              {oddsAlert && (
-                <div style={{ fontSize: 9, color: '#fca5a5', marginTop: 2 }}>
-                  {oddsAlert.ubTo != null && `Unibet ${oddsAlert.ubFrom?.toFixed(2)} → ${oddsAlert.ubTo?.toFixed(2)}`}
-                  {oddsAlert.bcTo != null && ` · Betclic ${oddsAlert.bcFrom?.toFixed(2)} → ${oddsAlert.bcTo?.toFixed(2)}`}
-                </div>
+                <span style={{ marginLeft: 'auto', fontSize: 10, color: 'var(--text-dim)', flexShrink: 0 }}>
+                  proj <b style={{ color: 'var(--text)' }}>{estimate.toFixed(1)}</b>
+                </span>
               )}
             </div>
-            {/* Barre temps */}
-            <div className="bc-stats" style={{ margin: '0.35rem 0 0.25rem' }}>
+            {oddsAlert && (
+              <div style={{ fontSize: 9, color: '#fca5a5', margin: '-0.15rem 0 0.2rem' }}>
+                {oddsAlert.ubTo != null && `Unibet ${oddsAlert.ubFrom?.toFixed(2)} → ${oddsAlert.ubTo?.toFixed(2)}`}
+                {oddsAlert.bcTo != null && ` · Betclic ${oddsAlert.bcFrom?.toFixed(2)} → ${oddsAlert.bcTo?.toFixed(2)}`}
+              </div>
+            )}
+            <div className="bc-stats" style={{ margin: '0 0 0.3rem' }}>
               <div className="bc-prob">
                 <div className="bc-prob-bar-track">
-                  <div className="bc-prob-bar-fill" style={{ width: `${barPct}%`, background: barColor }} />
+                  <div className="bc-prob-bar-fill" style={{ width: `${barPct}%`, background: '#60a5fa' }} />
                 </div>
                 <span className="bc-prob-pct" style={{ color: '#60a5fa', fontSize: 10 }}>{timeLabel}</span>
               </div>
@@ -2168,7 +2104,6 @@ export default function PlaceBetPage() {
   const acceptedTotalAlerts   = rawTotalAlerts.filter(a => a.status === 'accepted').sort((a, b) => (b.acceptedAt || 0) - (a.acceptedAt || 0));
   const pendingResultAlerts  = rawResultAlerts.filter(a => a.status === 'pending');
   const acceptedResultAlerts = rawResultAlerts.filter(a => a.status === 'accepted');
-  const totalGroups           = groups.filter(g => g.status !== 'rejected').length + rawTotalAlerts.filter(a => a.status !== 'rejected').length + rawResultAlerts.filter(a => a.status !== 'rejected').length;
   // Grouper toutes les alertes foot (pending + accepted) par fixtureId — une carte par match
   // La carte apparaît si ≥1 alerte est encore pending, mais montre aussi les accepted en lecture seule
   const _allFoot = [
@@ -2179,7 +2114,7 @@ export default function PlaceBetPage() {
     ...dcBttsAlerts.filter(a => a.status === 'pending' || a.status === 'accepted'),
     ...dcOuAlerts.filter(a => a.status === 'pending' || a.status === 'accepted'),
   ];
-  const footballGroups = Object.values(
+  const _footballByFixture = Object.values(
     _allFoot.reduce((acc, a) => {
       const k = a.fixtureId || a.eventId;
       if (!acc[k]) acc[k] = { fixtureId: k, fixtureDate: a.fixtureDate, alerts: [] };
@@ -2187,6 +2122,17 @@ export default function PlaceBetPage() {
       return acc;
     }, {})
   ).filter(g => g.alerts.some(a => a.status === 'pending'));
+  // ≥2 bets sur le même match → carte groupée compacte (contour vert). 1 seul bet → ancien format de carte individuelle.
+  const footballGroups      = _footballByFixture.filter(g => g.alerts.length >= 2);
+  const footballSingleAlerts = _footballByFixture.filter(g => g.alerts.length === 1).map(g => g.alerts[0]);
+  const FB_SINGLE_CARD = {
+    football_btts:           { Card: BTTSAlertCard,      update: updateBttsStatus },
+    football_total:          { Card: FootballTotalCard,  update: updateFbTotalStatus },
+    football_result:         { Card: FootballResultCard, update: updateFbResultStatus },
+    football_pinnacle_edge:  { Card: PinnacleEdgeCard,   update: updateFbPinnacleStatus },
+    football_dc_btts:        { Card: DCBTTSAlertCard,    update: updateDcBttsStatus },
+    football_dc_ou:          { Card: DCOUAlertCard,      update: updateDcOuStatus },
+  };
 
   const handleFootballAccept = (alert, bk, odds) => {
     if (alert.type === 'football_btts')          updateBttsStatus(alert.id, 'accepted', bk, odds);
@@ -2214,14 +2160,10 @@ export default function PlaceBetPage() {
     ...pendingTotalAlerts.map(a => ({ type: 'total',    key: a.id,   date: a.fixtureDate,  data: a })),
     ...pendingResultAlerts.map(a => ({ type: 'basketresult', key: a.id, date: a.date,      data: a })),
     ...footballGroups.map(g => ({ type: 'fbgroup', key: g.fixtureId, date: g.fixtureDate, data: g })),
+    ...footballSingleAlerts.map(a => ({ type: 'fbsingle', key: a.id, date: a.fixtureDate, data: a })),
     ...bballPinnacleAlerts.filter(a => a.status === 'pending').map(a => ({ type: 'bballpinnacle', key: a.id, date: a.date, data: a })),
     ...bballPinnaclePropsAlerts.filter(a => a.status === 'pending').map(a => ({ type: 'bballpinnacleprops', key: a.id, date: a.date, data: a })),
   ].sort((a, b) => new Date(a.date || 0) - new Date(b.date || 0));
-  const totalAccepted       = acceptedGroups.length + acceptedTotalAlerts.length;
-  const kpiAcceptRate       = totalGroups > 0 ? Math.round(totalAccepted / totalGroups * 100) : null;
-  const kpiAvgProb          = acceptedGroups.length > 0
-    ? Math.round(acceptedGroups.reduce((s, g) => s + (g.maxProb || 0), 0) / acceptedGroups.length)
-    : null;
   const wonTotalAlerts      = rawTotalAlerts.filter(a => a.status === 'won').sort((a, b) => (b.acceptedAt || 0) - (a.acceptedAt || 0));
   const lostTotalAlerts     = rawTotalAlerts.filter(a => a.status === 'lost').sort((a, b) => (b.acceptedAt || 0) - (a.acceptedAt || 0));
   const rejectedGroups = groups.filter(g => g.status === 'rejected');
@@ -2272,10 +2214,8 @@ export default function PlaceBetPage() {
   return (
     <div className="page placebet-page">
 
-      {/* ── KPI STRIP ── */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
-        <div />
-        {(pendingGroups.length > 0 || pendingTotalAlerts.length > 0) && (
+      {(pendingGroups.length > 0 || pendingTotalAlerts.length > 0) && (
+        <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '0.75rem' }}>
           <button
             onClick={clearPending}
             style={{
@@ -2289,31 +2229,8 @@ export default function PlaceBetPage() {
             Tout effacer
             <svg width="9" height="9" viewBox="0 0 12 12" fill="none"><path d="M2 2L10 10M10 2L2 10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>
           </button>
-        )}
-      </div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '0.75rem', marginBottom: '1.5rem' }}>
-        {[
-          { icon: '📨', label: 'Alertes générées', value: totalGroups, color: '#3b82f6' },
-          { icon: '⏳', label: 'En attente',        value: pendingGroups.length + pendingTotalAlerts.length, color: '#f59e0b' },
-          { icon: '✅', label: 'Paris pris',         value: totalAccepted, color: '#10b981', sub: kpiAcceptRate != null ? `${kpiAcceptRate}% du total` : null },
-          { icon: '🎯', label: 'Proba moyenne',      value: kpiAvgProb != null ? `${kpiAvgProb}%` : '—', color: '#8b5cf6', sub: totalAccepted > 0 ? `sur ${totalAccepted} pari${totalAccepted > 1 ? 's' : ''}` : null },
-        ].map(({ icon, label, value, color, sub }) => (
-          <div key={label} style={{
-            background: 'var(--bg-card)', border: '1px solid var(--border)',
-            borderRadius: 12, padding: '0.85rem 1rem',
-            display: 'flex', alignItems: 'center', gap: '0.85rem',
-            position: 'relative', overflow: 'hidden',
-          }}>
-            <div style={{ position: 'absolute', top: 0, left: 0, right: 0, height: 2, background: `linear-gradient(90deg, ${color} 0%, transparent 100%)` }} />
-            <div style={{ width: 34, height: 34, borderRadius: 9, background: `${color}18`, border: `1px solid ${color}30`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16, flexShrink: 0 }}>{icon}</div>
-            <div>
-              <div style={{ fontSize: '1.5rem', fontWeight: 800, color: 'var(--text)', lineHeight: 1, letterSpacing: '-0.03em' }}>{value}</div>
-              <div style={{ fontSize: 11, color: 'var(--text-sub)', fontWeight: 500, marginTop: 2 }}>{label}</div>
-              {sub && <div style={{ fontSize: 10, color, fontWeight: 600, marginTop: 1 }}>{sub}</div>}
-            </div>
-          </div>
-        ))}
-      </div>
+        </div>
+      )}
 
       {/* ── ALERTES UNIFIÉES (foot + basket, triées par date) ── */}
       {allPendingItems.length === 0 && !hasHistory && (
@@ -2331,6 +2248,12 @@ export default function PlaceBetPage() {
             if (item.type === 'total')    return <GameTotalCard key={item.key} alert={item.data} onAccept={(id, bk, odds) => updateTotalStatus(id, 'accepted', bk, odds)} onReject={id => updateTotalStatus(id, 'rejected')} onDismiss={dismissTotal} />;
             if (item.type === 'basketresult') return <BasketballResultCard key={item.key} alert={item.data} onAccept={id => updateResultStatus(id, 'accepted')} onReject={id => updateResultStatus(id, 'rejected')} onDismiss={dismissResult} />;
             if (item.type === 'fbgroup') return <FootballGroupCard key={item.key} group={item.data} onAccept={handleFootballAccept} onReject={handleFootballReject} onDismissAll={handleFootballDismissAll} />;
+            if (item.type === 'fbsingle') {
+              const cfg = FB_SINGLE_CARD[item.data.type];
+              if (!cfg) return null;
+              const { Card, update } = cfg;
+              return <Card key={item.key} alert={item.data} onAccept={(id, bk, odds) => update(id, 'accepted', bk, odds)} onReject={id => update(id, 'rejected')} onDismiss={id => update(id, 'rejected')} />;
+            }
             if (item.type === 'bballpinnacle') return <BasketballPinnacleEdgeCard key={item.key} alert={item.data} onAccept={(id, bk, odds) => updateBballPinnacleStatus(id, 'accepted', bk, odds)} onReject={id => updateBballPinnacleStatus(id, 'rejected')} onDismiss={dismissBballPinnacle} />;
             if (item.type === 'bballpinnacleprops') return <BasketballPinnaclePropsCard key={item.key} alert={item.data} onAccept={(id, bk, odds) => updateBballPinnaclePropsStatus(id, 'accepted', bk, odds)} onReject={id => updateBballPinnaclePropsStatus(id, 'rejected')} onDismiss={dismissBballPinnacleProps} />;
             return null;

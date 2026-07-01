@@ -156,11 +156,13 @@ function footballAlertToGroup(a) {
   const isDcOu          = a.type === 'football_dc_ou';
   const isPinnacleTotal = isPinnacle && a.market === 'totals';
   const isLineless = isBtts || isResult || isDcBtts || (isPinnacle && !isPinnacleTotal);
-  const DC_DIR = { '1x': '1X', 'x2': 'X2', '12': '12' };
+  const dcHome = a.homeShort || a.home;
+  const dcAway = a.awayShort || a.away;
+  const DC_TEAMS = { '1x': `${dcHome} / Nul`, 'x2': `Nul / ${dcAway}`, '12': `${dcHome} / ${dcAway}` };
   return {
     key: `fb__${a.id}`, type: a.type,
     player: isBtts ? 'Les deux équipes marquent' : isResult ? 'Résultat 1X2' : isPinnacle ? 'Value Bet vs Pinnacle'
-      : isDcBtts ? `DC ${DC_DIR[a.direction] ?? a.direction} & BTTS` : isDcOu ? `DC ${DC_DIR[a.direction] ?? a.direction} & +1.5` : 'Total buts',
+      : isDcBtts ? `${DC_TEAMS[a.direction] ?? a.direction} & BTTS` : isDcOu ? `${DC_TEAMS[a.direction] ?? a.direction} & +${a.line ?? 1.5} but` : 'Total buts',
     team: null, fixture: isBtts ? a.fixture : `${a.home} vs ${a.away}`,
     fixtureDate: a.fixtureDate,
     homeTeam: isBtts ? a.homeTeam : a.home, awayTeam: isBtts ? a.awayTeam : a.away,
@@ -466,7 +468,7 @@ function AlertCard({ group, playerStats, onDismiss }) {
           <span style={{ fontSize: 11, fontWeight: 700, color: '#22d3ee', flexShrink: 0 }}>
             💎 {s.direction === 'draw' ? 'Nul' : s.direction === 'home' ? (group.homeShort || group.homeTeam) : (group.awayShort || group.awayTeam)}
           </span>
-        ) : s && (
+        ) : s && (s.stat === 'dc_btts' || s.stat === 'dc_ou') ? null : s && (
           <span style={{ fontSize: 11, fontWeight: 700, color: s.direction === 'over' ? '#4ade80' : '#f87171', flexShrink: 0 }}>
             {s.direction === 'over' ? '▲' : '▼'} {s.line} {STAT_LABEL[s.stat] ?? s.stat}
           </span>
@@ -838,7 +840,7 @@ export default function RunningPage() {
             {scheduledGroups.length > 0 && (
               <div style={{ position: 'fixed', bottom: 24, left: 236, zIndex: 200, display: 'flex', flexDirection: 'row', flexWrap: 'wrap', gap: '0.4rem', maxWidth: '70vw' }}>
                 {scheduledGroups.map(m => (
-                  <div key={m.matchKey} style={{ width: 260 }}>
+                  <div key={m.matchKey} style={{ width: 340 }}>
                     <MatchGroup match={m} scoreData={scoreData[m.matchKey] || null} liveStats={liveStats} onDismiss={dismiss} />
                   </div>
                 ))}
