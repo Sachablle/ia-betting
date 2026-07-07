@@ -784,6 +784,48 @@ const _mergeFootballBookmaker = (allMatches, sourceOdds, bkKey) => {
   }
 };
 
+// Fallback bookmaker (foot) : certains bookmakers ratent un match un cycle sur deux pour des
+// raisons qui n'ont rien à voir avec une vraie absence de cotes :
+// - Betclic : le h2h vient de la page de liste par ligue (fiable), mais btts/totals/dcbtts/dcou
+//   viennent d'un fetch par match individuel (fetchBetclicFootballExtras, timeout 8s) bien plus
+//   sujet aux échecs transitoires (page pas trouvée, marché pas encore posté).
+// - Pinnacle : throttle interne de 15 min (PINNACLE_FOOT_MIN_INTERVAL_MS) — si generateBackgroundAlerts
+//   et /api/odds déclenchent tous les deux un _refreshOddsCache à moins de 15 min d'intervalle,
+//   le 2e renvoie [] pour tout le foot, pas juste un match isolé.
+// Dans les deux cas, une donnée absente ce cycle-ci ne veut pas dire "plus de cotes" — sans ce
+// fallback, ça faisait clignoter (Betclic) ou disparaître complètement (Pinnacle) les cotes côté
+// front (constaté 7 juillet 2026). Même principe que le fallback basket équivalent (ligne ~4808) :
+// on réutilise la dernière valeur connue tant qu'elle a moins de 30 min (ODDS_TTL), en conservant
+// l'horodatage d'origine pour ne pas prolonger artificiellement sa fraîcheur.
+const _fillMissingBookmaker = (allMatches, prevMatches, bkKey) => {
+  const now = Date.now();
+  const atKey = `_${bkKey}At`;
+  for (const m of allMatches) {
+    for (const marketType of ['h2h', 'btts', 'totals', 'dcbtts', 'dcou']) {
+      if (m.markets?.[marketType]?.bookmakers?.[bkKey]) {
+        m[atKey] = m[atKey] || {};
+        m[atKey][marketType] = now;
+      }
+    }
+  }
+  if (!prevMatches?.length) return;
+  for (const m of allMatches) {
+    const prev = prevMatches.find(p => fuzzy(p.homeTeam, m.homeTeam) && fuzzy(p.awayTeam, m.awayTeam));
+    if (!prev) continue;
+    for (const marketType of ['h2h', 'btts', 'totals', 'dcbtts', 'dcou']) {
+      if (m.markets?.[marketType]?.bookmakers?.[bkKey]) continue;
+      const prevBk = prev.markets?.[marketType]?.bookmakers?.[bkKey];
+      if (!prevBk) continue;
+      const staleAt = prev[atKey]?.[marketType] ?? 0;
+      if (now - staleAt > 30 * 60 * 1000) continue;
+      m.markets[marketType] = m.markets[marketType] || { bookmakers: {} };
+      m.markets[marketType].bookmakers[bkKey] = prevBk;
+      m[atKey] = m[atKey] || {};
+      m[atKey][marketType] = staleAt;
+    }
+  }
+};
+
 // Marque la tendance (hausse/baisse) de chaque cote par rapport au cache précédent
 // — affichée en flèche ▲/▼ dans FootballOddsBox
 const _computeOddsTrends = (newMatches, prevMatches) => {
@@ -848,6 +890,10 @@ async function _refreshOddsCache() {
   _mergeFootballBookmaker(allMatches, wmOdds, 'winamax');
   _mergeFootballBookmaker(allMatches, pinOdds, 'pinnacle');
 
+  const prevMatches = _oddsCache.data?.matches || [];
+  _fillMissingBookmaker(allMatches, prevMatches, 'betclic');
+  _fillMissingBookmaker(allMatches, prevMatches, 'pinnacle');
+
   _computeOddsTrends(allMatches, _oddsCache.data?.matches);
 
   // Gèle les cotes au coup d'envoi : un match toujours présent dans le scrape après son
@@ -856,7 +902,6 @@ async function _refreshOddsCache() {
   // capture pré-match. Avant ce fix, seul un match totalement *absent* du scrape était figé —
   // un match qui restait visible en live (cas Canada-Qatar, 19 juin 2026) continuait à être
   // rafraîchi indéfiniment avec des cotes in-play affichées comme si elles étaient pré-match.
-  const prevMatches = _oddsCache.data?.matches || [];
   const now = Date.now();
   const frozenAllMatches = allMatches.map(m => {
     const kickoff = m.commenceTime ? new Date(m.commenceTime).getTime() : NaN;
@@ -6345,8 +6390,13 @@ async function fetchBetclicFootballExtras(href, homeTeam = '') {
     }
 
     // Total de buts — lignes 1.5 et 2.5 (over/under)
+    // startsWith (pas égalité stricte) : Betclic a ajouté un suffixe "(t. rég)" à ce marché
+    // (7 juillet 2026, probablement pour distinguer temps réglementaire/prolongations en phase
+    // finale CDM) — l'égalité stricte ne matchait plus, faisant disparaître tout l'onglet "Buts"
+    // Betclic. Ne pas confondre avec les marchés par équipe "Total de buts (t. rég) - Suisse" qui
+    // commencent par "Total" sans "Nombre" — startsWith('nombre total de buts') les exclut bien.
     let totals = null;
-    const totMkt = mkts.find(mk => mk.name === 'Nombre total de buts');
+    const totMkt = mkts.find(mk => (mk.name ?? '').toLowerCase().startsWith('nombre total de buts'));
     if (totMkt) {
       const t = {};
       for (const row of totMkt.selectionMatrix ?? []) {
