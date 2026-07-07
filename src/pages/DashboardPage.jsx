@@ -1,13 +1,14 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { cachedFetch, getCached } from '../utils/fetchCache';
-import { groupAlerts } from '../utils/groupAlerts';
 
 const ALERT_KEY       = 'nba_prop_alerts';
 const GAME_TOTAL_KEY  = 'nba_game_total_alerts';
 const FB_BTTS_KEY     = 'fb_btts_alerts';
 const FB_TOTAL_KEY    = 'fb_total_alerts';
 const FB_RESULT_KEY   = 'fb_result_alerts';
+const FB_DC_BTTS_KEY  = 'fb_dc_btts_alerts';
+const FB_DC_OU_KEY    = 'fb_dc_ou_alerts';
 const BBALL_RESULT_KEY = 'basketball_result_alerts';
 
 // ── Widget : Countdown prochain match ────────────────────────────────────────
@@ -29,6 +30,8 @@ function CountdownWidget() {
       try { local = [...local, ...JSON.parse(localStorage.getItem(FB_BTTS_KEY) || '[]')]; } catch {}
       try { local = [...local, ...JSON.parse(localStorage.getItem(FB_TOTAL_KEY) || '[]')]; } catch {}
       try { local = [...local, ...JSON.parse(localStorage.getItem(FB_RESULT_KEY) || '[]')]; } catch {}
+      try { local = [...local, ...JSON.parse(localStorage.getItem(FB_DC_BTTS_KEY) || '[]')]; } catch {}
+      try { local = [...local, ...JSON.parse(localStorage.getItem(FB_DC_OU_KEY) || '[]')]; } catch {}
       try { local = [...local, ...JSON.parse(localStorage.getItem(BBALL_RESULT_KEY) || '[]')]; } catch {}
 
       // Normalise l'ID : tronque après 'over'/'under' pour fusionner ancien format (avec ligne) et nouveau
@@ -43,8 +46,11 @@ function CountdownWidget() {
       for (const a of local)    { if (a.id) byId[normId(a.id)] = a; }
       for (const a of bgAlerts) { const k = normId(a.id); if (a.id && !byId[k]) byId[k] = a; }
 
-      // Exclut seulement les alertes rejetées
-      const active = Object.values(byId).filter(a => a.status !== 'rejected');
+      // "En cours" = paris réellement acceptés, pas suggestions pending ni déjà réglés (won/lost/
+      // void) — le filtre précédent (tout sauf rejected) comptait des alertes juste proposées par
+      // le modèle comme si elles étaient "en cours" (bug du 7 juillet 2026, ex. les 2 alertes DC
+      // pending USA-Belgique comptées comme des paris en cours alors qu'aucun n'était accepté).
+      const active = Object.values(byId).filter(a => a.status === 'accepted');
 
       const byKey = {};
       for (const a of active) {
@@ -72,7 +78,16 @@ function CountdownWidget() {
 
     load();
     const id = setInterval(load, 60_000);
-    return () => clearInterval(id);
+    // Sans ça, ce widget pouvait rester figé jusqu'à 60s après un accept/reject ou un rechargement
+    // cloud (bug du 7 juillet 2026 : un pari tout juste accepté n'apparaissait pas dans "En cours"
+    // tant que le prochain polling n'était pas passé).
+    window.addEventListener('nba_alerts_updated', load);
+    window.addEventListener('cloud_synced', load);
+    return () => {
+      clearInterval(id);
+      window.removeEventListener('nba_alerts_updated', load);
+      window.removeEventListener('cloud_synced', load);
+    };
   }, []);
 
   useEffect(() => {
@@ -817,8 +832,12 @@ function AlertsChart({ accepted, days: numDays = 30 }) {
 
   const byDay = {};
   accepted.forEach(a => {
-    // Priorité : acceptedAt → savedAt → maintenant (jamais fixtureDate qui peut être dans le futur)
-    const ts = a.acceptedAt ?? a.savedAt ?? Date.now();
+    // Priorité : acceptedAt → savedAt → settledAt → fixtureDate (si déjà réglé, donc forcément
+    // dans le passé) → maintenant en tout dernier recours. D'anciennes alertes foot n'ont ni
+    // acceptedAt ni savedAt enregistré ; les compter sur "maintenant" les faisait apparaître comme
+    // acceptées aujourd'hui alors qu'elles datent de plusieurs semaines (bug du 7 juillet 2026).
+    const resolved = ['won', 'lost', 'void'].includes(a.status);
+    const ts = a.acceptedAt ?? a.savedAt ?? a.settledAt ?? (resolved ? (a.fixtureDate ?? a.date) : null) ?? Date.now();
     const raw = new Date(ts);
     const day = new Date(raw.getTime() - raw.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
     byDay[day] = (byDay[day] || 0) + 1;
@@ -837,7 +856,10 @@ function AlertsChart({ accepted, days: numDays = 30 }) {
   const linePath = `M ${pts.map(([x, y]) => `${x},${y}`).join(' L ')}`;
   const areaPath = `${linePath} L ${px(days.length - 1)},${padT + cH} L ${px(0)},${padT + cH} Z`;
   const n = days.length;
-  const xIdxs = [...new Set([0, Math.round(n * 0.25), Math.round(n * 0.5), Math.round(n * 0.75), n - 1])];
+  // Math.round(n*0.75) peut dépasser n-1 pour un petit n (ex. n=2 → index 2, hors tableau →
+  // "Invalid Date" affiché sur l'axe) — on clamp chaque index à la plage valide.
+  const clamp = i => Math.max(0, Math.min(i, n - 1));
+  const xIdxs = [...new Set([0, clamp(Math.round(n * 0.25)), clamp(Math.round(n * 0.5)), clamp(Math.round(n * 0.75)), n - 1])];
 
   return (
     <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={H} style={{ display: 'block' }}>
@@ -1118,6 +1140,9 @@ export default function DashboardPage() {
   const [alerts, setAlerts]           = useState([]);
   const [totalAlerts, setTotalAlerts] = useState([]);
   const [resultAlerts, setResultAlerts] = useState([]);
+  // Toutes les alertes foot (BTTS/O-U/Résultat/DC) — le graphique "Paris acceptés" les ignorait
+  // entièrement avant ce fix (7 juillet 2026), ne comptant que les props/totaux basket.
+  const [footballAlerts, setFootballAlerts] = useState([]);
   const [period, setPeriod]           = useState(5);
 
 
@@ -1133,6 +1158,12 @@ export default function DashboardPage() {
     catch { setTotalAlerts([]); }
     try { setResultAlerts(JSON.parse(localStorage.getItem(BBALL_RESULT_KEY) || '[]')); }
     catch { setResultAlerts([]); }
+    try {
+      const fb = [FB_BTTS_KEY, FB_TOTAL_KEY, FB_RESULT_KEY, FB_DC_BTTS_KEY, FB_DC_OU_KEY]
+        .flatMap(k => { try { return JSON.parse(localStorage.getItem(k) || '[]'); } catch { return []; } })
+        .map(backfill);
+      setFootballAlerts(fb);
+    } catch { setFootballAlerts([]); }
   };
 
   useEffect(() => {
@@ -1158,22 +1189,11 @@ export default function DashboardPage() {
 
   const accepted        = dedupAlerts(alerts.filter(a => RESOLVED.includes(a.status)));
   const acceptedTotals  = totalAlerts.filter(a => RESOLVED.includes(a.status));
+  // Pas de dedupAlerts ici : ces alertes n'ont pas de champ `player`, la clé de dédup collapserait
+  // à tort plusieurs matchs/marchés différents ensemble.
+  const acceptedFootball    = footballAlerts.filter(a => RESOLVED.includes(a.status));
+  const acceptedBballResult = resultAlerts.filter(a => RESOLVED.includes(a.status));
   const allDedupAlerts  = dedupAlerts(alerts);
-
-  // ── KPI strip (déplacé depuis la page Alertes le 1 juil. 2026) — même source (groupAlerts)
-  // que PlaceBetPage pour ne jamais afficher un chiffre différent entre les deux pages.
-  const kpiGroups         = groupAlerts(alerts);
-  const kpiPendingGroups  = kpiGroups.filter(g => g.status === 'pending');
-  const kpiAcceptedGroups = kpiGroups.filter(g => g.status === 'accepted');
-  const kpiPendingTotals  = totalAlerts.filter(a => a.status === 'pending');
-  const kpiAcceptedTotals = totalAlerts.filter(a => a.status === 'accepted');
-  const kpiTotalGroups    = kpiGroups.filter(g => g.status !== 'rejected').length + totalAlerts.filter(a => a.status !== 'rejected').length + resultAlerts.filter(a => a.status !== 'rejected').length;
-  const kpiTotalAccepted  = kpiAcceptedGroups.length + kpiAcceptedTotals.length;
-  const kpiAcceptRate     = kpiTotalGroups > 0 ? Math.round(kpiTotalAccepted / kpiTotalGroups * 100) : null;
-  const kpiAvgProb        = kpiAcceptedGroups.length > 0
-    ? Math.round(kpiAcceptedGroups.reduce((s, g) => s + (g.maxProb || 0), 0) / kpiAcceptedGroups.length)
-    : null;
-  const kpiPendingCount   = kpiPendingGroups.length + kpiPendingTotals.length;
 
   return (
     <div style={{ padding: '0.9rem 2.5rem 2rem' }}>
@@ -1219,7 +1239,7 @@ export default function DashboardPage() {
             ))}
           </select>
         </div>
-        <AlertsChart accepted={[...accepted, ...acceptedTotals]} days={period} />
+        <AlertsChart accepted={[...accepted, ...acceptedTotals, ...acceptedFootball, ...acceptedBballResult]} days={period} />
       </div>
 
       {/* Grid 2 colonnes : chaque ligne partage la même hauteur */}
@@ -1228,31 +1248,6 @@ export default function DashboardPage() {
         <SystemHealthSection />
         <QuotasWidget />
         <UpcomingMatchesWidget />
-      </div>
-
-      {/* KPI strip — Alertes générées / En attente / Paris pris / Proba moyenne */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '0.75rem', marginBottom: '1.5rem' }}>
-        {[
-          { icon: '📨', label: 'Alertes générées', value: kpiTotalGroups, color: '#3b82f6' },
-          { icon: '⏳', label: 'En attente',        value: kpiPendingCount, color: '#f59e0b' },
-          { icon: '✅', label: 'Paris pris',         value: kpiTotalAccepted, color: '#10b981', sub: kpiAcceptRate != null ? `${kpiAcceptRate}% du total` : null },
-          { icon: '🎯', label: 'Proba moyenne',      value: kpiAvgProb != null ? `${kpiAvgProb}%` : '—', color: '#8b5cf6', sub: kpiTotalAccepted > 0 ? `sur ${kpiTotalAccepted} pari${kpiTotalAccepted > 1 ? 's' : ''}` : null },
-        ].map(({ icon, label, value, color, sub }) => (
-          <div key={label} style={{
-            background: 'var(--bg-card)', border: '1px solid var(--border)',
-            borderRadius: 12, padding: '0.85rem 1rem',
-            display: 'flex', alignItems: 'center', gap: '0.85rem',
-            position: 'relative', overflow: 'hidden',
-          }}>
-            <div style={{ position: 'absolute', top: 0, left: 0, right: 0, height: 2, background: `linear-gradient(90deg, ${color} 0%, transparent 100%)` }} />
-            <div style={{ width: 34, height: 34, borderRadius: 9, background: `${color}18`, border: `1px solid ${color}30`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16, flexShrink: 0 }}>{icon}</div>
-            <div>
-              <div style={{ fontSize: '1.5rem', fontWeight: 800, color: 'var(--text)', lineHeight: 1, letterSpacing: '-0.03em' }}>{value}</div>
-              <div style={{ fontSize: 11, color: 'var(--text-sub)', fontWeight: 500, marginTop: 2 }}>{label}</div>
-              {sub && <div style={{ fontSize: 10, color, fontWeight: 600, marginTop: 1 }}>{sub}</div>}
-            </div>
-          </div>
-        ))}
       </div>
 
     </div>

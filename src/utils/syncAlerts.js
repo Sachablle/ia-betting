@@ -895,7 +895,9 @@ export { FB_DC_BTTS_KEY, FB_DC_OU_KEY };
 // 1-1 → "oui" gagné). Le sens "négatif" (under gagné, over perdu, BTTS non) ne peut être
 // confirmé qu'à STATUS_FINAL puisque le score peut encore évoluer.
 export function resolveFootballAlertResult(a, game) {
-  const hs = game.home?.score, as_ = game.away?.score;
+  // scoreReg = score du temps réglementaire (fullTime - extraTime, voir /api/fd/worldcup) — DC/BTTS/
+  // O-U/Résultat se règlent sur 90min, pas sur le score final après prolongation.
+  const hs = game.home?.scoreReg ?? game.home?.score, as_ = game.away?.scoreReg ?? game.away?.score;
   if (hs == null || as_ == null) return null;
   const isFinal = game.status === 'STATUS_FINAL';
   if (a.type === 'football_btts') {
@@ -945,7 +947,14 @@ export async function resolveCompletedFootballAlerts(alerts, save) {
     let changed = false;
     for (const a of toResolve) {
       const gid = a.fixtureId.replace('fdcdm_', '');
-      const game = games.find(g => String(g.id) === gid && ['STATUS_IN_PROGRESS', 'STATUS_FINAL'].includes(g.status));
+      let game = games.find(g => String(g.id) === gid && ['STATUS_IN_PROGRESS', 'STATUS_FINAL'].includes(g.status));
+      // Le match est sorti de la fenêtre glissante de /api/fd/worldcup (48h) — filet de rattrapage
+      // pour ne pas laisser un pari accepted bloqué indéfiniment (cf. server.js /api/fd/match/:id,
+      // bug du 7 juillet 2026 : alerte DC Suisse-Algérie du 3 juillet jamais réglée).
+      if (!game) {
+        const single = await fetch(`/api/fd/match/${gid}`).then(r => r.ok ? r.json() : null).catch(() => null);
+        if (single && ['STATUS_IN_PROGRESS', 'STATUS_FINAL'].includes(single.status)) game = single;
+      }
       if (!game) continue;
       const result = resolveFootballAlertResult(a, game);
       if (!result) continue;

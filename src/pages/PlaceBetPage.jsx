@@ -540,11 +540,11 @@ function GameTotalCard({ alert, onAccept, onReject, onDismiss }) {
         </div>
       </div>
 
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem', marginTop: '0.35rem', minWidth: 0 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', minWidth: 0, overflow: 'hidden' }}>
-          <span className="bc-team bc-team-home" style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{homeShort || home}</span>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem', marginTop: '0.35rem', flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', flexWrap: 'wrap' }}>
+          <span className="bc-team bc-team-home" style={{ flex: '0 1 auto' }}>{home || homeShort}</span>
           <span className="bc-vs">vs</span>
-          <span className="bc-team bc-team-away" style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{awayShort || away}</span>
+          <span className="bc-team bc-team-away" style={{ flex: '0 1 auto' }}>{away || awayShort}</span>
         </div>
         <span style={{ fontSize: 10, color: 'var(--text-dim)', flexShrink: 0, whiteSpace: 'nowrap' }}>
           {new Date(date).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
@@ -639,11 +639,11 @@ function BasketballPinnacleEdgeCard({ alert, onAccept, onReject, onDismiss }) {
         </div>
       </div>
 
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem', marginTop: '0.35rem', minWidth: 0 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', minWidth: 0, overflow: 'hidden' }}>
-          <span className="bc-team bc-team-home" style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{homeShort || home}</span>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem', marginTop: '0.35rem', flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', flexWrap: 'wrap' }}>
+          <span className="bc-team bc-team-home" style={{ flex: '0 1 auto' }}>{home || homeShort}</span>
           <span className="bc-vs">vs</span>
-          <span className="bc-team bc-team-away" style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{awayShort || away}</span>
+          <span className="bc-team bc-team-away" style={{ flex: '0 1 auto' }}>{away || awayShort}</span>
         </div>
         <span style={{ fontSize: 10, color: 'var(--text-dim)', flexShrink: 0, whiteSpace: 'nowrap' }}>
           {new Date(date).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
@@ -741,11 +741,11 @@ function BasketballPinnaclePropsCard({ alert, onAccept, onReject, onDismiss }) {
           </span>
         )}
       </div>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem', marginTop: '0.35rem', minWidth: 0 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', minWidth: 0, overflow: 'hidden' }}>
-          <span className="bc-team bc-team-home" style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{homeShort || home}</span>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem', marginTop: '0.35rem', flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', flexWrap: 'wrap' }}>
+          <span className="bc-team bc-team-home" style={{ flex: '0 1 auto' }}>{home || homeShort}</span>
           <span className="bc-vs">vs</span>
-          <span className="bc-team bc-team-away" style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{awayShort || away}</span>
+          <span className="bc-team bc-team-away" style={{ flex: '0 1 auto' }}>{away || awayShort}</span>
         </div>
         <span style={{ fontSize: 10, color: 'var(--text-dim)', flexShrink: 0, whiteSpace: 'nowrap' }}>
           {new Date(date).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })} · <span style={{ color: '#60a5fa' }}>{timeLabel}</span>
@@ -828,11 +828,11 @@ function BasketballResultCard({ alert, onAccept, onReject, onDismiss }) {
           )}
         </div>
       </div>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem', marginTop: '0.35rem', minWidth: 0 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', minWidth: 0, overflow: 'hidden' }}>
-          <span className="bc-team bc-team-home" style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{homeShort || home}</span>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem', marginTop: '0.35rem', flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', flexWrap: 'wrap' }}>
+          <span className="bc-team bc-team-home" style={{ flex: '0 1 auto' }}>{home || homeShort}</span>
           <span className="bc-vs">vs</span>
-          <span className="bc-team bc-team-away" style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{awayShort || away}</span>
+          <span className="bc-team bc-team-away" style={{ flex: '0 1 auto' }}>{away || awayShort}</span>
         </div>
         <span style={{ fontSize: 10, color: 'var(--text-dim)', flexShrink: 0, whiteSpace: 'nowrap' }}>
           {new Date(date).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
@@ -1498,9 +1498,24 @@ export default function PlaceBetPage() {
 
   const dismissDcOu = (id) => { saveDcOuAlerts(dcOuAlerts.filter(a => a.id !== id)); window.dispatchEvent(new Event('fb_dc_ou_alerts_updated')); };
 
+  // Cette page ne travaille que sur une fenêtre récente (rawAlerts, ~7j) et de nombreux points
+  // d'écriture (loadAlerts, resolveCompletedBets, accept/reject, dismiss, void, clearPending)
+  // n'ont jamais que ce sous-ensemble en main. Écraser ALERT_KEY avec un sous-ensemble partiel
+  // supprimait silencieusement l'historique won/lost/void plus ancien à chaque cycle — bug trouvé
+  // le 6 juillet 2026 (résultats de backtesting basket disparus après 7 jours). On refusionne donc
+  // systématiquement les résolus déjà en storage absents du sous-ensemble écrit.
+  const persistAlertKey = (alerts) => {
+    try {
+      const current = JSON.parse(localStorage.getItem(ALERT_KEY) || '[]');
+      const writtenIds = new Set(alerts.map(a => a.id));
+      const preservedOld = current.filter(a => ['won', 'lost', 'void'].includes(a.status) && !writtenIds.has(a.id));
+      cloudSet(ALERT_KEY, JSON.stringify([...alerts, ...preservedOld]));
+    } catch { cloudSet(ALERT_KEY, JSON.stringify(alerts)); }
+  };
+
   const saveAlerts = (alerts) => {
     try {
-      cloudSet(ALERT_KEY, JSON.stringify(alerts));
+      persistAlertKey(alerts);
       setRawAlerts([...alerts]);
     } catch {}
   };
@@ -1581,7 +1596,7 @@ export default function PlaceBetPage() {
         return a;
       });
       if (valid.length !== merged.length || reverted || backfilled) {
-        cloudSet(ALERT_KEY, JSON.stringify(finalAlerts));
+        persistAlertKey(finalAlerts);
         if (backfilled) window.dispatchEvent(new Event('nba_alerts_updated'));
       }
       setRawAlerts(finalAlerts);
@@ -2034,7 +2049,7 @@ export default function PlaceBetPage() {
       return a;
     });
     try {
-      cloudSet(ALERT_KEY, JSON.stringify(updated));
+      persistAlertKey(updated);
       // Sync backend : POST les acceptées, DELETE les rejetées
       if (status === 'accepted') {
         updated.filter(a => idSet.has(a.id)).forEach(a => postAcceptedAlertReliably(a));
@@ -2061,7 +2076,7 @@ export default function PlaceBetPage() {
     const dismissed = rawAlerts.filter(a => idSet.has(a.id));
     const updated = rawAlerts.filter(a => !idSet.has(a.id));
     try {
-      cloudSet(ALERT_KEY, JSON.stringify(updated));
+      persistAlertKey(updated);
       // Archive toutes les alertes dismissées en history — les pending passent en void+userDismissed
       // pour bloquer leur re-génération par syncBackgroundAlerts (findByFingerprint 'void')
       const TERMINAL = ['accepted', 'won', 'lost', 'void', 'rejected'];
@@ -2091,7 +2106,7 @@ export default function PlaceBetPage() {
   const voidIds = (ids) => {
     const idSet = new Set(ids);
     const updated = rawAlerts.map(a => idSet.has(a.id) ? { ...a, status: 'void', actualStat: null, resolvedAt: Date.now() } : a);
-    try { cloudSet(ALERT_KEY, JSON.stringify(updated)); } catch {}
+    try { persistAlertKey(updated); } catch {}
     setRawAlerts(updated);
     notify();
   };
@@ -2200,7 +2215,7 @@ export default function PlaceBetPage() {
 
   const clearPending = () => {
     const kept = rawAlerts.filter(a => a.status !== 'pending');
-    try { cloudSet(ALERT_KEY, JSON.stringify(kept)); } catch {}
+    try { persistAlertKey(kept); } catch {}
     setRawAlerts(kept);
     const keptTotals = rawTotalAlerts.filter(a => a.status !== 'pending');
     try { cloudSet(GAME_TOTAL_KEY, JSON.stringify(keptTotals)); } catch {}

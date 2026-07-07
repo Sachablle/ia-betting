@@ -760,7 +760,14 @@ export default function RunningPage() {
         return { ...a, status: 'void', userDismissed: true };
       return a;
     });
-    try { cloudSet(ALERT_KEY, JSON.stringify(updated)); } catch {}
+    try {
+      // Ne jamais laisser une écriture partielle (rawAlerts de cette page) écraser un
+      // won/lost/void déjà persisté ailleurs (même bug que PlaceBetPage.jsx corrigé le 6 juillet).
+      const current = JSON.parse(localStorage.getItem(ALERT_KEY) || '[]');
+      const writtenIds = new Set(updated.map(a => a.id));
+      const preservedOld = current.filter(a => ['won', 'lost', 'void'].includes(a.status) && !writtenIds.has(a.id));
+      cloudSet(ALERT_KEY, JSON.stringify([...updated, ...preservedOld]));
+    } catch {}
     setRawAlerts(updated);
   };
 

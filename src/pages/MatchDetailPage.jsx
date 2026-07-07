@@ -183,9 +183,14 @@ function shrinkFactor(rawFactor, games, k = SHRINK_K) {
 }
 function computeCdmBTTS(homeStats, awayStats, poolAvg = null, homeName = null) {
   if (homeStats?.goalsFor == null || awayStats?.goalsFor == null) return null;
+  // poolAvg vient d'un fetch async (/api/football/cdm/poolavg?fixtureId=...) — tant qu'il n'est
+  // pas arrivé, ne PAS retomber sur des constantes par défaut : ça produisait une proba fantôme
+  // (ex. 74% au lieu de 67% réel) sur les tout premiers rendus, sauvegardée dans l'alerte avant
+  // que la vraie moyenne gelée du match n'arrive, sans pouvoir être corrigée ensuite.
+  if (!poolAvg) return null;
 
-  const avgGF = poolAvg?.avgGF || 2.15;
-  const avgGA = poolAvg?.avgGA || 0.78;
+  const avgGF = poolAvg.avgGF;
+  const avgGA = poolAvg.avgGA;
   const homeAdv = CDM_HOST_NATIONS.has(homeName) ? CDM_HOME_ADV : 1.0;
 
   // Facteurs attaque/défense normalisés — identique au backend (computeLambdas), aucun
@@ -741,7 +746,6 @@ function FootballOddsBox({ markets, bttsResult, home, away, frozen, onRefresh, r
             {[
               { key: '1x', label: `${home?.name ?? '1X'} / Nul & ${suffix}`, prob: tab === 'dc_btts' ? dcBttsResult?.p1x : dcOuResult?.p1x },
               { key: 'x2', label: `${away?.name ?? 'X2'} / Nul & ${suffix}`, prob: tab === 'dc_btts' ? dcBttsResult?.px2 : dcOuResult?.px2 },
-              { key: '12', label: `${home?.name ?? '12'} / ${away?.name ?? ''} & ${suffix}`, prob: tab === 'dc_btts' ? dcBttsResult?.p12 : dcOuResult?.p12 },
             ].map(({ key, label, prob }) => (
               <div key={key} style={{ display: 'grid', gridTemplateColumns: `1fr${bks.map(() => ' 48px').join('')}`, gap: '0 0.25rem', alignItems: 'center', padding: '0.28rem 0', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -1386,9 +1390,15 @@ export default function MatchDetailPage() {
       ? computeBTTS(homeMatches, awayMatches, liveHomeStats.id, liveAwayStats.id)
       : computeStaticBTTS(fixture);
 
-  // Sauvegarde alerte BTTS si confiance ≥ 70%
+  // Sauvegarde alerte BTTS si confiance ≥ 70% — nécessite au moins une cote Unibet/Betclic
+  // exploitable (sinon l'alerte n'est pas actionnable : pas de bouton pour l'accepter, et elle
+  // finit purgée comme orpheline par syncFootballAlerts dès qu'un autre match génère une alerte
+  // backend, ce qui la fait disparaître sans explication côté UI).
   useEffect(() => {
     if (!bttsResult || !fixture || bttsResult.prob < 70) return;
+    const unibetOdds = matchOdds?.btts?.bookmakers?.unibet?.yes || null;
+    const betclicOdds = matchOdds?.btts?.bookmakers?.betclic?.yes || null;
+    if (!unibetOdds && !betclicOdds) return;
     const alertId = `${fixture.id}_btts_yes`;
     try {
       const existing = JSON.parse(localStorage.getItem('fb_btts_alerts') || '[]');
@@ -1415,8 +1425,8 @@ export default function MatchDetailPage() {
         direction: 'yes',
         probability: bttsResult.prob,
         pinnacleOdds,
-        unibetOdds: matchOdds?.btts?.bookmakers?.unibet?.yes || null,
-        betclicOdds: matchOdds?.btts?.bookmakers?.betclic?.yes || null,
+        unibetOdds,
+        betclicOdds,
         edge,
         savedAt: Date.now(),
         status: old?.status || 'pending',

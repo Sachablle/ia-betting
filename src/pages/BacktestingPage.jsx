@@ -1,6 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
 import { syncSettlements, resolveCompletedFootballAlerts } from '../utils/syncAlerts';
-import { setItem as cloudSetItem } from '../utils/cloudStorage';
 
 const ROLLING_N = 20;
 const DEFAULT_ODDS = 1.9;
@@ -75,130 +74,88 @@ function countAccepted(periodDays, sportFilter, typeFilter, model = 'new') {
   return props.length + totals.length + btts.length + fbTotals.length + fbResults.length + basketResults.length;
 }
 
-function loadAllResolved(periodDays, model = 'new') {
+const DC_DIR = { '1x': '1X', 'x2': 'X2', '12': '12' };
+
+const getBetOdds = a =>
+  a.acceptedUnibetOdds ?? a.acceptedBetclicOdds ?? a.acceptedWinamaxOdds ?? a.acceptedPinnacleOdds ??
+  a.unibetOdds ?? a.betclicOdds ?? a.winamaxOdds ?? a.pinnacleOdds ?? null;
+
+// Transforme une entrée du registre permanent (backend /api/bet-history) dans le format d'affichage
+// attendu par cette page — un seul mapping par type d'alerte, au lieu d'un bloc dupliqué par clé
+// localStorage. _sourceKey est toujours 'bet_ledger' : la suppression (handleDeleteBet) cible ce
+// registre unique via /api/bet-history/:id, jamais une clé localStorage écrasable en bloc.
+function mapLedgerEntry(a) {
+  const base = {
+    date: a.fixtureDate ?? a.date, status: a.status, odds: getBetOdds(a),
+    probability: a.acceptedProbability ?? a.probability ?? a.prob,
+    bookmaker: a.acceptedBookmaker ?? a.bookmaker,
+    _sourceKey: 'bet_ledger', _alertId: a.id,
+  };
+  switch (a.type) {
+    case 'player_prop':
+      return { ...base, type: 'prop', sport: ['euroleague','wnba','acb','lnb','bbl','legaa'].includes(a.league) ? a.league : 'nba',
+        label: a.player, sub: `${a.direction === 'over' ? '▲ Over' : '▼ Under'} ${a.line} ${(a.stat || '').toUpperCase()}`,
+        actual: a.actualStat, stat: a.stat, direction: a.direction, line: a.line, league: a.league || 'nba' };
+    case 'game_total':
+      return { ...base, type: 'total', sport: a.league || 'nba',
+        label: `${a.homeShort || a.home} vs ${a.awayShort || a.away}`,
+        sub: `${a.direction === 'over' ? '▲ Over' : '▼ Under'} ${a.line}`,
+        actual: a.actualStat ?? a.actualTotal, line: a.line, direction: a.direction, league: a.league || 'nba' };
+    case 'basketball_result':
+      return { ...base, type: 'result', sport: a.league || 'nba',
+        label: `${a.homeShort || a.home} vs ${a.awayShort || a.away}`,
+        sub: `🏆 Victoire ${a.direction === 'home' ? (a.homeShort || a.home) : (a.awayShort || a.away)}`,
+        direction: a.direction, league: a.league || 'nba' };
+    case 'football_btts':
+      return { ...base, type: 'btts', sport: 'football',
+        label: a.fixture || `${a.homeShort || a.home} vs ${a.awayShort || a.away}`,
+        sub: '✓ Les deux équipes marquent',
+        actual: (a.actualHomeScore != null && a.actualAwayScore != null) ? `${a.actualHomeScore}-${a.actualAwayScore}` : null,
+        league: a.league || 'football' };
+    case 'football_total':
+      return { ...base, type: 'total', sport: 'football',
+        label: `${a.homeShort || a.home} vs ${a.awayShort || a.away}`,
+        sub: `${a.direction === 'over' ? '▲ Plus' : '▼ Moins'} de ${a.line} buts`,
+        actual: (a.actualHomeScore != null && a.actualAwayScore != null) ? a.actualHomeScore + a.actualAwayScore : null,
+        line: a.line, direction: a.direction, league: a.league || 'football' };
+    case 'football_result':
+      return { ...base, type: 'result', sport: 'football',
+        label: `${a.homeShort || a.home} vs ${a.awayShort || a.away}`,
+        sub: a.direction === 'draw' ? '🏆 Match nul' : `🏆 Victoire ${a.direction === 'home' ? (a.homeShort || a.home) : (a.awayShort || a.away)}`,
+        actual: (a.actualHomeScore != null && a.actualAwayScore != null) ? `${a.actualHomeScore}-${a.actualAwayScore}` : null,
+        direction: a.direction, league: a.league || 'football' };
+    case 'football_dc_btts':
+      return { ...base, type: 'btts', sport: 'football',
+        label: `${a.homeShort || a.home} vs ${a.awayShort || a.away}`,
+        sub: `DC ${DC_DIR[a.direction] ?? a.direction} & BTTS`,
+        actual: (a.actualHomeScore != null && a.actualAwayScore != null) ? `${a.actualHomeScore}-${a.actualAwayScore}` : null,
+        league: a.league || 'cdm' };
+    case 'football_dc_ou':
+      return { ...base, type: 'total', sport: 'football',
+        label: `${a.homeShort || a.home} vs ${a.awayShort || a.away}`,
+        sub: `DC ${DC_DIR[a.direction] ?? a.direction} & +${a.line ?? 1.5} buts`,
+        actual: (a.actualHomeScore != null && a.actualAwayScore != null) ? a.actualHomeScore + a.actualAwayScore : null,
+        line: a.line ?? 1.5, direction: 'over', league: a.league || 'cdm' };
+    default:
+      return null;
+  }
+}
+
+// Source unique de vérité pour les résultats : le registre backend (/api/bet-history), jamais
+// tronqué en bloc par une page frontend (cf. cause racine des résultats disparus le 7 juillet
+// 2026). Les pages Alertes/Running restent la source des paris "en cours" (countAccepted
+// ci-dessus, encore basé sur localStorage — un pari pas encore réglé n'a pas sa place ici).
+async function loadAllResolved(periodDays, model = 'new') {
   const now = Date.now();
   const rawCutoff = periodDays === Infinity ? 0 : now - periodDays * 24 * 3600_000;
   const cutoff    = model === 'new' ? Math.max(rawCutoff, MODEL_SPLIT_MS) : rawCutoff;
   const endCutoff = model === 'old' ? MODEL_SPLIT_MS : Infinity;
 
-  const getOdds = a =>
-    a.acceptedUnibetOdds ?? a.acceptedBetclicOdds ?? a.acceptedWinamaxOdds ??
-    a.unibetOdds ?? a.betclicOdds ?? a.winamaxOdds ?? null;
-
-  const props = JSON.parse(localStorage.getItem('nba_prop_alerts') || '[]')
+  const ledger = await fetch('/api/bet-history').then(r => r.ok ? r.json() : []).catch(() => []);
+  return ledger
     .filter(a => ['won', 'lost'].includes(a.status))
-    .map(a => ({
-      type: 'prop', sport: ['euroleague','wnba','acb','lnb','bbl','legaa'].includes(a.league) ? a.league : 'nba',
-      label: a.player,
-      sub: `${a.direction === 'over' ? '▲ Over' : '▼ Under'} ${a.line} ${(a.stat || '').toUpperCase()}`,
-      date: a.fixtureDate, status: a.status, odds: getOdds(a),
-      probability: a.acceptedProbability ?? a.probability, actual: a.actualStat, stat: a.stat,
-      direction: a.direction, line: a.line, bookmaker: a.acceptedBookmaker, league: a.league || 'nba',
-      _sourceKey: 'nba_prop_alerts', _alertId: a.id,
-    }));
-
-  const totals = JSON.parse(localStorage.getItem('nba_game_total_alerts') || '[]')
-    .filter(a => ['won', 'lost'].includes(a.status))
-    .map(a => ({
-      type: 'total', sport: a.league || 'nba',
-      label: `${a.homeShort || a.home} vs ${a.awayShort || a.away}`,
-      sub: `${a.direction === 'over' ? '▲ Over' : '▼ Under'} ${a.line}`,
-      date: a.date, status: a.status,
-      odds: a.acceptedUnibetOdds ?? a.acceptedBetclicOdds ?? a.acceptedWinamaxOdds ??
-            a.unibetOdds ?? a.betclicOdds ?? a.winamaxOdds ?? null,
-      probability: a.acceptedProbability ?? a.prob, actual: a.actualTotal, line: a.line,
-      direction: a.direction, bookmaker: a.acceptedBookmaker, league: a.league || 'nba',
-      _sourceKey: 'nba_game_total_alerts', _alertId: a.id,
-    }));
-
-  const btts = JSON.parse(localStorage.getItem('fb_btts_alerts') || '[]')
-    .filter(a => ['won', 'lost'].includes(a.status))
-    .map(a => ({
-      type: 'btts', sport: 'football', label: a.fixture,
-      sub: '✓ Les deux équipes marquent', date: a.fixtureDate, status: a.status,
-      odds: a.acceptedUnibetOdds ?? a.acceptedBetclicOdds ?? a.acceptedWinamaxOdds ?? a.acceptedPinnacleOdds ??
-            a.unibetOdds ?? a.betclicOdds ?? a.winamaxOdds ?? a.pinnacleOdds ?? null,
-      probability: a.acceptedProbability ?? a.probability,
-      actual: (a.actualHomeScore != null && a.actualAwayScore != null) ? `${a.actualHomeScore}-${a.actualAwayScore}` : null,
-      league: a.league || 'football', bookmaker: a.acceptedBookmaker,
-      _sourceKey: 'fb_btts_alerts', _alertId: a.id,
-    }));
-
-  const fbTotals = JSON.parse(localStorage.getItem('fb_total_alerts') || '[]')
-    .filter(a => ['won', 'lost'].includes(a.status))
-    .map(a => ({
-      type: 'total', sport: 'football',
-      label: `${a.homeShort || a.home} vs ${a.awayShort || a.away}`,
-      sub: `${a.direction === 'over' ? '▲ Plus' : '▼ Moins'} de ${a.line} buts`,
-      date: a.fixtureDate, status: a.status,
-      odds: a.acceptedUnibetOdds ?? a.acceptedBetclicOdds ?? a.acceptedWinamaxOdds ??
-            a.unibetOdds ?? a.betclicOdds ?? a.winamaxOdds ?? null,
-      probability: a.acceptedProbability ?? a.probability,
-      actual: (a.actualHomeScore != null && a.actualAwayScore != null) ? a.actualHomeScore + a.actualAwayScore : null,
-      line: a.line, direction: a.direction, league: a.league || 'football',
-      bookmaker: a.acceptedBookmaker,
-      _sourceKey: 'fb_total_alerts', _alertId: a.id,
-    }));
-
-  const fbResults = JSON.parse(localStorage.getItem('fb_result_alerts') || '[]')
-    .filter(a => ['won', 'lost'].includes(a.status))
-    .map(a => ({
-      type: 'result', sport: 'football',
-      label: `${a.homeShort || a.home} vs ${a.awayShort || a.away}`,
-      sub: a.direction === 'draw' ? '🏆 Match nul' : `🏆 Victoire ${a.direction === 'home' ? (a.homeShort || a.home) : (a.awayShort || a.away)}`,
-      date: a.fixtureDate, status: a.status,
-      odds: a.acceptedUnibetOdds ?? a.acceptedBetclicOdds ?? a.acceptedWinamaxOdds ??
-            a.unibetOdds ?? a.betclicOdds ?? a.winamaxOdds ?? null,
-      probability: a.acceptedProbability ?? a.probability,
-      actual: (a.actualHomeScore != null && a.actualAwayScore != null) ? `${a.actualHomeScore}-${a.actualAwayScore}` : null,
-      direction: a.direction, league: a.league || 'football',
-      bookmaker: a.acceptedBookmaker,
-      _sourceKey: 'fb_result_alerts', _alertId: a.id,
-    }));
-
-  const basketResults = JSON.parse(localStorage.getItem('basketball_result_alerts') || '[]')
-    .filter(a => ['won', 'lost'].includes(a.status))
-    .map(a => ({
-      type: 'result', sport: a.league || 'nba',
-      label: `${a.homeShort || a.home} vs ${a.awayShort || a.away}`,
-      sub: `🏆 Victoire ${a.direction === 'home' ? (a.homeShort || a.home) : (a.awayShort || a.away)}`,
-      date: a.date, status: a.status,
-      odds: a.acceptedUnibetOdds ?? a.acceptedBetclicOdds ?? a.odds ?? null,
-      probability: a.acceptedProbability ?? a.probability,
-      direction: a.direction, bookmaker: a.acceptedBookmaker ?? a.bookmaker, league: a.league || 'nba',
-      _sourceKey: 'basketball_result_alerts', _alertId: a.id,
-    }));
-
-  const DC_DIR = { '1x': '1X', 'x2': 'X2', '12': '12' };
-  const dcBtts = JSON.parse(localStorage.getItem('fb_dc_btts_alerts') || '[]')
-    .filter(a => ['won', 'lost'].includes(a.status))
-    .map(a => ({
-      type: 'btts', sport: 'football',
-      label: `${a.homeShort || a.home} vs ${a.awayShort || a.away}`,
-      sub: `DC ${DC_DIR[a.direction] ?? a.direction} & BTTS`,
-      date: a.fixtureDate, status: a.status,
-      odds: a.acceptedUnibetOdds ?? a.acceptedBetclicOdds ?? a.unibetOdds ?? a.betclicOdds ?? null,
-      probability: a.acceptedProbability ?? a.probability,
-      actual: (a.actualHomeScore != null && a.actualAwayScore != null) ? `${a.actualHomeScore}-${a.actualAwayScore}` : null,
-      league: a.league || 'cdm', bookmaker: a.acceptedBookmaker,
-      _sourceKey: 'fb_dc_btts_alerts', _alertId: a.id,
-    }));
-
-  const dcOu = JSON.parse(localStorage.getItem('fb_dc_ou_alerts') || '[]')
-    .filter(a => ['won', 'lost'].includes(a.status))
-    .map(a => ({
-      type: 'total', sport: 'football',
-      label: `${a.homeShort || a.home} vs ${a.awayShort || a.away}`,
-      sub: `DC ${DC_DIR[a.direction] ?? a.direction} & +${a.line ?? 1.5} buts`,
-      date: a.fixtureDate, status: a.status,
-      odds: a.acceptedUnibetOdds ?? a.acceptedBetclicOdds ?? a.unibetOdds ?? a.betclicOdds ?? null,
-      probability: a.acceptedProbability ?? a.probability,
-      actual: (a.actualHomeScore != null && a.actualAwayScore != null) ? a.actualHomeScore + a.actualAwayScore : null,
-      line: a.line ?? 1.5, direction: 'over', league: a.league || 'cdm', bookmaker: a.acceptedBookmaker,
-      _sourceKey: 'fb_dc_ou_alerts', _alertId: a.id,
-    }));
-
-  return [...props, ...totals, ...btts, ...fbTotals, ...fbResults, ...basketResults, ...dcBtts, ...dcOu]
+    .map(mapLedgerEntry)
+    .filter(Boolean)
     .filter(a => { const t = new Date(a.date).getTime(); return !isNaN(t) && t >= cutoff && t < endCutoff; })
     .sort((a, b) => new Date(a.date) - new Date(b.date));
 }
@@ -974,7 +931,7 @@ export default function BacktestingPage() {
   const acceptedCount = useMemo(() => countAccepted(period, sportFilter, typeFilter, model), [period, sportFilter, typeFilter, model]);
 
   const loadData = (p, m) => {
-    setAllBets(loadAllResolved(p, m));
+    loadAllResolved(p, m).then(setAllBets);
     setPinnacleAllBets(loadPinnacleBets(p));
   };
 
@@ -1018,12 +975,8 @@ export default function BacktestingPage() {
   };
 
   const handleDeleteBet = (bet) => {
-    if (!bet._sourceKey || !bet._alertId) return;
-    try {
-      const arr = JSON.parse(localStorage.getItem(bet._sourceKey) || '[]');
-      const updated = JSON.stringify(arr.filter(a => a.id !== bet._alertId));
-      cloudSetItem(bet._sourceKey, updated); // localStorage + MongoDB
-    } catch {}
+    if (!bet._alertId) return;
+    fetch(`/api/bet-history/${bet._alertId}`, { method: 'DELETE' }).catch(() => {});
     setReloadKey(k => k + 1);
   };
 

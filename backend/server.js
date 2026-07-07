@@ -80,9 +80,28 @@ function _updateGlCache(key, games) {
 }
 const ACCEPTED_FILE        = join(CACHE_DIR, 'accepted_alerts.json');
 const SETTLEMENTS_FILE     = join(CACHE_DIR, 'settlements.json');
+const BET_LEDGER_FILE      = join(CACHE_DIR, 'bet_ledger.json');
 
 let _acceptedAlerts = [];
 let _settlements    = [];
+// Registre permanent des paris réglés (won/lost/void) — source unique de vérité pour le
+// Backtesting. Contrairement aux clés localStorage utilisées par les pages Alertes/Running
+// (qui ne travaillent que sur une fenêtre récente et peuvent réécrire leur clé en entier),
+// ce registre n'est jamais remplacé en bloc : on y ajoute ou met à jour une entrée par id,
+// jamais un tableau tronqué. Corrige la disparition récurrente de résultats de backtesting
+// constatée le 7 juillet 2026 (plusieurs pages écrasaient l'historique localStorage complet
+// avec un sous-ensemble récent).
+let _betLedger = [];
+try { if (existsSync(BET_LEDGER_FILE)) _betLedger = JSON.parse(readFileSync(BET_LEDGER_FILE, 'utf8')); } catch {}
+const _saveBetLedger = () => { try { writeFileSync(BET_LEDGER_FILE, JSON.stringify(_betLedger), 'utf8'); } catch {} };
+// Fusionne l'alerte complète (métadonnées joueur/match/cotes) avec son résultat final, et
+// upsert par id dans le registre — jamais de remplacement en bloc du tableau.
+function archiveBet(alert, result) {
+  const entry = { ...alert, ...result };
+  const i = _betLedger.findIndex(b => b.id === entry.id);
+  if (i >= 0) _betLedger[i] = entry; else _betLedger.push(entry);
+  _saveBetLedger();
+}
 try { if (existsSync(ACCEPTED_FILE))    _acceptedAlerts = JSON.parse(readFileSync(ACCEPTED_FILE,    'utf8')); } catch {}
 try {
   if (existsSync(SETTLEMENTS_FILE)) {
@@ -406,14 +425,25 @@ app.get('/api/fd/worldcup', async (req, res) => {
         if (mapped === 'STATUS_FINAL') return (now - new Date(m.utcDate).getTime()) < KEEP_MS;
         return true;
       })
-      .slice(0, 20).map(m => ({
-      id:     m.id,
-      date:   m.utcDate,
-      status: FD_STATUS_MAP[m.status],
-      round:  m.stage?.replace(/_/g,' ') || m.matchday ? `J${m.matchday}` : '',
-      home:   { name: m.homeTeam?.name, short: m.homeTeam?.shortName, logo: m.homeTeam?.crest, score: m.score?.fullTime?.home ?? null },
-      away:   { name: m.awayTeam?.name, short: m.awayTeam?.shortName, logo: m.awayTeam?.crest, score: m.score?.fullTime?.away ?? null },
-    }));
+      .slice(0, 20).map(m => {
+        // fullTime inclut les prolongations pour les matchs à élimination directe (score.extraTime
+        // renvoie les buts marqués en prolongation seulement). La plupart des marchés (DC, BTTS, O/U,
+        // Résultat 1X2) se règlent sur le temps réglementaire (90min) sauf mention contraire du
+        // bookmaker — scoreReg = fullTime - extraTime, utilisé pour le settlement. `score` reste le
+        // score final réel (avec prolongation) pour l'affichage.
+        const ftHome = m.score?.fullTime?.home ?? null;
+        const ftAway = m.score?.fullTime?.away ?? null;
+        const etHome = m.score?.extraTime?.home ?? 0;
+        const etAway = m.score?.extraTime?.away ?? 0;
+        return {
+          id:     m.id,
+          date:   m.utcDate,
+          status: FD_STATUS_MAP[m.status],
+          round:  m.stage?.replace(/_/g,' ') || m.matchday ? `J${m.matchday}` : '',
+          home:   { name: m.homeTeam?.name, short: m.homeTeam?.shortName, logo: m.homeTeam?.crest, score: ftHome, scoreReg: ftHome != null ? ftHome - etHome : null },
+          away:   { name: m.awayTeam?.name, short: m.awayTeam?.shortName, logo: m.awayTeam?.crest, score: ftAway, scoreReg: ftAway != null ? ftAway - etAway : null },
+        };
+      });
     _cdmCache = { games }; _cdmCacheTs = Date.now();
     try { writeFileSync(WORLDCUP_CACHE_FILE, JSON.stringify({ games, ts: _cdmCacheTs }), 'utf8'); } catch {}
     res.json(_cdmCache);
@@ -421,6 +451,42 @@ app.get('/api/fd/worldcup', async (req, res) => {
     console.error('football-data.org worldcup error:', err.message);
     _cdmErrorUntil = Date.now() + 60 * 1000;
     res.json(_cdmCache || { games: [] });
+  }
+});
+
+// Récupère un match CDM précis par ID, sans la fenêtre de 48h de /api/fd/worldcup — filet de
+// rattrapage pour resolveCompletedFootballAlerts (syncAlerts.js) quand une alerte accepted n'a
+// jamais pu être réglée dans les 48h (onglet fermé, panne temporaire...) : le match sort alors du
+// cache glissant et ne serait plus jamais trouvable, laissant le pari bloqué sur "accepted" pour
+// toujours (bug constaté le 7 juillet 2026, alerte DC Suisse-Algérie du 3 juillet jamais réglée).
+app.get('/api/fd/match/:id', async (req, res) => {
+  if (!FD_KEY) return res.status(503).json({ error: 'FD_API_KEY not configured' });
+  try {
+    const r = await fetch(`https://api.football-data.org/v4/matches/${req.params.id}`, { headers: { 'X-Auth-Token': FD_KEY } });
+    if (!r.ok) throw new Error(`FD ${r.status}`);
+    const m = await r.json();
+    if (!m?.id) return res.status(404).json({ error: 'not found' });
+    const FD_STATUS_MAP = {
+      SCHEDULED: 'STATUS_SCHEDULED', TIMED: 'STATUS_SCHEDULED',
+      IN_PLAY: 'STATUS_IN_PROGRESS', PAUSED: 'STATUS_IN_PROGRESS', LIVE: 'STATUS_IN_PROGRESS',
+      EXTRA_TIME: 'STATUS_IN_PROGRESS', PENALTY_SHOOTOUT: 'STATUS_IN_PROGRESS',
+      FINISHED: 'STATUS_FINAL', AWARDED: 'STATUS_FINAL',
+    };
+    const ftHome = m.score?.fullTime?.home ?? null;
+    const ftAway = m.score?.fullTime?.away ?? null;
+    const etHome = m.score?.extraTime?.home ?? 0;
+    const etAway = m.score?.extraTime?.away ?? 0;
+    res.json({
+      id: m.id,
+      date: m.utcDate,
+      status: FD_STATUS_MAP[m.status] || 'STATUS_SCHEDULED',
+      round: m.stage?.replace(/_/g, ' ') || (m.matchday ? `J${m.matchday}` : ''),
+      home: { name: m.homeTeam?.name, short: m.homeTeam?.shortName, logo: m.homeTeam?.crest, score: ftHome, scoreReg: ftHome != null ? ftHome - etHome : null },
+      away: { name: m.awayTeam?.name, short: m.awayTeam?.shortName, logo: m.awayTeam?.crest, score: ftAway, scoreReg: ftAway != null ? ftAway - etAway : null },
+    });
+  } catch (err) {
+    console.error('football-data.org single match error:', err.message);
+    res.status(502).json({ error: err.message });
   }
 });
 
@@ -554,9 +620,25 @@ app.post('/api/userdata', async (req, res) => {
     if (!db) return res.json({ ok: false, reason: 'no mongo' });
     const { key, value } = req.body;
     if (!key) return res.status(400).json({ ok: false });
+    let toStore = value;
+    // Garde-fou serveur (7 juillet 2026) : plusieurs pages frontend (PlaceBetPage/RunningPage) ne
+    // travaillent que sur une fenêtre récente de l'historique et réécrivent pourtant la clé entière —
+    // un onglet resté ouvert avec un ancien build JS peut donc écraser Mongo même après un correctif
+    // côté client (cf. perte des résultats basket du 6 juillet). Point d'écriture unique côté serveur :
+    // si la valeur écrite est un tableau d'alertes, un règlement déjà acquis (won/lost/void) absent du
+    // nouveau tableau est automatiquement réintégré au lieu d'être perdu.
+    if (Array.isArray(value) && value.every(v => v && typeof v === 'object' && 'id' in v)) {
+      const doc = await db.collection('userdata').findOne({ _id: 'main' });
+      const existing = doc?.data?.[key];
+      if (Array.isArray(existing)) {
+        const incomingIds = new Set(value.map(v => v.id));
+        const preserved = existing.filter(v => v && ['won', 'lost', 'void'].includes(v.status) && !incomingIds.has(v.id));
+        if (preserved.length) toStore = [...value, ...preserved];
+      }
+    }
     await db.collection('userdata').updateOne(
       { _id: 'main' },
-      { $set: { [`data.${key}`]: value, updatedAt: Date.now() } },
+      { $set: { [`data.${key}`]: toStore, updatedAt: Date.now() } },
       { upsert: true }
     );
     _sseClients.forEach(c => c.write(`data: sync\n\n`));
@@ -10742,10 +10824,12 @@ async function generateBackgroundAlerts() {
             break; // une seule ligne par match
           }
 
-          // DC & BTTS — 3 combinaisons (1X, X2, 12), une alerte par combinaison si seuil atteint
+          // DC & BTTS — 1X/X2 uniquement (12 = "pas de nul" volontairement exclu, retiré le
+          // 2 juillet 2026 — marché non souhaité par l'utilisateur, cf alerte perdante Belgique-Sénégal)
           const dcBttsBk = oddsMatch?.markets?.dcbtts?.bookmakers || {};
           const dcBttsProbs = computeDCBTTSProbs(lambdaHome, lambdaAway);
           for (const [key, prob] of Object.entries(dcBttsProbs)) {
+            if (key === '12') continue;
             if (prob < FB_DC_BTTS_ALERT_PROB) continue;
             const bestBk = FB_BOOKS.find(bk => (dcBttsBk[bk]?.[key] ?? 0) >= FB_DC_MIN_ODDS);
             if (!bestBk) continue;
@@ -10771,10 +10855,11 @@ async function generateBackgroundAlerts() {
             _bgLog.push(`football DC&BTTS alert: ${f.home.name} v ${f.away.name} [${f.league}] ${key} prob=${Math.round(prob * 100)}%`);
           }
 
-          // DC & Over 1.5 — même structure
+          // DC & Over 1.5 — 1X/X2 uniquement (12 exclu, cf commentaire ci-dessus)
           const dcOuBk = oddsMatch?.markets?.dcou?.bookmakers || {};
           const dcOuProbs = computeDCOverProbs(lambdaHome, lambdaAway, 1.5);
           for (const [key, prob] of Object.entries(dcOuProbs)) {
+            if (key === '12') continue;
             if (prob < FB_DC_OU_ALERT_PROB) continue;
             const bestBk = FB_BOOKS.find(bk => (dcOuBk[bk]?.[key] ?? 0) >= FB_DC_MIN_ODDS);
             if (!bestBk) continue;
@@ -11179,6 +11264,25 @@ app.post('/api/settlements', (req, res) => {
     _settlements.push({ id: s.id, status: s.status, probability: s.probability, line: s.line, edge: s.edge, settledAt: s.settledAt || Date.now() });
     _saveSettlements();
   }
+  // Fusionne avec les métadonnées complètes de l'alerte acceptée (poussées à l'accept via
+  // /api/accepted-alerts) pour archiver un enregistrement complet dans le registre permanent,
+  // pas juste {id,status} — sinon le Backtesting ne pourrait pas afficher le match/joueur/cotes.
+  const full = _acceptedAlerts.find(a => a.id === s.id);
+  if (full) {
+    archiveBet(full, { status: s.status, actualHomeScore: s.actualHomeScore, actualAwayScore: s.actualAwayScore, actualStat: s.actualStat, settledAt: s.settledAt || Date.now() });
+    _acceptedAlerts = _acceptedAlerts.filter(a => a.id !== s.id);
+    _saveAccepted();
+  }
+  res.json({ ok: true });
+});
+
+// Registre permanent des paris réglés (won/lost/void) — source unique de vérité pour la page
+// Backtesting, jamais tronqué par une page frontend (cf. archiveBet ci-dessus).
+app.get('/api/bet-history', (req, res) => res.json(_betLedger));
+
+app.delete('/api/bet-history/:id', (req, res) => {
+  _betLedger = _betLedger.filter(b => b.id !== req.params.id);
+  _saveBetLedger();
   res.json({ ok: true });
 });
 
@@ -11283,7 +11387,9 @@ async function runAutoSettle() {
             s.player === a.player && s.stat === a.stat && s.fixtureDate && a.fixtureDate &&
             Math.abs(new Date(s.fixtureDate).getTime() - new Date(a.fixtureDate).getTime()) < 36 * 3600_000
           );
-          if (!isDupSettlement) _settlements.push({ id: a.id, status: 'won', actualStat, player: a.player, stat: a.stat, direction: 'over', fixtureDate: a.fixtureDate, league: a.league, probability: a.acceptedProbability ?? a.probability, line: a.line, edge: a.edge, lineSource: a.lineSource, settledAt: Date.now(), liveEarlySettle: true });
+          const settledAt1 = Date.now();
+          if (!isDupSettlement) _settlements.push({ id: a.id, status: 'won', actualStat, player: a.player, stat: a.stat, direction: 'over', fixtureDate: a.fixtureDate, league: a.league, probability: a.acceptedProbability ?? a.probability, line: a.line, edge: a.edge, lineSource: a.lineSource, settledAt: settledAt1, liveEarlySettle: true });
+          archiveBet(a, { status: 'won', actualStat, settledAt: settledAt1 });
           _acceptedAlerts = _acceptedAlerts.filter(x => x.id !== a.id);
           _saveAccepted(); _saveSettlements();
           settledIds.add(a.id);
@@ -11302,7 +11408,7 @@ async function runAutoSettle() {
   const propsToCheck    = toCheck.filter(a => a.type === 'player_prop');
   const totalsToCheck   = toCheck.filter(a => a.type === 'game_total' || a.type === 'basketball_pinnacle_edge');
   const resultsToCheck  = toCheck.filter(a => a.type === 'basketball_result');
-  const footballToCheck = toCheck.filter(a => ['football_btts', 'football_total', 'football_result'].includes(a.type));
+  const footballToCheck = toCheck.filter(a => ['football_btts', 'football_total', 'football_result', 'football_dc_btts', 'football_dc_ou'].includes(a.type));
 
   const byMatch = {};
   for (const a of propsToCheck) {
@@ -11350,7 +11456,9 @@ async function runAutoSettle() {
         if (!player || player.dnp) {
           // Void = notifie le frontend (applySettlements) + supprime côté backend, sauvegarde immédiatement
           if (players.length > 0) {
-            if (!isDupSettlement) _settlements.push({ id: a.id, status: 'void', player: a.player, stat: a.stat, direction: a.direction, fixtureDate: a.fixtureDate, settledAt: Date.now() });
+            const settledAtVoid = Date.now();
+            if (!isDupSettlement) _settlements.push({ id: a.id, status: 'void', player: a.player, stat: a.stat, direction: a.direction, fixtureDate: a.fixtureDate, settledAt: settledAtVoid });
+            archiveBet(a, { status: 'void', actualStat: null, settledAt: settledAtVoid });
             _acceptedAlerts = _acceptedAlerts.filter(x => x.id !== a.id);
             _saveAccepted(); _saveSettlements();
           }
@@ -11364,7 +11472,11 @@ async function runAutoSettle() {
         // probability/line/edge conservés pour pouvoir construire une courbe de calibration
         // (proba annoncée vs % réel gagné) — avant ce fix, perdus au règlement, rendant impossible
         // toute vérification a posteriori des recalibrations du modèle.
-        if (!isDupSettlement) _settlements.push({ id: a.id, status, actualStat, player: a.player, stat: a.stat, direction: a.direction, fixtureDate: a.fixtureDate, league: a.league, probability: a.acceptedProbability ?? a.probability, line: a.line, edge: a.edge, lineSource: a.lineSource, settledAt: Date.now() });
+        {
+          const settledAt2 = Date.now();
+          if (!isDupSettlement) _settlements.push({ id: a.id, status, actualStat, player: a.player, stat: a.stat, direction: a.direction, fixtureDate: a.fixtureDate, league: a.league, probability: a.acceptedProbability ?? a.probability, line: a.line, edge: a.edge, lineSource: a.lineSource, settledAt: settledAt2 });
+          archiveBet(a, { status, actualStat, settledAt: settledAt2 });
+        }
         _acceptedAlerts = _acceptedAlerts.filter(x => x.id !== a.id);
         _saveAccepted(); _saveSettlements(); // Sauvegarde immédiate anti-doublons
       }
@@ -11401,7 +11513,9 @@ async function runAutoSettle() {
       const total = score.homeScore + score.awayScore;
       if (!total) continue;
       const status = (a.direction === 'over' ? total > a.line : total < a.line) ? 'won' : 'lost';
-      _settlements.push({ id: a.id, status, actualStat: total, line: a.line, edge: a.edge, league: a.league, probability: a.acceptedProbability ?? a.prob, settledAt: Date.now() });
+      const settledAt3 = Date.now();
+      _settlements.push({ id: a.id, status, actualStat: total, line: a.line, edge: a.edge, league: a.league, probability: a.acceptedProbability ?? a.prob, settledAt: settledAt3 });
+      archiveBet(a, { status, actualStat: total, settledAt: settledAt3 });
       _acceptedAlerts = _acceptedAlerts.filter(x => x.id !== a.id);
       _saveAccepted(); _saveSettlements();
     } catch {}
@@ -11415,7 +11529,9 @@ async function runAutoSettle() {
       if (!score) continue;
       const homeWon = score.homeScore > score.awayScore;
       const status = (a.direction === 'home' ? homeWon : !homeWon) ? 'won' : 'lost';
-      _settlements.push({ id: a.id, status, line: null, edge: a.edge, league: a.league, probability: a.acceptedProbability ?? a.probability, settledAt: Date.now() });
+      const settledAt4 = Date.now();
+      _settlements.push({ id: a.id, status, line: null, edge: a.edge, league: a.league, probability: a.acceptedProbability ?? a.probability, settledAt: settledAt4 });
+      archiveBet(a, { status, actualHomeScore: score.homeScore, actualAwayScore: score.awayScore, settledAt: settledAt4 });
       _acceptedAlerts = _acceptedAlerts.filter(x => x.id !== a.id);
       _saveAccepted(); _saveSettlements();
     } catch {}
@@ -11433,7 +11549,9 @@ async function runAutoSettle() {
         const gid = (a.fixtureId || a.eventId).replace('fdcdm_', '');
         const game = games.find(g => String(g.id) === gid && ['STATUS_IN_PROGRESS', 'STATUS_FINAL'].includes(g.status));
         if (!game) continue;
-        const hs = game.home?.score, as_ = game.away?.score;
+        // scoreReg = score du temps réglementaire (fullTime - extraTime) — ces marchés se règlent
+        // sur 90min, pas sur le score final après prolongation (voir /api/fd/worldcup).
+        const hs = game.home?.scoreReg ?? game.home?.score, as_ = game.away?.scoreReg ?? game.away?.score;
         if (hs == null || as_ == null) continue;
         const isFinal = game.status === 'STATUS_FINAL';
         let status = null;
@@ -11446,13 +11564,27 @@ async function runAutoSettle() {
             else if (a.direction === 'away') status = as_ > hs ? 'won' : 'lost';
             else status = hs === as_ ? 'won' : 'lost';
           }
+        } else if (a.type === 'football_dc_btts') {
+          if (isFinal) {
+            const bttsOk = hs > 0 && as_ > 0;
+            const dcOk = a.direction === '1x' ? hs >= as_ : a.direction === 'x2' ? as_ >= hs : hs !== as_;
+            status = bttsOk && dcOk ? 'won' : 'lost';
+          }
+        } else if (a.type === 'football_dc_ou') {
+          if (isFinal) {
+            const ouOk = hs + as_ > (a.line ?? 1.5);
+            const dcOk = a.direction === '1x' ? hs >= as_ : a.direction === 'x2' ? as_ >= hs : hs !== as_;
+            status = ouOk && dcOk ? 'won' : 'lost';
+          }
         } else { // football_total
           const total = hs + as_;
           if (a.direction === 'over') { if (total > a.line) status = 'won'; else if (isFinal) status = 'lost'; }
           else { if (total > a.line) status = 'lost'; else if (isFinal) status = 'won'; }
         }
         if (!status) continue;
-        _settlements.push({ id: a.id, status, line: a.line, edge: a.edge, league: a.league, probability: a.acceptedProbability ?? a.probability, settledAt: Date.now() });
+        const settledAt5 = Date.now();
+        _settlements.push({ id: a.id, status, line: a.line, edge: a.edge, league: a.league, probability: a.acceptedProbability ?? a.probability, settledAt: settledAt5 });
+        archiveBet(a, { status, actualHomeScore: hs, actualAwayScore: as_, settledAt: settledAt5 });
         _acceptedAlerts = _acceptedAlerts.filter(x => x.id !== a.id);
         _saveAccepted(); _saveSettlements();
       }

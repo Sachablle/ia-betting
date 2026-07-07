@@ -42,6 +42,11 @@ function purgeAlerts() {
       if (isNaN(t)) return false;
       const status = a.status || 'pending';
       if (status === 'pending') return t > now;
+      // won/lost/void alimentent l'historique de Backtesting (lecture directe de cette même clé) —
+      // ne jamais les purger sur l'âge. Bug trouvé le 6 juillet 2026 : ce filtre stripait localement
+      // les résultats basket de plus de 7 jours, puis syncBackgroundAlerts repoussait ce tableau
+      // tronqué vers MongoDB, effaçant silencieusement l'historique de backtesting.
+      if (['won', 'lost', 'void'].includes(status)) return true;
       return t > now - 7 * 24 * 3600 * 1000;
     });
     if (valid.length !== raw.length) {
