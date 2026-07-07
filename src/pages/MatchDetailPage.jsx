@@ -9,6 +9,7 @@ import FormStrip from '../components/FormStrip';
 import StatBar from '../components/StatBar';
 import TeamLogo from '../components/TeamLogo';
 import { OddsCell } from '../components/OddsCell';
+import { setItem as cloudSet } from '../utils/cloudStorage';
 
 const FINAL_STATUSES = new Set(['STATUS_FULL_TIME', 'STATUS_FINAL', 'STATUS_FT', 'STATUS_AFTER_EXTRA_TIME', 'STATUS_AFTER_PENALTIES']);
 
@@ -1432,7 +1433,12 @@ export default function MatchDetailPage() {
         status: old?.status || 'pending',
       };
       const filtered = existing.filter(a => a.id !== alertId);
-      localStorage.setItem('fb_btts_alerts', JSON.stringify([...filtered, alert]));
+      // cloudSet (pas localStorage.setItem brut) : sans passer par le setItem protégé de
+      // cloudStorage.js, cette alerte n'était jamais envoyée à MongoDB ni couverte par sa fenêtre
+      // de protection 90s — le prochain loadFromCloud() (déclenché par un SSE /api/sync-events,
+      // souvent en quelques secondes) l'écrasait aussitôt avec l'ancienne version sans l'alerte,
+      // la faisant disparaître presque immédiatement après sa création (constaté 7 juillet 2026).
+      cloudSet('fb_btts_alerts', JSON.stringify([...filtered, alert]));
       window.dispatchEvent(new Event('fb_btts_alerts_updated'));
     } catch {}
   }, [bttsResult?.prob, matchOdds]);
