@@ -640,6 +640,14 @@ export async function syncFootballAlerts() {
     const { alerts: bgAlerts } = await fetch('/api/nba/background-alerts').then(r => r.json());
     if (!bgAlerts?.length) return;
     const ORPHAN_GRACE_MS = 25 * 60_000;
+    // Le backend ne génère des alertes CDM que dans les 24h avant coup d'envoi (CDM_ALERT_WINDOW_MS,
+    // server.js) — pour éviter que la proba dérive avec le pool de matchs encore programmés. Une
+    // alerte CDM créée côté client (MatchDetailPage, sur un match encore loin) n'apparaîtra donc
+    // JAMAIS dans bgAlerts avant que la fenêtre 24h ne s'ouvre : sans cette exception, le purge
+    // "orphelin" ci-dessous la supprimait ~25 min après sa création, puis elle ne revenait que si
+    // l'utilisateur revisitait la page match (constaté 7 juillet 2026, ex: Angleterre-Norvège à 4j).
+    const isCdmBeyondWindow = a => /^fdcdm_/.test(a.fixtureId || '')
+      && a.fixtureDate && (new Date(a.fixtureDate).getTime() - Date.now()) > 24 * 3600_000;
 
     // BTTS
     const bttsAlerts = bgAlerts.filter(a => a.type === 'football_btts' && a.probability > 0);
@@ -679,6 +687,7 @@ export async function syncFootballAlerts() {
         if ((a.status || 'pending') !== 'pending') return true;
         if (Date.now() - (a.savedAt || 0) < ORPHAN_GRACE_MS) return true;
         if (!/^(fd_|fdcdm_)/.test(a.fixtureId || '')) return true;
+        if (isCdmBeyondWindow(a)) return true;
         return liveIds.has(a.id);
       });
       if (purged.length !== result.length) changed = true;
@@ -721,6 +730,7 @@ export async function syncFootballAlerts() {
       const purged = result.filter(a => {
         if ((a.status || 'pending') !== 'pending') return true;
         if (Date.now() - (a.savedAt || 0) < ORPHAN_GRACE_MS) return true;
+        if (isCdmBeyondWindow(a)) return true;
         return liveIds.has(a.id);
       });
       if (purged.length !== result.length) changed = true;
@@ -763,6 +773,7 @@ export async function syncFootballAlerts() {
       const purged = result.filter(a => {
         if ((a.status || 'pending') !== 'pending') return true;
         if (Date.now() - (a.savedAt || 0) < ORPHAN_GRACE_MS) return true;
+        if (isCdmBeyondWindow(a)) return true;
         return liveIds.has(a.id);
       });
       if (purged.length !== result.length) changed = true;
@@ -808,6 +819,7 @@ export async function syncFootballAlerts() {
       const purged = result.filter(a => {
         if ((a.status || 'pending') !== 'pending') return true;
         if (Date.now() - (a.savedAt || 0) < ORPHAN_GRACE_MS) return true;
+        if (isCdmBeyondWindow(a)) return true;
         return liveIds.has(a.id);
       });
       if (purged.length !== result.length) changed = true;
@@ -846,6 +858,7 @@ export async function syncFootballAlerts() {
       const purged = result.filter(a => {
         if ((a.status || 'pending') !== 'pending') return true;
         if (Date.now() - (a.savedAt || 0) < ORPHAN_GRACE_MS) return true;
+        if (isCdmBeyondWindow(a)) return true;
         return liveIds.has(a.id);
       });
       if (purged.length !== result.length) changed = true;
@@ -877,6 +890,7 @@ export async function syncFootballAlerts() {
       const purged = result.filter(a => {
         if ((a.status || 'pending') !== 'pending') return true;
         if (Date.now() - (a.savedAt || 0) < ORPHAN_GRACE_MS) return true;
+        if (isCdmBeyondWindow(a)) return true;
         return liveIds.has(a.id);
       });
       if (purged.length !== result.length) changed = true;
