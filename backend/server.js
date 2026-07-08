@@ -6,7 +6,7 @@ import { readFileSync, writeFileSync, writeFile, existsSync, mkdirSync } from 'f
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { MongoClient } from 'mongodb';
-import { computeEstimate, calcStd, isConsistentStat, winsorizeRecent, getShotVolumeAnchor, probAtLeast, tCDF4, getRestFactor, getScheduleDensityFactor, isPlayoffRound, toDefCat } from './compute.js';
+import { computeEstimate, calcStd, isConsistentStat, winsorizeRecent, getShotVolumeAnchor, probAtLeast, tCDF4, getRestFactor, getScheduleDensityFactor, isPlayoffRound, toDefCat, getDefByPosFactor } from './compute.js';
 import { computeLambdas, computeBTTSProb, computeOUProb, compute1X2Probs, computeDCBTTSProbs, computeDCOverProbs } from './computeFootball.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -8529,7 +8529,7 @@ function calcKeyPlayerOutPenalty(players) {
 
 const EU_PO_KEYWORDS = /quarter.final|semi.final|final|playoff|po round|round of/i;
 
-function computeEUEstimate(player, isHome, oppGames, myGames, gamelogs, gameDate, league, round = '', oppName = '') {
+function computeEUEstimate(player, isHome, oppGames, myGames, gamelogs, gameDate, league, round = '', oppName = '', oppDefByPos = null) {
   const season = player.stats;
   if (!season?.pts || season.pts < 2) return null;
   const leagueAvg = EU_LEAGUE_CONST_BG[league] || 83;
@@ -8586,6 +8586,15 @@ function computeEUEstimate(player, isHome, oppGames, myGames, gamelogs, gameDate
   // Défense adversaire
   const oppDef = calcEWAbg(oGames,'ptsAllowed',5);
   const defFactor = oppDef ? Math.min(1.20, Math.max(0.80, oppDef / NBA_REF_BG)) : 1.0;
+
+  // Défense adverse dédiée par stat (8 juillet 2026, LNB/BBL/Lega A via getEuroDefByPos — ACB pas
+  // encore équipé) — avant ce fix, reb réutilisait purement defFactor (points encaissés) et
+  // ast/tpm n'avaient aucun ajustement défensif du tout. Fallback strictement identique au
+  // comportement historique quand oppDefByPos est indisponible (défFactor pour reb, neutre 1.0
+  // pour ast/tpm) — voir le fix WNBA/NBA équivalent, même principe.
+  const defFactorReb = (oppDefByPos && getDefByPosFactor(oppDefByPos, player.position, 'reb')?.val) ?? defFactor;
+  const defFactorAst = (oppDefByPos && getDefByPosFactor(oppDefByPos, player.position, 'ast')?.val) ?? 1.0;
+  const defFactorTpm = (oppDefByPos && getDefByPosFactor(oppDefByPos, player.position, 'tpm')?.val) ?? 1.0;
 
   // Repos
   let restFactor = 1.0;
@@ -8671,10 +8680,10 @@ function computeEUEstimate(player, isHome, oppGames, myGames, gamelogs, gameDate
 
   const allMult = restFactor * locFactor * streakFactor * minNormFactor * fgFactor * h2hFactor * densityFactor * injReturnFactor;
 
-  const multPts = Math.min(1.35, Math.max(0.72, formFactor    * paceFactor * defFactor * allMult));
-  const multReb = Math.min(1.25, Math.max(0.78, formFactorReb *              defFactor * allMult));
-  const multAst = Math.min(1.25, Math.max(0.78, formFactorAst * paceFactor *             allMult));
-  const multTpm = Math.min(1.25, Math.max(0.78, formFactorTpm * paceFactor *             allMult));
+  const multPts = Math.min(1.35, Math.max(0.72, formFactor    * paceFactor * defFactor    * allMult));
+  const multReb = Math.min(1.25, Math.max(0.78, formFactorReb *              defFactorReb * allMult));
+  const multAst = Math.min(1.25, Math.max(0.78, formFactorAst * paceFactor * defFactorAst * allMult));
+  const multTpm = Math.min(1.25, Math.max(0.78, formFactorTpm * paceFactor * defFactorTpm * allMult));
   const estimatedRaw = basePts * multPts;
   const estReb    = baseReb * multReb;
   const estAst    = baseAst * multAst;
@@ -8726,6 +8735,73 @@ async function bgFetchEUGamelog(playerId, league, base) {
   } catch { return normalize(_glPersist[`eu_${playerId}`]?.games || []); }
 }
 
+// Défense par poste — ligues EU api-sports.io (BBL/Lega A, LNB si un jour réactivée). Même
+// principe que getWNBADefByPos (8 juillet 2026) : les gamelogs adverses (bballPlayerGamelog, déjà
+// fetchés/cachés pour les props) contiennent déjà pts/reb/ast/tpm + le nom complet de l'adversaire
+// par match — jamais agrégés par poste jusqu'ici. ACB volontairement exclue : son gamelog identifie
+// l'adversaire par un nom abrégé (ex: "Dreamland GC") qu'il faudrait recouper à la main avec les 18
+// IDs d'équipe (ACB_TEAM_MAP) — pas fait, risque de mauvais raccroché silencieux sinon.
+async function getEuroDefByPos(league) {
+  const cfg = EURO_LEAGUES[league];
+  if (!cfg) return { teamDefByPosById: {}, leagueAvg: {} };
+  const cacheKey = `euro_defbypos_${league}`;
+  const cached = _euroCache[cacheKey];
+  if (cached && Date.now() - cached.ts < CACHE_6H) return cached.data;
+
+  const td = await bballFetch(`/teams?league=${cfg.id}&season=${cfg.season}`).catch(() => null);
+  const teams = (td?.response || []).filter(t => t?.id && t?.name);
+  if (!teams.length) return { teamDefByPosById: {}, leagueAvg: {} };
+
+  const rosters = await Promise.all(
+    teams.map(t => bballFetch(`/players?team=${t.id}&season=${cfg.season}`).then(r => r.response || []).catch(() => []))
+  );
+  const allPlayers = [];
+  rosters.forEach(roster => { for (const p of roster) if (p?.id && p.position && p.position !== '—') allPlayers.push(p); });
+
+  const gamelogs = await Promise.all(allPlayers.map(p => bballPlayerGamelog(league, p.id).catch(() => [])));
+
+  const STATS = ['pts', 'reb', 'ast', 'tpm'];
+  const emptyBucket = () => ({ pts: [], reb: [], ast: [], tpm: [] });
+  const buckets = {};
+  teams.forEach(t => { buckets[t.name] = { G: emptyBucket(), F: emptyBucket(), C: emptyBucket() }; });
+
+  allPlayers.forEach((p, i) => {
+    const posKey = toDefCat(p.position);
+    for (const g of (gamelogs[i] || [])) {
+      const b = buckets[g.opponent]?.[posKey];
+      if (!b) continue;
+      if (g.pts != null) b.pts.push(g.pts);
+      if (g.reb != null) b.reb.push(g.reb);
+      if (g.ast != null) b.ast.push(g.ast);
+      const tpmVal = parseTpmMade(g.tpm);
+      if (tpmVal != null) b.tpm.push(tpmVal);
+    }
+  });
+
+  const avg = arr => arr.length ? +(arr.reduce((s, v) => s + v, 0) / arr.length).toFixed(2) : null;
+  const teamDefByPosByName = {};
+  for (const [name, b] of Object.entries(buckets)) {
+    teamDefByPosByName[name] = {};
+    for (const pos of ['G', 'F', 'C']) {
+      teamDefByPosByName[name][pos] = Object.fromEntries(STATS.map(stat => [stat, avg(b[pos][stat])]));
+    }
+  }
+
+  const leagueAvg = {};
+  for (const pos of ['G', 'F', 'C']) {
+    leagueAvg[pos] = Object.fromEntries(STATS.map(stat => [
+      stat, avg(Object.values(teamDefByPosByName).map(t => t[pos][stat]).filter(v => v != null)),
+    ]));
+  }
+
+  const teamDefByPosById = {};
+  teams.forEach(t => { teamDefByPosById[t.id] = teamDefByPosByName[t.name]; });
+
+  const data = { teamDefByPosById, leagueAvg };
+  _euroCache[cacheKey] = { data, ts: Date.now() };
+  return data;
+}
+
 async function runEUPropsAlerts(newAlerts, PORT) {
   // LNB exclue : pas de couverture gamelogs fiable (Bzzoiro ne couvre l'EL que pour Paris/Monaco) → projections non fiables, alertes désactivées
   const LEAGUES_EU = ['acb','bbl','legaa'];
@@ -8751,6 +8827,10 @@ async function runEUPropsAlerts(newAlerts, PORT) {
 
   for (const league of LEAGUES_EU) {
     try {
+      // Défense par poste (reb/ast/tpm dédiés, 8 juillet 2026) — ACB exclue volontairement, cf.
+      // commentaire de getEuroDefByPos. Un seul appel par ligue par cycle, caché 6h.
+      const euDefByPos = league !== 'acb' ? await getEuroDefByPos(league).catch(() => null) : null;
+
       // Auto-fetch scoreboard si cache vide
       if (!_euroCache[`euro_sb_${league}`]?.data) {
         try {
@@ -8865,6 +8945,9 @@ async function runEUPropsAlerts(newAlerts, PORT) {
             const isHome = homePlayers.some(p => p.id === rosterP.id);
             const myGames  = isHome ? homeGames : awayGames;
             const oppGames = isHome ? awayGames : homeGames;
+            const oppTeamIdEU = isHome ? game.away.id : game.home.id;
+            const oppDefByPosRaw = euDefByPos?.teamDefByPosById?.[oppTeamIdEU];
+            const oppDefByPosEU = (oppDefByPosRaw && euDefByPos?.leagueAvg) ? { ...oppDefByPosRaw, _leagueAvg: euDefByPos.leagueAvg } : null;
             const gamelogs = gamelogById[rosterP.id] || [];
             const lastGlDateEU = gamelogs[0]?.event_date?.slice(0,10) ?? gamelogs[0]?.date?.slice(0,10) ?? null;
 
@@ -8878,7 +8961,7 @@ async function runEUPropsAlerts(newAlerts, PORT) {
                 // Backfill tpm sur les snapshots gelés avant l'ajout du 10 juin 2026 (pts/reb/ast restent figés)
                 if (snapEU.tpm == null) {
                   const oppNameBf = isHome ? game.away.name : game.home.name;
-                  const tpmEst = computeEUEstimate(rosterP, isHome, oppGames, myGames, gamelogs, game.date, league, game.round, oppNameBf);
+                  const tpmEst = computeEUEstimate(rosterP, isHome, oppGames, myGames, gamelogs, game.date, league, game.round, oppNameBf, oppDefByPosEU);
                   if (tpmEst?.tpm != null) {
                     const redistFactorBf = isHome ? (homeRedist[String(rosterP.id)] ?? 1) : (awayRedist[String(rosterP.id)] ?? 1);
                     snapEU.tpm = redistFactorBf > 1 ? +(tpmEst.tpm * redistFactorBf).toFixed(1) : tpmEst.tpm;
@@ -8892,7 +8975,7 @@ async function runEUPropsAlerts(newAlerts, PORT) {
             }
 
             const oppName = isHome ? game.away.name : game.home.name;
-            const est = computeEUEstimate(rosterP, isHome, oppGames, myGames, gamelogs, game.date, league, game.round, oppName);
+            const est = computeEUEstimate(rosterP, isHome, oppGames, myGames, gamelogs, game.date, league, game.round, oppName, oppDefByPosEU);
             if (!est) continue;
 
             // Redist OUT
