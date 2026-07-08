@@ -1838,6 +1838,35 @@ app.get('/api/nba/leagueadvanced', async (req, res) => {
 
 // GET /api/nba/teamdefbypos/:espnTeamId
 // Retourne { G: 23.1, F: 18.4, C: 14.9 } = pts/game encaissés par position
+// Moyenne PTS/REB/AST/3PM par poste par ligne renvoyée par leaguedashplayerstats (même colonnes
+// que celles qui alimentaient déjà avgPts pour PTS — juste jamais lues pour les 3 autres stats).
+function _avgNbaStatsByPos(json) {
+  const rows = parseNbaRows(json);
+  if (!rows.length) return { pts: null, reb: null, ast: null, tpm: null };
+  const avg = k => +(rows.reduce((s, r) => s + (r[k] || 0), 0) / rows.length).toFixed(2);
+  return { pts: avg('PTS'), reb: avg('REB'), ast: avg('AST'), tpm: avg('FG3M') };
+}
+
+// Moyenne ligue par poste (8 juillet 2026) — sert de dénominateur pour comparer chaque équipe à
+// la moyenne (même principe que getWNBADefByPos/leagueAvg) : un seul jeu de 3 appels (G/F/C, sans
+// filtre adversaire), caché 24h, réutilisé pour toutes les équipes plutôt que recalculé par match.
+async function getNBALeagueAvgByPos() {
+  const cacheKey = 'nba_leagueavg_bypos';
+  const cached = _espnCache[cacheKey];
+  if (cached && Date.now() - cached.ts < CACHE_6H * 4) return cached.data;
+
+  const base = `leaguedashplayerstats?Season=${NBA_SEASON}&SeasonType=Regular+Season&MeasureType=Base&PerMode=PerGame`;
+  const gJson = await nbaStatsGet(`${base}&PlayerPosition=G`);
+  await new Promise(r => setTimeout(r, 300));
+  const fJson = await nbaStatsGet(`${base}&PlayerPosition=F`);
+  await new Promise(r => setTimeout(r, 300));
+  const cJson = await nbaStatsGet(`${base}&PlayerPosition=C`);
+
+  const data = { G: _avgNbaStatsByPos(gJson), F: _avgNbaStatsByPos(fJson), C: _avgNbaStatsByPos(cJson) };
+  _espnCache[cacheKey] = { data, ts: Date.now() };
+  return data;
+}
+
 app.get('/api/nba/teamdefbypos/:espnTeamId', async (req, res) => {
   const nbaTeamId = ESPN_TO_NBA_ID[Number(req.params.espnTeamId)];
   if (!nbaTeamId) return res.status(404).json({ error: 'Team not found' });
@@ -1855,13 +1884,8 @@ app.get('/api/nba/teamdefbypos/:espnTeamId', async (req, res) => {
     await new Promise(r => setTimeout(r, 300));
     const cJson = await nbaStatsGet(`${base}&PlayerPosition=C`);
 
-    const avgPts = (json) => {
-      const rows = parseNbaRows(json);
-      if (!rows.length) return null;
-      return +(rows.reduce((s, r) => s + (r.PTS || 0), 0) / rows.length).toFixed(1);
-    };
-
-    const data = { G: avgPts(gJson), F: avgPts(fJson), C: avgPts(cJson) };
+    // reb/ast/tpm ajoutés le 8 juillet 2026 (même colonnes déjà renvoyées par l'API, cf. WNBA)
+    const data = { G: _avgNbaStatsByPos(gJson), F: _avgNbaStatsByPos(fJson), C: _avgNbaStatsByPos(cJson) };
     _espnCache[cacheKey] = { data, ts: Date.now() };
     res.json(data);
   } catch (err) {
@@ -9221,16 +9245,22 @@ async function generateBackgroundAlerts() {
       savedAt: Date.now(),
     });
 
+    // Moyenne ligue par poste (reb/ast/tpm en plus de pts, 8 juillet 2026) — un seul appel,
+    // caché 24h, réutilisé pour tous les matchs du cycle plutôt que recalculé par équipe.
+    const nbaLeagueAvgByPos = await getNBALeagueAvgByPos().catch(() => null);
+
     for (const game of upcoming) {
       const homeId = ESPN_NBA_MAP[game.home.name];
       const awayId = ESPN_NBA_MAP[game.away.name];
       if (!homeId || !awayId) continue;
 
       // Fetch defense-by-position for both teams
-      const [homeDefByPos, awayDefByPos] = await Promise.all([
+      const [homeDefByPosRaw, awayDefByPosRaw] = await Promise.all([
         fetchWithTimeout(`http://localhost:${process.env.PORT || 3001}/api/nba/teamdefbypos/${homeId}`, 5000).then(r => r.ok ? r.json() : null).catch(() => null),
         fetchWithTimeout(`http://localhost:${process.env.PORT || 3001}/api/nba/teamdefbypos/${awayId}`, 5000).then(r => r.ok ? r.json() : null).catch(() => null),
       ]);
+      const homeDefByPos = homeDefByPosRaw && nbaLeagueAvgByPos ? { ...homeDefByPosRaw, _leagueAvg: nbaLeagueAvgByPos } : homeDefByPosRaw;
+      const awayDefByPos = awayDefByPosRaw && nbaLeagueAvgByPos ? { ...awayDefByPosRaw, _leagueAvg: nbaLeagueAvgByPos } : awayDefByPosRaw;
 
       // Player props — appelle directement la route qui gère scraping + cache + format
       let scrapedPlayers = null;
