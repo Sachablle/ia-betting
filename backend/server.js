@@ -8183,26 +8183,40 @@ async function getWNBADefByPos() {
   const allPlayers = rosters.flat().filter(p => p.id && p.position);
   const gamelogs = await Promise.all(allPlayers.map(p => bgFetchWNBAGamelog(p.id)));
 
-  // buckets[abbr][G/F/C] = pts marqués par les adversaires de cette position contre l'équipe `abbr`
+  // buckets[abbr][G/F/C][pts|reb|ast|tpm] = valeurs des adversaires de cette position contre `abbr`
+  // (8 juillet 2026 — auparavant seul pts était collecté, et reb/ast/tpm réutilisaient ce même
+  // facteur "points encaissés" dans computeEstimate, alors qu'une équipe peut être moyenne en
+  // défense sur les points tout en étant forte/faible au rebond ou à la passe. Le gamelog de
+  // chaque adversaire contient déjà reb/ast/tpm — juste jamais lu jusqu'ici)
+  const STATS = ['pts', 'reb', 'ast', 'tpm'];
   const buckets = {};
-  Object.values(idToAbbr).forEach(abbr => { buckets[abbr] = { G: [], F: [], C: [] }; });
+  Object.values(idToAbbr).forEach(abbr => {
+    buckets[abbr] = { G: { pts: [], reb: [], ast: [], tpm: [] }, F: { pts: [], reb: [], ast: [], tpm: [] }, C: { pts: [], reb: [], ast: [], tpm: [] } };
+  });
 
   allPlayers.forEach((p, i) => {
     const posKey = toDefCat(p.position);
     for (const g of (gamelogs[i] || [])) {
-      if (buckets[g.opponentAbbr]) buckets[g.opponentAbbr][posKey].push(g.pts);
+      const b = buckets[g.opponentAbbr]?.[posKey];
+      if (!b) continue;
+      for (const stat of STATS) if (g[stat] != null) b[stat].push(g[stat]);
     }
   });
 
   const avg = arr => arr.length ? +(arr.reduce((s, v) => s + v, 0) / arr.length).toFixed(2) : null;
   const teamDefByPosByAbbr = {};
   for (const [abbr, b] of Object.entries(buckets)) {
-    teamDefByPosByAbbr[abbr] = { G: avg(b.G), F: avg(b.F), C: avg(b.C) };
+    teamDefByPosByAbbr[abbr] = {};
+    for (const pos of ['G', 'F', 'C']) {
+      teamDefByPosByAbbr[abbr][pos] = Object.fromEntries(STATS.map(stat => [stat, avg(b[pos][stat])]));
+    }
   }
 
   const leagueAvg = {};
   for (const pos of ['G', 'F', 'C']) {
-    leagueAvg[pos] = avg(Object.values(teamDefByPosByAbbr).map(t => t[pos]).filter(v => v != null));
+    leagueAvg[pos] = Object.fromEntries(STATS.map(stat => [
+      stat, avg(Object.values(teamDefByPosByAbbr).map(t => t[pos][stat]).filter(v => v != null)),
+    ]));
   }
 
   const teamDefByPosById = {};

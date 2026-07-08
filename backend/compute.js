@@ -197,14 +197,24 @@ function toDefCat(pos) {
   return 'F';
 }
 
-function getDefByPosFactor(teamDef, position) {
-  if (!teamDef || !position) return { val: 1.0 };
-  const posKey    = toDefCat(position);
-  const allowed   = teamDef[posKey];
+// stat='pts' : format historique, teamDef[posKey] est un nombre brut (points encaissés par poste).
+// stat='reb'/'ast'/'tpm' (8 juillet 2026) : teamDef[posKey] est désormais un objet {pts,reb,ast,tpm}
+// (WNBA — cf. getWNBADefByPos) quand la donnée par-poste-et-par-stat est disponible. Tant qu'une
+// ligue/stat n'a pas encore ce format (NBA pas encore étendu, ligues EU sans défense par poste du
+// tout), retourne `null` plutôt que {val:1.0} — laisse l'appelant décider du fallback (reprendre le
+// facteur pts, comportement historique) plutôt que de neutraliser silencieusement l'ajustement.
+function getDefByPosFactor(teamDef, position, stat = 'pts') {
+  if (!teamDef || !position) return null;
+  const posKey  = toDefCat(position);
+  const posData = teamDef[posKey];
+  const allowed = (posData && typeof posData === 'object') ? posData[stat] : (stat === 'pts' ? posData : undefined);
+  if (allowed == null) return null;
   // _leagueAvg permet de fournir une moyenne ligue alternative (ex: WNBA, calculée
   // dynamiquement côté server.js) — sinon on retombe sur la constante NBA
-  const leagueAvg = (teamDef._leagueAvg || LEAGUE_AVG_BY_POS)[posKey];
-  if (!allowed || !leagueAvg) return { val: 1.0 };
+  const leagueAvgSrc = teamDef._leagueAvg || LEAGUE_AVG_BY_POS;
+  const leagueAvgPos = leagueAvgSrc[posKey];
+  const leagueAvg = (leagueAvgPos && typeof leagueAvgPos === 'object') ? leagueAvgPos[stat] : (stat === 'pts' ? leagueAvgPos : undefined);
+  if (!allowed || !leagueAvg) return null;
   return { val: Math.min(1.25, Math.max(0.75, allowed / leagueAvg)) };
 }
 
@@ -434,9 +444,20 @@ function computeEstimate(player, isHome, oppGames, myGames, gamelogs, oppAbbr, g
   const dampen = sampleDamp(Math.min(oppGames?.length || 0, myGames?.length || 0));
 
   const rawPaceF = getPaceFactor(oppGames);
-  const rawDefF  = oppDefByPos ? getDefByPosFactor(oppDefByPos, player.position) : getDefFactor(oppGames, inPO);
+  // Facteur adverse dédié par stat (8 juillet 2026) — avant ce fix, reb/ast/tpm réutilisaient tous
+  // le même facteur "points encaissés" que pts, alors qu'une équipe peut être moyenne en défense
+  // sur les points tout en étant forte (ou faible) au rebond/à la passe. Fallback sur le facteur
+  // pts tant que la donnée par-poste-et-par-stat n'est pas disponible (NBA pas encore étendu,
+  // ligues EU) — comportement strictement identique à avant dans ce cas.
+  const rawDefF    = (oppDefByPos && getDefByPosFactor(oppDefByPos, player.position, 'pts')) || getDefFactor(oppGames, inPO);
+  const rawDefFReb = (oppDefByPos && getDefByPosFactor(oppDefByPos, player.position, 'reb')) || rawDefF;
+  const rawDefFAst = (oppDefByPos && getDefByPosFactor(oppDefByPos, player.position, 'ast')) || rawDefF;
+  const rawDefFTpm = (oppDefByPos && getDefByPosFactor(oppDefByPos, player.position, 'tpm')) || rawDefF;
   const pace     = { ...rawPaceF, val: 1 + (rawPaceF.val - 1) * dampen };
-  const def      = { ...rawDefF,  val: 1 + (rawDefF.val  - 1) * dampen };
+  const def      = { ...rawDefF,    val: 1 + (rawDefF.val    - 1) * dampen };
+  const defReb   = { ...rawDefFReb, val: 1 + (rawDefFReb.val - 1) * dampen };
+  const defAst   = { ...rawDefFAst, val: 1 + (rawDefFAst.val - 1) * dampen };
+  const defTpm   = { ...rawDefFTpm, val: 1 + (rawDefFTpm.val - 1) * dampen };
 
   // H2H par stat — prend en compte l'historique joueur vs cet adversaire spécifique
   const h2hPts = getH2HFactor(g, oppAbbr, s.pts, 'pts');
@@ -484,26 +505,34 @@ function computeEstimate(player, isHome, oppGames, myGames, gamelogs, oppAbbr, g
     const ftAttn  = 1 + (ftRate.val  - 1) * 0.5;
     // Si le gamelog contient déjà des matchs PO, l'EWA reflète l'intensité playoffs → neutralise playoff.val
     const playoffAdj = hasPOData ? 1.0 : playoff.val;
-    const rawMult = def.val * paceDamped * rest.val * density.val * loc.val * vegas.val
-                  * blowout.val * injRet.val * roleNormPO * h2hCapped
+    const sharedMult = paceDamped * rest.val * density.val * loc.val * vegas.val
+                  * blowout.val * injRet.val * roleNormPO
                   * tsAttn * volAttn * ftAttn * playoffAdj * series.val;
+    const rawMult    = def.val    * sharedMult * h2hCapped;
+    const rawMultReb = defReb.val * sharedMult * h2hRebCapped;
+    const rawMultAst = defAst.val * sharedMult * h2hAstCapped;
+    const rawMultTpm = defTpm.val * sharedMult * h2hTpmCapped;
     adjMult    = Math.min(1.30, Math.max(0.74, rawMult));
-    adjMultReb = Math.min(1.30, Math.max(0.74, rawMult * (1 + (orebF.val - 1) * 0.6) * h2hRebCapped));
-    adjMultAst = Math.min(1.30, Math.max(0.74, rawMult * toaF.val * h2hAstCapped));
-    adjMultTpm = Math.min(1.30, Math.max(0.74, rawMult * h2hTpmCapped));
+    adjMultReb = Math.min(1.30, Math.max(0.74, rawMultReb * (1 + (orebF.val - 1) * 0.6)));
+    adjMultAst = Math.min(1.30, Math.max(0.74, rawMultAst * toaF.val));
+    adjMultTpm = Math.min(1.30, Math.max(0.74, rawMultTpm));
   } else {
     h2hCapped    = Math.min(1.08, Math.max(0.92, h2hPts.val));
     h2hRebCapped = Math.min(1.08, Math.max(0.92, h2hReb.val));
     h2hAstCapped = Math.min(1.08, Math.max(0.92, h2hAst.val));
     h2hTpmCapped = Math.min(1.08, Math.max(0.92, h2hTpm.val));
     const streakCapped = Math.min(1.06, Math.max(0.94, streak.val));
-    const rawMult = def.val * pace.val * rest.val * density.val * loc.val * vegas.val
-                  * blowout.val * injRet.val * streakCapped * h2hCapped
+    const sharedMult = pace.val * rest.val * density.val * loc.val * vegas.val
+                  * blowout.val * injRet.val * streakCapped
                   * tsF.val * shotVol.val * ftRate.val;
+    const rawMult    = def.val    * sharedMult * h2hCapped;
+    const rawMultReb = defReb.val * sharedMult * h2hRebCapped;
+    const rawMultAst = defAst.val * sharedMult * h2hAstCapped;
+    const rawMultTpm = defTpm.val * sharedMult * h2hTpmCapped;
     adjMult    = Math.min(1.24, Math.max(0.78, rawMult));
-    adjMultReb = Math.min(1.24, Math.max(0.78, rawMult * orebF.val * h2hRebCapped));
-    adjMultAst = Math.min(1.24, Math.max(0.78, rawMult * toaF.val * h2hAstCapped));
-    adjMultTpm = Math.min(1.24, Math.max(0.78, rawMult * h2hTpmCapped));
+    adjMultReb = Math.min(1.24, Math.max(0.78, rawMultReb * orebF.val));
+    adjMultAst = Math.min(1.24, Math.max(0.78, rawMultAst * toaF.val));
+    adjMultTpm = Math.min(1.24, Math.max(0.78, rawMultTpm));
   }
 
   // Rôle réduit : la moyenne saison n'est plus un plancher pertinent (cf. ewaW ci-dessus)
