@@ -8891,11 +8891,14 @@ async function runEUPropsAlerts(newAlerts, PORT) {
             applyManualOut(awayPlayers, game.away.id);
           }
 
-          // Injury gate (≤ 2.5h)
+          // Injury gate — plus de limite ≤2.5h (8 juillet 2026) : dès qu'un titulaire est Q/GTD,
+          // peu importe la distance au match, on bloque tant que son statut n'est pas mis à jour
+          // (les alertes se régénèrent tous les ~20min donc ça se débloque tout seul dès que le
+          // statut change — Out confirmé ou statut Q levé).
           const homeStarters = new Set(homePlayers.slice(0,5).map(p => String(p.id)));
           const awayStarters = new Set(awayPlayers.slice(0,5).map(p => String(p.id)));
-          const homeGated = hoursToGame <= 2.5 && homePlayers.some(p => homeStarters.has(String(p.id)) && Q_STATUSES.includes(p.injury));
-          const awayGated = hoursToGame <= 2.5 && awayPlayers.some(p => awayStarters.has(String(p.id)) && Q_STATUSES.includes(p.injury));
+          const homeGated = homePlayers.some(p => homeStarters.has(String(p.id)) && Q_STATUSES.includes(p.injury));
+          const awayGated = awayPlayers.some(p => awayStarters.has(String(p.id)) && Q_STATUSES.includes(p.injury));
           if (homeGated) _bgLog.push(`EU gate home ${game.home.short} [${league}]`);
           if (awayGated) _bgLog.push(`EU gate away ${game.away.short} [${league}]`);
 
@@ -9238,7 +9241,8 @@ function oppInjuryEffect(oppPlayers, oppStarters, playerPos, stat, hoursToGame, 
   };
   const relevant = (oppPlayers || []).filter(p => oppStarters.has(String(p.id)) && isRelevant(p.position));
   const outCount = relevant.filter(p => p.injury === 'Out').length;
-  const hasQ = hoursToGame <= 2.5 && relevant.some(p => (Q_STATUSES || []).includes(p.injury));
+  // Plus de limite ≤2.5h (8 juillet 2026) — cf. commentaire du gate EU équivalent
+  const hasQ = relevant.some(p => (Q_STATUSES || []).includes(p.injury));
   const boost = stat === 'reb' ? outCount * 0.12 : outCount * 0.08;
   return { factor: 1 + boost, shouldBlock: hasQ && outCount === 0 };
 }
@@ -9386,15 +9390,16 @@ async function generateBackgroundAlerts() {
         ? (1 / _nbaH2H.home) / (1 / _nbaH2H.home + 1 / _nbaH2H.away)
         : null;
 
-      // Injury gate — saison régulière ET playoffs (étendu 19 juin 2026, était playoffs-only),
-      // s'active à ≤ 2h30 avant le match. Bloque par ÉQUIPE (pas par game) : l'équipe adverse
-      // continue à générer des alertes.
+      // Injury gate — saison régulière ET playoffs (étendu 19 juin 2026, était playoffs-only).
+      // Plus de limite ≤2.5h (8 juillet 2026) : bloque dès qu'un titulaire est Q/GTD, peu importe
+      // la distance au match — se débloque tout seul dès que le statut est mis à jour (cycle
+      // ~20min). Bloque par ÉQUIPE (pas par game) : l'équipe adverse continue à générer des alertes.
       const Q_STATUSES   = ['Questionable', 'GTD', 'Game Time Decision', 'Doubtful', 'Day-To-Day'];
       const homeStarters = new Set(homePlayers.slice(0, 5).map(p => String(p.id)));
       const awayStarters = new Set(awayPlayers.slice(0, 5).map(p => String(p.id)));
       const isStarter    = (p, starters) => starters.has(String(p.id));
-      const homeGated = hoursToGame <= 2.5 && homePlayers.some(p => isStarter(p, homeStarters) && Q_STATUSES.includes(p.injury));
-      const awayGated = hoursToGame <= 2.5 && awayPlayers.some(p => isStarter(p, awayStarters) && Q_STATUSES.includes(p.injury));
+      const homeGated = homePlayers.some(p => isStarter(p, homeStarters) && Q_STATUSES.includes(p.injury));
+      const awayGated = awayPlayers.some(p => isStarter(p, awayStarters) && Q_STATUSES.includes(p.injury));
       if (homeGated || awayGated) {
         const names = [
           ...homePlayers.filter(p => isStarter(p, homeStarters) && Q_STATUSES.includes(p.injury)).map(p => `${p.name}(Q/home)`),
@@ -9433,6 +9438,11 @@ async function generateBackgroundAlerts() {
         [homeTop8, homeSched, awaySched, true],
         [awayTop8, awaySched, homeSched, false],
       ]) {
+        // homeGated/awayGated étaient calculés et loggés plus haut mais jamais réellement
+        // appliqués (bug trouvé le 8 juillet 2026 en étendant le gate — l'équivalent EU, lui,
+        // bloque bien via ce même continue). Fix : bloque la génération pour l'équipe gatée.
+        if (isHome && homeGated) continue;
+        if (!isHome && awayGated) continue;
         const rawOpp = isHome ? game.away.short : game.home.short;
         const oppAbbr = ESPN_ABBR_NORM[rawOpp] || rawOpp;
         const startIdx = isHome ? 0 : homeTop8.length;
@@ -9450,15 +9460,14 @@ async function generateBackgroundAlerts() {
           // Filtre minutes : joueur qui joue peu (fin de banc, blessé léger) → pas d'alerte
           { const avg = avgRecentMin(gamelog, 'min'); if (avg !== null && avg < MIN_AVG_MINUTES) { _bgLog.push(`skip ${player.name}: avg min ${avg.toFixed(1)} < ${MIN_AVG_MINUTES}`); continue; } }
 
-          // Gate Q/Doubtful : Under autorisé (minutes réduites → favorable), Over bloqué
-          const playerIsQ = Q_STATUSES.includes(player.injury) && hoursToGame <= 2.5;
+          // Gate Q/Doubtful : Under autorisé (minutes réduites → favorable), Over bloqué.
+          // Plus de limite ≤2.5h (8 juillet 2026), cf. gate équipe ci-dessus.
+          const playerIsQ = Q_STATUSES.includes(player.injury);
           if (playerIsQ) _bgLog.push(`${player.name}: Q himself → Under only`);
           // Flag si un titulaire coéquipier est Q (alerte envoyée mais avertissement)
           const myStarters = isHome ? homeStarters : awayStarters;
           const myPlayers  = isHome ? homePlayers  : awayPlayers;
-          const teamQNames = hoursToGame <= 2.5
-            ? myPlayers.filter(p => myStarters.has(String(p.id)) && Q_STATUSES.includes(p.injury) && String(p.id) !== String(player.id)).map(p => p.name)
-            : [];
+          const teamQNames = myPlayers.filter(p => myStarters.has(String(p.id)) && Q_STATUSES.includes(p.injury) && String(p.id) !== String(player.id)).map(p => p.name);
 
           // Projections périmées → pas d'alerte (comparaison par date uniquement, pas heure)
           if (lastPlayed && gamelog?.length) {
@@ -9806,10 +9815,26 @@ async function generateBackgroundAlerts() {
 
       const hoursToGame = (new Date(game.date).getTime() - Date.now()) / 3600000;
 
+      // Injury gate équipe (8 juillet 2026) — manquait entièrement côté WNBA (NBA/EU l'avaient déjà).
+      // Bloque dès qu'une titulaire est Q/GTD, peu importe la distance au match — se débloque tout
+      // seul dès que le statut est mis à jour (cycle ~20min). Bloque par équipe, pas par match :
+      // l'équipe adverse continue à générer des alertes normalement.
+      const homeGatedWNBA = homePatch.some(p => homeStartersWNBA.has(String(p.id)) && Q_STATUSES_WNBA.includes(p.injury));
+      const awayGatedWNBA = awayPatch.some(p => awayStartersWNBA.has(String(p.id)) && Q_STATUSES_WNBA.includes(p.injury));
+      if (homeGatedWNBA || awayGatedWNBA) {
+        const names = [
+          ...homePatch.filter(p => homeStartersWNBA.has(String(p.id)) && Q_STATUSES_WNBA.includes(p.injury)).map(p => `${p.name}(Q/home)`),
+          ...awayPatch.filter(p => awayStartersWNBA.has(String(p.id)) && Q_STATUSES_WNBA.includes(p.injury)).map(p => `${p.name}(Q/away)`),
+        ].join(', ');
+        _bgLog.push(`wnba gate ${game.home.short}v${game.away.short}: ${names}`);
+      }
+
       for (const [players, myScaled, oppScaled, isHome] of [
         [wnbaHomeTop8, homeScaled, awayScaled, true],
         [wnbaAwayTop8, awayScaled, homeScaled, false],
       ]) {
+        if (isHome && homeGatedWNBA) continue;
+        if (!isHome && awayGatedWNBA) continue;
         const oppAbbr = isHome ? game.away.short : game.home.short;
         const startIdx = isHome ? 0 : wnbaHomeTop8.length;
 
@@ -9821,12 +9846,12 @@ async function generateBackgroundAlerts() {
           // Filtre minutes WNBA
           { const avg = avgRecentMin(gamelog, 'min'); if (avg !== null && avg < MIN_AVG_MINUTES) { _bgLog.push(`skip wnba ${player.name}: avg min ${avg.toFixed(1)}`); continue; } }
 
-          // Per-player Q gate WNBA : Under autorisé, Over bloqué
-          const playerIsQWNBA = Q_STATUSES_WNBA.includes(player.injury) && hoursToGame <= 2.5;
+          // Per-player Q gate WNBA : Under autorisé, Over bloqué. Plus de limite ≤2.5h (8 juillet 2026).
+          const playerIsQWNBA = Q_STATUSES_WNBA.includes(player.injury);
           if (playerIsQWNBA) _bgLog.push(`wnba ${player.name}: Q herself → Under only`);
           const myStartersWNBA = isHome ? homeStartersWNBA : awayStartersWNBA;
           const myPlayersWNBA  = isHome ? homePatch : awayPatch;
-          const teamQNamesWNBA = hoursToGame <= 2.5 ? myPlayersWNBA.filter(p => myStartersWNBA.has(String(p.id)) && Q_STATUSES_WNBA.includes(p.injury) && String(p.id) !== String(player.id)).map(p => p.name) : [];
+          const teamQNamesWNBA = myPlayersWNBA.filter(p => myStartersWNBA.has(String(p.id)) && Q_STATUSES_WNBA.includes(p.injury) && String(p.id) !== String(player.id)).map(p => p.name);
           const redistFactorWNBA = isHome ? (homeRedistWNBA[String(player.id)] ?? 1) : (awayRedistWNBA[String(player.id)] ?? 1);
           const oppDefByPosWNBA = isHome ? awayDefByPosWNBA : homeDefByPosWNBA;
           const oppPlayersWNBA_  = isHome ? awayPatch : homePatch;
@@ -10112,13 +10137,13 @@ async function generateBackgroundAlerts() {
           const bestP = Math.max(full.pOver ?? 0, full.pUnder ?? 0);
           if (bestP < TOTAL_ALERT_PROB) { _bgLog.push(`${leagueKey} total skip ${game.home.short}v${game.away.short}: prob ${(bestP*100).toFixed(1)}% < ${TOTAL_ALERT_PROB*100}% (est=${full.estimated} line=${line})`); continue; }
 
-          // Filtre joueur clé (≥15 pts/match) Q/GTD, ≤2h30 du tip-off — saison régulière ET
-          // playoffs (étendu 19 juin 2026, était playoffs-only)
-          const hoursToTip = (new Date(game.date).getTime() - Date.now()) / 3600000;
-          if (hoursToTip <= 2.5) {
+          // Filtre joueur clé (≥15 pts/match) Q/GTD — saison régulière ET playoffs (étendu 19 juin
+          // 2026, était playoffs-only). Plus de limite ≤2.5h (8 juillet 2026) : bloque dès qu'un
+          // joueur clé est Q/GTD peu importe la distance au match.
+          {
             const [homePlayers, awayPlayers] = await Promise.all([rosterFn(homeId), rosterFn(awayId)]);
             const hasKeyQ = [...homePlayers, ...awayPlayers].some(p => (p.stats?.pts ?? 0) >= 15 && Q_STATUSES_TOTAL.includes(p.injury));
-            if (hasKeyQ) { _bgLog.push(`${leagueKey} total skip ${game.home.short}v${game.away.short}: key player Q/GTD ≤2h30`); continue; }
+            if (hasKeyQ) { _bgLog.push(`${leagueKey} total skip ${game.home.short}v${game.away.short}: key player Q/GTD`); continue; }
           }
 
           const direction = full.direction;
@@ -10361,6 +10386,17 @@ async function generateBackgroundAlerts() {
             fetch(`http://localhost:${PORT}/api/euro/${euLeague}/players/${g.home.id}`, { signal: AbortSignal.timeout(10000) }).then(r => r.ok ? r.json() : null).catch(() => null),
             fetch(`http://localhost:${PORT}/api/euro/${euLeague}/players/${g.away.id}`, { signal: AbortSignal.timeout(10000) }).then(r => r.ok ? r.json() : null).catch(() => null),
           ]);
+          // Injury gate (8 juillet 2026) — computeTeamWinProb ne réagissait qu'à un "Out" confirmé
+          // (via calcKeyPlayerOutPenalty), jamais à un statut Q/GTD encore incertain. Bloque toute
+          // l'alerte Résultat dès qu'une titulaire (top 5 pts) a un statut incertain, peu importe
+          // la distance au match — se débloque tout seul dès que le statut est mis à jour.
+          const homeStartersEU = new Set((homePlayersR?.players || []).slice(0, 5).map(p => String(p.id)));
+          const awayStartersEU = new Set((awayPlayersR?.players || []).slice(0, 5).map(p => String(p.id)));
+          const hasQEU = [...(homePlayersR?.players || []), ...(awayPlayersR?.players || [])].some(p =>
+            (homeStartersEU.has(String(p.id)) || awayStartersEU.has(String(p.id))) && Q_STATUSES_TOTAL.includes(p.injury)
+          );
+          if (hasQEU) { _bgLog.push(`${euLeague} result skip ${g.home.short}v${g.away.short}: titulaire Q/GTD`); continue; }
+
           const scalePlayers = arr => (arr || []).map(p => ({ ...p, stats: { ...p.stats, pts: (p.stats?.pts || 0) * scaleF } }));
           const homeOutPenalty = calcKeyPlayerOutPenalty(scalePlayers(homePlayersR?.players));
           const awayOutPenalty = calcKeyPlayerOutPenalty(scalePlayers(awayPlayersR?.players));
@@ -10458,6 +10494,17 @@ async function generateBackgroundAlerts() {
               schedFn(homeId), schedFn(awayId), rosterFn(homeId), rosterFn(awayId),
             ]);
             if (homeSched.length < 4 || awaySched.length < 4) continue;
+
+            // Injury gate (8 juillet 2026) — computeTeamWinProb ne réagissait qu'à un "Out" confirmé
+            // (via calcKeyPlayerOutPenalty), jamais à un statut Q/GTD encore incertain. Bloque toute
+            // l'alerte Résultat dès qu'une titulaire (top 5 pts) a un statut incertain, peu importe
+            // la distance au match — se débloque tout seul dès que le statut est mis à jour.
+            const homeStartersRes = new Set((homePlayers || []).slice(0, 5).map(p => String(p.id)));
+            const awayStartersRes = new Set((awayPlayers || []).slice(0, 5).map(p => String(p.id)));
+            const hasQRes = [...(homePlayers || []), ...(awayPlayers || [])].some(p =>
+              (homeStartersRes.has(String(p.id)) || awayStartersRes.has(String(p.id))) && Q_STATUSES_TOTAL.includes(p.injury)
+            );
+            if (hasQRes) { _bgLog.push(`${leagueKey} result skip ${g.home.short}v${g.away.short}: titulaire Q/GTD`); continue; }
 
             const homeOutPenalty = calcKeyPlayerOutPenalty(homePlayers);
             const awayOutPenalty = calcKeyPlayerOutPenalty(awayPlayers);
@@ -10604,10 +10651,9 @@ async function generateBackgroundAlerts() {
             const bestP = Math.max(full.pOver ?? 0, full.pUnder ?? 0);
             if (bestP < TOTAL_ALERT_PROB) { _bgLog.push(`${euLeague} total skip ${g.home.short}v${g.away.short}: prob ${(bestP*100).toFixed(1)}% < ${TOTAL_ALERT_PROB*100}% (est=${full.estimated} line=${line})`); continue; }
 
-            // Filtre joueur clé (≥15 pts/match) Q/GTD, ≤2h30 du tip-off — saison régulière ET
-            // playoffs (étendu 19 juin 2026, était playoffs-only)
-            const hoursToTip = (new Date(g.date).getTime() - Date.now()) / 3600000;
-            if (hoursToTip <= 2.5) {
+            // Filtre joueur clé (≥15 pts/match) Q/GTD — saison régulière ET playoffs (étendu 19 juin
+            // 2026, était playoffs-only). Plus de limite ≤2.5h (8 juillet 2026).
+            {
               const [homePlayersR, awayPlayersR] = await Promise.all([
                 fetch(`${euBase}/api/euro/${euLeague}/players/${g.home.id}`, { signal: AbortSignal.timeout(10000) }).then(r=>r.ok?r.json():null).catch(()=>null),
                 fetch(`${euBase}/api/euro/${euLeague}/players/${g.away.id}`, { signal: AbortSignal.timeout(10000) }).then(r=>r.ok?r.json():null).catch(()=>null),
@@ -10615,7 +10661,7 @@ async function generateBackgroundAlerts() {
               const homePlayers = homePlayersR?.players || [];
               const awayPlayers = awayPlayersR?.players || [];
               const hasKeyQ = [...homePlayers, ...awayPlayers].some(p => (p.stats?.pts ?? 0) >= 15 && Q_STATUSES_TOTAL.includes(p.injury));
-              if (hasKeyQ) { _bgLog.push(`${euLeague} total skip ${g.home.short}v${g.away.short}: key player Q/GTD ≤2h30`); continue; }
+              if (hasKeyQ) { _bgLog.push(`${euLeague} total skip ${g.home.short}v${g.away.short}: key player Q/GTD`); continue; }
             }
 
             const direction = full.direction;
@@ -11091,8 +11137,9 @@ async function generateBackgroundAlerts() {
     // Purge alerts for games no longer scheduled (completed/cancelled)
     backgroundAlerts.filter(a => upcomingIds.has(a.eventId)).forEach(a => { byId[a.id] = a; });
     filteredAlerts.forEach(a => {
-      // Une seule alerte pending par (match, joueur, stat) — purge toute version stale (direction
-      // ou ligne qui a bougé depuis le cycle précédent) avant d'ajouter la version à jour
+      // Une seule alerte pending par (match, joueur, stat) — entre l'ancienne version et la
+      // nouvelle, on garde celle avec la plus haute confiance (8 juillet 2026 — avant ce fix,
+      // la nouvelle remplaçait systématiquement l'ancienne même si sa proba était plus basse).
       if (a.type === 'player_prop' && a.player && a.stat) {
         const staleKey = Object.keys(byId).find(id => {
           const x = byId[id];
@@ -11100,7 +11147,14 @@ async function generateBackgroundAlerts() {
                  x.player === a.player && x.stat === a.stat &&
                  id !== a.id && (!x.status || x.status === 'pending');
         });
-        if (staleKey) { _bgLog.push(`prop-dedup: drop ${byId[staleKey].direction} ${byId[staleKey].line} ${a.player} ${a.stat} → ${a.direction} ${a.line}`); delete byId[staleKey]; }
+        if (staleKey) {
+          if ((byId[staleKey].probability ?? 0) > (a.probability ?? 0)) {
+            _bgLog.push(`prop-dedup: garde ${byId[staleKey].direction} ${byId[staleKey].line} ${byId[staleKey].player} ${byId[staleKey].stat} (${byId[staleKey].probability}%) plutôt que ${a.direction} ${a.line} (${a.probability}%)`);
+            return;
+          }
+          _bgLog.push(`prop-dedup: drop ${byId[staleKey].direction} ${byId[staleKey].line} ${a.player} ${a.stat} → ${a.direction} ${a.line}`);
+          delete byId[staleKey];
+        }
         // Si une alerte ACCEPTÉE existe déjà pour ce joueur/stat/match (même dans l'autre sens),
         // on ne génère pas de nouvelle alerte concurrente — le pari est déjà engagé, on ne le double pas.
         const hasAccepted = Object.values(byId).some(x =>
