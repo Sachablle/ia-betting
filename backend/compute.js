@@ -539,17 +539,38 @@ function computeEstimate(player, isHome, oppGames, myGames, gamelogs, oppAbbr, g
   const floorPts  = roleShrunk ? basePts * 0.7 : s.pts * 0.72;
   const projPtsRaw = Math.max(floorPts, +(basePts * adjMult).toFixed(1));
 
+  // TEST 8 juillet 2026 (pas encore déployé) — plafond combiné redistribution × ajustement
+  // matchup. Chacun des deux est déjà plafonné individuellement (redistributionFactor ≤1.15,
+  // adjMult* ≤1.24/1.30 en PO), mais rien n'empêchait les deux de se multiplier ensemble (jusqu'à
+  // ~1.43, +43%) quand une joueuse a À LA FOIS une coéquipière clé Out ET un matchup très
+  // favorable. Cas concret trouvé : Nneka Ogwumike (LA Sparks) projetée à 12.7 rebonds le 8
+  // juillet (saison ~8.7-9.1) avec 2 coéquipières Out. Ne s'applique QUE quand la redistribution
+  // est active (redistributionFactor>1) — zéro effet sur l'immense majorité des joueuses.
+  const COMBINED_BOOST_CAP = 1.30;
+  const capRedistStack = (finalVal, baseVal) => {
+    if (finalVal == null || !baseVal || redistributionFactor <= 1.0) return finalVal;
+    const baseNoRedist = baseVal / redistributionFactor;
+    const maxAllowed = baseNoRedist * COMBINED_BOOST_CAP;
+    return finalVal > maxAllowed ? +maxAllowed.toFixed(1) : finalVal;
+  };
+
+  const projPtsCapped = capRedistStack(projPtsRaw, basePts);
+
   // Ancrage volume × efficacité saison — n'affecte que pts (reb/ast/tpm inchangés)
   const volAnchor = getShotVolumeAnchor(g, 'pts', 'min');
   const projPts   = volAnchor != null
-    ? Math.max(floorPts, +(projPtsRaw * 0.85 + volAnchor * 0.15).toFixed(1))
-    : projPtsRaw;
+    ? Math.max(floorPts, +(projPtsCapped * 0.85 + volAnchor * 0.15).toFixed(1))
+    : projPtsCapped;
+
+  const rebRaw = baseReb ? +(baseReb * adjMultReb).toFixed(1) : null;
+  const astRaw = baseAst ? +(baseAst * adjMultAst).toFixed(1) : null;
+  const tpmRaw = baseTpm ? +(baseTpm * adjMultTpm).toFixed(1) : null;
 
   return {
     pts:       +projPts.toFixed(1),
-    reb:       baseReb ? +(baseReb * adjMultReb).toFixed(1) : null,
-    ast:       baseAst ? +(baseAst * adjMultAst).toFixed(1) : null,
-    tpm:       baseTpm ? +(baseTpm * adjMultTpm).toFixed(1) : null,
+    reb:       capRedistStack(rebRaw, baseReb),
+    ast:       capRedistStack(astRaw, baseAst),
+    tpm:       capRedistStack(tpmRaw, baseTpm),
     // Écart de la projection par rapport à la moyenne saison — sert à élargir le std dans probAtLeast
     deviation: { pts: Math.abs(adjMult - 1), reb: Math.abs(adjMultReb - 1), ast: Math.abs(adjMultAst - 1), tpm: Math.abs(adjMultTpm - 1) },
     streak,
