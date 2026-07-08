@@ -196,7 +196,11 @@ export async function syncBackgroundAlerts() {
         // le même % que la page du match (sinon "running" et "Analyse Props" divergent)
         const probChanged = a.probability != null && a.probability !== acceptedMatch.probability;
         const estChanged  = a.estimate != null && a.estimate !== acceptedMatch.estimate;
-        if (lineShift || ubShift || bcShift || wmShift || probChanged || estChanged) {
+        // Avertissement de dérive (8 juillet 2026, cf. refreshOrDropPendingProp/ById côté backend)
+        // — n'affecte jamais probability/status (le pari reste tel qu'accepté), juste un signal.
+        const driftChanged = !!a.probDropWarning !== !!acceptedMatch.probDropWarning
+          || a.currentProbability !== acceptedMatch.currentProbability;
+        if (lineShift || ubShift || bcShift || wmShift || probChanged || estChanged || driftChanged) {
           byId[acceptedMatch.id] = {
             ...acceptedMatch,
             ...((lineShift || ubShift || bcShift || wmShift) ? {
@@ -212,6 +216,8 @@ export async function syncBackgroundAlerts() {
             winamaxOdds: a.winamaxOdds ?? acceptedMatch.winamaxOdds,
             probability: a.probability ?? acceptedMatch.probability,
             estimate:    a.estimate    ?? acceptedMatch.estimate,
+            probDropWarning: a.probDropWarning ?? false,
+            currentProbability: a.probDropWarning ? a.currentProbability : null,
           };
           changed = true;
         }
@@ -279,7 +285,11 @@ export async function syncBackgroundAlerts() {
         // (= divergence avec Analyse Props, ex. Caitlin Clark / Bridges / Castle / Brunson)
         const probChanged = a.probability != null && a.probability !== prev.probability;
         const estChanged  = a.estimate != null && a.estimate !== prev.estimate;
-        if (lineShift || ubShift || bcShift || wmShift || probChanged || estChanged) {
+        // Avertissement de dérive (8 juillet 2026, cf. refreshOrDropPendingProp/ById côté backend)
+        // — n'affecte jamais probability/status (le pari reste tel qu'accepté), juste un signal.
+        const driftChanged = !!a.probDropWarning !== !!prev.probDropWarning
+          || a.currentProbability !== prev.currentProbability;
+        if (lineShift || ubShift || bcShift || wmShift || probChanged || estChanged || driftChanged) {
           byId[a.id] = {
             ...prev,
             ...((lineShift || ubShift || bcShift || wmShift) ? {
@@ -296,6 +306,8 @@ export async function syncBackgroundAlerts() {
             line: lineShift ? a.line : prev.line,
             probability: a.probability ?? prev.probability,
             estimate:    a.estimate    ?? prev.estimate,
+            probDropWarning: a.probDropWarning ?? false,
+            currentProbability: a.probDropWarning ? a.currentProbability : null,
           };
           changed = true;
         }
@@ -428,7 +440,18 @@ export async function syncGameTotalAlerts() {
         return;
       }
       const prev = result[idx];
-      if ((prev.status || 'pending') !== 'pending') return; // accepté/rejeté/réglé : ne pas toucher
+      if ((prev.status || 'pending') !== 'pending') {
+        // Accepté/rejeté/réglé : on ne retouche jamais le pari, seul un avertissement de dérive
+        // informatif (8 juillet 2026, cf. refreshOrDropPendingById côté backend) peut s'ajouter.
+        if (prev.status === 'accepted') {
+          const driftChanged = !!a.probDropWarning !== !!prev.probDropWarning || a.currentProbability !== prev.currentProbability;
+          if (driftChanged) {
+            result[idx] = { ...prev, probDropWarning: a.probDropWarning ?? false, currentProbability: a.probDropWarning ? a.currentProbability : null };
+            changed = true;
+          }
+        }
+        return;
+      }
       if (prev.estimated !== a.estimated || prev.line !== a.line || prev.direction !== a.direction
           || prev.edge !== a.edge || prev.prob !== a.prob) {
         result[idx] = {
@@ -608,7 +631,18 @@ export async function syncBasketballResultAlerts() {
         return;
       }
       const prev = result[idx];
-      if ((prev.status || 'pending') !== 'pending') return; // accepté/rejeté/réglé : ne pas toucher
+      if ((prev.status || 'pending') !== 'pending') {
+        // Accepté/rejeté/réglé : on ne retouche jamais le pari, seul un avertissement de dérive
+        // informatif (8 juillet 2026, cf. refreshOrDropPendingById côté backend) peut s'ajouter.
+        if (prev.status === 'accepted') {
+          const driftChanged = !!a.probDropWarning !== !!prev.probDropWarning || a.currentProbability !== prev.currentProbability;
+          if (driftChanged) {
+            result[idx] = { ...prev, probDropWarning: a.probDropWarning ?? false, currentProbability: a.probDropWarning ? a.currentProbability : null };
+            changed = true;
+          }
+        }
+        return;
+      }
       if (prev.probability !== a.probability || prev.margin !== a.margin || prev.edge !== a.edge
           || prev.odds !== a.odds || prev.bookmaker !== a.bookmaker) {
         result[idx] = { ...prev, probability: a.probability, margin: a.margin, edge: a.edge, odds: a.odds, bookmaker: a.bookmaker };

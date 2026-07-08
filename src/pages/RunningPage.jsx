@@ -78,8 +78,10 @@ function groupAlerts(raw) {
         league: a.league || 'nba', stats: [], maxProb: 0, ids: [],
         status: a.status || 'pending', acceptedAt: 0,
         acceptedBookmaker: a.acceptedBookmaker || null,
+        probDropWarning: false, currentProbability: null,
       };
     }
+    if (a.probDropWarning) { map[key].probDropWarning = true; map[key].currentProbability = a.currentProbability; }
     const entry = {
       stat: a.stat, direction: a.direction, line: a.line,
       estimate: a.estimate, probability: a.probability,
@@ -118,6 +120,7 @@ function totalAlertToGroup(a) {
     maxProb: a.prob || 0, ids: [a.id],
     status: a.status || 'pending', acceptedAt: a.acceptedAt || 0,
     acceptedBookmaker: a.acceptedBookmaker || null,
+    probDropWarning: a.probDropWarning || false, currentProbability: a.currentProbability ?? null,
   };
 }
 
@@ -477,6 +480,12 @@ function AlertCard({ group, playerStats, onDismiss }) {
           <span style={{ fontSize: 10, fontWeight: 700, color: bkColor, flexShrink: 0 }}>{acceptedOdds.toFixed(2)}</span>
         )}
         <span style={{ fontSize: 10, fontWeight: 800, color: '#60a5fa', minWidth: 28, textAlign: 'right' }}>{group.maxProb}%</span>
+        {group.probDropWarning && (
+          <span
+            title={`Recalculé depuis l'acceptation : ${group.currentProbability}% (était ${group.maxProb}%)`}
+            style={{ fontSize: 10, fontWeight: 800, color: '#f87171', flexShrink: 0 }}
+          >⚠ {group.currentProbability}%</span>
+        )}
         <button
           onClick={e => { e.stopPropagation(); onDismiss(group.ids, group); }}
           style={{ background: 'none', border: 'none', color: 'var(--text-dim)', cursor: 'pointer', fontSize: 14, padding: '0 0 0 4px', lineHeight: 1 }}
