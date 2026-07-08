@@ -8735,12 +8735,15 @@ async function bgFetchEUGamelog(playerId, league, base) {
   } catch { return normalize(_glPersist[`eu_${playerId}`]?.games || []); }
 }
 
-// Défense par poste — ligues EU api-sports.io (BBL/Lega A, LNB si un jour réactivée). Même
-// principe que getWNBADefByPos (8 juillet 2026) : les gamelogs adverses (bballPlayerGamelog, déjà
-// fetchés/cachés pour les props) contiennent déjà pts/reb/ast/tpm + le nom complet de l'adversaire
-// par match — jamais agrégés par poste jusqu'ici. ACB volontairement exclue : son gamelog identifie
-// l'adversaire par un nom abrégé (ex: "Dreamland GC") qu'il faudrait recouper à la main avec les 18
-// IDs d'équipe (ACB_TEAM_MAP) — pas fait, risque de mauvais raccroché silencieux sinon.
+// Défense par poste — ligues EU via api-sports.io (ACB/BBL/Lega A, LNB si un jour réactivée).
+// Même principe que getWNBADefByPos (8 juillet 2026) : les gamelogs adverses (bballPlayerGamelog,
+// déjà fetchés/cachés pour les props) contiennent déjà pts/reb/ast/tpm + le nom complet de
+// l'adversaire par match — jamais agrégés par poste jusqu'ici. Fonctionne aussi pour ACB : bien
+// que le roster/gamelog *principal* d'ACB vienne du scraping acb.com (plus complet, avec
+// steals/blocks/turnovers — cf. /api/euro/acb/players/:teamId), cette fonction-ci passe par
+// bballPlayerGamelog (api-sports.io) comme les autres ligues, qui couvre aussi l'ACB avec les
+// mêmes IDs numériques propres — aucun souci de nom abrégé à recouper à la main (ça n'aurait été
+// un problème que si on avait réutilisé le scraping acb.com, ce qui n'est pas le cas ici).
 async function getEuroDefByPos(league) {
   const cfg = EURO_LEAGUES[league];
   if (!cfg) return { teamDefByPosById: {}, leagueAvg: {} };
@@ -8827,9 +8830,9 @@ async function runEUPropsAlerts(newAlerts, PORT) {
 
   for (const league of LEAGUES_EU) {
     try {
-      // Défense par poste (reb/ast/tpm dédiés, 8 juillet 2026) — ACB exclue volontairement, cf.
-      // commentaire de getEuroDefByPos. Un seul appel par ligue par cycle, caché 6h.
-      const euDefByPos = league !== 'acb' ? await getEuroDefByPos(league).catch(() => null) : null;
+      // Défense par poste (reb/ast/tpm dédiés, 8 juillet 2026) — un seul appel par ligue par
+      // cycle, caché 6h. Fonctionne pour acb/bbl/legaa (cf. commentaire de getEuroDefByPos).
+      const euDefByPos = await getEuroDefByPos(league).catch(() => null);
 
       // Auto-fetch scoreboard si cache vide
       if (!_euroCache[`euro_sb_${league}`]?.data) {
