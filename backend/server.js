@@ -8529,7 +8529,7 @@ function calcKeyPlayerOutPenalty(players) {
 
 const EU_PO_KEYWORDS = /quarter.final|semi.final|final|playoff|po round|round of/i;
 
-function computeEUEstimate(player, isHome, oppGames, myGames, gamelogs, gameDate, league, round = '', oppName = '', oppDefByPos = null) {
+function computeEUEstimate(player, isHome, oppGames, myGames, gamelogs, gameDate, league, round = '', oppName = '', oppDefByPos = null, redistributionFactor = 1.0) {
   const season = player.stats;
   if (!season?.pts || season.pts < 2) return null;
   const leagueAvg = EU_LEAGUE_CONST_BG[league] || 83;
@@ -8693,11 +8693,29 @@ function computeEUEstimate(player, isHome, oppGames, myGames, gamelogs, gameDate
   const volAnchor = getShotVolumeAnchor(gl, 'points', 'minutes');
   const estimated = volAnchor != null ? estimatedRaw * 0.85 + volAnchor * 0.15 : estimatedRaw;
 
+  // Plafond combiné redistribution × ajustement matchup (8 juillet 2026) — même correctif que
+  // compute.js/computeEstimate (NBA/WNBA), cf. capRedistStack. multPts/multReb/multAst/multTpm
+  // sont déjà plafonnés individuellement (≤1.35/1.25), mais rien n'empêchait leur produit avec
+  // redistributionFactor (≤1.15, coéquipier Out) de dépasser ces plafonds — jusqu'à ~1.55/1.44.
+  // Ne s'applique QUE quand la redistribution est active — zéro effet sinon.
+  const COMBINED_BOOST_CAP_EU = 1.40; // vs plafond individuel pts 1.35
+  const COMBINED_BOOST_CAP_EU_OTHER = 1.32; // vs plafond individuel reb/ast/tpm 1.25
+  const capRedistStackEU = (finalVal, baseVal, cap) => {
+    if (redistributionFactor <= 1.0) return finalVal;
+    const boosted = finalVal * redistributionFactor;
+    const maxAllowed = baseVal * cap;
+    return boosted > maxAllowed ? maxAllowed : boosted;
+  };
+  const ptsFinal = capRedistStackEU(estimated, basePts, COMBINED_BOOST_CAP_EU);
+  const rebFinal = capRedistStackEU(estReb, baseReb, COMBINED_BOOST_CAP_EU_OTHER);
+  const astFinal = capRedistStackEU(estAst, baseAst, COMBINED_BOOST_CAP_EU_OTHER);
+  const tpmFinal = capRedistStackEU(estTpm, baseTpm, COMBINED_BOOST_CAP_EU_OTHER);
+
   return {
-    pts: Math.max(0, +estimated.toFixed(1)),
-    reb: Math.max(0, +estReb.toFixed(1)),
-    ast: Math.max(0, +estAst.toFixed(1)),
-    tpm: Math.max(0, +estTpm.toFixed(1)),
+    pts: Math.max(0, +ptsFinal.toFixed(1)),
+    reb: Math.max(0, +rebFinal.toFixed(1)),
+    ast: Math.max(0, +astFinal.toFixed(1)),
+    tpm: Math.max(0, +tpmFinal.toFixed(1)),
     // Écart de la projection par rapport à la moyenne saison — sert à élargir le std dans probAtLeast
     deviation: { pts: Math.abs(multPts - 1), reb: Math.abs(multReb - 1), ast: Math.abs(multAst - 1), tpm: Math.abs(multTpm - 1) },
   };
@@ -8967,10 +8985,10 @@ async function runEUPropsAlerts(newAlerts, PORT) {
                 // Backfill tpm sur les snapshots gelés avant l'ajout du 10 juin 2026 (pts/reb/ast restent figés)
                 if (snapEU.tpm == null) {
                   const oppNameBf = isHome ? game.away.name : game.home.name;
-                  const tpmEst = computeEUEstimate(rosterP, isHome, oppGames, myGames, gamelogs, game.date, league, game.round, oppNameBf, oppDefByPosEU);
+                  const redistFactorBf = isHome ? (homeRedist[String(rosterP.id)] ?? 1) : (awayRedist[String(rosterP.id)] ?? 1);
+                  const tpmEst = computeEUEstimate(rosterP, isHome, oppGames, myGames, gamelogs, game.date, league, game.round, oppNameBf, oppDefByPosEU, redistFactorBf);
                   if (tpmEst?.tpm != null) {
-                    const redistFactorBf = isHome ? (homeRedist[String(rosterP.id)] ?? 1) : (awayRedist[String(rosterP.id)] ?? 1);
-                    snapEU.tpm = redistFactorBf > 1 ? +(tpmEst.tpm * redistFactorBf).toFixed(1) : tpmEst.tpm;
+                    snapEU.tpm = tpmEst.tpm;
                     snapEU.deviation = { ...(snapEU.deviation || {}), tpm: tpmEst.deviation?.tpm ?? 0 };
                     _saveSnapshot();
                   }
@@ -8981,17 +8999,9 @@ async function runEUPropsAlerts(newAlerts, PORT) {
             }
 
             const oppName = isHome ? game.away.name : game.home.name;
-            const est = computeEUEstimate(rosterP, isHome, oppGames, myGames, gamelogs, game.date, league, game.round, oppName, oppDefByPosEU);
-            if (!est) continue;
-
-            // Redist OUT
             const redistFactor = isHome ? (homeRedist[String(rosterP.id)] ?? 1) : (awayRedist[String(rosterP.id)] ?? 1);
-            if (redistFactor > 1) {
-              est.pts = +(est.pts * redistFactor).toFixed(1);
-              est.reb = +(est.reb * redistFactor).toFixed(1);
-              est.ast = +(est.ast * redistFactor).toFixed(1);
-              est.tpm = est.tpm != null ? +(est.tpm * redistFactor).toFixed(1) : est.tpm;
-            }
+            const est = computeEUEstimate(rosterP, isHome, oppGames, myGames, gamelogs, game.date, league, game.round, oppName, oppDefByPosEU, redistFactor);
+            if (!est) continue;
             estimatesMap[rosterP.id] = { est, isHome, gamelogs };
 
             if (new Date(game.date) > Date.now()) {
