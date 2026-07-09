@@ -3500,6 +3500,17 @@ export default function BasketballDetailPage() {
   // ne vérifiaient pas la cote minimum — même classe de bug déjà corrigée sur les props le 8 juin).
   useEffect(() => {
     if (!gameSchedules || !fixture) return;
+    // /api/wnba/players renvoie toujours injury:null (ESPN WNBA jugé pas fiable, cf. CLAUDE.md) —
+    // sans ce patch RotoWire (déjà fetché pour l'affichage des badges), la pénalité Out et le
+    // garde-fou Q/GTD ne pouvaient jamais se déclencher ici (8 juillet 2026, même bug que côté
+    // alertes en arrière-plan).
+    const patchWNBA = arr => !isWNBA ? (arr || []) : (arr || []).map(p => {
+      const hit = Object.entries(outerInjuryData).find(([n]) => n === p.name || n.toLowerCase() === p.name.toLowerCase());
+      return hit ? { ...p, injury: hit[1].status } : p;
+    });
+    const patchedHomePlayers = patchWNBA(homePlayers);
+    const patchedAwayPlayers = patchWNBA(awayPlayers);
+
     const bks = bballOdds?.markets?.totals?.bookmakers ?? {};
     const refBk = ['unibet', 'betclic'].find(b => bks[b]?.line);
     const refTotal = refBk ? bks[refBk].line : null;
@@ -3510,6 +3521,7 @@ export default function BasketballDetailPage() {
           homeGames: gameSchedules.home, awayGames: gameSchedules.away,
           gameDate: fixture.date, round: fixture.round, league: fixture.league, refTotal,
           awayTeamKey: isEuro ? fixture.away.id : fixture.away.short,
+          homePlayers: patchedHomePlayers, awayPlayers: patchedAwayPlayers,
         }),
       }).then(r => r.json()).then(d => setGameTotalEstimate(d?.error ? null : { ...d, refBk })).catch(() => setGameTotalEstimate(null));
     } else {
@@ -3523,10 +3535,10 @@ export default function BasketballDetailPage() {
       body: JSON.stringify({
         homeGames: gameSchedules.home, awayGames: gameSchedules.away,
         gameDate: fixture.date, round: fixture.round, league: fixture.league,
-        homePlayers, awayPlayers,
+        homePlayers: patchedHomePlayers, awayPlayers: patchedAwayPlayers,
       }),
     }).then(r => r.json()).then(d => setResultEstimate(d?.error ? null : d)).catch(() => setResultEstimate(null));
-  }, [gameSchedules, bballOdds]);
+  }, [gameSchedules, bballOdds, outerInjuryData]);
 
   // Reset + fetch cotes quand le match change
   useEffect(() => {

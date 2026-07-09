@@ -255,6 +255,7 @@ export async function syncBackgroundAlerts() {
             winamaxOdds: a.winamaxOdds ?? pendingMatch.winamaxOdds,
             probability: a.probability ?? pendingMatch.probability,
             estimate:    a.estimate    ?? pendingMatch.estimate,
+            teammateOverlap: a.teammateOverlap ?? pendingMatch.teammateOverlap ?? null,
           };
           changed = true;
         }

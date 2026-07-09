@@ -90,6 +90,7 @@ function groupAlerts(raw) {
       acceptedUnibetOdds: a.acceptedUnibetOdds ?? null,
       acceptedBetclicOdds: a.acceptedBetclicOdds ?? null,
       acceptedWinamaxOdds: a.acceptedWinamaxOdds ?? null,
+      deviation: a.deviation ?? null, deviationCap: a.deviationCap ?? null,
     };
     if (!map[key].stats.find(s => `${s.stat}__${s.direction}` === `${a.stat}__${a.direction}`))
       map[key].stats.push(entry);
@@ -508,6 +509,18 @@ function AlertCard({ group, playerStats, onDismiss }) {
         {acceptedOdds && bk && (
           <span style={{ fontSize: 10, fontWeight: 700, color: bkColor, flexShrink: 0 }}>{acceptedOdds.toFixed(2)}</span>
         )}
+        {s?.deviation != null && s?.deviationCap > 0 && (() => {
+          const ratio = Math.min(1, s.deviation / s.deviationCap);
+          const gaugeColor = ratio > 0.66 ? '#f87171' : ratio > 0.33 ? '#fbbf24' : '#4ade80';
+          return (
+            <div
+              title={`Boost du modèle : ${Math.round(s.deviation * 100)}%/${Math.round(s.deviationCap * 100)}% du plafond — à quel point la projection s'écarte de la forme brute du joueur (plus proche du bout, plus le pari empile d'hypothèses)`}
+              style={{ flex: '0 0 28px', height: 5, borderRadius: 3, background: 'rgba(148,163,184,0.2)', overflow: 'hidden' }}
+            >
+              <div style={{ width: `${ratio * 100}%`, height: '100%', background: gaugeColor, borderRadius: 3 }} />
+            </div>
+          );
+        })()}
         <span style={{ fontSize: 10, fontWeight: 800, color: '#60a5fa', minWidth: 28, textAlign: 'right' }}>{group.maxProb}%</span>
         {group.probDropWarning && (
           <span

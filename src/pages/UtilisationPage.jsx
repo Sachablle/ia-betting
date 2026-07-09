@@ -198,10 +198,10 @@ P(Over) = 1 - studentT4CDF((line - estimated) / std)</div>
 <tr><td><strong>Sport</strong></td><td colspan="3">Basketball</td></tr>
 <tr><td><strong>Catégories</strong></td><td>Points, Rebonds, Passes, 3pts</td><td>Points cumulés du match</td><td>Victoire équipe</td></tr>
 <tr><td><strong>Seuil de confiance</strong></td><td>NBA/ACB/EU : 80% (spécialiste : 75%) · WNBA : pts/reb/tpm 77%, ast 80% (spécialiste toutes stats : 72%)</td><td>80% (jamais affiché au-dessus de 88%)</td><td>75%</td></tr>
-<tr><td><strong>Modèle</strong></td><td>Projection joueuse (EWA, forme, adversaire, blessures) → Student-t</td><td>Pace, momentum, repos, densité, playoffs, ancrage historique (40% modèle / 60% moyenne réelle)</td><td>Force nette (pts marqués − encaissés), repos, avantage terrain, pénalité blessure clé, playoffs → Student-t</td></tr>
+<tr><td><strong>Modèle</strong></td><td>Projection joueuse (EWA, forme, adversaire, blessures) → Student-t</td><td>Pace, momentum, repos, densité, playoffs, ancrage historique (40% modèle / 60% moyenne réelle), pénalité absence titulaire clé (8 juillet 2026)</td><td>Force nette (pts marqués − encaissés), repos, avantage terrain, pénalité blessure clé, playoffs → Student-t</td></tr>
 <tr><td><strong>Cote minimum</strong></td><td colspan="2">1.60 (Unibet/Betclic)</td><td>1.50 (Unibet/Betclic)</td></tr>
 <tr><td><strong>Marge moyenne saison ↔ ligne</strong></td><td>NBA/ACB/EU : pts 0.6 / reb 0.3 / ast 0.25 / 3pts 0.15 · WNBA : pts 0.4 / reb 0.2 / ast 0.25 (inchangé) / 3pts 0.10</td><td>—</td><td>—</td></tr>
-<tr><td><strong>Garde-fou spécifique</strong></td><td>Min. 3pts/match : NBA/ACB/EU ≥ 1.5 moy. saison · WNBA ≥ 1.2 moy. saison</td><td>Bloqué si joueur clé (≥15pts) incertain, ≤2h30 du match</td><td>—</td></tr>
+<tr><td><strong>Garde-fou spécifique</strong></td><td>Min. 3pts/match : NBA/ACB/EU ≥ 1.5 moy. saison · WNBA ≥ 1.2 moy. saison</td><td>Bloqué si joueur clé (≥15pts) incertain (Q/GTD), peu importe la distance au match (8 juillet 2026)</td><td>—</td></tr>
 <tr><td><strong>Edge minimum</strong></td><td>1.0 (2.0 si joueuse « franchise » sur Under : pts≥18/reb≥9/ast≥6/3pts≥3)</td><td>Filtre rapide 5% (NBA/WNBA) ou 4% (EU) avant le modèle complet</td><td>—</td></tr>
 <tr><td><strong>Ligues couvertes</strong></td><td>NBA, WNBA, ACB, LNB, BBL, Lega A</td><td>NBA, WNBA, ACB, BBL, Lega A (pas LNB)</td><td>NBA, WNBA, ACB, BBL, Lega A (pas LNB)</td></tr>
 <tr><td><strong>Cotes auto-chargées</strong></td><td>Oui depuis toujours</td><td>Oui depuis le 22 juin (avant : dépendait d'une visite de page)</td><td>Oui depuis le 22 juin</td></tr>
@@ -1370,9 +1370,9 @@ export default function UtilisationPage() {
             <tbody>
               <tr><td><strong>Ce que ça prédit</strong></td><td>Points cumulés du match (Over/Under une ligne)</td><td>Quelle équipe gagne</td></tr>
               <tr><td><strong>Seuil de confiance</strong></td><td>80% (jamais affiché au-dessus de 88%)</td><td>80%</td></tr>
-              <tr><td><strong>Modèle</strong></td><td>Pace, momentum, repos, densité, playoffs, ancrage historique (40% modèle / 60% moyenne réelle des 2 équipes)</td><td>Force nette (pts marqués − encaissés), repos, avantage terrain (+2.5 pts), pénalité blessure clé, playoffs</td></tr>
+              <tr><td><strong>Modèle</strong></td><td>Pace, momentum, repos, densité, playoffs, ancrage historique (40% modèle / 60% moyenne réelle des 2 équipes), pénalité absence titulaire clé (8 juillet 2026)</td><td>Force nette (pts marqués − encaissés), repos, avantage terrain (+2.5 pts), pénalité blessure clé, playoffs</td></tr>
               <tr><td><strong>Cote minimum</strong></td><td>1.50 (Unibet/Betclic — Winamax exclu du calcul depuis le 22 juin, reste affiché)</td><td>1.50 (idem)</td></tr>
-              <tr><td><strong>Garde-fou spécifique</strong></td><td>Bloqué si joueur clé (≥15 pts/match) incertain, ≤2h30 du match</td><td>—</td></tr>
+              <tr><td><strong>Garde-fou spécifique</strong></td><td>Bloqué si joueur clé (≥15 pts/match) incertain (Q/GTD), peu importe la distance au match (8 juillet 2026)</td><td>Idem — Q/GTD bloque aussi (8 juillet 2026)</td></tr>
               <tr><td><strong>1 alerte par match ?</strong></td><td>Oui</td><td>Oui (mathématiquement, dom + ext ne peuvent pas dépasser 80% en même temps)</td></tr>
             </tbody>
           </table>

@@ -4729,17 +4729,22 @@ app.get('/api/basketball/odds', async (req, res) => {
 // en arrière-plan. Exposé pour que les pages détail (MatchDetailPage-like) affichent EXACTEMENT
 // le même chiffre que l'alerte, au lieu d'une formule locale différente (19 juin 2026 — cf
 // l'incohérence trouvée entre EarlyWin backend et le widget "Modèle 1X2" côté frontend).
-app.post('/api/basketball/result', (req, res) => {
+app.post('/api/basketball/result', async (req, res) => {
   const { homeGames, awayGames, gameDate, round, league, homePlayers, awayPlayers } = req.body || {};
   if (!homeGames?.length || !awayGames?.length || !gameDate) return res.status(400).json({ error: 'homeGames/awayGames/gameDate requis' });
 
   const isWNBA = league === 'wnba';
-  const scaleF = (league && league !== 'nba' && league !== 'wnba') ? NBA_REF_BG / (EU_LEAGUE_CONST_BG[league] || NBA_REF_BG) : 1;
+  const isEU = league && league !== 'nba' && league !== 'wnba';
+  const scaleF = isEU ? NBA_REF_BG / (EU_LEAGUE_CONST_BG[league] || NBA_REF_BG) : 1;
   const scaleGames   = arr => scaleF === 1 ? arr : arr.map(g => ({ ...g, ptsScored: (g.ptsScored || 0) * scaleF, ptsAllowed: (g.ptsAllowed || 0) * scaleF }));
   const scalePlayers = arr => scaleF === 1 ? (arr || []) : (arr || []).map(p => ({ ...p, stats: { ...p.stats, pts: (p.stats?.pts || 0) * scaleF } }));
 
-  const homeOutPenalty = calcKeyPlayerOutPenalty(scalePlayers(homePlayers));
-  const awayOutPenalty = calcKeyPlayerOutPenalty(scalePlayers(awayPlayers));
+  const gamelogFn = isWNBA ? bgFetchWNBAGamelog : isEU ? (id => bgFetchEUGamelog(id, league, `http://localhost:${process.env.PORT || 3001}`)) : bgFetchGamelog;
+  const [homePlayersF, awayPlayersF] = await Promise.all([
+    filterSeasonLongOut(homePlayers, gamelogFn), filterSeasonLongOut(awayPlayers, gamelogFn),
+  ]);
+  const homeOutPenalty = calcKeyPlayerOutPenalty(scalePlayers(homePlayersF));
+  const awayOutPenalty = calcKeyPlayerOutPenalty(scalePlayers(awayPlayersF));
 
   const result = computeTeamWinProb({
     homeGames: scaleGames(homeGames), awayGames: scaleGames(awayGames),
@@ -4755,8 +4760,8 @@ app.post('/api/basketball/result', (req, res) => {
 // Source unique Total O/U — même modèle (computeGameTotalFull) que les alertes game_total,
 // pour que le widget "Modèle O/U" de la page détail affiche exactement le même chiffre que
 // l'alerte (remplace l'ancien calcul local computeGameTotal du frontend, 22 juin 2026).
-app.post('/api/basketball/total', (req, res) => {
-  const { homeGames, awayGames, gameDate, round, league, refTotal, awayTeamKey } = req.body || {};
+app.post('/api/basketball/total', async (req, res) => {
+  const { homeGames, awayGames, gameDate, round, league, refTotal, awayTeamKey, homePlayers, awayPlayers } = req.body || {};
   if (!homeGames?.length || !awayGames?.length || !gameDate || !refTotal) return res.status(400).json({ error: 'homeGames/awayGames/gameDate/refTotal requis' });
 
   const isWNBA = league === 'wnba';
@@ -4772,7 +4777,18 @@ app.post('/api/basketball/total', (req, res) => {
     String(hg.opponentId) === String(awayTeamKey) || normAbbr(hg.opponentAbbr) === normAbbr(awayTeamKey)
   ) : [];
 
-  const full = computeGameTotalFull({ homeGames, awayGames, avgPtsAllowed, ouBaseline, gameDate, round: round || '', refTotal, isWNBA, h2hGames });
+  // Pénalité absence titulaire clé — même mécanisme que /api/basketball/result (8 juillet 2026),
+  // pour que ce widget affiche exactement le même chiffre que l'alerte Total.
+  const scaleF = isEU ? NBA_REF_BG / (EU_LEAGUE_CONST_BG[league] || NBA_REF_BG) : 1;
+  const scalePlayers = arr => scaleF === 1 ? (arr || []) : (arr || []).map(p => ({ ...p, stats: { ...p.stats, pts: (p.stats?.pts || 0) * scaleF } }));
+  const gamelogFn = isWNBA ? bgFetchWNBAGamelog : isEU ? (id => bgFetchEUGamelog(id, league, `http://localhost:${process.env.PORT || 3001}`)) : bgFetchGamelog;
+  const [homePlayersF, awayPlayersF] = await Promise.all([
+    filterSeasonLongOut(homePlayers, gamelogFn), filterSeasonLongOut(awayPlayers, gamelogFn),
+  ]);
+  const homeOutPenalty = calcKeyPlayerOutPenalty(scalePlayers(homePlayersF));
+  const awayOutPenalty = calcKeyPlayerOutPenalty(scalePlayers(awayPlayersF));
+
+  const full = computeGameTotalFull({ homeGames, awayGames, avgPtsAllowed, ouBaseline, gameDate, round: round || '', refTotal, isWNBA, h2hGames, homeOutPenalty, awayOutPenalty });
   if (!full) return res.json({ error: 'insufficient data' });
   res.json({
     estimated: full.estimated, refTotal: full.refTotal, edge: full.edge, direction: full.direction, std: full.std,
@@ -8337,7 +8353,12 @@ function calcGameTotalStdBg(games, fallback = 12) {
 // Modèle complet : pace matchup, momentum, repos, densité calendrier, facteur playoffs,
 // ancre historique. `homeGames`/`awayGames` = schedules triés du plus récent au plus ancien
 // ({date, ptsScored, ptsAllowed, isHome}). `round` = '' (saison régulière) ou 'game' (playoffs).
-function computeGameTotalFull({ homeGames, awayGames, avgPtsAllowed, ouBaseline, gameDate, round, refTotal, isWNBA, h2hGames = [] }) {
+// `homeOutPenalty`/`awayOutPenalty` : points retirés au total si un titulaire clé est Out côté
+// concerné (0 si personne d'absent) — même pénalité que computeTeamWinProb (calcKeyPlayerOutPenalty),
+// calculée côté appelant à partir du roster. Un Out réduit le score de SON équipe, donc le total
+// combiné des deux équipes (8 juillet 2026 — avant ce fix, le Total ignorait totalement les absences,
+// y compris un Out confirmé comme A'ja Wilson).
+function computeGameTotalFull({ homeGames, awayGames, avgPtsAllowed, ouBaseline, gameDate, round, refTotal, isWNBA, h2hGames = [], homeOutPenalty = 0, awayOutPenalty = 0 }) {
   if (!homeGames?.length || !awayGames?.length) return null;
 
   const inPlayoffs = isPlayoffRound(round);
@@ -8426,7 +8447,12 @@ function computeGameTotalFull({ homeGames, awayGames, avgPtsAllowed, ouBaseline,
   const hAvgTotal = hEff.length >= 4 ? hEff.slice(0, Math.min(10, hEff.length)).reduce((s, g) => s + (g.ptsScored + g.ptsAllowed), 0) / Math.min(10, hEff.length) : null;
   const aAvgTotal = aEff.length >= 4 ? aEff.slice(0, Math.min(10, aEff.length)).reduce((s, g) => s + (g.ptsScored + g.ptsAllowed), 0) / Math.min(10, aEff.length) : null;
   const historicalAvg = hAvgTotal && aAvgTotal ? (hAvgTotal + aAvgTotal) / 2 : null;
-  const estimated = historicalAvg ? +(0.40 * rawEstimated + 0.60 * historicalAvg).toFixed(1) : +rawEstimated.toFixed(1);
+  const blended = historicalAvg ? (0.40 * rawEstimated + 0.60 * historicalAvg) : rawEstimated;
+
+  // Pénalité absence titulaire clé — appliquée après le blend modèle/historique (l'ancre
+  // historique ne "sait" pas qu'un titulaire est Out aujourd'hui), retirée directement du total
+  // combiné puisque les deux pénalités visent chacune le score de leur propre équipe.
+  const estimated = +(blended - homeOutPenalty - awayOutPenalty).toFixed(1);
 
   const edge = refTotal ? +((estimated - refTotal) / refTotal * 100).toFixed(1) : null;
 
@@ -8494,9 +8520,19 @@ function computeTeamWinProb({ homeGames, awayGames, gameDate, round, isWNBA = fa
   const awayDef = calcEWAbg(aEff, 'ptsAllowed', 8);
   if (!homeOff || !awayOff || !homeDef || !awayDef) return null;
 
-  // Rating net = ce que l'équipe marque en moyenne moins ce qu'elle concède (EWA récent)
-  let homeNet = homeOff - homeDef;
-  let awayNet = awayOff - awayDef;
+  // Rating net = ce que l'équipe marque en moyenne moins ce qu'elle concède (EWA récent, 8 matchs)
+  const homeNetEWA = homeOff - homeDef;
+  const awayNetEWA = awayOff - awayDef;
+
+  // Ancrage saison (9 juillet 2026) — computeGameTotalFull mélange déjà 40% modèle / 60% moyenne
+  // réelle pour éviter qu'une forme récente bruyante ne fasse dérailler l'estimation ; ce modèle-ci
+  // n'avait jamais ce garde-fou (100% EWA sur 8 matchs). Cas réel : Connecticut Sun (5-17, net saison
+  // -6) donné favori à 75% contre Minnesota Lynx (16-6, net saison +10.7) à cause d'une forme récente
+  // sur 8 matchs presque égale entre les deux — Minnesota a gagné de 6 comme l'annonçait la saison.
+  const homeNetSeason = hEff.length >= 5 ? calcAvgBg(hEff, 'ptsScored', hEff.length) - calcAvgBg(hEff, 'ptsAllowed', hEff.length) : null;
+  const awayNetSeason = aEff.length >= 5 ? calcAvgBg(aEff, 'ptsScored', aEff.length) - calcAvgBg(aEff, 'ptsAllowed', aEff.length) : null;
+  let homeNet = homeNetSeason != null ? 0.40 * homeNetEWA + 0.60 * homeNetSeason : homeNetEWA;
+  let awayNet = awayNetSeason != null ? 0.40 * awayNetEWA + 0.60 * awayNetSeason : awayNetEWA;
 
   // Repos / densité calendrier — mêmes facteurs que les props (compute.js), appliqués ici par équipe
   const homeRestF = getRestFactor(hEff, gameDate);
@@ -8525,6 +8561,37 @@ function calcKeyPlayerOutPenalty(players) {
   return (players || [])
     .filter(p => p.injury === 'Out' && (p.stats?.pts ?? 0) >= KEY_PLAYER_PTS)
     .reduce((s, p) => s + p.stats.pts * KEY_PLAYER_OUT_FACTOR, 0);
+}
+
+// Exclut de la pénalité Out les joueuses absentes depuis le DÉBUT de la saison (aucun match
+// joué) — leur absence est déjà dans la baseline de l'équipe (rating net calculé sur les vrais
+// matchs joués sans elles), une pénalité en plus double-compte. Même bug/cause que le fix du 18
+// juin sur computeRedist (cas réel : Napheesa Collier, out toute la saison pour opération des
+// chevilles, son "stats.pts" retombe sur sa moyenne de la saison passée faute de matchs cette
+// année — cf. fetchWNBAPlayerStats) — jamais étendu à calcKeyPlayerOutPenalty avant le 8 juillet,
+// a produit une alerte Résultat à 87,9%/edge 56,8% totalement fausse sur Minnesota Lynx.
+async function filterSeasonLongOut(players, gamelogFn) {
+  const outPlayers = (players || []).filter(p => p.injury === 'Out');
+  if (!outPlayers.length || !gamelogFn) return players || [];
+  const gamelogs = await Promise.all(outPlayers.map(p => gamelogFn(p.id).catch(() => [])));
+  const neverPlayed = new Set(outPlayers.filter((p, i) => !gamelogs[i]?.length).map(p => String(p.id)));
+  if (!neverPlayed.size) return players || [];
+  return (players || []).map(p => neverPlayed.has(String(p.id)) ? { ...p, injury: null } : p);
+}
+
+// bgFetchWNBARoster renvoie toujours injury:null (roster ESPN brut jugé pas fiable pour la WNBA,
+// cf. CLAUDE.md) — seule la section props patchait avec RotoWire, jamais Total ni Résultat (bug
+// trouvé le 8 juillet 2026 : ni la pénalité Out ni le garde-fou Q/GTD ne pouvaient donc jamais se
+// déclencher côté WNBA sur ces deux alertes). Si RotoWire échoue, fail-open comme la section props
+// existante (.catch(() => ({}))) : pas de statut détecté, le modèle tourne sans garde-fou, comme
+// avant ce fix — pas de panne bloquante en cascade.
+async function patchWNBARosterInjuries(players) {
+  const inj = await fetchRotoWireWNBAInjuries().catch(() => ({}));
+  if (!Object.keys(inj).length) return players || [];
+  return (players || []).map(p => {
+    const hit = Object.entries(inj).find(([n]) => n === p.name || n.toLowerCase() === p.name.toLowerCase());
+    return hit ? { ...p, injury: hit[1].status } : p;
+  });
 }
 
 const EU_PO_KEYWORDS = /quarter.final|semi.final|final|playoff|po round|round of/i;
@@ -9069,6 +9136,7 @@ async function runEUPropsAlerts(newAlerts, PORT) {
                 winamaxLine: wmLine?.line ?? null,
                 betclicLine: bcLine?.line ?? null,
                 injury: rosterP.injury || null,
+                deviation, deviationCap: stat === 'pts' ? 0.40 : 0.32,
                 savedAt: Date.now(),
                 ...(_euConsistent ? { consistentStat: true } : {}),
               };
@@ -9404,7 +9472,7 @@ async function generateBackgroundAlerts() {
     const newAlerts = [];
 
     // Helper : construit la base d'une alerte NBA
-    const baseAlert = (player, game, isHome, stat, line, estVal, teamHasQ = null) => ({
+    const baseAlert = (player, game, isHome, stat, line, estVal, teamHasQ = null, deviation = 0) => ({
       type: 'player_prop', league: 'nba', eventId: game.id,
       home: game.home.name, away: game.away.name,
       homeShort: game.home.short, awayShort: game.away.short,
@@ -9416,6 +9484,10 @@ async function generateBackgroundAlerts() {
       pinnacleOdds: null,
       injury: player.injury || null,
       ...(teamHasQ?.length ? { teamHasQ } : {}),
+      // Écart au neutre (redistribution × ajustement matchup) vs plafond combiné — pour la jauge
+      // "boost du modèle" côté carte d'alerte (9 juillet 2026). Plafond 0.30 = COMBINED_BOOST_CAP
+      // (1.30) de computeEstimate/compute.js, dupliqué ici en dur (pas exporté par compute.js).
+      deviation, deviationCap: 0.30,
       savedAt: Date.now(),
     });
 
@@ -9619,7 +9691,7 @@ async function generateBackgroundAlerts() {
               const _frozenTpmVolOk = stat !== 'tpm' || (_frozenSeasonAvg??0) >= TPM_MIN_SEASON_AVG;
               const _frozenOverOk = !playerIsQ && pOver >= _frozenFloor && _frozenEdge >= minEdgeFor(stat, 'over', _frozenSeasonAvg) && _frozenMarginOverOk && _frozenTpmVolOk;
               if (_frozenOverOk && hasValidOverOdds(refLine.over??null, wmLine?.over??null, bcLine?.over??null)) {
-                newAlerts.push({ ...baseAlert(player, game, isHome, stat, refLine.line, estVal, teamQNames), id:`${game.id}_${player.id}_${stat}_over_${refLine.line}`, direction:'over', probability:Math.round((disp?.pOver ?? pOver)*100), unibetOdds:capOdds(refLine.over??null), winamaxOdds:capOdds(wmLine?.over??null), betclicOdds:capOdds(bcLine?.over??null) });
+                newAlerts.push({ ...baseAlert(player, game, isHome, stat, refLine.line, estVal, teamQNames, deviation), id:`${game.id}_${player.id}_${stat}_over_${refLine.line}`, direction:'over', probability:Math.round((disp?.pOver ?? pOver)*100), unibetOdds:capOdds(refLine.over??null), winamaxOdds:capOdds(wmLine?.over??null), betclicOdds:capOdds(bcLine?.over??null) });
               } else if (_frozenOverOk) {
                 const alt = findLadderAlternative({ direction: 'over', refLineValue: refLine.line, bks, stat,
                   computeProbAtLine: line => displayProb(adjEstVal, std, null, gamelog, line, stat, deviation, game.date, lastGameStr)?.pOver ?? Math.max(0, probAtLeast(adjEstVal, std, Math.ceil(line), stat, deviation, false, gamelog.length)),
@@ -9627,13 +9699,13 @@ async function generateBackgroundAlerts() {
                     const marginOk = _frozenSeasonAvg == null || _frozenSeasonAvg >= line + SEASON_MARGIN[stat];
                     return p >= _frozenFloor && Math.abs(estVal - line) >= minEdgeFor(stat, 'over', _frozenSeasonAvg) && marginOk && _frozenTpmVolOk;
                   } });
-                if (alt) newAlerts.push({ ...baseAlert(player, game, isHome, stat, alt.line, estVal, teamQNames), id:`${game.id}_${player.id}_${stat}_over_${alt.line}`, direction:'over', probability:Math.round(alt.p*100), unibetOdds: alt.book==='unibet'?capOdds(alt.odds):null, winamaxOdds:null, betclicOdds: alt.book==='betclic'?capOdds(alt.odds):null, lineSource:'ladder' });
+                if (alt) newAlerts.push({ ...baseAlert(player, game, isHome, stat, alt.line, estVal, teamQNames, deviation), id:`${game.id}_${player.id}_${stat}_over_${alt.line}`, direction:'over', probability:Math.round(alt.p*100), unibetOdds: alt.book==='unibet'?capOdds(alt.odds):null, winamaxOdds:null, betclicOdds: alt.book==='betclic'?capOdds(alt.odds):null, lineSource:'ladder' });
               } else if (!_frozenMarginOverOk && pOver>=_frozenFloor) { _bgLog.push(`block NBA ${stat} over ${player.name}: moy saison ${(_frozenSeasonAvg??0).toFixed(1)} < ligne ${refLine.line} + marge ${SEASON_MARGIN[stat]}`); }
               else if (!_frozenTpmVolOk && pOver>=_frozenFloor) { _bgLog.push(`block NBA tpm over ${player.name}: moy saison ${(_frozenSeasonAvg??0).toFixed(1)} < ${TPM_MIN_SEASON_AVG}`); }
               else {
                 const _frozenUnderOk = !teamQNames?.length && pUnder >= _frozenFloor && _frozenEdge >= minEdgeFor(stat, 'under', _frozenSeasonAvg) && _frozenMarginUnderOk;
                 if (_frozenUnderOk && hasValidUnderOdds(refLine.under??null, wmLine?.under??null, bcLine?.under??null)) {
-                  newAlerts.push({ ...baseAlert(player, game, isHome, stat, refLine.line, estVal, teamQNames), id:`${game.id}_${player.id}_${stat}_under_${refLine.line}`, direction:'under', probability:Math.round((disp?.pUnder ?? pUnder)*100), unibetOdds:capUnderOdds(refLine.under??null), winamaxOdds:capUnderOdds(wmLine?.under??null), betclicOdds:capUnderOdds(bcLine?.under??null), ...(playerIsQ?{playerIsQ:true}:{}) });
+                  newAlerts.push({ ...baseAlert(player, game, isHome, stat, refLine.line, estVal, teamQNames, deviation), id:`${game.id}_${player.id}_${stat}_under_${refLine.line}`, direction:'under', probability:Math.round((disp?.pUnder ?? pUnder)*100), unibetOdds:capUnderOdds(refLine.under??null), winamaxOdds:capUnderOdds(wmLine?.under??null), betclicOdds:capUnderOdds(bcLine?.under??null), ...(playerIsQ?{playerIsQ:true}:{}) });
                 } else if (_frozenUnderOk) {
                   const alt = findLadderAlternative({ direction: 'under', refLineValue: refLine.line, bks, stat,
                     computeProbAtLine: line => displayProb(adjEstVal, std, null, gamelog, line, stat, deviation, game.date, lastGameStr)?.pUnder ?? Math.max(0, 1 - probAtLeast(adjEstVal, std, Math.floor(line) + 1, stat, deviation, false, gamelog.length)),
@@ -9641,7 +9713,7 @@ async function generateBackgroundAlerts() {
                       const marginOk = _frozenSeasonAvg == null || _frozenSeasonAvg <= line - SEASON_MARGIN[stat];
                       return p >= _frozenFloor && Math.abs(estVal - line) >= minEdgeFor(stat, 'under', _frozenSeasonAvg) && marginOk;
                     } });
-                  if (alt) newAlerts.push({ ...baseAlert(player, game, isHome, stat, alt.line, estVal, teamQNames), id:`${game.id}_${player.id}_${stat}_under_${alt.line}`, direction:'under', probability:Math.round(alt.p*100), unibetOdds: alt.book==='unibet'?capUnderOdds(alt.odds):null, winamaxOdds:null, betclicOdds: alt.book==='betclic'?capUnderOdds(alt.odds):null, lineSource:'ladder', ...(playerIsQ?{playerIsQ:true}:{}) });
+                  if (alt) newAlerts.push({ ...baseAlert(player, game, isHome, stat, alt.line, estVal, teamQNames, deviation), id:`${game.id}_${player.id}_${stat}_under_${alt.line}`, direction:'under', probability:Math.round(alt.p*100), unibetOdds: alt.book==='unibet'?capUnderOdds(alt.odds):null, winamaxOdds:null, betclicOdds: alt.book==='betclic'?capUnderOdds(alt.odds):null, lineSource:'ladder', ...(playerIsQ?{playerIsQ:true}:{}) });
                 } else if (!_frozenMarginUnderOk && pUnder>=_frozenFloor) { _bgLog.push(`block NBA ${stat} under ${player.name}: moy saison ${(_frozenSeasonAvg??0).toFixed(1)} > ligne ${refLine.line} - marge ${SEASON_MARGIN[stat]}`); }
               }
               refreshOrDropPendingProp(newAlerts, game.id, player.name, stat, {
@@ -9733,6 +9805,7 @@ async function generateBackgroundAlerts() {
               injury:       player.injury || null,
               ...(teamQNames?.length ? { teamHasQ: teamQNames } : {}),
               ...(playerIsQ ? { playerIsQ: true } : {}),
+              deviation, deviationCap: 0.30,
               savedAt:      Date.now(),
             };
             // Bloquer Under si L2 propres (min≥15) sont toutes > ligne (joueur en feu)
@@ -9983,7 +10056,7 @@ async function generateBackgroundAlerts() {
                     if (!snap.probs) snap.probs = {};
                     snap.probs[stat] = { pOver: +((disp?.pOver ?? pOver)).toFixed(3), pUnder: +((disp?.pUnder ?? pUnder)).toFixed(3), line: refLine.line, ubOver: refLine.over??null, bcOver: bcLine?.over??null, wmOver: wmLine?.over??null, ubUnder: refLine.under??null, bcUnder: bcLine?.under??null, wmUnder: wmLine?.under??null };
                   }
-                  const base = { type:'player_prop', league:'wnba', eventId:game.id, home:game.home.name, away:game.away.name, homeShort:game.home.short, awayShort:game.away.short, homeTeam:game.home.name, awayTeam:game.away.name, player:player.name, team:isHome?game.home.short:game.away.short, fixture:`${game.home.short} vs ${game.away.short}`, round:'', fixtureDate:game.date, stat, line:refLine.line, estimate:estVal, pinnacleOdds:null, injury:player.injury||null, ...(teamQNamesWNBA?.length?{teamHasQ:teamQNamesWNBA}:{}), ...(playerIsQWNBA?{playerIsQ:true}:{}), savedAt:Date.now() };
+                  const base = { type:'player_prop', league:'wnba', eventId:game.id, home:game.home.name, away:game.away.name, homeShort:game.home.short, awayShort:game.away.short, homeTeam:game.home.name, awayTeam:game.away.name, player:player.name, team:isHome?game.home.short:game.away.short, fixture:`${game.home.short} vs ${game.away.short}`, round:'', fixtureDate:game.date, stat, line:refLine.line, estimate:estVal, pinnacleOdds:null, injury:player.injury||null, ...(teamQNamesWNBA?.length?{teamHasQ:teamQNamesWNBA}:{}), ...(playerIsQWNBA?{playerIsQ:true}:{}), deviation: snap.deviation?.[stat] ?? 0, deviationCap: 0.30, savedAt:Date.now() };
                   const _wnbaFrozenStarter = myStartersWNBA.has(String(player.id));
                   // Plancher abaissé à 72% si la joueuse est "spécialiste" de cette stat — voir isConsistentStat (compute.js)
                   const _wnbaFrozenFloor = isConsistentStat(gamelog, stat) ? WNBA_SPECIALIST_FLOOR : (_wnbaFrozenStarter ? WNBA_ALERT_FLOOR[stat] : WNBA_ALERT_FLOOR_BENCH[stat]);
@@ -10114,6 +10187,7 @@ async function generateBackgroundAlerts() {
               injury:       player.injury || null,
               ...(teamQNamesWNBA?.length ? { teamHasQ: teamQNamesWNBA } : {}),
               ...(playerIsQWNBA ? { playerIsQ: true } : {}),
+              deviation, deviationCap: 0.30,
               savedAt:      Date.now(),
             };
             // Bloquer Under si L2 propres (min≥15) sont toutes > ligne (joueur en feu)
@@ -10231,10 +10305,28 @@ async function generateBackgroundAlerts() {
           const ESPN_SHORT_TO_STD = { SA:'SAS', NY:'NYK', GS:'GSW', NO:'NOP', UT:'UTA' };
           const normAbbr = a => ESPN_SHORT_TO_STD[a?.toUpperCase()] || a?.toUpperCase();
           const h2hGames = homeSched.filter(hg => normAbbr(hg.opponentAbbr) === normAbbr(game.away.short));
+
+          // Rosters déplacés avant le modèle complet (8 juillet 2026) — nécessaires pour la
+          // pénalité Out. WNBA : patch RotoWire (bgFetchWNBARoster renvoie injury:null brut).
+          const [homePlayersRaw, awayPlayersRaw] = await Promise.all([rosterFn(homeId), rosterFn(awayId)]);
+          const [homePlayersPatched, awayPlayersPatched] = isWNBA
+            ? await Promise.all([patchWNBARosterInjuries(homePlayersRaw), patchWNBARosterInjuries(awayPlayersRaw)])
+            : [homePlayersRaw, awayPlayersRaw];
+          // Exclut les absences saison entière (ex: Napheesa Collier) avant la pénalité Out — sinon
+          // double-comptage avec la baseline déjà sans elles (8 juillet 2026).
+          const gamelogFnBg = isWNBA ? bgFetchWNBAGamelog : bgFetchGamelog;
+          const [homePlayers, awayPlayers] = await Promise.all([
+            filterSeasonLongOut(homePlayersPatched, gamelogFnBg), filterSeasonLongOut(awayPlayersPatched, gamelogFnBg),
+          ]);
+          const homeOutPenalty = calcKeyPlayerOutPenalty(homePlayers);
+          const awayOutPenalty = calcKeyPlayerOutPenalty(awayPlayers);
+          if (homeOutPenalty || awayOutPenalty) _bgLog.push(`${leagueKey} total ${game.home.short}v${game.away.short}: outPen home=${homeOutPenalty.toFixed(1)} away=${awayOutPenalty.toFixed(1)}`);
+
           const full = computeGameTotalFull({
             homeGames: homeSched, awayGames: awaySched,
             avgPtsAllowed: leagueAvg, ouBaseline: gameAvg,
             gameDate: game.date, round: inPlayoffs ? 'game' : '', refTotal: line, isWNBA, h2hGames,
+            homeOutPenalty, awayOutPenalty,
           });
           if (!full) { _bgLog.push(`${leagueKey} total skip ${game.home.short}v${game.away.short}: full model null`); continue; }
 
@@ -10253,9 +10345,10 @@ async function generateBackgroundAlerts() {
 
           // Filtre joueur clé (≥15 pts/match) Q/GTD — saison régulière ET playoffs (étendu 19 juin
           // 2026, était playoffs-only). Plus de limite ≤2.5h (8 juillet 2026) : bloque dès qu'un
-          // joueur clé est Q/GTD peu importe la distance au match.
+          // joueur clé est Q/GTD peu importe la distance au match. Réutilise les rosters déjà
+          // patchés RotoWire ci-dessus (8 juillet 2026 — avant ce fix, refetch brut non patché,
+          // donc côté WNBA ce gate ne pouvait jamais se déclencher).
           {
-            const [homePlayers, awayPlayers] = await Promise.all([rosterFn(homeId), rosterFn(awayId)]);
             const hasKeyQ = [...homePlayers, ...awayPlayers].some(p => (p.stats?.pts ?? 0) >= 15 && Q_STATUSES_TOTAL.includes(p.injury));
             if (hasKeyQ) {
               _bgLog.push(`${leagueKey} total skip ${game.home.short}v${game.away.short}: key player Q/GTD`);
@@ -10516,9 +10609,15 @@ async function generateBackgroundAlerts() {
           );
           if (hasQEU) { _bgLog.push(`${euLeague} result skip ${g.home.short}v${g.away.short}: titulaire Q/GTD`); continue; }
 
+          // Exclut les absences saison entière avant la pénalité Out — sinon double-comptage avec
+          // la baseline déjà sans elles (8 juillet 2026).
+          const gamelogFnEU = id => bgFetchEUGamelog(id, euLeague, `http://localhost:${PORT}`);
+          const [homePlayersOutFEU, awayPlayersOutFEU] = await Promise.all([
+            filterSeasonLongOut(homePlayersR?.players, gamelogFnEU), filterSeasonLongOut(awayPlayersR?.players, gamelogFnEU),
+          ]);
           const scalePlayers = arr => (arr || []).map(p => ({ ...p, stats: { ...p.stats, pts: (p.stats?.pts || 0) * scaleF } }));
-          const homeOutPenalty = calcKeyPlayerOutPenalty(scalePlayers(homePlayersR?.players));
-          const awayOutPenalty = calcKeyPlayerOutPenalty(scalePlayers(awayPlayersR?.players));
+          const homeOutPenalty = calcKeyPlayerOutPenalty(scalePlayers(homePlayersOutFEU));
+          const awayOutPenalty = calcKeyPlayerOutPenalty(scalePlayers(awayPlayersOutFEU));
 
           const result = computeTeamWinProb({
             homeGames: hGames, awayGames: aGames, gameDate: g.date, round: '',
@@ -10621,10 +10720,16 @@ async function generateBackgroundAlerts() {
             const homeId = mapFn(g.home.name);
             const awayId = mapFn(g.away.name);
             if (!homeId || !awayId) continue;
-            const [homeSched, awaySched, homePlayers, awayPlayers] = await Promise.all([
+            const [homeSched, awaySched, homePlayersRaw, awayPlayersRaw] = await Promise.all([
               schedFn(homeId), schedFn(awayId), rosterFn(homeId), rosterFn(awayId),
             ]);
             if (homeSched.length < 4 || awaySched.length < 4) continue;
+
+            // WNBA : patch RotoWire (8 juillet 2026 — bgFetchWNBARoster renvoie injury:null brut,
+            // donc ni le gate Q/GTD ni calcKeyPlayerOutPenalty ne pouvaient jamais se déclencher).
+            const [homePlayers, awayPlayers] = isWNBA
+              ? await Promise.all([patchWNBARosterInjuries(homePlayersRaw), patchWNBARosterInjuries(awayPlayersRaw)])
+              : [homePlayersRaw, awayPlayersRaw];
 
             // Injury gate (8 juillet 2026) — computeTeamWinProb ne réagissait qu'à un "Out" confirmé
             // (via calcKeyPlayerOutPenalty), jamais à un statut Q/GTD encore incertain. Bloque toute
@@ -10637,8 +10742,14 @@ async function generateBackgroundAlerts() {
             );
             if (hasQRes) { _bgLog.push(`${leagueKey} result skip ${g.home.short}v${g.away.short}: titulaire Q/GTD`); continue; }
 
-            const homeOutPenalty = calcKeyPlayerOutPenalty(homePlayers);
-            const awayOutPenalty = calcKeyPlayerOutPenalty(awayPlayers);
+            // Exclut les absences saison entière (ex: Napheesa Collier) avant la pénalité Out —
+            // sinon double-comptage avec la baseline déjà sans elles (8 juillet 2026).
+            const gamelogFnRes = isWNBA ? bgFetchWNBAGamelog : bgFetchGamelog;
+            const [homePlayersOutF, awayPlayersOutF] = await Promise.all([
+              filterSeasonLongOut(homePlayers, gamelogFnRes), filterSeasonLongOut(awayPlayers, gamelogFnRes),
+            ]);
+            const homeOutPenalty = calcKeyPlayerOutPenalty(homePlayersOutF);
+            const awayOutPenalty = calcKeyPlayerOutPenalty(awayPlayersOutF);
 
             const result = computeTeamWinProb({
               homeGames: homeSched, awayGames: awaySched, gameDate: g.date, round: '',
@@ -10784,10 +10895,33 @@ async function generateBackgroundAlerts() {
             const gameMonth  = new Date(g.date).getMonth() + 1;
             const inPlayoffs = gameMonth >= 4 && gameMonth <= 6;
             const h2hGames = homeGames.filter(hg => String(hg.opponentId) === String(g.away.id));
+
+            // Rosters + pénalité Out déplacés avant le modèle complet (8 juillet 2026) — même
+            // rescale NBA-équivalent que la section Résultat EU (KEY_PLAYER_PTS est calibré NBA).
+            const scaleF = NBA_REF_BG / leagueAvg;
+            const scalePlayersEU = arr => (arr || []).map(p => ({ ...p, stats: { ...p.stats, pts: (p.stats?.pts || 0) * scaleF } }));
+            const [homePlayersR, awayPlayersR] = await Promise.all([
+              fetch(`${euBase}/api/euro/${euLeague}/players/${g.home.id}`, { signal: AbortSignal.timeout(10000) }).then(r=>r.ok?r.json():null).catch(()=>null),
+              fetch(`${euBase}/api/euro/${euLeague}/players/${g.away.id}`, { signal: AbortSignal.timeout(10000) }).then(r=>r.ok?r.json():null).catch(()=>null),
+            ]);
+            const homePlayers = homePlayersR?.players || [];
+            const awayPlayers = awayPlayersR?.players || [];
+            // Exclut les absences saison entière avant la pénalité Out — sinon double-comptage avec
+            // la baseline déjà sans elles (8 juillet 2026). homePlayers/awayPlayers (non filtrés)
+            // restent utilisés tels quels plus bas pour le garde-fou Q/GTD.
+            const gamelogFnEUTotal = id => bgFetchEUGamelog(id, euLeague, euBase);
+            const [homePlayersOutF, awayPlayersOutF] = await Promise.all([
+              filterSeasonLongOut(homePlayers, gamelogFnEUTotal), filterSeasonLongOut(awayPlayers, gamelogFnEUTotal),
+            ]);
+            const homeOutPenalty = calcKeyPlayerOutPenalty(scalePlayersEU(homePlayersOutF));
+            const awayOutPenalty = calcKeyPlayerOutPenalty(scalePlayersEU(awayPlayersOutF));
+            if (homeOutPenalty || awayOutPenalty) _bgLog.push(`${euLeague} total ${g.home.short}v${g.away.short}: outPen home=${homeOutPenalty.toFixed(1)} away=${awayOutPenalty.toFixed(1)}`);
+
             const full = computeGameTotalFull({
               homeGames, awayGames,
               avgPtsAllowed: leagueAvg, ouBaseline: EU_GAME_TOTAL_AVG[euLeague] ?? leagueAvg * 2,
               gameDate: g.date, round: inPlayoffs ? 'game' : '', refTotal: line, isWNBA: false, h2hGames,
+              homeOutPenalty, awayOutPenalty,
             });
             if (!full) { _bgLog.push(`${euLeague} total skip ${g.home.short}v${g.away.short}: full model null`); continue; }
 
@@ -10805,14 +10939,9 @@ async function generateBackgroundAlerts() {
             }
 
             // Filtre joueur clé (≥15 pts/match) Q/GTD — saison régulière ET playoffs (étendu 19 juin
-            // 2026, était playoffs-only). Plus de limite ≤2.5h (8 juillet 2026).
+            // 2026, était playoffs-only). Plus de limite ≤2.5h (8 juillet 2026). Réutilise les
+            // rosters déjà récupérés ci-dessus pour la pénalité Out (8 juillet 2026).
             {
-              const [homePlayersR, awayPlayersR] = await Promise.all([
-                fetch(`${euBase}/api/euro/${euLeague}/players/${g.home.id}`, { signal: AbortSignal.timeout(10000) }).then(r=>r.ok?r.json():null).catch(()=>null),
-                fetch(`${euBase}/api/euro/${euLeague}/players/${g.away.id}`, { signal: AbortSignal.timeout(10000) }).then(r=>r.ok?r.json():null).catch(()=>null),
-              ]);
-              const homePlayers = homePlayersR?.players || [];
-              const awayPlayers = awayPlayersR?.players || [];
               const hasKeyQ = [...homePlayers, ...awayPlayers].some(p => (p.stats?.pts ?? 0) >= 15 && Q_STATUSES_TOTAL.includes(p.injury));
               if (hasKeyQ) {
                 _bgLog.push(`${euLeague} total skip ${g.home.short}v${g.away.short}: key player Q/GTD`);
@@ -11346,6 +11475,25 @@ async function generateBackgroundAlerts() {
     // Purge les alertes pending explicitement marquées obsolètes ce cycle (cote plus jouable) par
     // refreshOrDropPendingProp/refreshOrDropPendingById — cf. commentaire en tête de fichier.
     for (const staleId of _staleAlertIds) delete byId[staleId];
+
+    // Avertissement corrélation coéquipière (8 juillet 2026) — deux joueuses de la même équipe sur
+    // la même stat se partagent une ressource limitée (rebonds, passes...) : une alerte pending qui
+    // arrive après qu'une coéquipière ait déjà été acceptée sur la même stat n'est pas un edge
+    // indépendant, cf. cas réel Ogwumike/Hamby (rebonds LA Sparks, acceptées à 2h d'intervalle sans
+    // que rien ne signale le chevauchement). Averti dans les deux sens (déjà-acceptée → nouvelle
+    // pending, et l'inverse si l'ordre s'inverse un jour) ; ne bloque rien, juste un signal affiché.
+    const allPropAlerts = Object.values(byId).filter(x => x.type === 'player_prop' && x.player && x.stat && x.team);
+    allPropAlerts.forEach(a => {
+      if ((a.status || 'pending') !== 'pending') return;
+      const teammateAccepted = allPropAlerts.find(x =>
+        x.status === 'accepted' && x.eventId === a.eventId && x.team === a.team &&
+        x.stat === a.stat && x.player !== a.player
+      );
+      a.teammateOverlap = teammateAccepted
+        ? { player: teammateAccepted.player, direction: teammateAccepted.direction, line: teammateAccepted.line, probability: teammateAccepted.probability }
+        : null;
+    });
+
     backgroundAlerts = Object.values(byId);
     _bgLog.push(`done: ${newAlerts.length} new, ${backgroundAlerts.length} total`);
     console.log(`[bg-alerts] Done — ${newAlerts.length} new, ${backgroundAlerts.length} total`);

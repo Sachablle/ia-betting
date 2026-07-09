@@ -996,7 +996,7 @@ function PropAlertCard({ group, onDismiss, onAccept, onReject }) {
         </span>
       </div>
 
-      {stats.map(({ stat, direction, line, estimate, unibetOdds, betclicOdds, winamaxOdds, oddsAlert, obsolete }) => {
+      {stats.map(({ stat, direction, line, estimate, unibetOdds, betclicOdds, winamaxOdds, oddsAlert, obsolete, teammateOverlap, deviation, deviationCap }) => {
         const isO = direction === 'over';
         const clr = isO ? '#4ade80' : '#f87171';
         const bg  = isO ? 'rgba(74,222,128,0.06)' : 'rgba(248,113,113,0.06)';
@@ -1008,6 +1008,9 @@ function PropAlertCard({ group, onDismiss, onAccept, onReject }) {
                 {isO ? '▲ Over' : '▼ Under'} {line} {STAT_LABEL[stat] ?? stat}
               </span>
               {isPending && obsolete && <span style={{ fontSize: 9, fontWeight: 800, padding: '2px 6px', borderRadius: 4, background: 'rgba(148,163,184,0.15)', color: '#94a3b8', border: '1px solid rgba(148,163,184,0.4)', flexShrink: 0 }}>OBSOLÈTE</span>}
+              {isPending && teammateOverlap && (
+                <span title={`${teammateOverlap.player} déjà acceptée sur la même stat (${STAT_LABEL[stat] ?? stat}, ${teammateOverlap.direction === 'over' ? '▲' : '▼'} ${teammateOverlap.line}, ${teammateOverlap.probability}%) — ressource partagée, pas un edge indépendant`} style={{ fontSize: 9, fontWeight: 800, padding: '2px 6px', borderRadius: 4, background: 'rgba(251,191,36,0.15)', color: '#fbbf24', border: '1px solid rgba(251,191,36,0.5)', flexShrink: 0 }}>⚠ Corrélée — {teammateOverlap.player}</span>
+              )}
               {estimate != null && (
                 <span style={{ marginLeft: 'auto', fontSize: 10, color: 'var(--text-dim)', flexShrink: 0 }}>
                   proj <b style={{ color: 'var(--text)' }}>{estimate.toFixed(1)}</b>
@@ -1020,6 +1023,20 @@ function PropAlertCard({ group, onDismiss, onAccept, onReject }) {
                 {oddsAlert.bcTo != null && ` · Betclic ${oddsAlert.bcFrom?.toFixed(2)} → ${oddsAlert.bcTo?.toFixed(2)}`}
               </div>
             )}
+            {deviation != null && deviationCap > 0 && (() => {
+              const ratio = Math.min(1, deviation / deviationCap);
+              const gaugeColor = ratio > 0.66 ? '#f87171' : ratio > 0.33 ? '#fbbf24' : '#4ade80';
+              return (
+                <div title="À quel point la projection s'écarte de la forme brute du joueur (redistribution + ajustement matchup cumulés) — plus la barre est proche du bout, plus le pari empile d'hypothèses au lieu de reposer sur une performance solide" style={{ display: 'flex', alignItems: 'center', gap: 6, margin: '0 0 0.3rem' }}>
+                  <div style={{ flex: '0 0 54px', height: 5, borderRadius: 3, background: 'rgba(148,163,184,0.2)', overflow: 'hidden' }}>
+                    <div style={{ width: `${ratio * 100}%`, height: '100%', background: gaugeColor, borderRadius: 3 }} />
+                  </div>
+                  <span style={{ fontSize: 9, color: 'var(--text-dim)' }}>
+                    {Math.round(deviation * 100)}%/{Math.round(deviationCap * 100)}% du plafond
+                  </span>
+                </div>
+              );
+            })()}
             <div className="bc-stats" style={{ margin: '0 0 0.3rem' }}>
               <div className="bc-prob">
                 <div className="bc-prob-bar-track">
