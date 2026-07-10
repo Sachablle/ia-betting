@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, Fragment } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { BBALL_FIXTURES } from '../utils/basketball';
-import { syncBackgroundAlerts, syncGameTotalAlerts, syncBasketballResultAlerts, syncBballPinnacleAlerts, syncBballPinnaclePropsAlerts, loadBballPinnaclePropsAlerts, saveBballPinnaclePropsAlerts, syncOddsDrift, syncFootballAlerts, resolveCompletedFootballAlerts, postAcceptedAlertReliably, FB_DC_BTTS_KEY, FB_DC_OU_KEY } from '../utils/syncAlerts';
+import { syncBackgroundAlerts, syncGameTotalAlerts, syncBasketballResultAlerts, syncBasketballSpreadAlerts, syncBballPinnacleAlerts, syncBballPinnaclePropsAlerts, loadBballPinnaclePropsAlerts, saveBballPinnaclePropsAlerts, syncOddsDrift, syncFootballAlerts, resolveCompletedFootballAlerts, postAcceptedAlertReliably, FB_DC_BTTS_KEY, FB_DC_OU_KEY } from '../utils/syncAlerts';
 import { BTTSAlertCard, FootballTotalCard, FootballResultCard, PinnacleEdgeCard, DCBTTSAlertCard, DCOUAlertCard, FootballGroupCard } from '../components/FootballAlertCards';
 import { setItem as cloudSet } from '../utils/cloudStorage';
 import { cachedFetch } from '../utils/fetchCache';
@@ -12,6 +12,8 @@ const HISTORY_KEY      = 'nba_bet_history';
 const GAME_TOTAL_KEY   = 'nba_game_total_alerts';
 const BASKETBALL_RESULT_KEY  = 'basketball_result_alerts';
 const BASKETBALL_RESULT_MIN_ODDS = 1.50; // cote mini — sous ce seuil, pas d'intérêt même à forte confiance
+const BASKETBALL_SPREAD_KEY  = 'basketball_spread_alerts';
+const BASKETBALL_SPREAD_MIN_ODDS = 1.60; // même seuil que la génération backend (SPREAD_MIN_ODDS)
 const FB_BTTS_KEY      = 'fb_btts_alerts';
 const FB_TOTAL_KEY     = 'fb_total_alerts';
 const FB_RESULT_KEY    = 'fb_result_alerts';
@@ -873,6 +875,98 @@ function BasketballResultCard({ alert, onAccept, onReject, onDismiss }) {
   );
 }
 
+// Écart H2H (Handicap, 9 juillet 2026) — même modèle/mêmes seuils que BasketballResultCard
+// (computeTeamWinProb), plus la ligne handicap et un avertissement si une alerte Résultat déjà
+// acceptée porte sur le même match/sens (matchCorrelation, même ressource : marge de victoire).
+function BasketballSpreadCard({ alert, onAccept, onReject, onDismiss }) {
+  const { id, home, away, homeShort, awayShort, date, teamName, teamShort, line, probability, odds, bookmaker, status, league, eventId, matchCorrelation } = alert;
+  const navigate   = useNavigate();
+  const isPending  = status === 'pending';
+  const isAccepted = status === 'accepted';
+  const leagueParam = league && league !== 'nba' ? `?league=${league}` : '';
+  const leagueLabel = { euroleague: 'EL Écart', wnba: 'WNBA Écart', acb: 'ACB Écart', bbl: 'BBL Écart', legaa: 'Lega A Écart' }[league] || 'NBA Écart';
+
+  const now = Date.now();
+  const msLeft = new Date(date).getTime() - now;
+  const hoursLeft = msLeft / 3_600_000;
+  const daysLeft  = Math.floor(hoursLeft / 24);
+  const hRem      = Math.floor(hoursLeft % 24);
+  const mRem      = Math.floor((msLeft % 3_600_000) / 60_000);
+  const timeLabel = msLeft <= 0 ? 'Imminent' : daysLeft > 0 ? `${daysLeft}j ${hRem}h` : hoursLeft >= 1 ? `${Math.floor(hoursLeft)}h ${mRem}m` : `${mRem}m`;
+  const barPct    = Math.min(Math.max(msLeft / (7 * 24 * 3_600_000) * 100, 0), 100);
+  const bkColor   = bookmaker === 'unibet' ? '#1db954' : bookmaker === 'betclic' ? '#e0292e' : '#e5e7eb';
+
+  return (
+    <div
+      className="bet-card"
+      style={{ position: 'relative', '--league-accent': '#fbbf24', borderColor: 'rgba(244,124,32,0.3)', cursor: eventId ? 'pointer' : 'default' }}
+      onClick={() => eventId && navigate(`/basketball/${eventId}${leagueParam}`)}
+      onMouseEnter={() => _prefetchBballCard(home, away, league)}
+    >
+      {!isPending && (
+        <button onClick={e => { e.stopPropagation(); onDismiss(id); }} style={{ position: 'absolute', top: 8, right: 10, background: 'none', border: 'none', color: 'var(--text-dim)', cursor: 'pointer', fontSize: 16, lineHeight: 1, padding: 0 }}>×</button>
+      )}
+      <div className="bc-header">
+        <span className="bc-flag">📏</span>
+        <span className="bc-league">{leagueLabel}</span>
+        <div style={{ marginLeft: 'auto', marginRight: 24, display: 'flex', alignItems: 'center', gap: 6 }}>
+          <span className={`bc-edge-badge ${probability >= 90 ? 'high' : 'mid'}`}>{probability}%</span>
+          {!isPending && (
+            <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 10, color: isAccepted ? '#4ade80' : '#f87171', background: isAccepted ? 'rgba(74,222,128,0.12)' : 'rgba(248,113,113,0.1)' }}>
+              {isAccepted ? '✓ Accepté' : '✗ Rejeté'}
+            </span>
+          )}
+        </div>
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem', marginTop: '0.35rem', flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', flexWrap: 'wrap' }}>
+          <span className="bc-team bc-team-home" style={{ flex: '0 1 auto' }}>{home || homeShort}</span>
+          <span className="bc-vs">vs</span>
+          <span className="bc-team bc-team-away" style={{ flex: '0 1 auto' }}>{away || awayShort}</span>
+        </div>
+        <span style={{ fontSize: 10, color: 'var(--text-dim)', flexShrink: 0, whiteSpace: 'nowrap' }}>
+          {new Date(date).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
+        </span>
+      </div>
+      <div style={{ margin: '0.3rem 0' }}>
+        <span style={{ fontSize: 12, fontWeight: 700, color: '#fbbf24', background: 'rgba(251,191,36,0.12)', padding: '0.25rem 0.5rem', borderRadius: 6, display: 'inline-block', maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          📏 {teamShort || teamName} {line > 0 ? '+' : ''}{line}
+        </span>
+        <div style={{ fontSize: 10, color: 'var(--text-dim)', marginTop: 3 }}>
+          P(couvre) <b style={{ color: 'var(--text)' }}>{probability}%</b>
+        </div>
+        {matchCorrelation && (
+          <div title="Une alerte Résultat déjà acceptée porte sur le même sens de ce match — même ressource (marge de victoire), pas un edge indépendant" style={{ fontSize: 9, fontWeight: 700, color: '#fbbf24', marginTop: 4, padding: '2px 6px', borderRadius: 4, background: 'rgba(251,191,36,0.1)', border: '1px solid rgba(251,191,36,0.35)', display: 'inline-block' }}>
+            ⚠ Corrélée — Résultat déjà accepté ({matchCorrelation.probability}%)
+          </div>
+        )}
+      </div>
+      <div className="bc-stats" style={{ margin: '0.3rem 0' }}>
+        <div className="bc-prob">
+          <div className="bc-prob-bar-track">
+            <div className="bc-prob-bar-fill" style={{ width: `${barPct}%`, background: '#60a5fa' }} />
+          </div>
+          <span className="bc-prob-pct" style={{ color: '#60a5fa', fontSize: 10 }}>{timeLabel}</span>
+        </div>
+      </div>
+      {odds && (
+        <div style={{ marginBottom: isPending ? '0.4rem' : 0 }}>
+          <div style={{ textAlign: 'center', background: 'rgba(255,255,255,0.04)', borderRadius: 6, padding: '0.25rem' }}>
+            <div style={{ fontSize: 9, color: 'var(--text-dim)', marginBottom: 2, textTransform: 'capitalize' }}>{bookmaker}</div>
+            <div style={{ fontSize: 13, fontWeight: 700, color: bkColor, fontVariantNumeric: 'tabular-nums' }}>{odds.toFixed(2)}</div>
+          </div>
+        </div>
+      )}
+      {isPending ? (
+        <div style={{ display: 'flex', gap: '0.5rem' }}>
+          <button onClick={e => { e.stopPropagation(); onAccept(id); }} style={{ flex: 1, padding: '0.4rem', borderRadius: 6, border: '1px solid rgba(74,222,128,0.5)', background: 'rgba(74,222,128,0.08)', color: '#4ade80', cursor: 'pointer', fontSize: 11, fontWeight: 700 }}>✓ Accepter</button>
+          <button onClick={e => { e.stopPropagation(); onReject(id); }} style={{ flex: 1, padding: '0.4rem', borderRadius: 6, border: '1px solid rgba(248,113,113,0.4)', background: 'rgba(248,113,113,0.06)', color: '#f87171', cursor: 'pointer', fontSize: 11, fontWeight: 700 }}>✗ Rejeter</button>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function TotalResultCard({ alert, onDismiss }) {
   const { id, home, away, homeShort, awayShort, date, direction, line, actualTotal, status } = alert;
   const isWon   = status === 'won';
@@ -1225,6 +1319,7 @@ export default function PlaceBetPage() {
   const [bballPinnacleAlerts, setBballPinnacleAlerts] = useState([]);
   const [bballPinnaclePropsAlerts, setBballPinnaclePropsAlerts] = useState([]);
   const [rawResultAlerts, setRawResultAlerts]   = useState([]);
+  const [rawSpreadAlerts, setRawSpreadAlerts]   = useState([]);
   const [bttsAlerts, setBttsAlerts]             = useState([]);
   const [fbTotalAlerts, setFbTotalAlerts]       = useState([]);
   const [fbResultAlerts, setFbResultAlerts]     = useState([]);
@@ -1962,6 +2057,48 @@ export default function PlaceBetPage() {
     notify();
   };
 
+  // Écart H2H (Handicap, 9 juillet 2026) — même mécanique que loadResultAlerts/updateResultStatus/
+  // dismissResult ci-dessus (même modèle serveur, mêmes seuils).
+  const loadSpreadAlerts = () => {
+    try {
+      const raw = JSON.parse(localStorage.getItem(BASKETBALL_SPREAD_KEY) || '[]');
+      const now = Date.now();
+      const cutoff7d = now - 7 * 24 * 3600 * 1000;
+      const valid = raw.filter(a => {
+        const matchTime = new Date(a.date).getTime();
+        if (isNaN(matchTime)) return false;
+        const status = a.status || 'pending';
+        if (status === 'won' || status === 'lost') return matchTime > cutoff7d;
+        if (status === 'accepted' || status === 'rejected') return matchTime > cutoff7d;
+        if (status === 'pending' && (a.odds ?? 0) < BASKETBALL_SPREAD_MIN_ODDS) return false;
+        return matchTime > now;
+      });
+      if (valid.length !== raw.length) cloudSet(BASKETBALL_SPREAD_KEY, JSON.stringify(valid));
+      setRawSpreadAlerts(valid);
+    } catch { setRawSpreadAlerts([]); }
+  };
+
+  const updateSpreadStatus = (id, status) => {
+    const updated = rawSpreadAlerts.map(a => a.id === id ? {
+      ...a, status,
+      ...(status === 'accepted' && !a.acceptedAt ? { acceptedAt: Date.now() } : {})
+    } : a);
+    try { cloudSet(BASKETBALL_SPREAD_KEY, JSON.stringify(updated)); } catch {}
+    setRawSpreadAlerts(updated);
+    if (status === 'accepted') {
+      const a = updated.find(x => x.id === id);
+      if (a) postAcceptedAlertReliably({ ...a, fixtureDate: a.date });
+    }
+    notify();
+  };
+
+  const dismissSpread = (id) => {
+    const updated = rawSpreadAlerts.filter(a => a.id !== id);
+    try { cloudSet(BASKETBALL_SPREAD_KEY, JSON.stringify(updated)); } catch {}
+    setRawSpreadAlerts(updated);
+    notify();
+  };
+
   // Merge backend background alerts into localStorage
   const fetchBackgroundAlerts = syncBackgroundAlerts;
 
@@ -1975,6 +2112,7 @@ export default function PlaceBetPage() {
     loadAlerts();
     loadTotalAlerts();
     loadResultAlerts();
+    loadSpreadAlerts();
     loadBttsAlerts();
     loadFbTotalAlerts();
     loadFbResultAlerts();
@@ -1985,6 +2123,7 @@ export default function PlaceBetPage() {
     fetchBackgroundAlerts();
     syncGameTotalAlerts();
     syncBasketballResultAlerts();
+    syncBasketballSpreadAlerts();
     syncBballPinnacleAlerts();
     syncBballPinnaclePropsAlerts();
     loadBballPinnaclePropsAlertsState();
@@ -1996,7 +2135,7 @@ export default function PlaceBetPage() {
       const existing = JSON.parse(localStorage.getItem(ALERT_KEY) || '[]');
       existing.filter(a => a.status === 'accepted').forEach(a => postAcceptedAlertReliably(a));
       // game_total et basketball_result stockent la date dans `date` (pas fixtureDate) — normaliser avant envoi
-      [GAME_TOTAL_KEY, BASKETBALL_RESULT_KEY].forEach(key => {
+      [GAME_TOTAL_KEY, BASKETBALL_RESULT_KEY, BASKETBALL_SPREAD_KEY].forEach(key => {
         const stored = JSON.parse(localStorage.getItem(key) || '[]');
         stored.filter(a => a.status === 'accepted').forEach(a => postAcceptedAlertReliably({ ...a, fixtureDate: a.fixtureDate || a.date }));
       });
@@ -2011,6 +2150,7 @@ export default function PlaceBetPage() {
     window.addEventListener('nba_alerts_updated', loadAlerts);
     window.addEventListener('nba_alerts_updated', loadTotalAlerts);
     window.addEventListener('nba_alerts_updated', loadResultAlerts);
+    window.addEventListener('nba_alerts_updated', loadSpreadAlerts);
     window.addEventListener('fb_btts_alerts_updated', loadBttsAlerts);
     window.addEventListener('fb_total_alerts_updated', loadFbTotalAlerts);
     window.addEventListener('fb_result_alerts_updated', loadFbResultAlerts);
@@ -2020,7 +2160,7 @@ export default function PlaceBetPage() {
     window.addEventListener('bball_pinnacle_alerts_updated', loadBballPinnacleAlerts);
     window.addEventListener('bball_pinnacle_props_alerts_updated', loadBballPinnaclePropsAlertsState);
     // Refresh cotes toutes les 2 min (mouvements de cotes sur alertes en jeu)
-    const timer = setInterval(() => { loadAlerts(); loadTotalAlerts(); loadResultAlerts(); fetchBackgroundAlerts(); syncGameTotalAlerts(); syncBasketballResultAlerts(); syncBballPinnacleAlerts(); syncBballPinnaclePropsAlerts(); syncFootballAlerts(); syncOddsDrift().then(loadAlerts); applySettlements(); }, 2 * 60 * 1000);
+    const timer = setInterval(() => { loadAlerts(); loadTotalAlerts(); loadResultAlerts(); loadSpreadAlerts(); fetchBackgroundAlerts(); syncGameTotalAlerts(); syncBasketballResultAlerts(); syncBasketballSpreadAlerts(); syncBballPinnacleAlerts(); syncBballPinnaclePropsAlerts(); syncFootballAlerts(); syncOddsDrift().then(loadAlerts); applySettlements(); }, 2 * 60 * 1000);
     // Aussi au retour sur la page (changement d'onglet / navigation)
     const onVisible = () => { if (document.visibilityState === 'visible') fetchBackgroundAlerts(); };
     document.addEventListener('visibilitychange', onVisible);
@@ -2028,6 +2168,7 @@ export default function PlaceBetPage() {
       window.removeEventListener('nba_alerts_updated', loadAlerts);
       window.removeEventListener('nba_alerts_updated', loadTotalAlerts);
       window.removeEventListener('nba_alerts_updated', loadResultAlerts);
+      window.removeEventListener('nba_alerts_updated', loadSpreadAlerts);
       document.removeEventListener('visibilitychange', onVisible);
       window.removeEventListener('fb_btts_alerts_updated', loadBttsAlerts);
       window.removeEventListener('fb_total_alerts_updated', loadFbTotalAlerts);
@@ -2136,6 +2277,8 @@ export default function PlaceBetPage() {
   const acceptedTotalAlerts   = rawTotalAlerts.filter(a => a.status === 'accepted').sort((a, b) => (b.acceptedAt || 0) - (a.acceptedAt || 0));
   const pendingResultAlerts  = rawResultAlerts.filter(a => a.status === 'pending');
   const acceptedResultAlerts = rawResultAlerts.filter(a => a.status === 'accepted');
+  const pendingSpreadAlerts  = rawSpreadAlerts.filter(a => a.status === 'pending');
+  const acceptedSpreadAlerts = rawSpreadAlerts.filter(a => a.status === 'accepted');
   // Grouper toutes les alertes foot (pending + accepted) par fixtureId — une carte par match
   // La carte apparaît si ≥1 alerte est encore pending, mais montre aussi les accepted en lecture seule
   const _allFoot = [
@@ -2191,6 +2334,7 @@ export default function PlaceBetPage() {
     ...pendingGroups.map(g => ({ type: 'prop',     key: g.key,  date: g.fixtureDate,  data: g })),
     ...pendingTotalAlerts.map(a => ({ type: 'total',    key: a.id,   date: a.fixtureDate,  data: a })),
     ...pendingResultAlerts.map(a => ({ type: 'basketresult', key: a.id, date: a.date,      data: a })),
+    ...pendingSpreadAlerts.map(a => ({ type: 'basketspread', key: a.id, date: a.date,      data: a })),
     ...footballGroups.map(g => ({ type: 'fbgroup', key: g.fixtureId, date: g.fixtureDate, data: g })),
     ...footballSingleAlerts.map(a => ({ type: 'fbsingle', key: a.id, date: a.fixtureDate, data: a })),
     ...bballPinnacleAlerts.filter(a => a.status === 'pending').map(a => ({ type: 'bballpinnacle', key: a.id, date: a.date, data: a })),
@@ -2206,7 +2350,7 @@ export default function PlaceBetPage() {
   const wonCount       = wonGroups.length + mixedGroups.length + wonTotalAlerts.length;
   const lostCount      = lostGroups.length + mixedGroups.length + lostTotalAlerts.length;
   const hasResults     = allResultGroups.length > 0 || wonTotalAlerts.length > 0 || lostTotalAlerts.length > 0;
-  const hasHistory     = historyExists || acceptedGroups.length > 0 || acceptedTotalAlerts.length > 0 || acceptedResultAlerts.length > 0 || hasResults;
+  const hasHistory     = historyExists || acceptedGroups.length > 0 || acceptedTotalAlerts.length > 0 || acceptedResultAlerts.length > 0 || acceptedSpreadAlerts.length > 0 || hasResults;
 
   const togglePanel = (panel) => setOpenPanel(p => p === panel ? null : panel);
 
@@ -2240,6 +2384,9 @@ export default function PlaceBetPage() {
     const keptResult = rawResultAlerts.filter(a => a.status !== 'pending');
     try { cloudSet(BASKETBALL_RESULT_KEY, JSON.stringify(keptResult)); } catch {}
     setRawResultAlerts(keptResult);
+    const keptSpread = rawSpreadAlerts.filter(a => a.status !== 'pending');
+    try { cloudSet(BASKETBALL_SPREAD_KEY, JSON.stringify(keptSpread)); } catch {}
+    setRawSpreadAlerts(keptSpread);
     notify();
   };
 
@@ -2279,6 +2426,7 @@ export default function PlaceBetPage() {
             if (item.type === 'prop')     return <PropAlertCard key={item.key} group={item.data} onDismiss={dismiss} onAccept={(ids, bk, odds) => updateStatus(ids, 'accepted', bk, odds)} onReject={ids => updateStatus(ids, 'rejected')} />;
             if (item.type === 'total')    return <GameTotalCard key={item.key} alert={item.data} onAccept={(id, bk, odds) => updateTotalStatus(id, 'accepted', bk, odds)} onReject={id => updateTotalStatus(id, 'rejected')} onDismiss={dismissTotal} />;
             if (item.type === 'basketresult') return <BasketballResultCard key={item.key} alert={item.data} onAccept={id => updateResultStatus(id, 'accepted')} onReject={id => updateResultStatus(id, 'rejected')} onDismiss={dismissResult} />;
+            if (item.type === 'basketspread') return <BasketballSpreadCard key={item.key} alert={item.data} onAccept={id => updateSpreadStatus(id, 'accepted')} onReject={id => updateSpreadStatus(id, 'rejected')} onDismiss={dismissSpread} />;
             if (item.type === 'fbgroup') return <FootballGroupCard key={item.key} group={item.data} onAccept={handleFootballAccept} onReject={handleFootballReject} onDismissAll={handleFootballDismissAll} />;
             if (item.type === 'fbsingle') {
               const cfg = FB_SINGLE_CARD[item.data.type];

@@ -10,6 +10,7 @@ const ALERT_KEY     = 'nba_prop_alerts';
 const HISTORY_KEY   = 'nba_bet_history';
 const GAME_TOTAL_KEY = 'nba_game_total_alerts';
 const BASKETBALL_RESULT_KEY = 'basketball_result_alerts';
+const BASKETBALL_SPREAD_KEY = 'basketball_spread_alerts';
 const FB_BTTS_KEY   = 'fb_btts_alerts';
 const FB_TOTAL_KEY  = 'fb_total_alerts';
 const FB_RESULT_KEY = 'fb_result_alerts';
@@ -662,6 +663,68 @@ export async function syncBasketballResultAlerts() {
 
     if (changed) {
       cloudSet(BASKETBALL_RESULT_KEY, JSON.stringify(purged));
+      window.dispatchEvent(new Event('nba_alerts_updated'));
+    }
+  } catch {}
+}
+
+// Pont alertes Écart H2H (Handicap, 9 juillet 2026) — même mécanique que syncBasketballResultAlerts
+// ci-dessus (même modèle marginExpected/std côté serveur), plus les champs propres à ce marché
+// (line, odds, bookmaker, matchCorrelation avec une alerte Résultat déjà acceptée sur le même sens).
+export async function syncBasketballSpreadAlerts() {
+  try {
+    const { alerts: bgAlerts } = await fetch('/api/nba/background-alerts').then(r => r.json());
+    if (!bgAlerts?.length) return;
+    const spreadAlerts = bgAlerts.filter(a => a.type === 'basketball_spread' && a.probability > 0);
+    if (!spreadAlerts.length) return;
+
+    const existing = JSON.parse(localStorage.getItem(BASKETBALL_SPREAD_KEY) || '[]');
+
+    const sameBet = (a, b) => {
+      if (a.home !== b.home || a.away !== b.away || a.direction !== b.direction) return false;
+      const aT = new Date(a.date).getTime();
+      const bT = new Date(b.date).getTime();
+      if (isNaN(aT) || isNaN(bT)) return true;
+      return Math.abs(aT - bT) <= 36 * 3600_000;
+    };
+
+    let changed = false;
+    const result = [...existing];
+    spreadAlerts.forEach(a => {
+      const idx = result.findIndex(p => p.id === a.id || sameBet(p, a));
+      if (idx === -1) {
+        result.push({ ...a, status: 'pending' });
+        changed = true;
+        return;
+      }
+      const prev = result[idx];
+      if ((prev.status || 'pending') !== 'pending') {
+        if (prev.status === 'accepted') {
+          const driftChanged = !!a.probDropWarning !== !!prev.probDropWarning || a.currentProbability !== prev.currentProbability;
+          if (driftChanged) {
+            result[idx] = { ...prev, probDropWarning: a.probDropWarning ?? false, currentProbability: a.probDropWarning ? a.currentProbability : null };
+            changed = true;
+          }
+        }
+        return;
+      }
+      if (prev.probability !== a.probability || prev.margin !== a.margin || prev.line !== a.line
+          || prev.odds !== a.odds || prev.bookmaker !== a.bookmaker) {
+        result[idx] = { ...prev, probability: a.probability, margin: a.margin, line: a.line, odds: a.odds, bookmaker: a.bookmaker, matchCorrelation: a.matchCorrelation ?? null };
+        changed = true;
+      }
+    });
+
+    const ORPHAN_GRACE_MS = 25 * 60_000;
+    const purged = result.filter(a => {
+      if ((a.status || 'pending') !== 'pending') return true;
+      if (Date.now() - (a.savedAt || 0) < ORPHAN_GRACE_MS) return true;
+      return spreadAlerts.some(p => p.id === a.id || sameBet(p, a));
+    });
+    if (purged.length !== result.length) changed = true;
+
+    if (changed) {
+      cloudSet(BASKETBALL_SPREAD_KEY, JSON.stringify(purged));
       window.dispatchEvent(new Event('nba_alerts_updated'));
     }
   } catch {}

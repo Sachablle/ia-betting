@@ -2097,6 +2097,7 @@ function PropsSection({ fixture, homePlayers, awayPlayers, rosterLoading, isComp
   const realized = [...(boxscore?.[bsKey] || [])].sort((a, b) => b.stats.pts - a.stats.pts);
   const lastName = n => n?.split(' ').slice(-1)[0]?.toLowerCase();
 
+  const isPlayerOut = p => (getInjury(p.name)?.status || p.injury) === 'Out';
   let startersSorted, benchSorted;
   if (isCompleted && realized.length > 0) {
     const starterIds = new Set(realized.filter(r => r.starter).map(r => String(r.id)));
@@ -2134,7 +2135,20 @@ function PropsSection({ fixture, homePlayers, awayPlayers, rosterLoading, isComp
       }
     }
   }
-  const isPlayerOut = p => (getInjury(p.name)?.status || p.injury) === 'Out';
+  // Backfill titulaires (10 juillet 2026) — les priorités 1/2 (noms du terrain / projLineup externe)
+  // désignent les titulaires habituelles sans savoir qui est blessée aujourd'hui ; les joueuses Out
+  // étaient retirées de l'affichage tout en bas (filtre isPlayerOut) sans être remplacées par la
+  // suivante du banc, faisant retomber le nombre de titulaires affichées sous 5 (cas réel : Kelsey
+  // Plum + Cameron Brink Out chez LA Sparks → seulement 3 titulaires au lieu de 5).
+  const outStarters = startersSorted.filter(isPlayerOut);
+  if (outStarters.length) {
+    const sortFn = (a, b) => ((b.stats?.min ?? b.stats?.pts ?? 0)) - ((a.stats?.min ?? a.stats?.pts ?? 0));
+    const activeStarters = startersSorted.filter(p => !isPlayerOut(p));
+    const activeBench = benchSorted.filter(p => !isPlayerOut(p));
+    const promoted = activeBench.slice(0, outStarters.length);
+    startersSorted = [...activeStarters, ...promoted].sort(sortFn);
+    benchSorted = [...activeBench.slice(outStarters.length), ...outStarters].sort(sortFn);
+  }
   const projected = [...startersSorted, { __separator: 'bench' }, ...benchSorted]
     .filter(p => p.__separator || !isPlayerOut(p));
 
@@ -2459,7 +2473,7 @@ const BK_ORDER   = ['pinnacle', 'unibet', 'betclic', 'betfair'];
 // EdgeBadge / OddsCell : importés de ../components/OddsCell (source unique avec MatchDetailPage
 // depuis le 22 juin 2026, voir ce fichier pour le détail).
 
-function OddsCard({ odds, home, away, league, homePlayers, awayPlayers, onRefresh, refreshing, defaultTab = 'all', gameTotalEstimate = null, resultEstimate = null, fixture = null, onTabChange = null, onTeamChange = null, showHomeOverride = null, eventId = null }) {
+function OddsCard({ odds, home, away, league, homePlayers, awayPlayers, onRefresh, refreshing, defaultTab = 'all', gameTotalEstimate = null, resultEstimate = null, gameSpreadEstimate = null, fixture = null, onTabChange = null, onTeamChange = null, showHomeOverride = null, eventId = null }) {
   const navigate = useNavigate();
   const location = useLocation();
   const isEL = league === 'euroleague';
@@ -2594,7 +2608,8 @@ function OddsCard({ odds, home, away, league, homePlayers, awayPlayers, onRefres
   const h2h = odds?.markets?.h2h;
   const tot = odds?.markets?.totals;
   const ew  = odds?.markets?.earlywin;
-  const availBks = BK_ORDER.filter(bk => h2h?.bookmakers?.[bk] || tot?.bookmakers?.[bk]);
+  const spread = odds?.markets?.spread;
+  const availBks = BK_ORDER.filter(bk => h2h?.bookmakers?.[bk] || tot?.bookmakers?.[bk] || spread?.bookmakers?.[bk]);
 
   // Edge Unibet/Betclic vs Pinnacle (25 juin 2026) — h2h?.fairProb / tot?.fairProb / h?.edgeHome
   // etc. lus plus bas dans OddsCell n'étaient en fait jamais assignés nulle part (vérifié) ; calculé
@@ -2621,7 +2636,7 @@ function OddsCard({ odds, home, away, league, homePlayers, awayPlayers, onRefres
   const ch = { fontSize: 9, fontWeight: 700, textTransform: 'uppercase', color: 'var(--text-dim)', textAlign: 'center', letterSpacing: '0.05em' };
   const sep = { borderLeft: '1px solid var(--border)', height: '70%', alignSelf: 'center' };
 
-  const TABS = [{ id: 'all', label: 'Résultat' }, { id: 'points', label: 'Points' }, { id: 'joueurs', label: 'Joueurs' }];
+  const TABS = [{ id: 'all', label: 'Résultat' }, { id: 'points', label: 'Points' }, { id: 'handicap', label: 'Écart H2H' }, { id: 'joueurs', label: 'Joueurs' }];
 
   const tabStyle = (id) => ({
     padding: '0.25rem 0.75rem', borderRadius: 5, border: '1px solid', cursor: 'pointer',
@@ -2636,7 +2651,7 @@ function OddsCard({ odds, home, away, league, homePlayers, awayPlayers, onRefres
   const showH2H = tab === 'all';
   const showTot = tab === 'all' || tab === 'points';
 
-  const cols = tab === 'all' ? COLS : tab === 'points' ? COLS_TOT : COLS_H2H;
+  const cols = tab === 'all' ? COLS : (tab === 'points' || tab === 'handicap') ? COLS_TOT : COLS_H2H;
 
   const oddsCardRef = useRef(null);
 
@@ -2730,6 +2745,14 @@ function OddsCard({ odds, home, away, league, homePlayers, awayPlayers, onRefres
           <div style={ch}>Total</div>
           <div style={ch}>Over</div>
           <div style={ch}>Under</div>
+        </div>
+      )}
+      {tab === 'handicap' && (
+        <div style={{ display: 'grid', gridTemplateColumns: COLS_TOT, gap: '0 0.25rem', paddingBottom: '0.35rem', borderBottom: '1px solid var(--border)', marginBottom: '0.2rem' }}>
+          <div />
+          <div style={ch}>Écart</div>
+          <div style={ch}>{home.short}</div>
+          <div style={ch}>{away.short}</div>
         </div>
       )}
 
@@ -2908,6 +2931,7 @@ function OddsCard({ odds, home, away, league, homePlayers, awayPlayers, onRefres
         const isPinnacle = bk === 'pinnacle';
         const h = h2h?.bookmakers?.[bk];
         const t = tot?.bookmakers?.[bk];
+        const sp = spread?.bookmakers?.[bk];
         const gridCols = tab === 'all' ? COLS_H2H : COLS_TOT;
         return (
           <div key={bk} style={{
@@ -2927,6 +2951,12 @@ function OddsCard({ odds, home, away, league, homePlayers, awayPlayers, onRefres
                 <OddsCell value={h?.away} edge={null} isPinnacle={isPinnacle} color={isPinnacle ? undefined : BK_COLORS[bk]} />
                 {ew?.bookmakers?.[bk]?.away && <span style={{ position: 'absolute', left: '50%', marginLeft: '1.3rem', fontSize: 9, color: 'var(--text-dim)', whiteSpace: 'nowrap', pointerEvents: 'none' }}>({ew.bookmakers[bk].away.toFixed(2)})</span>}
               </div>
+            </> : tab === 'handicap' ? <>
+              <div style={{ textAlign: 'center', fontSize: 10, fontVariantNumeric: 'tabular-nums', fontWeight: isPinnacle ? 700 : 400, color: 'var(--text)' }}>
+                {sp?.home?.line != null ? `${sp.home.line > 0 ? '+' : ''}${sp.home.line}` : '—'}
+              </div>
+              <OddsCell value={sp?.home?.odds} edge={null} isPinnacle={isPinnacle} color={isPinnacle ? undefined : BK_COLORS[bk]} />
+              <OddsCell value={sp?.away?.odds} edge={null} isPinnacle={isPinnacle} color={isPinnacle ? undefined : BK_COLORS[bk]} />
             </> : <>
               <div style={{ textAlign: 'center', fontSize: 10, fontVariantNumeric: 'tabular-nums', fontWeight: isPinnacle ? 700 : 400, color: 'var(--text)' }}>
                 {t?.line ?? '—'}
@@ -2998,6 +3028,32 @@ function OddsCard({ odds, home, away, league, homePlayers, awayPlayers, onRefres
       {tab === 'points' && gameTotalEstimate && fixture && (
         <GameTotalWidget estimate={gameTotalEstimate} fixture={fixture} tot={tot} edgePopupKey={edgePopupKey} setEdgePopupKey={setEdgePopupKey} edgePopupRef={edgePopupRef} />
       )}
+
+      {tab === 'handicap' && gameSpreadEstimate && (() => {
+        const { pHomeCovers, pAwayCovers, homeLine, refBk } = gameSpreadEstimate;
+        if (pHomeCovers == null || pAwayCovers == null) return null;
+        // Même code couleur que Modèle 1X2/O.U — vert ≥62%, orange 52-62%, rouge <52% (9 juillet 2026)
+        const items = [
+          { key: 'home', label: home?.short ?? 'Dom', line: homeLine, prob: Math.round(pHomeCovers) },
+          { key: 'away', label: away?.short ?? 'Ext', line: -homeLine, prob: Math.round(pAwayCovers) },
+        ];
+        return (
+          <div style={{ borderTop: '1px solid var(--border)', marginTop: '0.5rem', paddingTop: '0.5rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem', flexWrap: 'nowrap' }}>
+            <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-dim)', flexShrink: 0 }}>Modèle Écart{refBk ? ` (${BK_LABELS[refBk] ?? refBk})` : ''}</span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '1.1rem', flexWrap: 'nowrap', flexShrink: 0 }}>
+              {items.map(it => {
+                const probColor = it.prob >= 62 ? '#10b981' : it.prob >= 52 ? '#f59e0b' : '#ef4444';
+                return (
+                  <span key={it.key} style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                    <span style={{ fontSize: 9, fontWeight: 700, color: 'var(--text)' }}>{it.label} {it.line > 0 ? '+' : ''}{it.line}</span>
+                    <span style={{ fontSize: 8, fontWeight: 600, color: probColor }}>{it.prob}%</span>
+                  </span>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }
@@ -3071,6 +3127,7 @@ export default function BasketballDetailPage() {
   const [gameSchedules, setGameSchedules]     = useState(null);
   const [gameTotalEstimate, setGameTotalEstimate] = useState(null);
   const [resultEstimate, setResultEstimate] = useState(null);
+  const [gameSpreadEstimate, setGameSpreadEstimate] = useState(null);
   const [showOddsDropdown, setShowOddsDropdown] = useState(fromAlert);
   const [oddsTab, setOddsTab] = useState(fromAlert ? 'joueurs' : 'all'); // onglet actif de la boîte Odds — pilote l'affichage des cartes en dessous
   const [homeNames, setHomeNames]       = useState(Array(5).fill(''));
@@ -3538,6 +3595,24 @@ export default function BasketballDetailPage() {
         homePlayers: patchedHomePlayers, awayPlayers: patchedAwayPlayers,
       }),
     }).then(r => r.json()).then(d => setResultEstimate(d?.error ? null : d)).catch(() => setResultEstimate(null));
+
+    // Écart de points (Handicap, 9 juillet 2026) — même source unique que Résultat/Total, réutilise
+    // computeTeamWinProb côté serveur (marge attendue + écart-type déjà ancrés saison).
+    const spBks = bballOdds?.markets?.spread?.bookmakers ?? {};
+    const spRefBk = ['unibet', 'betclic'].find(b => spBks[b]?.home?.line != null);
+    const spHomeLine = spRefBk ? spBks[spRefBk].home.line : null;
+    if (spHomeLine != null) {
+      fetch('/api/basketball/spread', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          homeGames: gameSchedules.home, awayGames: gameSchedules.away,
+          gameDate: fixture.date, round: fixture.round, league: fixture.league, homeLine: spHomeLine,
+          homePlayers: patchedHomePlayers, awayPlayers: patchedAwayPlayers,
+        }),
+      }).then(r => r.json()).then(d => setGameSpreadEstimate(d?.error ? null : { ...d, refBk: spRefBk })).catch(() => setGameSpreadEstimate(null));
+    } else {
+      setGameSpreadEstimate(null);
+    }
   }, [gameSchedules, bballOdds, outerInjuryData]);
 
   // Reset + fetch cotes quand le match change
@@ -3838,7 +3913,7 @@ export default function BasketballDetailPage() {
 
       {showOddsDropdown && (bballOdds?.found || (isEuroleague && bballOdds !== null)) && (
         <section className="detail-card compact-card" style={{ marginBottom: '0.5rem' }}>
-          <OddsCard key={fixture?.id} odds={bballOdds} home={home} away={away} league={fixture.league} homePlayers={homePlayers} awayPlayers={(awayPlayers||[]).filter(p=>!new Set((homePlayers||[]).map(p=>String(p.id))).has(String(p.id)))} onRefresh={refreshOdds} refreshing={oddsRefreshing} defaultTab={fromAlert ? 'joueurs' : 'all'} gameTotalEstimate={!isCompleted ? gameTotalEstimate : null} resultEstimate={!isCompleted ? resultEstimate : null} fixture={fixture} onTabChange={(id) => { setOddsTab(id); if (id === 'joueurs') { setShowProps(true); setPropsCollapsed(false); } else { setPropsCollapsed(true); } }} onTeamChange={setOddsTeam} showHomeOverride={oddsTeam} eventId={bballOdds?.eventId ?? null} />
+          <OddsCard key={fixture?.id} odds={bballOdds} home={home} away={away} league={fixture.league} homePlayers={homePlayers} awayPlayers={(awayPlayers||[]).filter(p=>!new Set((homePlayers||[]).map(p=>String(p.id))).has(String(p.id)))} onRefresh={refreshOdds} refreshing={oddsRefreshing} defaultTab={fromAlert ? 'joueurs' : 'all'} gameTotalEstimate={!isCompleted ? gameTotalEstimate : null} resultEstimate={!isCompleted ? resultEstimate : null} gameSpreadEstimate={!isCompleted ? gameSpreadEstimate : null} fixture={fixture} onTabChange={(id) => { setOddsTab(id); if (id === 'joueurs') { setShowProps(true); setPropsCollapsed(false); } else { setPropsCollapsed(true); } }} onTeamChange={setOddsTeam} showHomeOverride={oddsTeam} eventId={bballOdds?.eventId ?? null} />
         </section>
       )}
 

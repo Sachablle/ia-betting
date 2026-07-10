@@ -4797,6 +4797,43 @@ app.post('/api/basketball/total', async (req, res) => {
   });
 });
 
+// Écart de points (Handicap, 9 juillet 2026) — même source unique que Résultat/Total : réutilise
+// computeTeamWinProb (marge attendue + écart-type, ancrage saison + pénalité Out déjà intégrés),
+// puis évalue la probabilité de couvrir la ligne bookmaker via computeSpreadCoverProb. Pour que le
+// widget "Modèle Écart" de la page détail affiche exactement le même chiffre qu'une future alerte.
+app.post('/api/basketball/spread', async (req, res) => {
+  const { homeGames, awayGames, gameDate, round, league, homeLine, homePlayers, awayPlayers } = req.body || {};
+  if (!homeGames?.length || !awayGames?.length || !gameDate || homeLine == null) return res.status(400).json({ error: 'homeGames/awayGames/gameDate/homeLine requis' });
+
+  const isWNBA = league === 'wnba';
+  const isEU = league && league !== 'nba' && league !== 'wnba';
+  const scaleF = isEU ? NBA_REF_BG / (EU_LEAGUE_CONST_BG[league] || NBA_REF_BG) : 1;
+  const scaleGames   = arr => scaleF === 1 ? arr : arr.map(g => ({ ...g, ptsScored: (g.ptsScored || 0) * scaleF, ptsAllowed: (g.ptsAllowed || 0) * scaleF }));
+  const scalePlayers = arr => scaleF === 1 ? (arr || []) : (arr || []).map(p => ({ ...p, stats: { ...p.stats, pts: (p.stats?.pts || 0) * scaleF } }));
+
+  const gamelogFn = isWNBA ? bgFetchWNBAGamelog : isEU ? (id => bgFetchEUGamelog(id, league, `http://localhost:${process.env.PORT || 3001}`)) : bgFetchGamelog;
+  const [homePlayersF, awayPlayersF] = await Promise.all([
+    filterSeasonLongOut(homePlayers, gamelogFn), filterSeasonLongOut(awayPlayers, gamelogFn),
+  ]);
+  const homeOutPenalty = calcKeyPlayerOutPenalty(scalePlayers(homePlayersF));
+  const awayOutPenalty = calcKeyPlayerOutPenalty(scalePlayers(awayPlayersF));
+
+  const result = computeTeamWinProb({
+    homeGames: scaleGames(homeGames), awayGames: scaleGames(awayGames),
+    gameDate, round: round || '', isWNBA, homeOutPenalty, awayOutPenalty,
+  });
+  if (!result) return res.json({ error: 'insufficient data' });
+
+  const cover = computeSpreadCoverProb(result.marginExpected, result.std, homeLine);
+  if (!cover) return res.json({ error: 'insufficient data' });
+
+  res.json({
+    homeLine, marginExpected: result.marginExpected, std: result.std,
+    pHomeCovers: +(cover.pHomeCovers * 100).toFixed(1),
+    pAwayCovers: +(cover.pAwayCovers * 100).toFixed(1),
+  });
+});
+
 async function _refreshBasketballOdds(home, away, league, cacheKey, cached, matchStarted, matchTeam) {
   const [ubData, bcMatches, wmMatches] = await Promise.all([
     fetchUnibetBasketData(home, away, league).catch(() => null),
@@ -4822,6 +4859,14 @@ async function _refreshBasketballOdds(home, away, league, cacheKey, cached, matc
   if (ubData?.totals) {
     markets.totals = markets.totals || { bookmakers: {} };
     markets.totals.bookmakers.unibet = ubData.totals;
+  }
+  if (ubData?.spread) {
+    markets.spread = markets.spread || { bookmakers: {} };
+    markets.spread.bookmakers.unibet = ubData.spread;
+  }
+  if (ubData?.spreadAllLines) {
+    markets.spreadAllLines = markets.spreadAllLines || { bookmakers: {} };
+    markets.spreadAllLines.bookmakers.unibet = ubData.spreadAllLines;
   }
 
   // Betclic via scraping
@@ -4879,6 +4924,14 @@ async function _refreshBasketballOdds(home, away, league, cacheKey, cached, matc
     markets.totals = markets.totals || { bookmakers: {} };
     markets.totals.bookmakers.betclic = bcDetails.totals;
   }
+  if (bcDetails?.spread) {
+    markets.spread = markets.spread || { bookmakers: {} };
+    markets.spread.bookmakers.betclic = bcDetails.spread;
+  }
+  if (bcDetails?.spreadAllLines) {
+    markets.spreadAllLines = markets.spreadAllLines || { bookmakers: {} };
+    markets.spreadAllLines.bookmakers.betclic = bcDetails.spreadAllLines;
+  }
   if (bcDetails?.earlywin) {
     markets.earlywin = markets.earlywin || { bookmakers: {} };
     markets.earlywin.bookmakers.betclic = bcDetails.earlywin;
@@ -4901,6 +4954,14 @@ async function _refreshBasketballOdds(home, away, league, cacheKey, cached, matc
   if (!bcDetails?.totals && prevMarkets?.totals?.bookmakers?.betclic) {
     markets.totals = markets.totals || { bookmakers: {} };
     markets.totals.bookmakers.betclic = prevMarkets.totals.bookmakers.betclic;
+  }
+  if (!bcDetails?.spread && prevMarkets?.spread?.bookmakers?.betclic) {
+    markets.spread = markets.spread || { bookmakers: {} };
+    markets.spread.bookmakers.betclic = prevMarkets.spread.bookmakers.betclic;
+  }
+  if (!bcDetails?.spreadAllLines && prevMarkets?.spreadAllLines?.bookmakers?.betclic) {
+    markets.spreadAllLines = markets.spreadAllLines || { bookmakers: {} };
+    markets.spreadAllLines.bookmakers.betclic = prevMarkets.spreadAllLines.bookmakers.betclic;
   }
   if (!bcDetails?.earlywin && prevMarkets?.earlywin?.bookmakers?.betclic) {
     markets.earlywin = markets.earlywin || { bookmakers: {} };
@@ -5105,8 +5166,48 @@ async function fetchBetclicMatchDetails(home, away, league = 'nba') {
     }
   }
 
+  // 6b. Écart de points (Handicap, 9 juillet 2026) — Betclic expose ça comme des paires de
+  // sélections en langage clair ("Équipe gagne de N ou +" / "Équipe ne perd pas ou perd de N ou -")
+  // plutôt qu'un handicap ±X.5 classique — reconstruit la ligne .5 équivalente à partir de N.
+  let spread = null;
+  let spreadAllLines = null;
+  const spreadMk = mkList.find(mk => mk.name === 'Écart de points entre les équipes');
+  if (spreadMk) {
+    const normStrSpread = s => (s || '').toLowerCase().replace(/[^a-z]/g, '');
+    const spreadHomeKey = normStrSpread(lwrdBc(home));
+    const spreadAwayKey = normStrSpread(lwrdBc(away));
+    const lineMap = {};
+    for (const row of spreadMk.selectionMatrix || []) {
+      for (const s of row.selections || []) {
+        const sel = s.selectionOneof?.selection ?? s;
+        if (!sel.name || !sel.odds) continue;
+        const winM  = sel.name.match(/^(.+?)\s+gagne de\s+(\d+)\s+ou\s*\+$/i);
+        const loseM = sel.name.match(/^(.+?)\s+ne perd pas ou perd de\s+(\d+)\s+ou\s*-$/i);
+        let team, line;
+        if (winM)       { team = winM[1];  line = -(parseInt(winM[2], 10) - 0.5); }
+        else if (loseM) { team = loseM[1]; line = +(parseInt(loseM[2], 10) - 0.5); }
+        else continue;
+        const isHomeSel = normStrSpread(team).includes(spreadHomeKey);
+        const isAwaySel = normStrSpread(team).includes(spreadAwayKey);
+        if (!isHomeSel && !isAwaySel) continue;
+        const key = Math.abs(line);
+        if (!lineMap[key]) lineMap[key] = {};
+        if (isHomeSel) lineMap[key].home = { line, odds: sel.odds };
+        else           lineMap[key].away = { line, odds: sel.odds };
+      }
+    }
+    const cands = Object.values(lineMap).filter(v => v.home && v.away);
+    if (cands.length) {
+      const pickBest = cs => cs.reduce((best, c) => Math.abs(1/c.home.odds - 1/c.away.odds) < Math.abs(1/best.home.odds - 1/best.away.odds) ? c : best, cs[0]);
+      spread = pickBest(cands);
+      spreadAllLines = cands.sort((a, b) => a.home.line - b.home.line);
+    }
+  }
+
   return {
     ...(totals ? { totals } : {}),
+    ...(spread ? { spread } : {}),
+    ...(spreadAllLines ? { spreadAllLines } : {}),
     ...(earlywin ? { earlywin } : {}),
     ...(Object.keys(players).length ? { players } : {}),
   };
@@ -5228,6 +5329,29 @@ async function fetchUnibetBasketData(home, away, league = 'nba') {
     if (cands.length) {
       const best = cands.reduce((b, c) => Math.abs(1/c.over - 1/c.under) < Math.abs(1/b.over - 1/b.under) ? c : b);
       result.totals = best;
+    }
+  }
+
+  // 5b. Handicap / Écart de points (9 juillet 2026) — Unibet expose un champ "spread" numérique
+  // propre par issue (ex: -8.5/+8.5), pas besoin de parser du texte comme pour Betclic.
+  const spreadGroup = gm.find(g => g.description === 'Face à Face Handicap Points - Match');
+  if (spreadGroup) {
+    const spreadHomeKey = isEuroLeague ? teamSlug(home).slice(0, 6) : norm(lwrd(home));
+    const spreadAwayKey = isEuroLeague ? teamSlug(away).slice(0, 6) : norm(lwrd(away));
+    const cands = [];
+    for (const mk of spreadGroup.markets || []) {
+      const outs = mk.outcomes || [];
+      const homeOut = outs.find(o => norm(o.description).includes(spreadHomeKey));
+      const awayOut = outs.find(o => norm(o.description).includes(spreadAwayKey));
+      if (!homeOut || !awayOut || homeOut.spread == null || awayOut.spread == null) continue;
+      const homeSide = { line: homeOut.spread, odds: price(homeOut.price) };
+      const awaySide = { line: awayOut.spread, odds: price(awayOut.price) };
+      if (homeSide.odds && awaySide.odds) cands.push({ home: homeSide, away: awaySide });
+    }
+    if (cands.length) {
+      const best = cands.reduce((b, c) => Math.abs(1/c.home.odds - 1/c.away.odds) < Math.abs(1/b.home.odds - 1/b.away.odds) ? c : b);
+      result.spread = best;
+      result.spreadAllLines = cands.sort((a, b) => a.home.line - b.home.line);
     }
   }
 
@@ -8490,6 +8614,10 @@ function computeGameTotalFull({ homeGames, awayGames, avgPtsAllowed, ouBaseline,
 // absence titulaire clé), converti en proba de victoire via Student t df=4 — même esprit
 // que le modèle Poisson foot (indépendant des cotes, comparé ensuite au marché pour l'edge).
 const RESULT_ALERT_PROB     = 0.75;
+// Écart H2H (Handicap, 9 juillet 2026) — mêmes seuils que Résultat (même modèle sous-jacent,
+// marginExpected/std), alignés sur demande explicite de l'utilisateur (pas de traitement à part).
+const SPREAD_ALERT_PROB     = 0.75;
+const SPREAD_MIN_ODDS       = 1.60;
 const HOME_COURT_PTS        = 2.5;  // avantage terrain moyen, en points de marge (échelle NBA)
 const KEY_PLAYER_PTS        = 15;   // seuil "titulaire clé" pour la pénalité Out (échelle NBA — EU déjà recalé)
 const KEY_PLAYER_OUT_FACTOR = 0.4;  // part de sa moyenne pts retirée du rating équipe (le reste redistribué aux coéquipiers ailleurs dans l'app)
@@ -8554,6 +8682,47 @@ function computeTeamWinProb({ homeGames, awayGames, gameDate, round, isWNBA = fa
   const pAway = 1 - pHome;
 
   return { pHome, pAway, marginExpected: +marginExpected.toFixed(1), std: +std.toFixed(1) };
+}
+
+// Probabilité de couvrir un écart de points (Handicap, 9 juillet 2026) — réutilise marginExpected/
+// std déjà calculés par computeTeamWinProb, même principe que computeGameTotalFull pour les totaux
+// (P(marge > seuil) via Student-t df4). `homeLine` = ligne handicap côté domicile (ex: -8.5 si
+// l'équipe qui reçoit est favorite de 8.5, +8.5 si outsider) — même convention que le champ `spread`
+// scrapé (natif chez Unibet, reconstruit en .5 équivalent chez Betclic).
+function computeSpreadCoverProb(marginExpected, std, homeLine) {
+  if (marginExpected == null || !std || homeLine == null) return null;
+  const threshold = -homeLine; // marge nécessaire pour que le domicile couvre
+  const rawPHome = 1 - tCDF4((threshold - marginExpected) / std);
+  const pHomeCovers = Math.max(0.02, Math.min(0.98, rawPHome));
+  return { pHomeCovers, pAwayCovers: 1 - pHomeCovers };
+}
+
+// Recherche dans l'échelle de lignes Écart H2H (9 juillet 2026) — même principe que
+// findLadderAlternative pour les props : si la ligne la plus équilibrée ne suffit pas (cote trop
+// juste ou probabilité sous le plancher), cherche une ligne plus large où la cote reste ≥ minOdds
+// et où la probabilité de couverture (recalculée à cette ligne précise, jamais réutilisée) dépasse
+// le plancher. `spreadAllLinesBks` = { unibet: [...], betclic: [...] } (cf. spreadAllLines scrapé).
+// `lineScale` (EU uniquement) : les lignes bookmaker sont en points réels de la ligue, alors que
+// marginExpected/std sont déjà recalés en équivalent NBA (comme le reste du modèle Résultat EU) —
+// on rescale la ligne juste pour l'évaluation de proba, la valeur affichée/pariée reste réelle.
+function findSpreadLadderAlternative({ direction, spreadAllLinesBks, marginExpected, std, minOdds = SPREAD_MIN_ODDS, probFloor = SPREAD_ALERT_PROB, lineScale = 1 }) {
+  const ladder = [
+    ...(spreadAllLinesBks?.unibet  || []).map(l => ({ ...l, book: 'unibet'  })),
+    ...(spreadAllLinesBks?.betclic || []).map(l => ({ ...l, book: 'betclic' })),
+  ];
+  if (!ladder.length) return null;
+  let best = null;
+  for (const cand of ladder) {
+    const side = direction === 'home' ? cand.home : cand.away;
+    if (!side || side.odds == null || side.odds < minOdds) continue;
+    const homeLine = (direction === 'home' ? side.line : -side.line) * lineScale;
+    const cover = computeSpreadCoverProb(marginExpected, std, homeLine);
+    if (!cover) continue;
+    const p = direction === 'home' ? cover.pHomeCovers : cover.pAwayCovers;
+    if (p < probFloor) continue;
+    if (!best || p > best.p) best = { line: side.line, odds: side.odds, book: cand.book, p };
+  }
+  return best;
 }
 
 // Pénalité Out à partir d'un roster (joueurs avec stats.pts, échelle déjà recalée si EU)
@@ -10662,6 +10831,43 @@ async function generateBackgroundAlerts() {
             refreshOrDropPendingById(newAlerts, `${g.id}_eu_result_${side}`, +(prob * 100).toFixed(1), prob >= RESULT_ALERT_PROB && bestOdds >= RESULT_MIN_ODDS,
               { probability: +(prob * 100).toFixed(1), margin: result.marginExpected }, `${(prob*100).toFixed(1)}%`);
           }
+
+          // Écart H2H (Handicap, 9 juillet 2026) — mêmes seuils que Résultat, ligne rescalée en
+          // équivalent NBA pour l'évaluation (marginExpected déjà sur cette échelle), ligne réelle
+          // conservée pour l'affichage/pari. Corrélation signalée si Résultat déjà accepté même sens.
+          const spreadAllLinesBksEU = oddsData?.markets?.spreadAllLines?.bookmakers || {};
+          if (Object.keys(spreadAllLinesBksEU).length) {
+            const spreadCreatedSidesEU = new Set();
+            for (const side of ['home', 'away']) {
+              const alt = findSpreadLadderAlternative({ direction: side, spreadAllLinesBks: spreadAllLinesBksEU, marginExpected: result.marginExpected, std: result.std, lineScale: scaleF });
+              if (!alt) continue;
+              const alertId = `${g.id}_eu_spread_${side}`;
+              if (newAlerts.find(a => a.id === alertId)) { spreadCreatedSidesEU.add(side); continue; }
+              const resultAccepted = _acceptedAlerts.find(a => a.type === 'basketball_result' && a.eventId === g.id && a.direction === side);
+              newAlerts.push({
+                id: alertId, type: 'basketball_spread', league: euLeague,
+                eventId: g.id, home: g.home.name, away: g.away.name,
+                homeShort: g.home.short, awayShort: g.away.short,
+                date: g.date, direction: side,
+                teamName: side === 'home' ? g.home.name : g.away.name,
+                teamShort: side === 'home' ? g.home.short : g.away.short,
+                line: alt.line, probability: +(alt.p * 100).toFixed(1),
+                margin: result.marginExpected, odds: alt.odds, bookmaker: alt.book,
+                ...(resultAccepted ? { matchCorrelation: { type: 'basketball_result', probability: resultAccepted.probability } } : {}),
+                savedAt: Date.now(),
+              });
+              spreadCreatedSidesEU.add(side);
+            }
+            for (const side of ['home', 'away']) {
+              if (spreadCreatedSidesEU.has(side)) continue;
+              const stillAlt = findSpreadLadderAlternative({ direction: side, spreadAllLinesBks: spreadAllLinesBksEU, marginExpected: result.marginExpected, std: result.std, probFloor: 0, lineScale: scaleF });
+              const prob = stillAlt?.p ?? 0;
+              refreshOrDropPendingById(newAlerts, `${g.id}_eu_spread_${side}`, +(prob * 100).toFixed(1),
+                !!stillAlt && stillAlt.odds >= SPREAD_MIN_ODDS && prob >= SPREAD_ALERT_PROB,
+                { probability: +(prob * 100).toFixed(1), margin: result.marginExpected, line: stillAlt?.line, odds: stillAlt?.odds }, `${(prob*100).toFixed(1)}%`);
+            }
+          }
+
           // Pinnacle H2H edge — EU
           if (h2hBks.pinnacle?.home && h2hBks.pinnacle?.away) {
             const pinH2H = h2hBks.pinnacle;
@@ -10794,6 +11000,45 @@ async function generateBackgroundAlerts() {
               refreshOrDropPendingById(newAlerts, `${g.id}_${leagueKey}_result_${side}`, +(prob * 100).toFixed(1), prob >= RESULT_ALERT_PROB && bestOdds >= RESULT_MIN_ODDS,
                 { probability: +(prob * 100).toFixed(1), margin: result.marginExpected }, `${(prob*100).toFixed(1)}%`);
             }
+
+            // Écart H2H (Handicap, 9 juillet 2026) — mêmes seuils que Résultat (même modèle
+            // marginExpected/std), recherche dans l'échelle de lignes (findSpreadLadderAlternative)
+            // si la ligne la plus équilibrée ne suffit pas. Corrélation signalée si une alerte
+            // Résultat déjà acceptée porte sur le même match/sens — même ressource (marge de
+            // victoire), pas un edge indépendant (cf. cas Ogwumike/Hamby généralisé à l'équipe).
+            const spreadAllLinesBks = oddsData?.markets?.spreadAllLines?.bookmakers || {};
+            if (Object.keys(spreadAllLinesBks).length) {
+              const spreadCreatedSides = new Set();
+              for (const side of ['home', 'away']) {
+                const alt = findSpreadLadderAlternative({ direction: side, spreadAllLinesBks, marginExpected: result.marginExpected, std: result.std });
+                if (!alt) continue;
+                const alertId = `${g.id}_${leagueKey}_spread_${side}`;
+                if (newAlerts.find(a => a.id === alertId)) { spreadCreatedSides.add(side); continue; }
+                const resultAccepted = _acceptedAlerts.find(a => a.type === 'basketball_result' && a.eventId === g.id && a.direction === side);
+                newAlerts.push({
+                  id: alertId, type: 'basketball_spread', league: leagueKey,
+                  eventId: g.id, home: g.home.name, away: g.away.name,
+                  homeShort: g.home.short, awayShort: g.away.short,
+                  date: g.date, direction: side,
+                  teamName: side === 'home' ? g.home.name : g.away.name,
+                  teamShort: side === 'home' ? g.home.short : g.away.short,
+                  line: alt.line, probability: +(alt.p * 100).toFixed(1),
+                  margin: result.marginExpected, odds: alt.odds, bookmaker: alt.book,
+                  ...(resultAccepted ? { matchCorrelation: { type: 'basketball_result', probability: resultAccepted.probability } } : {}),
+                  savedAt: Date.now(),
+                });
+                spreadCreatedSides.add(side);
+              }
+              for (const side of ['home', 'away']) {
+                if (spreadCreatedSides.has(side)) continue;
+                const stillAlt = findSpreadLadderAlternative({ direction: side, spreadAllLinesBks, marginExpected: result.marginExpected, std: result.std, probFloor: 0 });
+                const prob = stillAlt?.p ?? 0;
+                refreshOrDropPendingById(newAlerts, `${g.id}_${leagueKey}_spread_${side}`, +(prob * 100).toFixed(1),
+                  !!stillAlt && stillAlt.odds >= SPREAD_MIN_ODDS && prob >= SPREAD_ALERT_PROB,
+                  { probability: +(prob * 100).toFixed(1), margin: result.marginExpected, line: stillAlt?.line, odds: stillAlt?.odds }, `${(prob*100).toFixed(1)}%`);
+              }
+            }
+
             // Pinnacle H2H edge — NBA/WNBA
             if (h2hBks.pinnacle?.home && h2hBks.pinnacle?.away) {
               const pinH2H = h2hBks.pinnacle;
@@ -11955,6 +12200,7 @@ async function runAutoSettle() {
   const propsToCheck    = toCheck.filter(a => a.type === 'player_prop');
   const totalsToCheck   = toCheck.filter(a => a.type === 'game_total' || a.type === 'basketball_pinnacle_edge');
   const resultsToCheck  = toCheck.filter(a => a.type === 'basketball_result');
+  const spreadsToCheck  = toCheck.filter(a => a.type === 'basketball_spread');
   const footballToCheck = toCheck.filter(a => ['football_btts', 'football_total', 'football_result', 'football_dc_btts', 'football_dc_ou'].includes(a.type));
 
   const byMatch = {};
@@ -12079,6 +12325,24 @@ async function runAutoSettle() {
       const settledAt4 = Date.now();
       _settlements.push({ id: a.id, status, line: null, edge: a.edge, league: a.league, probability: a.acceptedProbability ?? a.probability, settledAt: settledAt4 });
       archiveBet(a, { status, actualHomeScore: score.homeScore, actualAwayScore: score.awayScore, settledAt: settledAt4 });
+      _acceptedAlerts = _acceptedAlerts.filter(x => x.id !== a.id);
+      _saveAccepted(); _saveSettlements();
+    } catch {}
+  }
+
+  // Écart H2H basket (Handicap, 9 juillet 2026) — même mécanisme que Résultat ci-dessus, la marge
+  // finale (homeScore - awayScore) est comparée à la ligne pariée (a.direction 'home'/'away',
+  // a.line du point de vue du camp parié, ex: home -8.5 → couvre si marge > 8.5).
+  for (const a of spreadsToCheck) {
+    try {
+      const score = await fetchFinalScoreBg(a.league, a.fixtureDate, a.home, a.away, a.homeShort, a.awayShort);
+      if (!score) continue;
+      const margin = score.homeScore - score.awayScore;
+      const actualMargin = a.direction === 'home' ? margin : -margin;
+      const status = actualMargin > -a.line ? 'won' : 'lost';
+      const settledAt5 = Date.now();
+      _settlements.push({ id: a.id, status, actualStat: margin, line: a.line, league: a.league, probability: a.acceptedProbability ?? a.probability, settledAt: settledAt5 });
+      archiveBet(a, { status, actualHomeScore: score.homeScore, actualAwayScore: score.awayScore, settledAt: settledAt5 });
       _acceptedAlerts = _acceptedAlerts.filter(x => x.id !== a.id);
       _saveAccepted(); _saveSettlements();
     } catch {}
