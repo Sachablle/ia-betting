@@ -6,6 +6,7 @@ import { readFileSync, writeFileSync, writeFile, existsSync, mkdirSync } from 'f
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { MongoClient } from 'mongodb';
+import { promises as dnsPromises } from 'dns';
 import { computeEstimate, calcStd, isConsistentStat, winsorizeRecent, getShotVolumeAnchor, probAtLeast, tCDF4, getRestFactor, getScheduleDensityFactor, isPlayoffRound, toDefCat, getDefByPosFactor } from './compute.js';
 import { computeLambdas, computeBTTSProb, computeOUProb, compute1X2Probs, computeDCBTTSProbs, computeDCOverProbs } from './computeFootball.js';
 
@@ -586,9 +587,42 @@ async function getMongoDb() {
   return _mongoClient.db('ia-betting');
 }
 
+// ── Watchdog réseau ──────────────────────────────────────────────────────────
+// Incident vécu le 11 juillet 2026 : le process a cessé de résoudre TOUS les
+// noms de domaine externes (ENOTFOUND simultané sur rotowire/ESPN/football-data),
+// probablement le threadpool libuv (résolutions DNS) saturé par la charge de
+// scraping concurrente de l'app — sans jamais crasher, donc les alertes se sont
+// arrêtées en silence pendant des heures. Mitigé à la racine en relevant
+// UV_THREADPOOL_SIZE (package.json). Ce watchdog est le filet de sécurité si ça
+// se reproduit : un ping DNS léger toutes les 2 min, log impossible à rater dès
+// 3 échecs d'affilée (~6 min). `node --watch` ne redémarre PAS tout seul après
+// un crash (seulement sur modif de fichier) — donc pas d'auto-exit ici, juste
+// un signal fort pour agir vite (redémarrage manuel : npm run dev).
+let _netFailStreak = 0;
+let _netLastCheckOk = true;
+async function _networkWatchdog() {
+  try {
+    await Promise.race([
+      dnsPromises.lookup('www.espn.com'),
+      new Promise((_, rej) => setTimeout(() => rej(new Error('timeout 5s')), 5000)),
+    ]);
+    if (_netFailStreak >= 3) console.log(`✅ [watchdog] réseau rétabli après ${_netFailStreak} échecs`);
+    _netFailStreak = 0;
+    _netLastCheckOk = true;
+  } catch (e) {
+    _netFailStreak++;
+    _netLastCheckOk = false;
+    if (_netFailStreak === 3) {
+      console.error(`🔴🔴🔴 [watchdog] RÉSEAU DNS EN PANNE (${e.message}) — les alertes ne se génèrent probablement plus depuis ~6min. node --watch ne redémarre PAS tout seul : relancer le process (npm run dev).`);
+    } else if (_netFailStreak > 3 && _netFailStreak % 5 === 0) {
+      console.error(`🔴 [watchdog] réseau toujours en panne (streak ${_netFailStreak}, ${Math.round(_netFailStreak * 2)}min)`);
+    }
+  }
+}
+
 // ── Routes ───────────────────────────────────────────────────────────────────
 
-app.get('/api/health', (req, res) => res.json({ ok: true, timestamp: new Date().toISOString() }));
+app.get('/api/health', (req, res) => res.json({ ok: true, timestamp: new Date().toISOString(), networkOk: _netLastCheckOk, netFailStreak: _netFailStreak }));
 
 app.get('/api/sync-events', (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
@@ -4915,6 +4949,18 @@ async function _refreshBasketballOdds(home, away, league, cacheKey, cached, matc
           ? { home: pinMatch.h2h.away, away: pinMatch.h2h.home }
           : { home: pinMatch.h2h.home, away: pinMatch.h2h.away };
       }
+      // Écart H2H (Handicap, 11 juillet 2026) — même gestion d'inversion home/away que h2h ci-dessus
+      // (Pinnacle peut désigner l'équipe "domicile" différemment de notre source ESPN).
+      if (pinMatch.spread) {
+        const isReversedSpread = matchTeam(pinMatch.homeTeam, away) && matchTeam(pinMatch.awayTeam, home);
+        const swapSide = s => isReversedSpread ? { home: s.away, away: s.home } : s;
+        markets.spread = markets.spread || { bookmakers: {} };
+        markets.spread.bookmakers.pinnacle = swapSide(pinMatch.spread);
+        if (pinMatch.spreadAllLines?.length) {
+          markets.spreadAllLines = markets.spreadAllLines || { bookmakers: {} };
+          markets.spreadAllLines.bookmakers.pinnacle = pinMatch.spreadAllLines.map(swapSide);
+        }
+      }
     }
   }
 
@@ -5974,6 +6020,27 @@ async function _fetchPinnacleLeagueOdds(leagueId, sportType) {
       }
     }
 
+    // Écart H2H (Handicap, 11 juillet 2026) — même API que h2h/totaux, marché "spread" de Pinnacle.
+    // basketball uniquement (football a son propre chemin de scraping Playwright, non concerné).
+    if (sportType === 'basketball') {
+      const spreadMkts = matchMarkets.filter(m => m.type === 'spread');
+      if (spreadMkts.length) {
+        const toSide = m => {
+          const hp = m.prices.find(p => p.designation === 'home');
+          const ap = m.prices.find(p => p.designation === 'away');
+          if (!hp || !ap) return null;
+          return { home: { line: hp.points, odds: _pinDecimal(hp.price) }, away: { line: ap.points, odds: _pinDecimal(ap.price) } };
+        };
+        const allLines = spreadMkts.map(toSide).filter(Boolean).sort((a, b) => a.home.line - b.home.line);
+        if (allLines.length) {
+          result.spreadAllLines = allLines;
+          const mainMkt = spreadMkts.find(m => !m.isAlternate);
+          result.spread = mainMkt ? toSide(mainMkt) : allLines.reduce((best, c) =>
+            Math.abs(1 / c.home.odds - 1 / c.away.odds) < Math.abs(1 / best.home.odds - 1 / best.away.odds) ? c : best, allLines[0]);
+        }
+      }
+    }
+
     if (sportType === 'basketball') {
       result.line  ??= NaN;
       result.over  ??= NaN;
@@ -5981,7 +6048,7 @@ async function _fetchPinnacleLeagueOdds(leagueId, sportType) {
       result.h2h   ??= null;
     }
 
-    if (result.h2h || result.totals || !Number.isNaN(result.line)) results.push(result);
+    if (result.h2h || result.totals || !Number.isNaN(result.line) || result.spread) results.push(result);
   }
   return results;
 }
@@ -12468,6 +12535,10 @@ app.listen(PORT, () => {
   // Start background alert job: first run after 2s, then every 20min
   setTimeout(generateBackgroundAlerts, 2_000);
   setInterval(generateBackgroundAlerts, 20 * 60 * 1000);
+
+  // Watchdog réseau — ping DNS léger toutes les 2 min (voir commentaire à la définition)
+  setInterval(_networkWatchdog, 2 * 60 * 1000);
+  _networkWatchdog();
 
   // Auto-settle : toutes les 3 min
   setInterval(() => runAutoSettle().catch(() => {}), 3 * 60 * 1000);

@@ -6,6 +6,23 @@
 
 import { setItem as cloudSet } from './cloudStorage.js';
 
+// Écrit `alerts` dans la clé localStorage `key` en préservant toute entrée déjà en storage dont le
+// statut est décisif (accepted/rejected/won/lost/void) et absente du sous-ensemble écrit. Sans ça,
+// une page qui ne garde qu'une fenêtre récente en state (ex. rawAlerts ~7j) peut écraser
+// silencieusement un pari tout juste accepté par un autre onglet/cycle utilisant un state obsolète
+// — fix du 6 juillet 2026 pour ALERT_KEY seul, généralisé à toutes les clés le 11 juillet 2026 après
+// l'incident Breanna Stewart (alerte acceptée disparue sans trace, écrasée par une écriture
+// concurrente qui ne la protégeait pas encore).
+const PROTECTED_STATUSES = new Set(['accepted', 'rejected', 'won', 'lost', 'void']);
+export function persistAlertsKey(key, alerts) {
+  try {
+    const current = JSON.parse(localStorage.getItem(key) || '[]');
+    const writtenIds = new Set(alerts.map(a => a.id));
+    const preservedOld = current.filter(a => PROTECTED_STATUSES.has(a.status) && !writtenIds.has(a.id));
+    cloudSet(key, JSON.stringify([...alerts, ...preservedOld]));
+  } catch { cloudSet(key, JSON.stringify(alerts)); }
+}
+
 const ALERT_KEY     = 'nba_prop_alerts';
 const HISTORY_KEY   = 'nba_bet_history';
 const GAME_TOTAL_KEY = 'nba_game_total_alerts';
@@ -24,7 +41,10 @@ const PURGE_PLAYERS = ['Justin Bean', 'Jack Kayil', 'Leandro Bolmaro'];
 // quelle page. Boucle sur toutes les clés d'alertes connues (props, total, résultat équipe, foot)
 // pour que chaque type bénéficie du même règlement serveur — un seul endroit à étendre pour un
 // futur type d'alerte (22 juin 2026, avant ça seul ALERT_KEY/props était couvert ici).
-const SETTLEABLE_KEYS = [ALERT_KEY, GAME_TOTAL_KEY, BASKETBALL_RESULT_KEY, FB_BTTS_KEY, FB_TOTAL_KEY, FB_RESULT_KEY, FB_PINNACLE_KEY, BBALL_PINNACLE_KEY, FB_DC_BTTS_KEY, FB_DC_OU_KEY];
+// BASKETBALL_SPREAD_KEY manquait ici jusqu'au 11 juillet 2026 — le backend règle bien les paris
+// spread (runAutoSettle) mais le frontend ne les recevait jamais, restant bloqués en 'accepted'
+// indéfiniment sans jamais passer won/lost (trouvé lors de l'audit suite à l'incident Breanna Stewart).
+const SETTLEABLE_KEYS = [ALERT_KEY, GAME_TOTAL_KEY, BASKETBALL_RESULT_KEY, BASKETBALL_SPREAD_KEY, FB_BTTS_KEY, FB_TOTAL_KEY, FB_RESULT_KEY, FB_PINNACLE_KEY, BBALL_PINNACLE_KEY, FB_DC_BTTS_KEY, FB_DC_OU_KEY];
 
 const PENDING_SYNC_KEY = 'pending_alert_sync';
 const readPendingSync  = () => { try { return JSON.parse(localStorage.getItem(PENDING_SYNC_KEY) || '[]'); } catch { return []; } };
@@ -599,7 +619,7 @@ export function loadBballPinnaclePropsAlerts() {
   try { return JSON.parse(localStorage.getItem(BBALL_PINNACLE_PROPS_KEY) || '[]'); } catch { return []; }
 }
 export function saveBballPinnaclePropsAlerts(arr) {
-  try { cloudSet(BBALL_PINNACLE_PROPS_KEY, JSON.stringify(arr)); } catch {}
+  try { persistAlertsKey(BBALL_PINNACLE_PROPS_KEY, arr); } catch {}
 }
 
 // Pont alertes "Résultat" basket (victoire équipe, NBA/WNBA/EU) backend → localStorage

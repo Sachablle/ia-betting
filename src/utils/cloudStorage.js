@@ -11,6 +11,7 @@ const SYNC_KEYS = new Set([
   'fb_dc_btts_alerts',
   'fb_dc_ou_alerts',
   'basketball_result_alerts',
+  'basketball_spread_alerts',
   'fb_pinnacle_alerts',
   'bball_pinnacle_alerts',
   'bball_pinnacle_props_alerts',

@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { BBALL_FIXTURES } from '../utils/basketball';
-import { syncBackgroundAlerts, syncSettlements, syncGameTotalAlerts, syncBballPinnacleAlerts, syncBasketballResultAlerts, syncBasketballSpreadAlerts, syncOddsDrift, syncFootballAlerts, resolveCompletedFootballAlerts, postAcceptedAlertReliably, FB_DC_BTTS_KEY, FB_DC_OU_KEY } from '../utils/syncAlerts';
+import { syncBackgroundAlerts, syncSettlements, syncGameTotalAlerts, syncBballPinnacleAlerts, syncBasketballResultAlerts, syncBasketballSpreadAlerts, syncOddsDrift, syncFootballAlerts, resolveCompletedFootballAlerts, postAcceptedAlertReliably, persistAlertsKey, FB_DC_BTTS_KEY, FB_DC_OU_KEY } from '../utils/syncAlerts';
 import { setItem as cloudSet } from '../utils/cloudStorage';
 import { cachedFetch } from '../utils/fetchCache';
 
@@ -769,17 +769,17 @@ export default function RunningPage() {
     // Règlement BTTS/O-U football (CDM uniquement, cf. resolveCompletedFootballAlerts)
     try {
       const btts = JSON.parse(localStorage.getItem(FB_BTTS_KEY) || '[]');
-      resolveCompletedFootballAlerts(btts, alerts => { cloudSet(FB_BTTS_KEY, JSON.stringify(alerts)); setBttsAlerts(alerts); });
+      resolveCompletedFootballAlerts(btts, alerts => { persistAlertsKey(FB_BTTS_KEY, alerts); setBttsAlerts(alerts); });
       const fbTotal = JSON.parse(localStorage.getItem(FB_TOTAL_KEY) || '[]');
-      resolveCompletedFootballAlerts(fbTotal, alerts => { cloudSet(FB_TOTAL_KEY, JSON.stringify(alerts)); setFbTotalAlerts(alerts); });
+      resolveCompletedFootballAlerts(fbTotal, alerts => { persistAlertsKey(FB_TOTAL_KEY, alerts); setFbTotalAlerts(alerts); });
       const fbResult = JSON.parse(localStorage.getItem(FB_RESULT_KEY) || '[]');
-      resolveCompletedFootballAlerts(fbResult, alerts => { cloudSet(FB_RESULT_KEY, JSON.stringify(alerts)); setFbResultAlerts(alerts); });
+      resolveCompletedFootballAlerts(fbResult, alerts => { persistAlertsKey(FB_RESULT_KEY, alerts); setFbResultAlerts(alerts); });
       const fbPinnacle = JSON.parse(localStorage.getItem(FB_PINNACLE_KEY) || '[]');
-      resolveCompletedFootballAlerts(fbPinnacle, alerts => { cloudSet(FB_PINNACLE_KEY, JSON.stringify(alerts)); setFbPinnacleAlerts(alerts); });
+      resolveCompletedFootballAlerts(fbPinnacle, alerts => { persistAlertsKey(FB_PINNACLE_KEY, alerts); setFbPinnacleAlerts(alerts); });
       const dcBtts = JSON.parse(localStorage.getItem(FB_DC_BTTS_KEY) || '[]');
-      resolveCompletedFootballAlerts(dcBtts, alerts => { cloudSet(FB_DC_BTTS_KEY, JSON.stringify(alerts)); setDcBttsAlerts(alerts); });
+      resolveCompletedFootballAlerts(dcBtts, alerts => { persistAlertsKey(FB_DC_BTTS_KEY, alerts); setDcBttsAlerts(alerts); });
       const dcOu = JSON.parse(localStorage.getItem(FB_DC_OU_KEY) || '[]');
-      resolveCompletedFootballAlerts(dcOu, alerts => { cloudSet(FB_DC_OU_KEY, JSON.stringify(alerts)); setDcOuAlerts(alerts); });
+      resolveCompletedFootballAlerts(dcOu, alerts => { persistAlertsKey(FB_DC_OU_KEY, alerts); setDcOuAlerts(alerts); });
     } catch {}
     // basketball_pinnacle_edge (WNBA) se règle côté serveur (runAutoSettle, totalsToCheck) — pas
     // de résolution client séparée nécessaire, syncSettlements() ci-dessus suffit (BBALL_PINNACLE_KEY
@@ -833,21 +833,21 @@ export default function RunningPage() {
     if (group?.type === 'game_total') {
       const idSet = new Set(ids);
       const updated = rawTotalAlerts.map(a => idSet.has(a.id) ? { ...a, status: 'void' } : a);
-      try { cloudSet(GAME_TOTAL_KEY, JSON.stringify(updated)); } catch {}
+      try { persistAlertsKey(GAME_TOTAL_KEY, updated); } catch {}
       setRawTotalAlerts(updated);
       return;
     }
     if (group?.type === 'basketball_result') {
       const idSet = new Set(ids);
       const updated = rawResultAlerts.map(a => idSet.has(a.id) ? { ...a, status: 'void' } : a);
-      try { cloudSet(BASKETBALL_RESULT_KEY, JSON.stringify(updated)); } catch {}
+      try { persistAlertsKey(BASKETBALL_RESULT_KEY, updated); } catch {}
       setRawResultAlerts(updated);
       return;
     }
     if (group?.type === 'basketball_spread') {
       const idSet = new Set(ids);
       const updated = rawSpreadAlerts.map(a => idSet.has(a.id) ? { ...a, status: 'void' } : a);
-      try { cloudSet(BASKETBALL_SPREAD_KEY, JSON.stringify(updated)); } catch {}
+      try { persistAlertsKey(BASKETBALL_SPREAD_KEY, updated); } catch {}
       setRawSpreadAlerts(updated);
       return;
     }
@@ -873,10 +873,11 @@ export default function RunningPage() {
     });
     try {
       // Ne jamais laisser une écriture partielle (rawAlerts de cette page) écraser un
-      // won/lost/void déjà persisté ailleurs (même bug que PlaceBetPage.jsx corrigé le 6 juillet).
+      // won/lost/void/accepted/rejected déjà persisté ailleurs (même bug que PlaceBetPage.jsx
+      // corrigé le 6 juillet, étendu à accepted/rejected le 11 juillet — cf. incident Breanna Stewart).
       const current = JSON.parse(localStorage.getItem(ALERT_KEY) || '[]');
       const writtenIds = new Set(updated.map(a => a.id));
-      const preservedOld = current.filter(a => ['won', 'lost', 'void'].includes(a.status) && !writtenIds.has(a.id));
+      const preservedOld = current.filter(a => ['won', 'lost', 'void', 'accepted', 'rejected'].includes(a.status) && !writtenIds.has(a.id));
       cloudSet(ALERT_KEY, JSON.stringify([...updated, ...preservedOld]));
     } catch {}
     setRawAlerts(updated);
@@ -884,37 +885,37 @@ export default function RunningPage() {
 
   const dismissBtts = (id) => {
     const updated = bttsAlerts.filter(a => a.id !== id);
-    try { cloudSet(FB_BTTS_KEY, JSON.stringify(updated)); } catch {}
+    try { persistAlertsKey(FB_BTTS_KEY, updated); } catch {}
     setBttsAlerts(updated);
   };
   const dismissFbTotal = (id) => {
     const updated = fbTotalAlerts.filter(a => a.id !== id);
-    try { cloudSet(FB_TOTAL_KEY, JSON.stringify(updated)); } catch {}
+    try { persistAlertsKey(FB_TOTAL_KEY, updated); } catch {}
     setFbTotalAlerts(updated);
   };
   const dismissFbResult = (id) => {
     const updated = fbResultAlerts.filter(a => a.id !== id);
-    try { cloudSet(FB_RESULT_KEY, JSON.stringify(updated)); } catch {}
+    try { persistAlertsKey(FB_RESULT_KEY, updated); } catch {}
     setFbResultAlerts(updated);
   };
   const dismissFbPinnacle = (id) => {
     const updated = fbPinnacleAlerts.filter(a => a.id !== id);
-    try { cloudSet(FB_PINNACLE_KEY, JSON.stringify(updated)); } catch {}
+    try { persistAlertsKey(FB_PINNACLE_KEY, updated); } catch {}
     setFbPinnacleAlerts(updated);
   };
   const dismissBballPinnacle = (id) => {
     const updated = bballPinnacleAlerts.filter(a => a.id !== id);
-    try { cloudSet(BBALL_PINNACLE_KEY, JSON.stringify(updated)); } catch {}
+    try { persistAlertsKey(BBALL_PINNACLE_KEY, updated); } catch {}
     setBballPinnacleAlerts(updated);
   };
   const dismissDcBtts = (id) => {
     const updated = dcBttsAlerts.filter(a => a.id !== id);
-    try { cloudSet(FB_DC_BTTS_KEY, JSON.stringify(updated)); } catch {}
+    try { persistAlertsKey(FB_DC_BTTS_KEY, updated); } catch {}
     setDcBttsAlerts(updated);
   };
   const dismissDcOu = (id) => {
     const updated = dcOuAlerts.filter(a => a.id !== id);
-    try { cloudSet(FB_DC_OU_KEY, JSON.stringify(updated)); } catch {}
+    try { persistAlertsKey(FB_DC_OU_KEY, updated); } catch {}
     setDcOuAlerts(updated);
   };
 

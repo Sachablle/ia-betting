@@ -3088,6 +3088,7 @@ function normalizeLiveGame(g) {
     league: g.league || 'nba',
     round: exactMatch?.round || g.statusDetail || '',
     date: g.date,
+    status: g.status,
     venue: g.venue ? { name: g.venue.name, city: g.venue.city, capacity: null } : null,
     h2h: exactMatch?.h2h || [],
     isLive: g.status === 'STATUS_IN_PROGRESS',
@@ -3228,25 +3229,37 @@ export default function BasketballDetailPage() {
     const elapsedNow = staticFixture ? Date.now() - new Date(staticFixture.date).getTime() : 0;
     if (staticFixture && elapsedNow >= 3 * 60 * 60 * 1000) { setLoadingLive(false); return; }
     const sbUrl = isWNBA ? '/api/wnba/scoreboard' : '/api/nba/scoreboard';
-    cachedFetch(sbUrl, 20_000)
-      .then(d => {
-        const games = d.games || [];
-        if (isWNBA) setAllLiveGames(games);
-        const game = games.find(g => {
-          if (String(g.id) === String(id)) return true;
-          // For static fixtures, match by team names + date proximity
-          if (staticFixture) {
-            const diff = Math.abs(new Date(g.date).getTime() - new Date(staticFixture.date).getTime());
-            return g.home.name === staticFixture.home.name &&
-                   g.away.name === staticFixture.away.name &&
-                   diff < 12 * 60 * 60 * 1000;
-          }
-          return false;
-        });
-        if (game) setLiveFixture(normalizeLiveGame(game));
-      })
-      .catch(() => {})
-      .finally(() => setLoadingLive(false));
+    let timer;
+    // Poll tant que le match n'est pas encore vu comme terminé — sans ça, un fetch unique au mount
+    // gèle la page sur l'état capté à l'ouverture (score/statut jamais mis à jour si la page reste
+    // ouverte pendant/avant le match, "Terminé" + score + stats réalisées n'apparaissent jamais tant
+    // qu'on ne recharge pas la page à la main). Trouvé le 12 juillet 2026 sur Atlanta-Portland (WNBA).
+    const poll = () => {
+      fetch(sbUrl)
+        .then(r => r.json())
+        .then(d => {
+          const games = d.games || [];
+          if (isWNBA) setAllLiveGames(games);
+          const game = games.find(g => {
+            if (String(g.id) === String(id)) return true;
+            // For static fixtures, match by team names + date proximity
+            if (staticFixture) {
+              const diff = Math.abs(new Date(g.date).getTime() - new Date(staticFixture.date).getTime());
+              return g.home.name === staticFixture.home.name &&
+                     g.away.name === staticFixture.away.name &&
+                     diff < 12 * 60 * 60 * 1000;
+            }
+            return false;
+          });
+          if (game) setLiveFixture(normalizeLiveGame(game));
+          setLoadingLive(false);
+          const isDone = game?.status === 'STATUS_FINAL';
+          if (!isDone) timer = setTimeout(poll, game?.status === 'STATUS_IN_PROGRESS' ? 30_000 : 5 * 60_000);
+        })
+        .catch(() => { setLoadingLive(false); timer = setTimeout(poll, 60_000); });
+    };
+    poll();
+    return () => clearTimeout(timer);
   }, [id]);
 
   // Score live pour les fixtures EL statiques
