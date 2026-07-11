@@ -27,6 +27,7 @@ const WNBA_LEADERS_CACHE_FILE   = join(CACHE_DIR, 'wnba_leaders.json');
 const NBA_STANDINGS_CACHE_FILE  = join(CACHE_DIR, 'nba_standings.json');
 const NBA_LEADERS_CACHE_FILE    = join(CACHE_DIR, 'nba_leaders.json');
 const ESPN_PLAYERS_CACHE_FILE   = join(CACHE_DIR, 'espn_players_cache.json');
+const UB_MATCH_URL_CACHE_FILE   = join(CACHE_DIR, 'unibet_match_urls.json');
 
 // Cache persistant gamelogs — survit aux redémarrages, jamais remplacé par moins de données
 let _glPersist = {};
@@ -1080,7 +1081,14 @@ const WNBA_SEASON        = new Date().getFullYear();
 const now = new Date();
 const ESPN_SEASON = now.getMonth() >= 9 ? now.getFullYear() + 1 : now.getFullYear();
 const _espnCache    = {};
+// Persisté sur disque (12 juillet 2026) — un match qui passe en live disparaît de la page
+// listing Unibet (cf. fetchUnibetBasketData) ; sans l'URL retenue avant le coup d'envoi, plus
+// aucun moyen de retrouver la page une fois live. Purement en mémoire jusqu'ici, cette table
+// était vidée à chaque redémarrage du process (node --watch), perdant définitivement les cotes
+// Unibet de tout match déjà en live au redémarrage — cas réel : Las Vegas Aces vs Phoenix Mercury.
 const _ubMatchUrlCache = {};   // { `${league}_${normHome}_${normAway}` → matchPath }
+try { if (existsSync(UB_MATCH_URL_CACHE_FILE)) Object.assign(_ubMatchUrlCache, JSON.parse(readFileSync(UB_MATCH_URL_CACHE_FILE, 'utf8'))); } catch {}
+const _saveUbMatchUrlCache = () => { try { writeFileSync(UB_MATCH_URL_CACHE_FILE, JSON.stringify(_ubMatchUrlCache), 'utf8'); } catch {} };
 const CACHE_6H      = 6 * 60 * 60 * 1000;
 // Charge les rosters NBA/WNBA depuis le disque dès que _espnCache + CACHE_6H sont disponibles
 _loadEspnPlayersFromDisk();
@@ -2550,8 +2558,15 @@ async function fetchRotoWireWNBALineups() {
     const mnpMap = {};
     const visitData = parseList(visitUl, mnpMap);
     const homeData  = parseList(homeUl, mnpMap);
-    if (visitData) result[visitAbbr] = { ...visitData, injuries: {} };
-    if (homeData)  result[homeAbbr]  = { ...homeData,  injuries: {} };
+    // `opponent` retenu pour vérifier, côté appelant, que cette boîte correspond bien au match
+    // demandé — RotoWire ne fait pas toujours tourner sa page lineups.php en avance (un match du
+    // soir peut n'être posté que peu avant le tip-off) : sans ce garde-fou, une équipe qui a déjà
+    // joué la veille voyait sa compo CONFIRMÉE de la veille (contre un autre adversaire) collée à
+    // tort sur son match du jour, encore affiché "Probable" par RotoWire lui-même. Cas réel : New
+    // York Liberty vs Toronto Tempo (12 juillet) affichait la compo confirmée de NY vs Minnesota
+    // (11 juillet, terminé) tant que RotoWire n'avait pas encore posté celle du soir.
+    if (visitData) result[visitAbbr] = { ...visitData, opponent: homeAbbr, injuries: {} };
+    if (homeData)  result[homeAbbr]  = { ...homeData,  opponent: visitAbbr, injuries: {} };
     Object.assign(_wnbaLineupInjuries, mnpMap);
   }
   _espnCache[ck] = { data: result, ts: Date.now() };
@@ -2594,8 +2609,11 @@ async function _refreshWnbaProjectedLineup(date, home, away, ck) {
   // 1. RotoWire WNBA lineups
   try {
     const all = await fetchRotoWireWNBALineups();
-    const homeRoto = all[home.toUpperCase()];
-    const awayRoto = all[away.toUpperCase()];
+    // Vérifie que la boîte trouvée correspond bien à CE match (cf. commentaire opponent dans
+    // fetchRotoWireWNBALineups) — sinon c'est la compo d'un autre match (généralement la veille)
+    // qui traîne encore sur la page RotoWire, à ignorer plutôt qu'à afficher à tort.
+    const homeRoto = all[home.toUpperCase()]?.opponent === away.toUpperCase() ? all[home.toUpperCase()] : null;
+    const awayRoto = all[away.toUpperCase()]?.opponent === home.toUpperCase() ? all[away.toUpperCase()] : null;
     if (homeRoto?.starters?.length) { result.starters[home.toUpperCase()] = homeRoto; result.source = 'rotowire'; }
     if (awayRoto?.starters?.length) { result.starters[away.toUpperCase()] = awayRoto; result.source = 'rotowire'; }
   } catch (e) { console.warn('RotoWire WNBA lineup:', e.message); }
@@ -3229,8 +3247,11 @@ async function fetchRotoWireELLineups() {
     const homeKey  = ROTO_EL_MAP[homeAbbr]  || homeAbbr;
     const visitData = parseList(visitUl);
     const homeData  = parseList(homeUl);
-    if (visitData) result[visitKey] = visitData;
-    if (homeData)  result[homeKey]  = homeData;
+    // `opponent` — même garde-fou que NBA/WNBA (cf. fetchRotoWireWNBALineups) : sans lui, une
+    // équipe déjà passée sur la page (match de la veille encore affiché faute de mise à jour
+    // RotoWire) voit sa compo CONFIRMÉE d'alors collée à tort sur son match suivant.
+    if (visitData) result[visitKey] = { ...visitData, opponent: homeKey };
+    if (homeData)  result[homeKey]  = { ...homeData,  opponent: visitKey };
   }
 
   _espnCache[ck] = { data: result, ts: Date.now() };
@@ -3242,8 +3263,10 @@ app.get('/api/euroleague/projectedlineup', async (req, res) => {
   if (!home || !away) return res.status(400).json({ error: 'home, away requis' });
   try {
     const all = await fetchRotoWireELLineups();
-    const homeData  = all[home.toUpperCase()];
-    const awayData  = all[away.toUpperCase()];
+    // Vérifie l'adversaire avant de faire confiance à la boîte trouvée (cf. commentaire opponent
+    // dans fetchRotoWireELLineups) — sinon c'est potentiellement la compo d'un autre match.
+    const homeData  = all[home.toUpperCase()]?.opponent === away.toUpperCase() ? all[home.toUpperCase()] : null;
+    const awayData  = all[away.toUpperCase()]?.opponent === home.toUpperCase() ? all[away.toUpperCase()] : null;
     const starters  = {};
     if (homeData)  starters[home.toUpperCase()]  = homeData;
     if (awayData)  starters[away.toUpperCase()] = awayData;
@@ -4545,8 +4568,11 @@ async function fetchRotoWireAllLineups() {
     const mnpMap = {};
     const visitData = parseList(visitUl, mnpMap);
     const homeData  = parseList(homeUl, mnpMap);
-    if (visitData) result[visitAbbr] = { ...visitData, injuries: {} };
-    if (homeData)  result[homeAbbr]  = { ...homeData,  injuries: {} };
+    // `opponent` retenu pour vérifier, côté appelant, que cette boîte correspond bien au match
+    // demandé — même garde-fou que côté WNBA (cf. fetchRotoWireWNBALineups) contre une compo
+    // CONFIRMÉE de la veille (autre adversaire) collée à tort sur le match du jour.
+    if (visitData) result[visitAbbr] = { ...visitData, opponent: homeAbbr, injuries: {} };
+    if (homeData)  result[homeAbbr]  = { ...homeData,  opponent: visitAbbr, injuries: {} };
     // Attacher les blessures au bon résultat (on les stocke globalement dans _lineupInjuries)
     Object.assign(_lineupInjuries, mnpMap);
   }
@@ -4625,8 +4651,11 @@ async function _refreshNbaProjectedLineup(date, home, away, ck) {
   // 1. RotoWire — scraping HTML (home + away en un seul appel)
   try {
     const all = await fetchRotoWireAllLineups();
-    const homeRoto = all[toStd(home)];
-    const awayRoto = all[toStd(away)];
+    // Vérifie que la boîte trouvée correspond bien à CE match (cf. commentaire opponent dans
+    // fetchRotoWireAllLineups) — sinon c'est la compo d'un autre match (généralement la veille)
+    // qui traîne encore sur la page RotoWire, à ignorer plutôt qu'à afficher à tort.
+    const homeRoto = all[toStd(home)]?.opponent === toStd(away) ? all[toStd(home)] : null;
+    const awayRoto = all[toStd(away)]?.opponent === toStd(home) ? all[toStd(away)] : null;
     if (homeRoto?.starters?.length) { result.starters[toStd(home)] = homeRoto; result.source = 'rotowire'; }
     if (awayRoto?.starters?.length) { result.starters[toStd(away)] = awayRoto; result.source = 'rotowire'; }
   } catch (e) { console.warn('RotoWire lookup:', e.message); }
@@ -5305,7 +5334,7 @@ async function fetchUnibetBasketData(home, away, league = 'nba') {
 
   if (matchPath) {
     // Cache URL for reuse when match goes live and disappears from list
-    _ubMatchUrlCache[urlCacheKey] = matchPath;
+    if (_ubMatchUrlCache[urlCacheKey] !== matchPath) { _ubMatchUrlCache[urlCacheKey] = matchPath; _saveUbMatchUrlCache(); }
   } else {
     // Match no longer in list (live or finished) — reuse cached pre-match URL
     matchPath = _ubMatchUrlCache[urlCacheKey] ?? null;
