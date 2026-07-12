@@ -149,7 +149,7 @@ const importPlaceBet        = () => import('./pages/PlaceBetPage');
 const importRunning         = () => import('./pages/RunningPage');
 const importBacktesting     = () => import('./pages/BacktestingPage');
 const importWorldMap        = () => import('./pages/WorldMapPage');
-const importEffectif        = () => import('./pages/EffectifPage');
+const importDatabaseMap     = () => import('./pages/DatabaseMapPage');
 const importPlayerLines     = () => import('./pages/PlayerLinesPage');
 const importOutrights       = () => import('./pages/OutrightsPage');
 
@@ -159,7 +159,7 @@ const PlaceBetPage         = lazy(importPlaceBet);
 const RunningPage          = lazy(importRunning);
 const BacktestingPage      = lazy(importBacktesting);
 const WorldMapPage         = lazy(importWorldMap);
-const EffectifPage         = lazy(importEffectif);
+const DatabaseMapPage      = lazy(importDatabaseMap);
 const PlayerLinesPage      = lazy(importPlayerLines);
 const OutrightsPage        = lazy(importOutrights);
 const UtilisationPage      = lazy(() => import('./pages/UtilisationPage'));
@@ -171,7 +171,7 @@ const SportsPage           = lazy(() => import('./pages/SportsPage'));
 if (typeof requestIdleCallback !== 'undefined') {
   requestIdleCallback(() => {
     importPlaceBet(); importRunning(); importBacktesting(); importWorldMap();
-    importEffectif(); importOutrights(); importMatchDetail(); importBasketballDetail();
+    importDatabaseMap(); importOutrights(); importMatchDetail(); importBasketballDetail();
   });
 }
 
@@ -191,7 +191,7 @@ export function preloadPage(path) {
   else if (path.includes('running'))    importRunning();
   else if (path.includes('backtesting')) importBacktesting();
   else if (path.includes('carte'))      importWorldMap();
-  else if (path.includes('effectif'))   importEffectif();
+  else if (path.includes('effectif'))   importDatabaseMap();
   else if (path.includes('/player/'))   importPlayerLines();
   else if (path.includes('outrights'))  importOutrights();
   else if (path.includes('basketball')) importBasketballDetail();
@@ -324,7 +324,7 @@ export default function App() {
               <Route path="/placebet" element={<PlaceBetPage />} />
               <Route path="/running" element={<RunningPage />} />
               <Route path="/analyser" element={<Navigate to="/backtesting" replace />} />
-              <Route path="/database/effectif" element={<EffectifPage />} />
+              <Route path="/database/effectif" element={<DatabaseMapPage />} />
               <Route path="/utilisation" element={<UtilisationPage />} />
               <Route path="/backtesting" element={<BacktestingPage />} />
               <Route path="/outrights" element={<OutrightsPage />} />

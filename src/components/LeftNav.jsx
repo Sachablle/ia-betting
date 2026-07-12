@@ -35,7 +35,7 @@ const NAV_SECTIONS = [
     items: [
       { to: '/dashboard',   icon: '◈', label: 'Dashboard',   sub: 'Vue d\'ensemble' },
       { to: '/carte',       icon: '⬡', label: 'Sports',       sub: 'Championnats' },
-      { to: '/database/effectif', icon: '▤', label: 'Base de données', sub: 'Effectifs' },
+      { to: '/database/effectif', icon: '▤', label: 'Base de données', sub: 'Championnats' },
     ],
   },
   {

@@ -217,10 +217,6 @@ const LEAGUES = [
   },
 ];
 
-const SPORT_LABELS = {
-  ligue1: 'Football', pl: 'Football', laliga: 'Football', bundes: 'Football', seriea: 'Football',
-  nba: 'Basket', wnba: 'Basket', acb: 'Basket', euroleague: 'Basket',
-};
 
 
 function RosterPanel({ team, onClose }) {
@@ -641,30 +637,16 @@ function LeagueItem({ league }) {
   );
 }
 
-export default function EffectifPage() {
-  const football = LEAGUES.filter(l => SPORT_LABELS[l.id] === 'Football');
-  const basket   = LEAGUES.filter(l => SPORT_LABELS[l.id] === 'Basket');
+const EU_BASKET_LEAGUE_IDS = new Set(['acb', 'lnb', 'bbl', 'legaa']);
 
-  return (
-    <div className="page">
-      <section className="ef-section">
-        <h2 className="ef-section-title">Football</h2>
-        <div className="ef-list">
-          {football.map(l => <LeagueItem key={l.id} league={l} />)}
-        </div>
-      </section>
-
-      <section className="ef-section">
-        <h2 className="ef-section-title">Basket</h2>
-        <div className="ef-list">
-          {basket.map(l =>
-            l.id === 'nba'  ? <NBALeagueItem  key={l.id} league={l} /> :
-            l.id === 'wnba' ? <WNBALeagueItem key={l.id} league={l} /> :
-            l.id === 'acb'  ? <EULeagueItem   key={l.id} league={l} /> :
-                              <LeagueItem     key={l.id} league={l} />
-          )}
-        </div>
-      </section>
-    </div>
-  );
+// Dispatch par type de ligue (NBA/WNBA/EU basket/football) — réutilisé tel quel par la Carte
+// championnats (DatabaseMapPage.jsx) pour afficher les équipes d'un pays cliqué. EULeagueItem est
+// générique (roster via /api/euro/:league/roster/byname/:nom) : marche pour acb/lnb/bbl/legaa.
+export function renderLeagueItem(l) {
+  return l.id === 'nba'  ? <NBALeagueItem  key={l.id} league={l} /> :
+         l.id === 'wnba' ? <WNBALeagueItem key={l.id} league={l} /> :
+         EU_BASKET_LEAGUE_IDS.has(l.id) ? <EULeagueItem key={l.id} league={l} /> :
+                           <LeagueItem     key={l.id} league={l} />;
 }
+
+export { LEAGUES };
