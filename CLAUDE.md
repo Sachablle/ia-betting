@@ -49,9 +49,7 @@ Single Express file. All external API calls happen here; the frontend never call
 
 **Routes:**
 - `GET /api/health`
-- `GET /api/fd/matches` — football-data.org: next 5 fixtures + standings for 5 leagues. 30-min cache. 200ms delay between league requests (10 req/min limit).
-- `GET /api/football/matches` — API-Football: next 5 fixtures + standings. 30-min cache.
-- `GET /api/football/h2h/:homeId/:awayId` — last 5 h2h results from API-Football.
+- `GET /api/fd/matches` — football-data.org: next 5 fixtures + standings for 5 leagues. 30-min cache. 200ms delay between league requests (10 req/min limit). Sole source for the 5-league fixture list (Carte du Monde hub, `WorldMapPage.jsx`, and `MatchDetailPage.jsx` via `useFootballFixtures.js`) since 12 juillet 2026 — API-Football (`v3.football.api-sports.io`) was removed entirely from the project (dead weight: its `/api/football/matches` route had been gated off behind an unset `FOOTBALL_MATCHES_ENABLED` flag since the feature's original commit, `/api/football/h2h` was never called by any page, `src/utils/api.js` that wrapped both was never imported anywhere).
 - `GET /api/odds` — The Odds API: h2h + btts markets, bookmakers: `pinnacle, betfair_ex_eu, unibet_eu, betclic`.
 - `GET /api/alerts` — value bet alerts: edges above `VALUE_THRESHOLD` (default 2%).
 - `GET /api/nba/scoreboard` — ESPN live NBA scoreboard. Polled every 30s if live game active, 5min otherwise.
@@ -250,7 +248,6 @@ realized.find(r =>
 | Variable | Source | Free tier |
 |---|---|---|
 | `FD_API_KEY` | football-data.org | 10 req/min |
-| `FOOTBALL_API_KEY` | api-sports.io (football) | 100 req/day |
 | `BASKETBALL_API_KEY` | api-sports.io (basketball, plan Pro) | 7500 req/day |
 | `ODDS_API_KEY` | the-odds-api.com | 500 req/month |
 | `BZZOIRO_API_KEY` | sports.bzzoiro.com | — (EuroLeague uniquement, voir ci-dessous) |

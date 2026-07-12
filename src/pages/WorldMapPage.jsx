@@ -6,12 +6,14 @@ import { cachedFetch } from '../utils/fetchCache';
 import GEO_DATA from 'world-atlas/countries-110m.json';
 const GEO_URL = GEO_DATA;
 
+// Ordre du tableau `leagues` = ordre d'affichage/sport par défaut (cf. _firstSport plus bas) —
+// football en premier partout sauf États-Unis (pas de foot couvert là-bas, basket reste devant).
 const COVERED = {
   '840': { name: 'États-Unis', flag: '🇺🇸', leagues: ['nba','wnba'] },
-  '250': { name: 'France',     flag: '🇫🇷', leagues: ['lnb','ligue1'] },
-  '724': { name: 'Espagne',    flag: '🇪🇸', leagues: ['acb','laliga'] },
-  '276': { name: 'Allemagne',  flag: '🇩🇪', leagues: ['bbl','bundes'] },
-  '380': { name: 'Italie',     flag: '🇮🇹', leagues: ['legaa','seriea'] },
+  '250': { name: 'France',     flag: '🇫🇷', leagues: ['ligue1','lnb'] },
+  '724': { name: 'Espagne',    flag: '🇪🇸', leagues: ['laliga','acb'] },
+  '276': { name: 'Allemagne',  flag: '🇩🇪', leagues: ['bundes','bbl'] },
+  '380': { name: 'Italie',     flag: '🇮🇹', leagues: ['seriea','legaa'] },
   '826': { name: 'Angleterre', flag: '🏴󠁧󠁢󠁥󠁮󠁧󠁿', leagues: ['pl'] },
 };
 
@@ -56,7 +58,7 @@ function _prefetchCountry(country) {
     } else if (l === 'euroleague') {
       cachedFetch('/api/euroleague/scoreboard', 20_000).catch(()=>{});
     } else if (FOOTBALL_LEAGUES.has(l)) {
-      cachedFetch('/api/football/matches', 30_000).catch(()=>{});
+      cachedFetch('/api/fd/matches', 30_000).catch(()=>{});
     } else {
       cachedFetch(`/api/euro/${l}/scoreboard`, 20_000).catch(()=>{});
     }
@@ -183,7 +185,7 @@ function StatsOverlay({ league, onClose, standData, cats }) {
   );
 }
 
-function Panel({ country, onClose, statsLeague, setStatsLeague }) {
+function Panel({ country, onClose, statsLeague, setStatsLeague, onOpenBasketStats }) {
   const navigate = useNavigate();
   const [matches, setMatches] = useState({});
   const [loading, setLoading] = useState(true);
@@ -210,28 +212,21 @@ function Panel({ country, onClose, statsLeague, setStatsLeague }) {
       if (l === 'nba')  return cachedFetch('/api/nba/scoreboard', 20_000).then(d=>{const s=splitGames(d.games||[]);return{l,...s};});
       if (l === 'wnba') return cachedFetch('/api/wnba/scoreboard', 20_000).then(d=>{const s=splitGames(d.games||[]);return{l,...s};});
       if (l === 'euroleague') return cachedFetch('/api/euroleague/scoreboard', 20_000).then(d=>{const s=splitGames(d.games||[]);return{l,...s};});
-      if (FOOTBALL_LEAGUES.has(l) && l !== 'cdm') return cachedFetch('/api/football/matches', 30_000).then(d=>{
-        const all=(d.fixtures||[]).filter(f=>f.league?.key===l).map(f=>({
-          id:f.id,date:f.date,status:f.status==='STATUS_FULL_TIME'?'STATUS_FINAL':'STATUS_SCHEDULED',round:f.round,
-          home:{name:f.homeTeam?.name,short:f.homeTeam?.shortName,logo:f.homeTeam?.crest,score:f.score?.home??null},
-          away:{name:f.awayTeam?.name,short:f.awayTeam?.shortName,logo:f.awayTeam?.crest,score:f.score?.away??null},
+      // 5 grands championnats — football-data.org (même source/même id `fd_<id>` que MatchDetailPage
+      // via useFootballFixtures, cf. src/utils/useFootballFixtures.js). Seuls les matchs SCHEDULED
+      // sont renvoyés par /api/fd/matches (pas encore de source de score final pour ces 5 ligues,
+      // contrairement à la CDM) — l'onglet "Terminés" restera vide pour elles, comme documenté.
+      if (FOOTBALL_LEAGUES.has(l) && l !== 'cdm') return cachedFetch('/api/fd/matches', 30_000).then(d=>{
+        const all=(d.matches||[]).filter(f=>f.league===l).map(f=>({
+          id:`fd_${f.id}`,date:f.date,status:'STATUS_SCHEDULED',round:f.round,
+          home:{name:f.home?.name,short:f.home?.short,logo:f.home?.logoId,score:null},
+          away:{name:f.away?.name,short:f.away?.short,logo:f.away?.logoId,score:null},
         }));
         return{l,...splitGames(all)};
       });
       if (l === 'cdm') return cachedFetch('/api/fd/worldcup', 30_000).then(d => {
         const games = (d.games || []).map(g => ({ ...g, id: `fdcdm_${g.id}` }));
         return {l, ...splitGames(games)};
-      });
-      if (l === 'euroleague') return cachedFetch('/api/euroleague/scoreboard', 20_000).then(d=>({l,games:(d.games||[]).filter(g=>g.status!=='STATUS_FINAL').slice(0,5)}));
-      if (FOOTBALL_LEAGUES.has(l)) return cachedFetch('/api/football/matches', 30_000).then(d=>{
-        const today = new Date(); today.setHours(0,0,0,0);
-        const soon  = new Date(today); soon.setDate(soon.getDate()+7);
-        const games = (d.fixtures||[]).filter(f=>f.league?.key===l&&f.status==='STATUS_SCHEDULED').map(f=>({
-          id: f.id, date: f.date, status: f.status, round: f.round,
-          home:{ name:f.homeTeam?.name, short:f.homeTeam?.shortName, logo:f.homeTeam?.crest, score:null },
-          away:{ name:f.awayTeam?.name, short:f.awayTeam?.shortName, logo:f.awayTeam?.crest, score:null },
-        })).slice(0,4);
-        return {l, games};
       });
       return cachedFetch(`/api/euro/${l}/scoreboard`, 20_000).then(d=>{const s=splitGames(d.games||[]);return{l,...s};});
     };
@@ -289,10 +284,20 @@ function Panel({ country, onClose, statsLeague, setStatsLeague }) {
         </div>
         <div style={{display:'flex',alignItems:'center',gap:6,marginTop:'1rem'}}>
           <div style={{flex:1,height:1,background:'linear-gradient(90deg,rgba(251,146,60,0.4),transparent)'}}/>
-          {[['basket','🏀','#fb923c','rgba(251,146,60,',_hasBasket],['football','⚽','#2d8a2d','rgba(45,138,45,',_hasFootball]].map(([sport, icon, col, rgba, has]) => {
+          {(_hasFootball
+            ? [['football','⚽','#2d8a2d','rgba(45,138,45,',_hasFootball],['basket','🏀','#fb923c','rgba(251,146,60,',_hasBasket]]
+            : [['basket','🏀','#fb923c','rgba(251,146,60,',_hasBasket],['football','⚽','#2d8a2d','rgba(45,138,45,',_hasFootball]]
+          ).map(([sport, icon, col, rgba, has]) => {
             const active = sportFilter === sport;
             return (
-              <button key={sport} onClick={() => has && setSportFilter(f => f === sport ? null : sport)}
+              <button key={sport} onClick={() => {
+                  if (!has) return;
+                  const next = sportFilter === sport ? null : sport;
+                  setSportFilter(next);
+                  // Le panneau classement/leaders ne s'affiche que quand le basket est explicitement
+                  // sélectionné — sinon il restait visible même sur l'onglet Football (Espagne, etc.)
+                  if (next === 'basket') onOpenBasketStats(country); else setStatsLeague(null);
+                }}
                 title={sport === 'football' ? 'Football uniquement' : 'Basket uniquement'}
                 style={{
                   background: active ? `${rgba}0.15)` : 'none',
@@ -320,7 +325,10 @@ function Panel({ country, onClose, statsLeague, setStatsLeague }) {
           const isFootball = FOOTBALL_LEAGUES.has(league);
           const lp = league==='wnba'?'?league=wnba':['nba'].includes(league)?'':`?league=${league}`;
           const { soon=[], upcoming=[], done=[] } = matches[league] || {};
-          const mode = view[league] || 'soon';
+          // Si rien dans les 30h mais des matchs plus loin (ex: reprise de saison à plusieurs
+          // semaines), les montrer directement plutôt que forcer un clic sur "À venir" pour voir
+          // un onglet "soon" vide.
+          const mode = view[league] || (soon.length === 0 && upcoming.length > 0 ? 'upcoming' : 'soon');
           const games = mode === 'upcoming' ? [...soon, ...upcoming] : soon;
           return (
             <div key={league} style={{marginBottom:'1.5rem'}}>
@@ -389,15 +397,21 @@ function Panel({ country, onClose, statsLeague, setStatsLeague }) {
                             style={{width:'100%',background:'none',border:'none',borderTop:i>0?'1px solid rgba(255,255,255,0.04)':'none',padding:'0.65rem 0.5rem',cursor:'pointer',textAlign:'center',transition:'background .15s'}}
                             onMouseEnter={e=>{e.currentTarget.style.background='rgba(255,255,255,0.04)';_prefetchMatch(g,league);}}
                             onMouseLeave={e=>e.currentTarget.style.background='none'}>
-                            <div style={{display:'flex',alignItems:'center',justifyContent:'center',gap:8,marginBottom:3}}>
-                              {g.home?.logo&&<img src={g.home.logo} alt="" width={20} height={20} style={{objectFit:'contain',borderRadius:'50%'}} onError={e=>e.target.style.display='none'}/>}
-                              <span style={{fontSize:12,fontWeight:700,color:'#fff'}}>{g.home?.name||g.home?.short}</span>
-                              {live&&g.home?.score!=null
-                                ? <span style={{fontSize:13,fontWeight:800,color:'#60a5fa',fontFamily:'monospace',margin:'0 4px'}}>{g.home.score} – {g.away.score}</span>
-                                : <span style={{fontSize:10,color:'rgba(255,255,255,0.25)',margin:'0 5px'}}>vs</span>
-                              }
-                              <span style={{fontSize:12,fontWeight:700,color:'#fff'}}>{g.away?.name||g.away?.short}</span>
-                              {g.away?.logo&&<img src={g.away.logo} alt="" width={20} height={20} style={{objectFit:'contain',borderRadius:'50%'}} onError={e=>e.target.style.display='none'}/>}
+                            <div style={{display:'grid',gridTemplateColumns:'1fr auto 1fr',alignItems:'center',gap:8,marginBottom:3}}>
+                              <div style={{display:'flex',alignItems:'center',justifyContent:'flex-end',gap:6,minWidth:0}}>
+                                <span style={{fontSize:12,fontWeight:700,color:'#fff',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{g.home?.name||g.home?.short}</span>
+                                {g.home?.logo&&<img src={g.home.logo} alt="" width={20} height={20} style={{objectFit:'contain',borderRadius:'50%',flexShrink:0}} onError={e=>e.target.style.display='none'}/>}
+                              </div>
+                              <div style={{flexShrink:0}}>
+                                {live&&g.home?.score!=null
+                                  ? <span style={{fontSize:13,fontWeight:800,color:'#60a5fa',fontFamily:'monospace',whiteSpace:'nowrap'}}>{g.home.score} – {g.away.score}</span>
+                                  : <span style={{fontSize:10,color:'rgba(255,255,255,0.25)',whiteSpace:'nowrap'}}>vs</span>
+                                }
+                              </div>
+                              <div style={{display:'flex',alignItems:'center',justifyContent:'flex-start',gap:6,minWidth:0}}>
+                                {g.away?.logo&&<img src={g.away.logo} alt="" width={20} height={20} style={{objectFit:'contain',borderRadius:'50%',flexShrink:0}} onError={e=>e.target.style.display='none'}/>}
+                                <span style={{fontSize:12,fontWeight:700,color:'#fff',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{g.away?.name||g.away?.short}</span>
+                              </div>
                             </div>
                             <div style={{display:'flex',alignItems:'center',justifyContent:'center',gap:6}}>
                               {live
@@ -433,16 +447,22 @@ function Panel({ country, onClose, statsLeague, setStatsLeague }) {
                         const awayWon = hs != null && as != null && as > hs;
                         const WIN = '#2d8a2d', DIM = 'rgba(255,255,255,0.35)';
                         return (
-                          <div style={{display:'flex',alignItems:'center',justifyContent:'center',gap:7,marginBottom:2}}>
-                            {g.home?.logo&&<img src={g.home.logo} alt="" width={16} height={16} style={{objectFit:'contain',borderRadius:'50%'}} onError={e=>e.target.style.display='none'}/>}
-                            <span style={{fontSize:11,fontWeight:homeWon?700:500,color:homeWon?'#fff':'rgba(255,255,255,0.55)'}}>{g.home?.name||g.home?.short}</span>
-                            {hs!=null&&<>
-                              <span style={{fontSize:13,fontWeight:800,color:homeWon?WIN:DIM,fontFamily:'monospace'}}>{hs}</span>
-                              <span style={{fontSize:10,color:'rgba(255,255,255,0.2)'}}>–</span>
-                              <span style={{fontSize:13,fontWeight:800,color:awayWon?WIN:DIM,fontFamily:'monospace'}}>{as}</span>
-                            </>}
-                            <span style={{fontSize:11,fontWeight:awayWon?700:500,color:awayWon?'#fff':'rgba(255,255,255,0.55)'}}>{g.away?.name||g.away?.short}</span>
-                            {g.away?.logo&&<img src={g.away.logo} alt="" width={16} height={16} style={{objectFit:'contain',borderRadius:'50%'}} onError={e=>e.target.style.display='none'}/>}
+                          <div style={{display:'grid',gridTemplateColumns:'1fr auto 1fr',alignItems:'center',gap:7,marginBottom:2}}>
+                            <div style={{display:'flex',alignItems:'center',justifyContent:'flex-end',gap:5,minWidth:0}}>
+                              <span style={{fontSize:11,fontWeight:homeWon?700:500,color:homeWon?'#fff':'rgba(255,255,255,0.55)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{g.home?.name||g.home?.short}</span>
+                              {g.home?.logo&&<img src={g.home.logo} alt="" width={16} height={16} style={{objectFit:'contain',borderRadius:'50%',flexShrink:0}} onError={e=>e.target.style.display='none'}/>}
+                            </div>
+                            <div style={{flexShrink:0,display:'flex',alignItems:'center',gap:5}}>
+                              {hs!=null&&<>
+                                <span style={{fontSize:13,fontWeight:800,color:homeWon?WIN:DIM,fontFamily:'monospace'}}>{hs}</span>
+                                <span style={{fontSize:10,color:'rgba(255,255,255,0.2)'}}>–</span>
+                                <span style={{fontSize:13,fontWeight:800,color:awayWon?WIN:DIM,fontFamily:'monospace'}}>{as}</span>
+                              </>}
+                            </div>
+                            <div style={{display:'flex',alignItems:'center',justifyContent:'flex-start',gap:5,minWidth:0}}>
+                              {g.away?.logo&&<img src={g.away.logo} alt="" width={16} height={16} style={{objectFit:'contain',borderRadius:'50%',flexShrink:0}} onError={e=>e.target.style.display='none'}/>}
+                              <span style={{fontSize:11,fontWeight:awayWon?700:500,color:awayWon?'#fff':'rgba(255,255,255,0.55)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{g.away?.name||g.away?.short}</span>
+                            </div>
                           </div>
                         );
                       })()}
@@ -510,15 +530,23 @@ export default function WorldMapPage() {
     });
   }, [selected]);
 
-  // Auto-ouvre la ligue basket la plus active au moment du clic
+  // Le panneau classement/leaders ne s'ouvre plus automatiquement à l'ouverture d'un pays — il ne
+  // s'affiche que sur clic explicite de l'icône 🏀 (cf. openBestBasketLeague, appelée depuis Panel).
+  // Sans ça, les stats ACB apparaissaient même quand l'onglet Football était affiché en premier
+  // (France/Espagne/Allemagne/Italie, depuis le rebranchement football-data.org du 12 juillet).
   useEffect(() => {
-    if (!selected) { setStatsLeague(null); setPrefetch({}); return; }
-    const leagues = selected.leagues.filter(l => STATS_LEAGUES.has(l));
+    setStatsLeague(null);
+    if (!selected) setPrefetch({});
+  }, [selected]);
+
+  // Ouvre la ligue basket la plus active du pays sélectionné — plusieurs ligues basket possibles
+  // seulement pour les États-Unis (NBA/WNBA), une seule pour les autres pays couverts.
+  const openBestBasketLeague = (country) => {
+    const leagues = country.leagues.filter(l => STATS_LEAGUES.has(l));
     if (!leagues.length) { setStatsLeague(null); return; }
     if (leagues.length === 1) { setStatsLeague(leagues[0]); return; }
 
     const NOW = Date.now();
-    let cancelled = false;
     Promise.all(leagues.map(async l => {
       try {
         const d = await cachedFetch(scoreboardUrl(l), 30_000);
@@ -528,12 +556,10 @@ export default function WorldMapPage() {
         return { l, hasActive };
       } catch { return { l, hasActive: false }; }
     })).then(results => {
-      if (cancelled) return;
       const active = results.find(r => r.hasActive);
       setStatsLeague(active ? active.l : leagues[0]);
     });
-    return () => { cancelled = true; };
-  }, [selected]);
+  };
 
   // Position approximative de chaque pays sur la map (transform-origin pour le zoom)
   const ZOOM_ORIGIN = {
@@ -728,7 +754,7 @@ export default function WorldMapPage() {
 
 
       {/* Panel */}
-      {selected && <Panel country={selected} onClose={()=>{setSelected(null);setSelectedGeoId(null);setStatsLeague(null);}} statsLeague={statsLeague} setStatsLeague={setStatsLeague}/>}
+      {selected && <Panel country={selected} onClose={()=>{setSelected(null);setSelectedGeoId(null);setStatsLeague(null);}} statsLeague={statsLeague} setStatsLeague={setStatsLeague} onOpenBasketStats={openBestBasketLeague}/>}
 
       {/* StatsOverlay — rendu ici (hors Panel) pour que position:fixed soit relatif au viewport */}
       {statsLeague && <StatsOverlay league={statsLeague} onClose={() => setStatsLeague(null)} standData={prefetch[statsLeague]?.standData || null} cats={prefetch[statsLeague]?.cats || null} />}

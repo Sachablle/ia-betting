@@ -492,41 +492,15 @@ app.get('/api/fd/match/:id', async (req, res) => {
   }
 });
 
-// ── API-Football ─────────────────────────────────────────────────────────────
-const FOOTBALL_KEY  = process.env.FOOTBALL_API_KEY;
-const FOOTBALL_MATCHES_ENABLED = process.env.FOOTBALL_MATCHES_ENABLED === 'true';
-const FOOTBALL_BASE = 'https://v3.football.api-sports.io';
-const FOOTBALL_LEAGUES = [
-  { id: 61,  key: 'ligue1' },
-  { id: 39,  key: 'pl'     },
-  { id: 140, key: 'laliga' },
-  { id: 78,  key: 'bundes' },
-  { id: 135, key: 'seriea' },
-];
-
 app.use(cors({ origin: ['http://localhost:5173', 'http://localhost:4173'] }));
 app.use(express.json({ limit: '10mb' }));
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-function currentSeason() {
-  const now = new Date();
-  return now.getMonth() >= 6 ? now.getFullYear() : now.getFullYear() - 1;
-}
-
 function abbrev(name) {
   const parts = name.replace(/[^a-zA-Z\s]/g, '').trim().split(/\s+/);
   if (parts.length === 1) return parts[0].slice(0, 3).toUpperCase();
   return parts.map(w => w[0]).join('').toUpperCase().slice(0, 4);
-}
-
-async function footballGet(path) {
-  const resp = await fetch(`${FOOTBALL_BASE}${path}`, {
-    headers: { 'x-apisports-key': FOOTBALL_KEY },
-  });
-  if (!resp.ok) throw new Error(`API-Football ${resp.status}: ${path}`);
-  _captureFootballQuota(resp);
-  return resp.json();
 }
 
 function removeVig(odds, type) {
@@ -567,12 +541,6 @@ function transformOddsApiResponse(events) {
     return { id: event.id, sportKey: event.sport_key, homeTeam: event.home_team, awayTeam: event.away_team, league: event.sport_title, commenceTime: event.commence_time, markets };
   });
 }
-
-// ── Cache ─────────────────────────────────────────────────────────────────────
-
-let _fbCache = null;
-let _fbCacheTs = 0;
-const FB_TTL = 30 * 60 * 1000; // 30 min
 
 // ── SSE sync : notifie tous les clients connectés quand MongoDB change ───────
 const _sseClients = new Set();
@@ -681,96 +649,6 @@ app.post('/api/userdata', async (req, res) => {
   } catch (e) {
     console.error('[userdata POST]', e.message);
     res.status(500).json({ ok: false });
-  }
-});
-
-// API-Football : matchs enrichis avec stats de classement
-app.get('/api/football/matches', async (req, res) => {
-  if (!FOOTBALL_KEY || !FOOTBALL_MATCHES_ENABLED) {
-    return res.status(503).json({ error: 'FOOTBALL_API_KEY not configured' });
-  }
-
-  if (_fbCache && Date.now() - _fbCacheTs < FB_TTL) {
-    return res.json(_fbCache);
-  }
-
-  try {
-    const season = currentSeason();
-    const allMatches = [];
-
-    for (const league of FOOTBALL_LEAGUES) {
-      const [fixturesRes, standingsRes] = await Promise.all([
-        footballGet(`/fixtures?league=${league.id}&season=${season}&next=5`),
-        footballGet(`/standings?league=${league.id}&season=${season}`),
-      ]);
-
-      // Map teamId → stats depuis classement
-      const standingsArr = standingsRes.response?.[0]?.league?.standings?.[0] || [];
-      const statsMap = {};
-      for (const s of standingsArr) {
-        statsMap[s.team.id] = {
-          position:     s.rank,
-          points:       s.points,
-          played:       s.all.played,
-          wins:         s.all.win,
-          draws:        s.all.draw,
-          losses:       s.all.lose,
-          goalsFor:     s.all.goals.for,
-          goalsAgainst: s.all.goals.against,
-          form:         s.form.split('').filter(c => 'WDL'.includes(c)).slice(-5),
-        };
-      }
-
-      for (const f of fixturesRes.response || []) {
-        const hId = f.teams.home.id;
-        const aId = f.teams.away.id;
-
-        allMatches.push({
-          id:      String(f.fixture.id),
-          league:  league.key,
-          round:   f.league.round || '',
-          date:    f.fixture.date,
-          venue:   f.fixture.venue?.name ? { name: f.fixture.venue.name, city: f.fixture.venue.city || '', capacity: null } : null,
-          weather: null,
-          isLive:  true,
-          home: { id: hId, name: f.teams.home.name, short: abbrev(f.teams.home.name), logoId: hId, upcoming: [], ...(statsMap[hId] || {}) },
-          away: { id: aId, name: f.teams.away.name, short: abbrev(f.teams.away.name), logoId: aId, upcoming: [], ...(statsMap[aId] || {}) },
-          h2h:     [],
-          markets: {},
-        });
-      }
-    }
-
-    allMatches.sort((a, b) => new Date(a.date) - new Date(b.date));
-    const result = { matches: allMatches, count: allMatches.length };
-    _fbCache = result;
-    _fbCacheTs = Date.now();
-    res.json(result);
-  } catch (err) {
-    console.error('API-Football error:', err.message);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// API-Football : H2H entre deux équipes
-app.get('/api/football/h2h/:homeId/:awayId', async (req, res) => {
-  if (!FOOTBALL_KEY) return res.status(503).json({ error: 'FOOTBALL_API_KEY not configured' });
-  try {
-    const { homeId, awayId } = req.params;
-    const data = await footballGet(`/fixtures/headtohead?h2h=${homeId}-${awayId}&last=5`);
-    const h2h = (data.response || [])
-      .filter(f => f.goals.home != null && f.goals.away != null)
-      .slice(0, 5)
-      .map(f => ({
-        date:      f.fixture.date.slice(0, 10),
-        home:      f.teams.home.name,
-        away:      f.teams.away.name,
-        scoreHome: f.goals.home,
-        scoreAway: f.goals.away,
-      }));
-    res.json({ h2h });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
   }
 });
 
@@ -8057,15 +7935,9 @@ function _updateScraper(name, ok) {
 }
 
 // Quotas API — mis à jour à chaque appel réel (pas depuis le cache)
-let _footballApiQuota = { remaining: null, limit: null, ts: null }; // API-Football (100/jour)
 let _basketballApiQuota = { remaining: null, limit: null, ts: null }; // API-Basketball (7500/jour)
 let _fdQuota = { remaining: null, limit: 10, ts: null }; // football-data.org (10/min)
 
-function _captureFootballQuota(resp) {
-  const remaining = parseInt(resp.headers.get('x-ratelimit-requests-remaining'), 10);
-  const limit     = parseInt(resp.headers.get('x-ratelimit-requests-limit'), 10);
-  if (!isNaN(remaining)) _footballApiQuota = { remaining, limit: isNaN(limit) ? null : limit, ts: Date.now() };
-}
 function _captureBasketballApiQuota(resp) {
   const remaining = parseInt(resp.headers.get('x-ratelimit-requests-remaining'), 10);
   const limit     = parseInt(resp.headers.get('x-ratelimit-requests-limit'), 10);
@@ -11880,7 +11752,6 @@ app.get('/api/system/health', async (req, res) => {
     },
     quotas: {
       footballData:  _fdQuota,
-      footballApi:   _footballApiQuota,
       basketballApi: _basketballApiQuota,
     },
   });
@@ -12521,8 +12392,6 @@ app.post('/api/system/warmup', (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`ValueBet backend → http://localhost:${PORT}`);
-  if (!FOOTBALL_KEY) console.warn('⚠  FOOTBALL_API_KEY not set — /api/football/matches returns 503');
-;
 
   // Sanity check au démarrage — détecte les problèmes critiques avant qu'ils atteignent l'UI
   setTimeout(async () => {
@@ -12544,7 +12413,6 @@ app.listen(PORT, () => {
     }
 
     // /status ne consomme pas le quota journalier — sert juste à initialiser le compteur affiché
-    if (FOOTBALL_KEY) footballGet('/status').catch(() => {});
     if (BBALL_KEY) bballFetch('/status').catch(() => {});
 
     // Pre-warm standings + leaders (WorldMap) — évite le CHARGEMENT au 1er clic

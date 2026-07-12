@@ -306,7 +306,10 @@ function calibrationBands(bets) {
     { label: '85%+',   min: 85, max: 101 },
   ];
   return bands.map(band => {
-    const b = bets.filter(x => x.status !== 'void' && x.probability != null && x.probability >= band.min && x.probability < band.max);
+    // Comparaison sur la probabilité arrondie (même valeur que celle affichée sur la carte du pari,
+    // cf. bet.probability.toFixed(0) plus bas) — sinon deux paris affichés "75%" pouvaient atterrir
+    // dans deux bandes différentes si leurs valeurs brutes étaient par ex. 74.6% et 75.3%.
+    const b = bets.filter(x => x.status !== 'void' && x.probability != null && Math.round(x.probability) >= band.min && Math.round(x.probability) < band.max);
     const won = b.filter(x => x.status === 'won').length;
     return { ...band, total: b.length, won, rate: b.length > 0 ? (won / b.length * 100) : null };
   });
@@ -353,24 +356,25 @@ function calibrationByCategory(bets) {
   }
   return Object.entries(groups)
     .map(([key, arr]) => {
-      const rows = CALIB_THRESHOLDS.map(t => {
-        const subset = arr.filter(a => a.probability >= t);
+      // Buckets exclusifs (chaque pari compté une seule fois, jamais répliqué dans plusieurs
+      // seuils) — demandé le 12 juillet 2026 : l'ancien système cumulatif "≥seuil" comptait un
+      // pari à 74% dans les lignes 55%, 60%, 65% ET 70% à la fois, ce qui donnait l'impression
+      // (à tort niveau calcul, mais trompeur à l'affichage) que les paris à haute probabilité
+      // étaient dupliqués partout au lieu d'être rangés dans une seule catégorie claire.
+      const rows = CALIB_THRESHOLDS.map((t, i) => {
+        const next = CALIB_THRESHOLDS[i + 1] ?? Infinity;
+        // Même arrondi que l'affichage (cf. calibrationBands ci-dessus) — sinon deux paris affichés
+        // "75%" pouvaient se répartir dans deux seuils différents selon leur valeur brute non arrondie.
+        const subset = arr.filter(a => { const p = Math.round(a.probability); return p >= t && p < next; });
         if (subset.length === 0) return null;
         const won = subset.filter(a => a.status === 'won').length;
         const sorted = [...subset].sort((a, b) => new Date(b.date) - new Date(a.date));
-        return { threshold: t, n: subset.length, won, rate: won / subset.length * 100, bets: sorted };
+        return { threshold: t, minThreshold: t, maxThreshold: next, n: subset.length, won, rate: won / subset.length * 100, bets: sorted };
       }).filter(Boolean);
-      // Fusionne les seuils consécutifs qui donnent exactement le même échantillon
-      // (même n) en une seule ligne "minThreshold–maxThreshold" — évite de répéter
-      // la même barre 100%/1-1 sur 6 lignes quand l'échantillon est trop petit pour
-      // qu'un seuil plus élevé exclue réellement un pari.
-      const collapsed = [];
-      for (const r of rows) {
-        const last = collapsed[collapsed.length - 1];
-        if (last && last.n === r.n) last.maxThreshold = r.threshold;
-        else collapsed.push({ ...r, minThreshold: r.threshold, maxThreshold: r.threshold });
-      }
-      return { key, total: arr.length, rows: collapsed };
+      // La ligne la plus haute occupée est toujours ouverte ("≥seuil%") : aucun pari de cette
+      // catégorie ne dépasse ce seuil, donc pas de fourchette figée à afficher au-dessus.
+      if (rows.length) rows[rows.length - 1].maxThreshold = Infinity;
+      return { key, total: arr.length, rows };
     })
     .filter(g => g.total >= 1)
     .sort((a, b) => {
@@ -566,7 +570,10 @@ function CalibCategoryCard({ group }) {
         {group.rows.map(r => {
           const isOpen = openThreshold === r.minThreshold;
           const color = r.rate >= 85 ? '#4ade80' : r.rate >= 50 ? '#f59e0b' : '#f87171';
-          const label = r.minThreshold === r.maxThreshold ? `≥${r.minThreshold}%` : `${r.minThreshold}–${r.maxThreshold}%`;
+          // Buckets exclusifs (cf. calibrationByCategory) : chaque pari n'apparaît que dans une
+          // seule ligne. "≥seuil%" pour la ligne la plus haute occupée (rien au-dessus dans cette
+          // catégorie), sinon la vraie fourchette exclusive "min–max%".
+          const label = r.maxThreshold === Infinity ? `≥${r.minThreshold}%` : `${r.minThreshold}–${r.maxThreshold}%`;
           return (
             <div key={r.minThreshold}>
               <div

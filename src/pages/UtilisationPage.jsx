@@ -75,8 +75,7 @@ function openReviewPDF() {
 <table>
 <thead><tr><th>Source</th><th>Ce qu'elle apporte</th><th>Limite / Cache</th></tr></thead>
 <tbody>
-<tr><td><strong>football-data.org</strong></td><td>Fixtures + standings 5 ligues</td><td>10 req/min — cache 30min</td></tr>
-<tr><td><strong>api-sports.io</strong></td><td>Idem (source alternative)</td><td>100 req/jour</td></tr>
+<tr><td><strong>football-data.org</strong></td><td>Fixtures + standings 5 ligues (source unique depuis le 12 juillet 2026 — API-Football retiré du projet, jamais réellement branché)</td><td>10 req/min — cache 30min</td></tr>
 <tr><td><strong>The Odds API</strong></td><td>Cotes h2h + BTTS (Pinnacle, Betfair, Unibet, Betclic)</td><td>500 req/mois — cache disque 30min</td></tr>
 <tr><td><strong>Unibet (scraping HTML)</strong></td><td>Cotes h2h football FR</td><td>Sans clé</td></tr>
 </tbody>
@@ -453,20 +452,6 @@ export default function UtilisationPage() {
               </table>
             </div>
 
-            <div className="util-card">
-              <div className="util-card-header">
-                <span className="util-badge util-badge--key">Clé requise</span>
-                <span className="util-card-name">API-Football (api-sports.io)</span>
-              </div>
-              <p className="util-card-desc">Source alternative enrichie de statistiques de classement et de l'historique des confrontations directes. Quota serré : 100 req/jour.</p>
-              <table className="util-table">
-                <thead><tr><th>Donnée</th><th>Ligues</th><th>Cache</th></tr></thead>
-                <tbody>
-                  <tr><td>5 prochains matchs + classement</td><td>L1, PL, Liga, Bundes, Serie A</td><td>30 min</td></tr>
-                  <tr><td>H2H (5 dernières confrontations)</td><td>Toutes ligues</td><td>30 min</td></tr>
-                </tbody>
-              </table>
-            </div>
           </>}
 
           {/* ── Basketball seulement ── */}
@@ -634,7 +619,7 @@ export default function UtilisationPage() {
               <span className="util-refresh-icon">⚽</span>
               <div>
                 <div className="util-refresh-label">Fixtures football</div>
-                <div className="util-refresh-desc">Cache 30 min — football-data.org + API-Football. Délai 200ms entre ligues (quota 10 req/min).</div>
+                <div className="util-refresh-desc">Cache 30 min — football-data.org. Délai 200ms entre ligues (quota 10 req/min).</div>
               </div>
             </div>
           )}
@@ -1150,7 +1135,7 @@ export default function UtilisationPage() {
               <span className="util-refresh-icon">⚽</span>
               <div>
                 <div className="util-refresh-label">H2H (confrontations directes)</div>
-                <div className="util-refresh-desc">5 dernières rencontres entre les deux équipes — score, vainqueur, date. Source : API-Football (cache 30min).</div>
+                <div className="util-refresh-desc">Pas encore de source branchée pour les 5 grands championnats (toujours vide) — l'ancienne source prévue (API-Football) n'a jamais été réellement utilisée par aucune page et a été retirée du projet le 12 juillet 2026.</div>
               </div>
             </div>
             <div className="util-refresh-item">

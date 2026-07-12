@@ -295,7 +295,7 @@ function _warmupOnStartup() {
   cachedFetch('/api/nba/scoreboard', 20_000).catch(() => {});
   cachedFetch('/api/wnba/scoreboard', 20_000).catch(() => {});
   cachedFetch('/api/fd/worldcup', 30_000).catch(() => {});
-  cachedFetch('/api/football/matches', 30_000).catch(() => {});
+  cachedFetch('/api/fd/matches', 30_000).catch(() => {});
   cachedFetch('/api/odds', 30_000).catch(() => {});
   cachedFetch('/api/nba/standings', 6 * 3_600_000).catch(() => {});
   cachedFetch('/api/wnba/standings', 6 * 3_600_000).catch(() => {});

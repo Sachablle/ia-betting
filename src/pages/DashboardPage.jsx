@@ -449,14 +449,11 @@ function QuotasWidget() {
 
   const fdRem    = q?.footballData?.remaining;
   const fdLim    = q?.footballData?.limit ?? 10;
-  const footRem  = q?.footballApi?.remaining;
-  const footLim  = q?.footballApi?.limit ?? 100;
   const bballRem = q?.basketballApi?.remaining;
   const bballLim = q?.basketballApi?.limit ?? 7500;
 
   const cards = [
     { label: 'football-data.org', rem: fdRem,    lim: fdLim,    period: 'requêtes /min'  },
-    { label: 'API-Football',      rem: footRem,  lim: footLim,  period: 'requêtes /jour' },
     { label: 'API-Basketball',    rem: bballRem, lim: bballLim, period: 'requêtes /jour' },
   ];
 
@@ -954,14 +951,14 @@ function UpcomingMatchesWidget() {
         cachedFetch('/api/wnba/scoreboard', 30_000).then(d=>(d.games||[]).map(g=>norm(g,'wnba'))),
         cachedFetch('/api/fd/worldcup', 30_000).then(d=>(d.games||[]).map(g=>norm({...g,id:`fdcdm_${g.id}`},'cdm'))),
         ...EU_BASKET.map(l=>cachedFetch(`/api/euro/${l}/scoreboard`, 30_000).then(d=>(d.games||[]).map(g=>norm(g,l)))),
-        cachedFetch('/api/football/matches', 30_000).then(d=>
-          (d.fixtures||[])
-            .filter(f=>EU_FOOT.includes(f.league?.key)&&f.status==='STATUS_SCHEDULED')
+        cachedFetch('/api/fd/matches', 30_000).then(d=>
+          (d.matches||[])
+            .filter(f=>EU_FOOT.includes(f.league))
             .map(f=>norm({
-              id:f.id, date:f.date, status:f.status,
-              home:{name:f.homeTeam?.name, short:f.homeTeam?.shortName},
-              away:{name:f.awayTeam?.name, short:f.awayTeam?.shortName},
-            }, f.league?.key))
+              id:`fd_${f.id}`, date:f.date, status:'STATUS_SCHEDULED',
+              home:{name:f.home?.name, short:f.home?.short},
+              away:{name:f.away?.name, short:f.away?.short},
+            }, f.league))
         ),
       ]);
 
