@@ -242,11 +242,11 @@ function calcSignificance(bets) {
   const avgOdds = nonVoid.reduce((s, b) => s + (b.odds ?? DEFAULT_ODDS), 0) / n;
   const p0 = 1 / avgOdds;
   const z = (pHat - p0) / Math.sqrt(p0 * (1 - p0) / n);
-  if (z <= 0)   return { label: 'Pas d\'edge',          color: '#f87171', icon: '✗', z, p0 };
+  if (z <= 0)   return { label: 'Pas d\'edge',          color: '#ef4444', icon: '✗', z, p0 };
   if (z > 2.33) return { label: 'Très significatif',   color: '#4ade80', icon: '✓✓', z, p0, level: 99 };
   if (z > 1.65) return { label: 'Significatif (95%)',  color: '#4ade80', icon: '✓',  z, p0, level: 95 };
   if (z > 1.28) return { label: 'Marginal (90%)',      color: '#f59e0b', icon: '~',  z, p0, level: 90 };
-  return { label: 'Non significatif', color: '#f87171', icon: '?', z, p0 };
+  return { label: 'Non significatif', color: '#ef4444', icon: '?', z, p0 };
 }
 
 function buildCumPL(bets) {
@@ -469,7 +469,7 @@ function LineChart({ points, yKey, color, label, yFormat, baseline }) {
   const ptsStr = points.map((p, i) => `${xOf(i)},${yOf(p[yKey])}`).join(' ');
   const area = `M ${xOf(0)},${y0} ` + points.map((p, i) => `L ${xOf(i)},${yOf(p[yKey])}`).join(' ') + ` L ${xOf(points.length - 1)},${y0} Z`;
   const lastV = vals[vals.length - 1];
-  const lineColor = color || (lastV >= base ? '#4ade80' : '#f87171');
+  const lineColor = color || (lastV >= base ? '#4ade80' : '#ef4444');
   return (
     <svg width="100%" viewBox={`0 0 ${W} ${H}`} style={{ display: 'block', overflow: 'visible' }}>
       <line x1={PAD.l} x2={W - PAD.r} y1={y0} y2={y0} stroke="rgba(255,255,255,0.15)" strokeWidth="1" strokeDasharray="4,3" />
@@ -507,7 +507,7 @@ function PLChart({ points }) {
   const pts = points.map((p, i) => `${xOf(i)},${yOf(p.pl)}`).join(' ');
   const area = `M ${xOf(0)},${y0} ` + points.map((p, i) => `L ${xOf(i)},${yOf(p.pl)}`).join(' ') + ` L ${xOf(points.length - 1)},${y0} Z`;
   const lastPL = points[points.length - 1].pl;
-  const lineColor = lastPL >= 0 ? '#4ade80' : '#f87171';
+  const lineColor = lastPL >= 0 ? '#4ade80' : '#ef4444';
   const step = range <= 2 ? 0.5 : range <= 5 ? 1 : range <= 10 ? 2 : 5;
   const ticks = [];
   for (let v = Math.ceil(minPL / step) * step; v <= maxPL + 0.001; v += step) ticks.push(v);
@@ -547,10 +547,10 @@ function CalibrationRow({ band }) {
     <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
       <span style={{ width: 50, fontSize: 11, color: 'var(--text-dim)', flexShrink: 0 }}>{label}</span>
       <div style={{ flex: 1, height: 6, borderRadius: 3, background: 'rgba(255,255,255,0.08)', position: 'relative', overflow: 'hidden' }}>
-        <div style={{ position: 'absolute', left: 0, top: 0, height: '100%', width: `${rate}%`, background: rate >= 55 ? '#4ade80' : '#f87171', borderRadius: 3, transition: 'width 0.4s' }} />
+        <div style={{ position: 'absolute', left: 0, top: 0, height: '100%', width: `${rate}%`, background: rate >= 55 ? '#4ade80' : '#ef4444', borderRadius: 3, transition: 'width 0.4s' }} />
       </div>
       <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)', minWidth: 36, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{rate.toFixed(0)}%</span>
-      <span style={{ fontSize: 10, color: diff >= 0 ? '#4ade80' : '#f87171', minWidth: 36, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
+      <span style={{ fontSize: 10, color: diff >= 0 ? '#4ade80' : '#ef4444', minWidth: 36, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
         {diff >= 0 ? '+' : ''}{diff.toFixed(0)}pp
       </span>
       <span style={{ fontSize: 10, color: 'var(--text-dim)', minWidth: 28, textAlign: 'right' }}>{won}/{total}</span>
@@ -568,7 +568,7 @@ function CalibCategoryCard({ group }) {
       <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
         {group.rows.map(r => {
           const isOpen = openThreshold === r.minThreshold;
-          const color = r.rate >= 85 ? '#4ade80' : r.rate >= 50 ? '#f59e0b' : '#f87171';
+          const color = r.rate >= 85 ? '#4ade80' : r.rate >= 50 ? '#f59e0b' : '#ef4444';
           // Buckets exclusifs (cf. calibrationByCategory) : chaque pari n'apparaît que dans une
           // seule ligne. "≥seuil%" pour la ligne la plus haute occupée (rien au-dessus dans cette
           // catégorie), sinon la vraie fourchette exclusive "min–max%".
@@ -604,7 +604,7 @@ function CalibCategoryCard({ group }) {
 function DonutResults({ metrics, accepted = 0 }) {
   const segments = [
     { key: 'won',      label: 'Gagné',   color: '#4ade80', count: metrics.won },
-    { key: 'lost',     label: 'Perdu',   color: '#f87171', count: metrics.lost },
+    { key: 'lost',     label: 'Perdu',   color: '#ef4444', count: metrics.lost },
     { key: 'accepted', label: 'En jeu',  color: '#60a5fa', count: accepted },
   ].filter(s => s.count > 0);
   const total = metrics.won + metrics.lost + accepted;
@@ -670,8 +670,8 @@ const TYPE_COLORS = {
 const BK_COLORS   = { unibet: '#1db954', betclic: '#e0292e', winamax: '#e5e7eb', pinnacle: '#3b82f6', inconnu: '#64748b' };
 
 function TypeStatsRow({ g }) {
-  const roiColor = g.roi == null ? 'var(--text-dim)' : g.roi >= 0 ? '#4ade80' : '#f87171';
-  const wrColor  = g.winRate == null ? 'var(--text-dim)' : g.winRate >= 50 ? '#4ade80' : '#f87171';
+  const roiColor = g.roi == null ? 'var(--text-dim)' : g.roi >= 0 ? '#4ade80' : '#ef4444';
+  const wrColor  = g.winRate == null ? 'var(--text-dim)' : g.winRate >= 50 ? '#4ade80' : '#ef4444';
   return (
     <div style={{ display: 'grid', gridTemplateColumns: '90px 40px 40px 1fr 60px 60px', alignItems: 'center', gap: '0 0.75rem', padding: '0.4rem 0.75rem', borderRadius: 8, background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.05)' }}>
       <span style={{ fontSize: 12, fontWeight: 600, color: TYPE_COLORS[g.label] || 'var(--text)' }}>{g.label}</span>
@@ -692,8 +692,8 @@ function TypeStatsRow({ g }) {
 
 function BookmakerRow({ g }) {
   const bkColor  = BK_COLORS[g.bk] || '#64748b';
-  const roiColor = g.roi >= 0 ? '#4ade80' : '#f87171';
-  const wrColor  = g.winRate >= 50 ? '#4ade80' : '#f87171';
+  const roiColor = g.roi >= 0 ? '#4ade80' : '#ef4444';
+  const wrColor  = g.winRate >= 50 ? '#4ade80' : '#ef4444';
   return (
     <div style={{ display: 'grid', gridTemplateColumns: '80px 36px 36px 1fr 56px 60px', alignItems: 'center', gap: '0 0.75rem', padding: '0.4rem 0.75rem', borderRadius: 8, background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.05)' }}>
       <span style={{ fontSize: 12, fontWeight: 700, color: bkColor, textTransform: 'capitalize' }}>{g.bk}</span>
@@ -724,10 +724,10 @@ function _saveBetNote(key, val) {
 function BetRow({ bet, rank, stake = 10, compact = false }) {
   const isWon  = bet.status === 'won';
   const isVoid = bet.status === 'void';
-  const statusColor = isVoid ? '#94a3b8' : isWon ? '#4ade80' : '#f87171';
+  const statusColor = isVoid ? '#94a3b8' : isWon ? '#4ade80' : '#ef4444';
   const o = bet.odds ?? 1.9;
   const pl = isVoid ? null : isWon ? (o - 1) * stake : -stake;
-  const plColor = pl == null ? '#94a3b8' : pl >= 0 ? '#4ade80' : '#f87171';
+  const plColor = pl == null ? '#94a3b8' : pl >= 0 ? '#4ade80' : '#ef4444';
   const plStr = pl == null ? '—' : `${pl >= 0 ? '+' : ''}${pl.toFixed(0)}€`;
   const dateStr = new Date(bet.date).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' });
 
@@ -1026,9 +1026,9 @@ export default function BacktestingPage() {
     ? { metrics: pinMetrics, calib: pinCalib, typeStats: pinTypeStats, rolling: pinRolling, rollingMetrics: pinRollingMetrics, cumPoints: pinCumPoints, rollingWR: pinRollingWR, bets: pinnacleFiltered }
     : { metrics, calib, typeStats, rolling, rollingMetrics, cumPoints, rollingWR, bets: filtered };
 
-  const roiColor = metrics.roi == null ? 'var(--text-dim)' : metrics.roi >= 0 ? '#4ade80' : '#f87171';
-  const plColor  = metrics.pl === 0    ? 'var(--text-dim)' : metrics.pl >= 0  ? '#4ade80' : '#f87171';
-  const wrColor  = metrics.winRate == null ? 'var(--text-dim)' : metrics.winRate >= 50 ? '#4ade80' : '#f87171';
+  const roiColor = metrics.roi == null ? 'var(--text-dim)' : metrics.roi >= 0 ? '#4ade80' : '#ef4444';
+  const plColor  = metrics.pl === 0    ? 'var(--text-dim)' : metrics.pl >= 0  ? '#4ade80' : '#ef4444';
+  const wrColor  = metrics.winRate == null ? 'var(--text-dim)' : metrics.winRate >= 50 ? '#4ade80' : '#ef4444';
 
   return (
     <div className="page" style={{ paddingBottom: '3rem' }}>
@@ -1121,16 +1121,16 @@ export default function BacktestingPage() {
         {/* KPIs ligne 1 — performance */}
         <div style={{ display: 'flex', gap: '0.6rem', flexWrap: 'wrap', marginBottom: '0.6rem' }}>
           <KpiCard pinnacle={showPinnacle} label="Paris résolus" value={D.metrics.total} sub={`${D.metrics.won}W · ${D.metrics.lost}L`} />
-          <KpiCard pinnacle={showPinnacle} label="Win Rate"  value={D.metrics.winRate != null ? `${D.metrics.winRate.toFixed(1)}%` : '—'} sub={`${D.metrics.won + D.metrics.lost} non-void`} color={D.metrics.winRate == null ? 'var(--text-dim)' : D.metrics.winRate >= 50 ? '#4ade80' : '#f87171'} />
-          <KpiCard pinnacle={showPinnacle} label="ROI"       value={D.metrics.roi != null ? `${D.metrics.roi >= 0 ? '+' : ''}${D.metrics.roi.toFixed(1)}%` : '—'} sub={`flat ${stake}€/pari`} color={D.metrics.roi == null ? 'var(--text-dim)' : D.metrics.roi >= 0 ? '#4ade80' : '#f87171'} />
-          <KpiCard pinnacle={showPinnacle} label="P&L"       value={`${D.metrics.pl >= 0 ? '+' : ''}${(D.metrics.pl * stake).toFixed(0)}€`} sub={`mise ${stake}€/alerte`} color={D.metrics.pl >= 0 ? '#4ade80' : '#f87171'} />
+          <KpiCard pinnacle={showPinnacle} label="Win Rate"  value={D.metrics.winRate != null ? `${D.metrics.winRate.toFixed(1)}%` : '—'} sub={`${D.metrics.won + D.metrics.lost} non-void`} color={D.metrics.winRate == null ? 'var(--text-dim)' : D.metrics.winRate >= 50 ? '#4ade80' : '#ef4444'} />
+          <KpiCard pinnacle={showPinnacle} label="ROI"       value={D.metrics.roi != null ? `${D.metrics.roi >= 0 ? '+' : ''}${D.metrics.roi.toFixed(1)}%` : '—'} sub={`flat ${stake}€/pari`} color={D.metrics.roi == null ? 'var(--text-dim)' : D.metrics.roi >= 0 ? '#4ade80' : '#ef4444'} />
+          <KpiCard pinnacle={showPinnacle} label="P&L"       value={`${D.metrics.pl >= 0 ? '+' : ''}${(D.metrics.pl * stake).toFixed(0)}€`} sub={`mise ${stake}€/alerte`} color={D.metrics.pl >= 0 ? '#4ade80' : '#ef4444'} />
         </div>
 
         {/* KPIs ligne 2 — séries + significativité */}
         {(() => { const dD = showPinnacle ? pinDd : dd; const sG = showPinnacle ? pinSig : sig; return (
         <div style={{ display: 'flex', gap: '0.6rem', flexWrap: 'wrap', marginBottom: '1.25rem' }}>
           <KpiCard pinnacle={showPinnacle} small label="Meilleure série" value={`${dD.maxWin}W`} color="#4ade80" />
-          <KpiCard pinnacle={showPinnacle} small label="Pire série"      value={`${dD.maxLoss}L`} color={dD.maxLoss >= 5 ? '#f87171' : '#f59e0b'} />
+          <KpiCard pinnacle={showPinnacle} small label="Pire série"      value={`${dD.maxLoss}L`} color={dD.maxLoss >= 5 ? '#ef4444' : '#f59e0b'} />
           <SigBadge sig={sG} pinnacle={showPinnacle} />
         </div>
         ); })()}
@@ -1154,8 +1154,8 @@ export default function BacktestingPage() {
               : <>
                   <div style={{ display: 'flex', gap: '1.25rem', marginBottom: '0.75rem' }}>
                     {[
-                      { lbl: 'Win Rate', val: D.rollingMetrics.winRate != null ? `${D.rollingMetrics.winRate.toFixed(0)}%` : '—', col: (D.rollingMetrics.winRate ?? 0) >= 50 ? '#4ade80' : '#f87171' },
-                      { lbl: 'P&L',      val: `${D.rollingMetrics.pl >= 0 ? '+' : ''}${(D.rollingMetrics.pl * stake).toFixed(0)}€`, col: D.rollingMetrics.pl >= 0 ? '#4ade80' : '#f87171' },
+                      { lbl: 'Win Rate', val: D.rollingMetrics.winRate != null ? `${D.rollingMetrics.winRate.toFixed(0)}%` : '—', col: (D.rollingMetrics.winRate ?? 0) >= 50 ? '#4ade80' : '#ef4444' },
+                      { lbl: 'P&L',      val: `${D.rollingMetrics.pl >= 0 ? '+' : ''}${(D.rollingMetrics.pl * stake).toFixed(0)}€`, col: D.rollingMetrics.pl >= 0 ? '#4ade80' : '#ef4444' },
                       { lbl: 'Bilan',    val: `${D.rollingMetrics.won}W/${D.rollingMetrics.lost}L`, col: 'var(--text)' },
                     ].map(({ lbl, val, col }) => (
                       <div key={lbl}>
@@ -1275,9 +1275,9 @@ export default function BacktestingPage() {
             <div style={{ display: 'flex', gap: '0.6rem', flexWrap: 'wrap', marginBottom: '1.25rem' }}>
               {[
                 { label: 'Paris résolus', value: pinMetrics.total,   sub: `${pinMetrics.won}W · ${pinMetrics.lost}L`, color: 'var(--text)' },
-                { label: 'Win Rate',  value: pinMetrics.winRate != null ? `${pinMetrics.winRate.toFixed(1)}%` : '—', sub: `${pinMetrics.won + pinMetrics.lost} non-void`, color: pinMetrics.winRate == null ? 'var(--text-dim)' : pinMetrics.winRate >= 50 ? '#4ade80' : '#f87171' },
-                { label: 'ROI',       value: pinMetrics.roi != null ? `${pinMetrics.roi >= 0 ? '+' : ''}${pinMetrics.roi.toFixed(1)}%` : '—', sub: `flat ${stake}€/pari`, color: pinMetrics.roi == null ? 'var(--text-dim)' : pinMetrics.roi >= 0 ? '#4ade80' : '#f87171' },
-                { label: 'P&L',       value: `${pinMetrics.pl >= 0 ? '+' : ''}${(pinMetrics.pl * stake).toFixed(0)}€`, sub: `mise ${stake}€/alerte`, color: pinMetrics.pl >= 0 ? '#4ade80' : '#f87171' },
+                { label: 'Win Rate',  value: pinMetrics.winRate != null ? `${pinMetrics.winRate.toFixed(1)}%` : '—', sub: `${pinMetrics.won + pinMetrics.lost} non-void`, color: pinMetrics.winRate == null ? 'var(--text-dim)' : pinMetrics.winRate >= 50 ? '#4ade80' : '#ef4444' },
+                { label: 'ROI',       value: pinMetrics.roi != null ? `${pinMetrics.roi >= 0 ? '+' : ''}${pinMetrics.roi.toFixed(1)}%` : '—', sub: `flat ${stake}€/pari`, color: pinMetrics.roi == null ? 'var(--text-dim)' : pinMetrics.roi >= 0 ? '#4ade80' : '#ef4444' },
+                { label: 'P&L',       value: `${pinMetrics.pl >= 0 ? '+' : ''}${(pinMetrics.pl * stake).toFixed(0)}€`, sub: `mise ${stake}€/alerte`, color: pinMetrics.pl >= 0 ? '#4ade80' : '#ef4444' },
               ].map(({ label, value, sub, color }) => (
                 <div key={label} style={{ flex: '1 1 100px', background: 'rgba(96,165,250,0.07)', border: '1px solid rgba(96,165,250,0.18)', borderRadius: 12, padding: '0.75rem 1rem' }}>
                   <div style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.09em', color: '#60a5fa', marginBottom: 4 }}>{label}</div>

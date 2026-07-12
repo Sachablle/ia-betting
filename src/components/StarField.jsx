@@ -14,15 +14,12 @@ function generateDotShadows(count, colorFn, spread = 0, minOpacity = 0.25, opaci
 
 const white  = o => `rgba(255,255,255,${o})`;
 const bubble = o => `rgba(165,243,252,${o})`;
-const ember  = o => `rgba(249,115,22,${o})`;
 const violet = o => `rgba(167,139,250,${o})`;
 
 const STARS_A   = generateDotShadows(70, white,  0.5, 0.18, 0.42);
 const STARS_B   = generateDotShadows(60, white,  0.5, 0.18, 0.42);
 const BUBBLES   = generateDotShadows(70, bubble, 0.5, 0.18, 0.42);
 const BUBBLES_2 = generateDotShadows(60, bubble, 0.5, 0.18, 0.42);
-const EMBERS_A  = generateDotShadows(70, ember,  0.5, 0.18, 0.42);
-const EMBERS_B  = generateDotShadows(60, ember,  0.5, 0.18, 0.42);
 const VIOLETS_A = generateDotShadows(80, violet, 0.5, 0.15, 0.50);
 const VIOLETS_B = generateDotShadows(70, violet, 0.5, 0.15, 0.50);
 
@@ -70,45 +67,6 @@ function OceanDepthBackground() {
   );
 }
 
-// ── 3. Aurora boréale ────────────────────────────────────────────────────────
-function AuroraBackground() {
-  return (
-    <Wrap bg="linear-gradient(180deg, #010a08 0%, #020e0b 60%, #010806 100%)">
-      <style>{`
-        @keyframes auroraDrift1 { 0%,100% { transform: translateX(-8%) scaleY(1);   opacity: 0.55; } 50% { transform: translateX(8%) scaleY(1.3);  opacity: 0.9; } }
-        @keyframes auroraDrift2 { 0%,100% { transform: translateX(6%) scaleY(0.9);  opacity: 0.4;  } 50% { transform: translateX(-6%) scaleY(1.2); opacity: 0.7; } }
-        @keyframes auroraDrift3 { 0%,100% { transform: translateX(-4%) scaleY(1.1); opacity: 0.35; } 50% { transform: translateX(5%) scaleY(0.85); opacity: 0.6; } }
-        @keyframes riseUp  { 0% { transform: translateY(10vh); opacity: 0.9; }  100% { transform: translateY(-30vh); opacity: 0; } }
-        @keyframes riseUp2 { 0% { transform: translateY(15vh); opacity: 0.85; } 100% { transform: translateY(-35vh); opacity: 0; } }
-      `}</style>
-      <div style={{ position: 'absolute', top: '-10%', left: '-5%', width: '45vw', height: '80vh', background: 'linear-gradient(180deg, rgba(52,211,153,0.55) 0%, rgba(16,185,129,0.28) 40%, transparent 80%)', filter: 'blur(50px)', animation: 'auroraDrift1 12s ease-in-out infinite', willChange: 'transform' }} />
-      <div style={{ position: 'absolute', top: '-15%', left: '30%', width: '50vw', height: '90vh', background: 'linear-gradient(180deg, rgba(99,102,241,0.45) 0%, rgba(139,92,246,0.22) 40%, transparent 80%)', filter: 'blur(60px)', animation: 'auroraDrift2 16s ease-in-out infinite', willChange: 'transform' }} />
-      <div style={{ position: 'absolute', top: '-5%', left: '60%', width: '40vw', height: '75vh', background: 'linear-gradient(180deg, rgba(34,211,238,0.38) 0%, rgba(6,182,212,0.18) 40%, transparent 80%)', filter: 'blur(50px)', animation: 'auroraDrift3 20s ease-in-out infinite', willChange: 'transform' }} />
-      <div style={{ position: 'absolute', top: 0, left: 0, width: '1px', height: '1px', borderRadius: '50%', boxShadow: STARS_A, animation: 'riseUp 16s linear infinite' }} />
-      <div style={{ position: 'absolute', top: 0, left: 0, width: '1px', height: '1px', borderRadius: '50%', boxShadow: STARS_B, animation: 'riseUp2 22s linear infinite', animationDelay: '-8s' }} />
-    </Wrap>
-  );
-}
-
-// ── 4. Braises rouges ────────────────────────────────────────────────────────
-function EmberBackground() {
-  return (
-    <Wrap bg="radial-gradient(ellipse at 50% 100%, #1a0a05 0%, #0d0504 60%, #080202 100%)">
-      <style>{`
-        @keyframes emberPulse  { 0%,100% { opacity: 0.4; } 50% { opacity: 0.72; } }
-        @keyframes emberPulse2 { 0%,100% { opacity: 0.3; } 50% { opacity: 0.6;  } }
-        @keyframes riseUp  { 0% { transform: translateY(10vh); opacity: 0.9; }  100% { transform: translateY(-30vh); opacity: 0; } }
-        @keyframes riseUp2 { 0% { transform: translateY(15vh); opacity: 0.85; } 100% { transform: translateY(-35vh); opacity: 0; } }
-      `}</style>
-      <div style={{ position: 'absolute', bottom: '-20%', left: '20%', width: '70vw', height: '70vw', borderRadius: '50%', background: 'radial-gradient(circle, rgba(239,68,68,0.22), rgba(249,115,22,0.12), transparent 70%)', filter: 'blur(80px)', animation: 'emberPulse 6s ease-in-out infinite' }} />
-      <div style={{ position: 'absolute', bottom: '-5%', right: '5%', width: '40vw', height: '40vw', borderRadius: '50%', background: 'radial-gradient(circle, rgba(220,38,38,0.28), transparent 70%)', filter: 'blur(60px)', animation: 'emberPulse2 9s ease-in-out infinite', animationDelay: '-3s' }} />
-      <div style={{ position: 'absolute', bottom: '-10%', left: '5%', width: '30vw', height: '30vw', borderRadius: '50%', background: 'radial-gradient(circle, rgba(251,146,60,0.2), transparent 70%)', filter: 'blur(50px)', animation: 'emberPulse 11s ease-in-out infinite', animationDelay: '-5s' }} />
-      <div style={{ position: 'absolute', top: 0, left: 0, width: '1px', height: '1px', borderRadius: '50%', boxShadow: EMBERS_A, animation: 'riseUp 16s linear infinite' }} />
-      <div style={{ position: 'absolute', top: 0, left: 0, width: '1px', height: '1px', borderRadius: '50%', boxShadow: EMBERS_B, animation: 'riseUp2 22s linear infinite', animationDelay: '-8s' }} />
-    </Wrap>
-  );
-}
-
 // ── 5. Minuit violet ─────────────────────────────────────────────────────────
 function MidnightVioletBackground() {
   return (
@@ -148,14 +106,48 @@ function AbyssalOceanBackground() {
   );
 }
 
+// ── 8. Encre dans l'eau ──────────────────────────────────────────────────────
+function InkBackground() {
+  return (
+    <Wrap bg="radial-gradient(ellipse at 50% 40%, #0e0e10 0%, #050506 60%, #000000 100%)">
+      <style>{`
+        @keyframes inkDrift1 { 0%,100% { transform: translate(-6%,-4%) scale(1) rotate(0deg); } 50% { transform: translate(8%,6%) scale(1.25) rotate(15deg); } }
+        @keyframes inkDrift2 { 0%,100% { transform: translate(5%,6%) scale(1.1) rotate(0deg); } 50% { transform: translate(-7%,-5%) scale(0.85) rotate(-20deg); } }
+        @keyframes inkDrift3 { 0%,100% { transform: translate(-3%,5%) scale(0.95) rotate(0deg); } 50% { transform: translate(6%,-8%) scale(1.15) rotate(10deg); } }
+      `}</style>
+      <div style={{ position: 'absolute', top: '10%', left: '15%', width: '55vw', height: '55vw', borderRadius: '45% 55% 60% 40% / 50% 45% 55% 50%', background: 'radial-gradient(circle, rgba(180,190,200,0.10), transparent 70%)', filter: 'blur(55px)', animation: 'inkDrift1 34s ease-in-out infinite', willChange: 'transform' }} />
+      <div style={{ position: 'absolute', bottom: '5%', right: '10%', width: '60vw', height: '60vw', borderRadius: '55% 45% 40% 60% / 45% 55% 50% 55%', background: 'radial-gradient(circle, rgba(140,150,165,0.08), transparent 70%)', filter: 'blur(65px)', animation: 'inkDrift2 40s ease-in-out infinite', willChange: 'transform' }} />
+      <div style={{ position: 'absolute', top: '40%', left: '50%', width: '40vw', height: '40vw', borderRadius: '50% 50% 45% 55% / 55% 45% 55% 45%', background: 'radial-gradient(circle, rgba(210,215,225,0.07), transparent 70%)', filter: 'blur(50px)', animation: 'inkDrift3 30s ease-in-out infinite', willChange: 'transform' }} />
+    </Wrap>
+  );
+}
+
+// ── 9. Orage nocturne ────────────────────────────────────────────────────────
+function StormBackground() {
+  return (
+    <Wrap bg="linear-gradient(180deg, #131922 0%, #0a0e14 55%, #05070a 100%)">
+      <style>{`
+        @keyframes cloudDrift1 { 0%,100% { transform: translateX(-5%) scale(1); opacity: 0.5; } 50% { transform: translateX(5%) scale(1.08); opacity: 0.7; } }
+        @keyframes cloudDrift2 { 0%,100% { transform: translateX(4%) scale(1.05); opacity: 0.4; } 50% { transform: translateX(-6%) scale(0.95); opacity: 0.6; } }
+        @keyframes lightning1 { 0%, 91%, 100% { opacity: 0; } 92% { opacity: 0.55; } 93% { opacity: 0.1; } 94% { opacity: 0.4; } 95% { opacity: 0; } }
+        @keyframes lightning2 { 0%, 96%, 100% { opacity: 0; } 97% { opacity: 0.4; } 98% { opacity: 0.05; } 99% { opacity: 0.3; } 100% { opacity: 0; } }
+      `}</style>
+      <div style={{ position: 'absolute', top: '-10%', left: '-10%', width: '70vw', height: '50vh', background: 'radial-gradient(ellipse, rgba(71,85,105,0.35), transparent 70%)', filter: 'blur(50px)', animation: 'cloudDrift1 22s ease-in-out infinite' }} />
+      <div style={{ position: 'absolute', top: '0%', right: '-10%', width: '65vw', height: '45vh', background: 'radial-gradient(ellipse, rgba(51,65,85,0.3), transparent 70%)', filter: 'blur(50px)', animation: 'cloudDrift2 26s ease-in-out infinite' }} />
+      <div style={{ position: 'absolute', top: '5%', left: '8%', width: '35vw', height: '35vh', borderRadius: '50%', background: 'radial-gradient(circle, rgba(224,242,254,0.9), rgba(147,197,253,0.3), transparent 70%)', filter: 'blur(15px)', animation: 'lightning1 9s ease-in-out infinite', mixBlendMode: 'screen' }} />
+      <div style={{ position: 'absolute', top: '2%', right: '12%', width: '30vw', height: '30vh', borderRadius: '50%', background: 'radial-gradient(circle, rgba(224,242,254,0.8), rgba(147,197,253,0.25), transparent 70%)', filter: 'blur(15px)', animation: 'lightning2 13s ease-in-out infinite', animationDelay: '-4s', mixBlendMode: 'screen' }} />
+    </Wrap>
+  );
+}
+
 // ── Switcher ─────────────────────────────────────────────────────────────────
 const VARIANTS = [
   { name: 'Nébuleuse spatiale', Comp: NebulaBackground },
   { name: 'Profondeurs océan',  Comp: OceanDepthBackground },
-  { name: 'Aurora boréale',     Comp: AuroraBackground },
-  { name: 'Braises rouges',     Comp: EmberBackground },
   { name: 'Minuit violet',      Comp: MidnightVioletBackground },
   { name: 'Océan abyssal',      Comp: AbyssalOceanBackground },
+  { name: "Encre dans l'eau",   Comp: InkBackground },
+  { name: 'Orage nocturne',     Comp: StormBackground },
 ];
 
 export default function StarField() {
