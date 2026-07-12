@@ -907,6 +907,16 @@ function _buildMergedCompetitions(betclicData, pinnacleData, pmuData) {
 }
 
 let _outrightsRefreshing = false;
+// Un vrai scrape par source est bloqué pendant 15min après la dernière tentative (garde-fou
+// anti-ban) — exposé au frontend pour afficher un minuteur plutôt que de laisser croire qu'un
+// clic sur "Rafraîchir" relance toujours un vrai scraping.
+function _outrightsNextRefreshAt() {
+  return Math.max(
+    _outrightAttempts.betclic   + BETCLIC_OUTRIGHT_MIN_INTERVAL_MS,
+    _outrightAttempts.pinnacle  + PINNACLE_OUTRIGHT_MIN_INTERVAL_MS,
+    _outrightAttempts.pmu       + PMU_OUTRIGHT_MIN_INTERVAL_MS,
+  );
+}
 app.get('/api/outrights', async (req, res) => {
   if (req.query.refresh === '1') { _outrightsCache.ts = 0; _pinnacleOutrightsCache.ts = 0; _pmuOutrightsCache.ts = 0; }
 
@@ -921,7 +931,7 @@ app.get('/api/outrights', async (req, res) => {
       _pmuOutrightsCache.data || {},
     );
     const blockedUntil = Date.now() < _scraperBlockedUntil.betclic ? _scraperBlockedUntil.betclic : null;
-    res.json({ competitions, blockedUntil, stale: cacheStale });
+    res.json({ competitions, blockedUntil, stale: cacheStale, nextRefreshAt: _outrightsNextRefreshAt() });
 
     if (cacheStale && !_outrightsRefreshing) {
       _outrightsRefreshing = true;
@@ -937,9 +947,9 @@ app.get('/api/outrights', async (req, res) => {
     const [betclicData, pinnacleData, pmuData] = await Promise.all([getOutrights(), getPinnacleOutrights(), getPmuOutrights()]);
     const competitions = _buildMergedCompetitions(betclicData, pinnacleData, pmuData);
     const blockedUntil = Date.now() < _scraperBlockedUntil.betclic ? _scraperBlockedUntil.betclic : null;
-    res.json({ competitions, blockedUntil });
+    res.json({ competitions, blockedUntil, nextRefreshAt: _outrightsNextRefreshAt() });
   } catch (err) {
-    res.json({ competitions: {}, blockedUntil: null });
+    res.json({ competitions: {}, blockedUntil: null, nextRefreshAt: _outrightsNextRefreshAt() });
   }
 });
 

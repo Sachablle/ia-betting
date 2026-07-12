@@ -189,16 +189,21 @@ function CountdownWidget() {
           )}
         </div>
       </div>
-      {/* Bande bas — Cycle alertes */}
-      <div style={{ borderTop: '1px solid var(--border)', padding: '0.35rem 0.75rem 0.4rem' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: '0.3rem' }}>
+      {/* Bande bas — Cycle alertes. Étiquette fixe en haut, barre centrée dans l'espace
+          restant en dessous (flex:1 sur ce bloc + wrapper centré autour de la barre) — sans
+          ça la barre restait collée juste sous l'étiquette avec tout le vide en dessous
+          quand la carte s'étire pour matcher la hauteur de ses voisines. */}
+      <div style={{ borderTop: '1px solid var(--border)', padding: '0.35rem 0.75rem 0.4rem', flex: 1, display: 'flex', flexDirection: 'column' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
           <span style={{ fontSize: 9, fontWeight: 700, color: 'var(--text-sub)', textTransform: 'uppercase', letterSpacing: '0.1em' }}>Cycle alertes</span>
           <span style={{ fontSize: 9, color: dim }}>
             {bgHealth?.bgLastRun ? (bgRemMin != null ? `dans ${bgRemMin}min` : '—') : 'jamais'}
           </span>
         </div>
-        <div style={{ height: 4, borderRadius: 99, background: 'rgba(255,255,255,0.07)', overflow: 'hidden' }}>
-          <div style={{ height: '100%', width: `${bgPct * 100}%`, background: 'linear-gradient(to right, #facc15, #4ade80)', borderRadius: 99, transition: 'width 0.5s ease' }} />
+        <div style={{ flex: 1, display: 'flex', alignItems: 'center' }}>
+          <div style={{ height: 4, width: '100%', borderRadius: 99, background: 'rgba(255,255,255,0.07)', overflow: 'hidden' }}>
+            <div style={{ height: '100%', width: `${bgPct * 100}%`, background: 'linear-gradient(to right, #facc15, #4ade80)', borderRadius: 99, transition: 'width 0.5s ease' }} />
+          </div>
         </div>
       </div>
     </div>
@@ -243,9 +248,12 @@ function SignalIcon({ label, ts, ok, lastOk, greenMs = 10 * 60_000, yellowMs = 2
     );
   };
 
+  // Juste milieu entre l'ancien gabarit "Cotes & données" (28px/10px, jugé trop gros une fois
+  // aligné avec Taux de scraping) et l'ancien gabarit "Taux de scraping" (26px/7px, jugé trop
+  // épuré tout seul) — les deux catégories convergent maintenant vers cette même taille réduite.
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'flex-end', gap: '0.3rem', minWidth: 52 }}>
-      <div style={{ position: 'relative', width: 28, height: 22 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'flex-end', gap: '0.25rem', minWidth: 46 }}>
+      <div style={{ position: 'relative', width: 24, height: 19 }}>
         {level === 3 && (
           <div style={{
             position: 'absolute', inset: -4,
@@ -253,15 +261,15 @@ function SignalIcon({ label, ts, ok, lastOk, greenMs = 10 * 60_000, yellowMs = 2
             pointerEvents: 'none',
           }} />
         )}
-        <svg width={28} height={22} viewBox="0 0 24 20" style={{ filter: level > 0 ? `drop-shadow(0 0 3px ${color}80)` : 'none' }}>
+        <svg width={24} height={19} viewBox="0 0 24 20" style={{ filter: level > 0 ? `drop-shadow(0 0 3px ${color}80)` : 'none' }}>
           {wifiArc(11, level >= 3)}
           {wifiArc(7,  level >= 2)}
           {wifiArc(3.5, level >= 1)}
           <circle cx={12} cy={15.5} r={2} fill={level > 0 ? color : dim} />
         </svg>
       </div>
-      <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-sub)', letterSpacing: '0.04em' }}>{label}</span>
-      <span style={{ fontSize: 9, color, opacity: level === 0 ? 0.5 : 0.85 }}>{sub}</span>
+      <span style={{ fontSize: 8.5, fontWeight: 700, color: 'var(--text-sub)', letterSpacing: '0.04em' }}>{label}</span>
+      <span style={{ fontSize: 8, color, opacity: level === 0 ? 0.5 : 0.85 }}>{sub}</span>
     </div>
   );
 }
@@ -376,21 +384,26 @@ function SystemHealthSection() {
     <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 16, display: 'flex', alignItems: 'stretch', height: '100%', boxSizing: 'border-box' }}>
 
       <div style={{ padding: '0.3rem 0.75rem', display: 'flex', flexDirection: 'column', justifyContent: 'flex-start', gap: '0.75rem' }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid var(--border)', paddingBottom: '0.3rem', marginBottom: '0' }}>
+        {/* position:relative + bouton/horodatage en absolute — sans ça, ce bloc plus haut que le
+            simple libellé des autres panneaux (En cours, Prochain match, Taux de scraping)
+            étirait la ligne de séparation plus bas que les leurs. */}
+        <div style={{ position: 'relative', display: 'flex', alignItems: 'center', borderBottom: '1px solid var(--border)', paddingBottom: '0.3rem', marginBottom: '0' }}>
           <span style={{ fontSize: 8, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--text-sub)' }}>Cotes &amp; Données</span>
-          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 2 }}>
+          {/* Bouton + horodatage réduits et mis côte à côte (pas empilés) — pour rester dans la
+              hauteur de la ligne sans déborder sur le trait de séparation du dessous. */}
+          <div style={{ position: 'absolute', right: 0, top: '50%', transform: 'translateY(-50%)', display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+            {lastRefreshed && (
+              <span style={{ fontSize: 7, color: 'var(--text-dim)' }}>
+                {lastRefreshed.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
+              </span>
+            )}
             <button
               className={`icon-refresh-btn${refreshing ? ' spinning' : ''}`}
               onClick={handleRefresh}
               disabled={refreshing}
               title="Rafraîchir"
-              style={{ width: 16, height: 16, fontSize: 11, lineHeight: 1, padding: 0, flexShrink: 0 }}
+              style={{ width: 11, height: 11, fontSize: 8, lineHeight: 1, padding: 0, flexShrink: 0 }}
             >↻</button>
-            {lastRefreshed && (
-              <span style={{ fontSize: 8, color: 'var(--text-dim)' }}>
-                {lastRefreshed.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
-              </span>
-            )}
           </div>
         </div>
 
@@ -484,89 +497,81 @@ function QuotasWidget() {
 }
 
 function ScrapingRatePanel({ sc }) {
-  // Couleurs par position dans le groupe (0=bleu clair, 1=bleu foncé, 2=violet) — identique pour toutes les catégories
-  const POS_COLORS = [
-    ['#0e7490', '#22d3ee'],
-    ['#1e3a8a', '#60a5fa'],
-    ['#3730a3', '#a78bfa'],
-  ];
+  const pctFor = key => {
+    const h = sc[key]?.history ?? [];
+    return h.length ? Math.round(h.reduce((s, v) => s + v, 0) / h.length * 100) : null;
+  };
 
-  const GROUPS = [
-    { label: 'Basket — Cotes',   items: [{ key: 'pinnacle_wnba', name: 'Pinnacle' }, { key: 'unibet', name: 'Unibet' }, { key: 'betclic', name: 'Betclic' }] },
-    { label: 'Basket — Données', items: [{ key: 'espn', name: 'ESPN' }, { key: 'rotowire', name: 'RotoWire' }, { key: 'acb', name: 'ACB' }] },
-    { label: 'Foot — Cotes',     items: [{ key: 'pinnacle_foot', name: 'Pinnacle' }, { key: 'unibet_foot', name: 'Unibet' }, { key: 'betclic_foot', name: 'Betclic' }] },
-  ];
+  // Même pictogramme WiFi que "Cotes & données" (SignalIcon) pour une harmonie visuelle totale —
+  // seule la source du niveau change : ici le taux de succès (%), là-bas la fraîcheur (temps).
+  const dim = 'rgba(255,255,255,0.1)';
+  const levelFor = pct => {
+    if (pct == null) return { level: 0, color: '#f87171' };
+    if (pct >= 90) return { level: 3, color: '#4ade80' };
+    if (pct >= 60) return { level: 2, color: '#facc15' };
+    return { level: 0, color: '#f87171' };
+  };
+  const wifiArc = (r, active, color) => {
+    const a0 = -Math.PI * 5 / 6, a1 = -Math.PI / 6;
+    const x0 = (12 + r * Math.cos(a0)).toFixed(2), y0 = (15 + r * Math.sin(a0)).toFixed(2);
+    const x1 = (12 + r * Math.cos(a1)).toFixed(2), y1 = (15 + r * Math.sin(a1)).toFixed(2);
+    return <path key={r} d={`M ${x0} ${y0} A ${r} ${r} 0 0 1 ${x1} ${y1}`} stroke={active ? color : dim} fill="none" strokeWidth="2.2" strokeLinecap="round" />;
+  };
 
-  const SIZE = 26, R = 10, STROKE = 2;
-  const CIRC = 2 * Math.PI * R;
-
-  const RingChart = ({ name, scraper, colorIdx = 0 }) => {
-    const h = sc[scraper]?.history ?? [];
-    const rate     = h.length ? h.reduce((s, v) => s + v, 0) / h.length : null;
-    const pct      = rate != null ? Math.round(rate * 100) : null;
-    const [c0, c1] = POS_COLORS[colorIdx] ?? POS_COLORS[0];
-    const dash     = pct != null ? (pct / 100) * CIRC : 0;
-    const gid      = `grad-${scraper}`;
-    const fid      = `glow-${scraper}`;
-    const cx       = SIZE / 2, cy = SIZE / 2;
+  const WifiIcon = ({ level, color, size = 24 }) => {
+    const h = size * (19 / 24);
     return (
-      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.2rem', width: SIZE, flexShrink: 0 }}>
-        <svg width={SIZE} height={SIZE} viewBox={`0 0 ${SIZE} ${SIZE}`} style={{ display: 'block' }}>
-          <defs>
-            <linearGradient id={gid} x1="0" y1={SIZE} x2={SIZE} y2="0" gradientUnits="userSpaceOnUse">
-              <stop offset="0%"   stopColor={c0} stopOpacity="0.55" />
-              <stop offset="100%" stopColor={c1} stopOpacity="1" />
-            </linearGradient>
-            <filter id={fid} x="-60%" y="-60%" width="220%" height="220%">
-              <feGaussianBlur stdDeviation="2" result="blur" />
-              <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
-            </filter>
-          </defs>
-          <circle cx={cx} cy={cy} r={R} fill="none" stroke="rgba(255,255,255,0.06)" strokeWidth={STROKE} />
-          {pct != null && (
-            <circle
-              cx={cx} cy={cy} r={R} fill="none"
-              stroke={`url(#${gid})`} strokeWidth={STROKE}
-              strokeDasharray={`${dash} ${CIRC}`}
-              strokeDashoffset={CIRC / 4}
-              strokeLinecap="round"
-              filter={`url(#${fid})`}
-              style={{ transition: 'stroke-dasharray 0.5s ease' }}
-            />
-          )}
-          <text x={cx} y={cy} textAnchor="middle" dominantBaseline="central"
-            style={{ fontSize: 4, fontWeight: 800, fill: pct != null ? c1 : 'rgba(255,255,255,0.2)', fontFamily: 'inherit', fontVariantNumeric: 'tabular-nums' }}>
-            {pct != null ? `${pct}%` : '—'}
-          </text>
+      <div style={{ position: 'relative', width: size, height: h }}>
+        {level > 0 && (
+          <div style={{ position: 'absolute', inset: -4, background: `radial-gradient(ellipse at 50% 75%, ${color}35 0%, transparent 70%)`, pointerEvents: 'none' }} />
+        )}
+        <svg width={size} height={h} viewBox="0 0 24 20" style={{ filter: level > 0 ? `drop-shadow(0 0 3px ${color}80)` : 'none' }}>
+          {wifiArc(11, level >= 3, color)}
+          {wifiArc(7,  level >= 2, color)}
+          {wifiArc(3.5, level >= 1, color)}
+          <circle cx={12} cy={15.5} r={2} fill={level > 0 ? color : dim} />
         </svg>
-        <span style={{ fontSize: 7, color: 'var(--text-sub)', textAlign: 'center', whiteSpace: 'nowrap' }}>{name}</span>
       </div>
     );
   };
 
-  const ROWS = [
-    { sport: 'Basket', groups: [GROUPS[0], GROUPS[1]] },
-    { sport: 'Foot',   groups: [GROUPS[2]] },
-  ];
+  // Un bookmaker scrape à la fois le foot et le basket (deux historiques distincts) — fusionnés
+  // en une seule moyenne pour rester au même format qu'un SignalIcon "Cotes & données" (une seule
+  // icône/valeur par entrée), quitte à perdre le détail par sport.
+  const pctMerged = (...keys) => {
+    const vals = keys.map(pctFor).filter(v => v != null);
+    return vals.length ? Math.round(vals.reduce((s, v) => s + v, 0) / vals.length) : null;
+  };
+
+  // Format strictement identique à SignalIcon dans "Cotes & données" : icône → nom → valeur.
+  // `detail` (survol) redonne accès au détail foot/basket perdu par la fusion en une moyenne.
+  const WifiStat = ({ label, pct, detail }) => {
+    const { level, color } = levelFor(pct);
+    return (
+      <div title={detail} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'flex-end', gap: '0.25rem', minWidth: 46 }}>
+        <WifiIcon level={level} color={color} />
+        <span style={{ fontSize: 8.5, fontWeight: 700, color: 'var(--text-sub)', letterSpacing: '0.04em' }}>{label}</span>
+        <span style={{ fontSize: 8, color, opacity: pct == null ? 0.5 : 0.85 }}>{pct != null ? `${pct}%` : '—'}</span>
+      </div>
+    );
+  };
+
+  const detailFor = (footKey, basketKey) => {
+    const f = pctFor(footKey), b = pctFor(basketKey);
+    return `⚽ ${f != null ? f + '%' : '—'} · 🏀 ${b != null ? b + '%' : '—'}`;
+  };
 
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
       <div style={{ fontSize: 8, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--text-sub)', borderBottom: '1px solid var(--border)', paddingBottom: '0.3rem' }}>Taux de scraping</div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem', flex: 1 }}>
-        {ROWS.map(row => (
-          <div key={row.sport} style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-            <span style={{ fontSize: 5, textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--text-dim)', width: 18, flexShrink: 0 }}>{row.sport}</span>
-            <div style={{ width: 1, background: 'rgba(255,255,255,0.08)', alignSelf: 'stretch', flexShrink: 0 }} />
-            {row.groups.map((g, gi) => (
-              <div key={g.label} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                {gi > 0 && <div style={{ width: 1, background: 'rgba(255,255,255,0.06)', alignSelf: 'stretch', flexShrink: 0 }} />}
-                <div style={{ display: 'flex', gap: '0.5rem' }}>
-                  {g.items.map((item, i) => <RingChart key={item.key + g.label} name={item.name} scraper={item.key} colorIdx={i} />)}
-                </div>
-              </div>
-            ))}
-          </div>
-        ))}
+      <div style={{ flex: 1, display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: '0.5rem' }}>
+        <WifiStat label="Pinnacle" pct={pctMerged('pinnacle_foot', 'pinnacle_wnba')} detail={detailFor('pinnacle_foot', 'pinnacle_wnba')} />
+        <WifiStat label="Unibet"   pct={pctMerged('unibet_foot', 'unibet')}           detail={detailFor('unibet_foot', 'unibet')} />
+        <WifiStat label="Betclic"  pct={pctMerged('betclic_foot', 'betclic')}         detail={detailFor('betclic_foot', 'betclic')} />
+        <div style={{ width: 1, background: 'rgba(255,255,255,0.08)', alignSelf: 'stretch', flexShrink: 0 }} />
+        <WifiStat label="ESPN"     pct={pctFor('espn')} />
+        <WifiStat label="RotoWire" pct={pctFor('rotowire')} />
+        <WifiStat label="ACB"      pct={pctFor('acb')} />
       </div>
     </div>
   );

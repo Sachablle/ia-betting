@@ -530,13 +530,17 @@ export default function WorldMapPage() {
     });
   }, [selected]);
 
-  // Le panneau classement/leaders ne s'ouvre plus automatiquement à l'ouverture d'un pays — il ne
-  // s'affiche que sur clic explicite de l'icône 🏀 (cf. openBestBasketLeague, appelée depuis Panel).
-  // Sans ça, les stats ACB apparaissaient même quand l'onglet Football était affiché en premier
-  // (France/Espagne/Allemagne/Italie, depuis le rebranchement football-data.org du 12 juillet).
+  // Le panneau classement/leaders ne s'ouvre plus automatiquement à l'ouverture d'un pays qui a
+  // aussi du football — il ne s'affiche que sur clic explicite de l'icône 🏀 (cf.
+  // openBestBasketLeague, appelée depuis Panel). Sans ça, les stats ACB apparaissaient même quand
+  // l'onglet Football était affiché en premier (France/Espagne/Allemagne/Italie, depuis le
+  // rebranchement football-data.org du 12 juillet). Mais pour un pays 100% basket (États-Unis),
+  // il n'y a aucune ambiguïté de sport à lever — s'ouvre directement, pas la peine de cliquer.
   useEffect(() => {
-    setStatsLeague(null);
-    if (!selected) setPrefetch({});
+    if (!selected) { setStatsLeague(null); setPrefetch({}); return; }
+    const hasFootball = selected.leagues.some(l => FOOTBALL_LEAGUES.has(l));
+    if (hasFootball) setStatsLeague(null);
+    else openBestBasketLeague(selected);
   }, [selected]);
 
   // Ouvre la ligue basket la plus active du pays sélectionné — plusieurs ligues basket possibles

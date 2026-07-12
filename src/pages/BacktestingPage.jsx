@@ -82,8 +82,7 @@ const getBetOdds = a =>
 
 // Transforme une entrée du registre permanent (backend /api/bet-history) dans le format d'affichage
 // attendu par cette page — un seul mapping par type d'alerte, au lieu d'un bloc dupliqué par clé
-// localStorage. _sourceKey est toujours 'bet_ledger' : la suppression (handleDeleteBet) cible ce
-// registre unique via /api/bet-history/:id, jamais une clé localStorage écrasable en bloc.
+// localStorage. _sourceKey est toujours 'bet_ledger'.
 function mapLedgerEntry(a) {
   const base = {
     date: a.fixtureDate ?? a.date, status: a.status, odds: getBetOdds(a),
@@ -722,7 +721,7 @@ function _saveBetNote(key, val) {
   } catch {}
 }
 
-function BetRow({ bet, rank, stake = 10, compact = false, onDelete }) {
+function BetRow({ bet, rank, stake = 10, compact = false }) {
   const isWon  = bet.status === 'won';
   const isVoid = bet.status === 'void';
   const statusColor = isVoid ? '#94a3b8' : isWon ? '#4ade80' : '#f87171';
@@ -768,7 +767,7 @@ function BetRow({ bet, rank, stake = 10, compact = false, onDelete }) {
   }
 
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: '24px 1fr auto auto auto auto auto 22px 18px', alignItems: 'center', gap: '0 0.5rem', padding: '0.35rem 0.75rem', borderRadius: 7, background: 'rgba(255,255,255,0.02)', borderLeft: `3px solid ${statusColor}44`, fontSize: 12 }}>
+    <div style={{ display: 'grid', gridTemplateColumns: '24px 1fr auto auto auto auto auto 22px', alignItems: 'center', gap: '0 0.5rem', padding: '0.35rem 0.75rem', borderRadius: 7, background: 'rgba(255,255,255,0.02)', borderLeft: `3px solid ${statusColor}44`, fontSize: 12 }}>
       <span style={{ fontSize: 10, color: 'var(--text-dim)', textAlign: 'center' }}>#{rank}</span>
       <div style={{ minWidth: 0 }}>
         <div style={{ fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{bet.label}</div>
@@ -792,15 +791,6 @@ function BetRow({ bet, rank, stake = 10, compact = false, onDelete }) {
         title="Ajouter une note"
         style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 12, color: note ? 'rgba(251,191,36,0.8)' : 'rgba(255,255,255,0.18)', padding: 0, lineHeight: 1, alignSelf: 'center' }}
       >✏</button>
-      {onDelete && (
-        <button
-          onClick={() => onDelete(bet)}
-          title="Supprimer ce pari de l'historique"
-          style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 11, color: 'rgba(255,255,255,0.15)', padding: 0, lineHeight: 1, alignSelf: 'center' }}
-          onMouseEnter={e => e.currentTarget.style.color = '#f87171'}
-          onMouseLeave={e => e.currentTarget.style.color = 'rgba(255,255,255,0.15)'}
-        >🗑</button>
-      )}
       {(note || editing) && (
         <div style={{ gridColumn: '1 / -1', paddingLeft: 26, paddingBottom: '0.3rem' }}>
           {editing ? (
@@ -979,12 +969,6 @@ export default function BacktestingPage() {
     ]);
     loadData(period, model);
     setRefreshing(false);
-  };
-
-  const handleDeleteBet = (bet) => {
-    if (!bet._alertId) return;
-    fetch(`/api/bet-history/${bet._alertId}`, { method: 'DELETE' }).catch(() => {});
-    setReloadKey(k => k + 1);
   };
 
   const filtered = useMemo(() => allBets.filter(b => {
@@ -1181,7 +1165,7 @@ export default function BacktestingPage() {
                     ))}
                   </div>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', maxHeight: 240, overflowY: 'auto' }}>
-                    {[...D.rolling].reverse().map((bet, i) => <BetRow key={`${bet.date}_${bet.label}_${bet.sub}`} bet={bet} rank={D.rolling.length - i} stake={stake} onDelete={handleDeleteBet} />)}
+                    {[...D.rolling].reverse().map((bet, i) => <BetRow key={`${bet.date}_${bet.label}_${bet.sub}`} bet={bet} rank={D.rolling.length - i} stake={stake} />)}
                   </div>
                 </>
             }
@@ -1253,7 +1237,7 @@ export default function BacktestingPage() {
             )}
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', maxHeight: 480, overflowY: 'auto' }}>
-            {[...D.bets].reverse().map((bet, i) => <BetRow key={`${bet.date}_${bet.label}_${bet.sub}`} bet={bet} rank={D.bets.length - i} stake={stake} onDelete={handleDeleteBet} />)}
+            {[...D.bets].reverse().map((bet, i) => <BetRow key={`${bet.date}_${bet.label}_${bet.sub}`} bet={bet} rank={D.bets.length - i} stake={stake} />)}
           </div>
         </Section>
 
@@ -1311,7 +1295,7 @@ export default function BacktestingPage() {
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', maxHeight: 360, overflowY: 'auto' }}>
               {[...pinnacleFiltered].reverse().map((bet, i) => (
-                <BetRow key={`${bet.date}_${bet.label}_${bet.sub}`} bet={bet} rank={pinnacleFiltered.length - i} stake={stake} onDelete={handleDeleteBet} />
+                <BetRow key={`${bet.date}_${bet.label}_${bet.sub}`} bet={bet} rank={pinnacleFiltered.length - i} stake={stake} />
               ))}
             </div>
           </>)}

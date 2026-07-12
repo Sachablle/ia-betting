@@ -38,7 +38,7 @@ function SportToggle({ sport, setSport, has }) {
 const COMP_ORDER = ['ligue1', 'pl', 'laliga', 'seriea', 'bundesliga', 'nba', 'wnba'];
 const BOOK_ORDER = ['pinnacle', 'betclic', 'pmu'];
 const BOOK_LABELS = { betclic: 'Betclic', pinnacle: 'Pinnacle', pmu: 'PMU' };
-const BOOK_ODDS_COLORS = { betclic: 'var(--red)', pinnacle: '#ffffff', pmu: '#166534' };
+const BOOK_ODDS_COLORS = { betclic: '#ef4444', pinnacle: '#ffffff', pmu: '#166534' };
 const BOOK_COL_WIDTH = 52;
 
 function Card({ title, books, children }) {
@@ -79,7 +79,7 @@ function TeamRow({ rank, name, teamBooks, isFavorite, books }) {
       <span style={{ fontSize: 11, color: 'var(--text-dim)', textAlign: 'center' }}>{rank}</span>
       <span style={{ fontSize: 11.5, fontWeight: isFavorite ? 700 : 500, color: isFavorite ? '#60a5fa' : 'var(--text)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{name}</span>
       {books.map(b => (
-        <span key={b} style={{ fontSize: 11, fontWeight: 700, textAlign: 'left', fontVariantNumeric: 'tabular-nums', color: BOOK_ODDS_COLORS[b], marginLeft: '0.1cm' }}>
+        <span key={b} style={{ fontSize: 11, fontWeight: 700, textAlign: 'right', fontVariantNumeric: 'tabular-nums', color: BOOK_ODDS_COLORS[b] }}>
           {teamBooks[b] != null ? teamBooks[b].toFixed(2) : '—'}
         </span>
       ))}
@@ -93,21 +93,35 @@ export default function OutrightsPage() {
   const [error, setError] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [lastRefreshed, setLastRefreshed] = useState(null);
+  const [nextRefreshAt, setNextRefreshAt] = useState(null);
+  const [now, setNow] = useState(Date.now());
   const [params, setParams] = useSearchParams();
   const sport = params.get('sport') || 'football';
 
   useEffect(() => {
     fetch('/api/outrights')
       .then(r => r.json())
-      .then(d => { setData(d.competitions); setBlockedUntil(d.blockedUntil); })
+      .then(d => { setData(d.competitions); setBlockedUntil(d.blockedUntil); setNextRefreshAt(d.nextRefreshAt ?? null); })
       .catch(() => setError(true));
   }, []);
 
+  // Tick chaque seconde pour faire vivre le minuteur — seulement pendant le cooldown, pas besoin
+  // de tourner en continu le reste du temps.
+  useEffect(() => {
+    if (!nextRefreshAt || nextRefreshAt <= Date.now()) return;
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [nextRefreshAt]);
+
+  const msLeft   = nextRefreshAt ? nextRefreshAt - now : 0;
+  const onCooldown = msLeft > 0;
+
   const handleRefresh = () => {
+    if (onCooldown) return;
     setRefreshing(true);
     fetch('/api/outrights?refresh=1')
       .then(r => r.json())
-      .then(d => { setData(d.competitions); setBlockedUntil(d.blockedUntil); setError(false); setLastRefreshed(new Date()); })
+      .then(d => { setData(d.competitions); setBlockedUntil(d.blockedUntil); setNextRefreshAt(d.nextRefreshAt ?? null); setNow(Date.now()); setError(false); setLastRefreshed(new Date()); })
       .catch(() => setError(true))
       .finally(() => setRefreshing(false));
   };
@@ -139,12 +153,17 @@ export default function OutrightsPage() {
               <button
                 className={`icon-refresh-btn${refreshing ? ' spinning' : ''}`}
                 onClick={handleRefresh}
-                disabled={refreshing}
-                title="Rafraîchir"
+                disabled={refreshing || onCooldown}
+                title={onCooldown ? 'Un vrai scraping a déjà eu lieu récemment (anti-ban) — réessaie plus tard' : 'Rafraîchir'}
+                style={onCooldown ? { opacity: 0.4, cursor: 'not-allowed' } : undefined}
               >
                 ↻
               </button>
-              {lastRefreshed && (
+              {onCooldown ? (
+                <div style={{ fontSize: 9, color: 'var(--text-dim)', textAlign: 'right' }}>
+                  Prochain vrai scrape dans {Math.floor(msLeft / 60_000)}:{String(Math.floor((msLeft % 60_000) / 1000)).padStart(2, '0')}
+                </div>
+              ) : lastRefreshed && (
                 <div style={{ fontSize: 9, color: 'var(--text-dim)', textAlign: 'right' }}>
                   {lastRefreshed.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
                 </div>
@@ -155,7 +174,11 @@ export default function OutrightsPage() {
         )}
       </div>
 
-      {error && <div style={{ color: 'var(--text-dim)', fontSize: 13 }}>Impossible de charger les outrights.</div>}
+      {/* error ne doit jamais masquer des données déjà chargées (ex: échec d'un refresh après une
+          1ère charge réussie) — sinon les outrights affichés disparaissent tant qu'on n'a pas
+          navigué ailleurs et qu'un nouveau montage ne relance pas la 1ère charge. */}
+      {error && !data && <div style={{ color: 'var(--text-dim)', fontSize: 13 }}>Impossible de charger les outrights.</div>}
+      {error && data && <div style={{ color: '#f87171', fontSize: 11, marginBottom: '0.75rem' }}>Le dernier rafraîchissement a échoué — cotes précédentes affichées.</div>}
       {!error && !data && <div style={{ color: 'var(--text-dim)', fontSize: 13 }}>Chargement…</div>}
       {data && filtered.length === 0 && (
         <div style={{ color: 'var(--text-dim)', fontSize: 13 }}>Aucune compétition disponible pour ce sport pour le moment.</div>

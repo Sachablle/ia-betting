@@ -404,6 +404,43 @@ function propConfColor(stat, league, pct) {
   return '#ffb400';
 }
 
+// Légende cliquable pour les onglets Résultat/Points/Écart H2H/Joueurs — même format que
+// PropLegendCard (dots de couleur + seuil d'alerte), sans texte descriptif sur ce que représente
+// chaque onglet (déjà documenté dans la page Utilisation, pas besoin de le répéter ici).
+function OddsLegendCard({ tab }) {
+  const Dot = ({ color }) => <span style={{ display: 'inline-block', width: 6, height: 6, borderRadius: '50%', background: color, marginRight: 4, flexShrink: 0 }} />;
+  const showBands = tab !== 'joueurs';
+  const ALERTS = {
+    all: <>Alerte si probabilité ≥ <b style={{ color: '#4ade80' }}>75%</b> + cote ≥ <b style={{ color: '#ef4444' }}>1.60</b>.</>,
+    points: <>Alerte si P(Over) ou P(Under) ≥ <b style={{ color: '#4ade80' }}>80%</b> + cote ≥ <b style={{ color: '#ef4444' }}>1.60</b> (Unibet/Betclic) — bloquée si joueur clé incertain/absent.</>,
+    handicap: <>Alerte mêmes seuils que Résultat (≥ <b style={{ color: '#4ade80' }}>75%</b>, cote ≥ <b style={{ color: '#ef4444' }}>1.60</b>).</>,
+    joueurs: <>Alerte si un bookmaker offre ≥ <b style={{ color: '#4ade80' }}>20% d'edge</b> vs la ligne Pinnacle, cote ≥ <b style={{ color: '#ef4444' }}>1.60</b>.</>,
+  };
+  return (
+    <div>
+      <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text)', marginBottom: '0.6rem' }}>
+        Code couleur — confiance
+      </div>
+      {showBands && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', marginBottom: '0.5rem' }}>
+          <span style={{ display: 'flex', alignItems: 'center', fontSize: 9.5, whiteSpace: 'nowrap' }}>
+            <Dot color="#10b981" /><b style={{ color: '#10b981' }}>≥ 62%</b>&nbsp;— confiance forte
+          </span>
+          <span style={{ display: 'flex', alignItems: 'center', fontSize: 9.5, whiteSpace: 'nowrap' }}>
+            <Dot color="#f59e0b" /><b style={{ color: '#f59e0b' }}>52–62%</b>&nbsp;— moyen
+          </span>
+          <span style={{ display: 'flex', alignItems: 'center', fontSize: 9.5, whiteSpace: 'nowrap' }}>
+            <Dot color="#ef4444" /><b style={{ color: '#ef4444' }}>&lt; 52%</b>&nbsp;— faible
+          </span>
+        </div>
+      )}
+      <div style={{ fontSize: 9, lineHeight: 1.45, color: 'var(--text)', ...(showBands ? { borderTop: '1px solid var(--border)', paddingTop: '0.4rem' } : {}) }}>
+        {ALERTS[tab] ?? ALERTS.all}
+      </div>
+    </div>
+  );
+}
+
 // Légende cliquable — explique le code couleur des % projetés et le seuil d'alerte par stat.
 function PropLegendCard({ league }) {
   const bands = EU_PROP_LEAGUES.has(league) ? PROP_CONF_BANDS.eu : PROP_CONF_BANDS.nba_short;
@@ -1413,9 +1450,12 @@ function BetLine({ label, estimated, line, onChange }) {
 
 const ALERT_KEY = 'nba_prop_alerts';
 
-function PropsSection({ fixture, homePlayers, awayPlayers, rosterLoading, isCompleted, projLineup, gameTotal, eventId, onClose, pinnacleH2H, showHomeOverride, onTeamChange, homeNames, awayNames, rankSlotRef }) {
+function PropsSection({ fixture, homePlayers, awayPlayers, rosterLoading, isCompleted, projLineup, gameTotal, eventId, onClose, pinnacleH2H, showHomeOverride, onTeamChange, homeNames, awayNames, rankSlotRef, forceLegendOpen = false }) {
   const isWNBA = fixture?.league === 'wnba';
   const [showLegend, setShowLegend]      = useState(false);
+  // Ouverte soit par son propre bouton "?", soit forcée par le "?" de la boîte cotes (onglet
+  // Joueurs) — un seul état affiché, mais deux déclencheurs possibles.
+  const legendOpen = showLegend || forceLegendOpen;
   const [legendBox, setLegendBox]         = useState(null); // { top, left }
   const propsCardRef = useRef(null);
   const propsHeaderRef = useRef(null);
@@ -1424,17 +1464,17 @@ function PropsSection({ fixture, homePlayers, awayPlayers, rosterLoading, isComp
   const LEGEND_W = 252;
   // Ferme la légende au clic en dehors — sans bloquer le scroll/hover du reste de la page
   useEffect(() => {
-    if (!showLegend) return;
+    if (!legendOpen) return;
     const onDocClick = (e) => {
       if (legendRef.current?.contains(e.target) || legendBtnRef.current?.contains(e.target)) return;
       setShowLegend(false);
     };
     document.addEventListener('mousedown', onDocClick, true);
     return () => document.removeEventListener('mousedown', onDocClick, true);
-  }, [showLegend]);
+  }, [legendOpen]);
   // Recalcule la position pendant que la légende est ouverte → elle suit la carte au scroll/resize
   useEffect(() => {
-    if (!showLegend) return;
+    if (!legendOpen) return;
     const update = () => {
       if (!propsCardRef.current) return;
       const r = propsCardRef.current.getBoundingClientRect();
@@ -1448,7 +1488,7 @@ function PropsSection({ fixture, homePlayers, awayPlayers, rosterLoading, isComp
     window.addEventListener('scroll', update, true);
     window.addEventListener('resize', update);
     return () => { window.removeEventListener('scroll', update, true); window.removeEventListener('resize', update); };
-  }, [showLegend]);
+  }, [legendOpen]);
   const [showHome, setShowHome]         = useState(true);
   useEffect(() => { if (showHomeOverride != null) setShowHome(showHomeOverride); }, [showHomeOverride]);
   const [boxscore, setBoxscore]         = useState(null);
@@ -2183,10 +2223,10 @@ function PropsSection({ fixture, homePlayers, awayPlayers, rosterLoading, isComp
           style={{
             width: 16, height: 16, borderRadius: '50%', fontSize: 10, fontWeight: 700,
             display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-            color: showLegend ? '#fb923c' : 'var(--text-dim)', border: `1px solid ${showLegend ? 'rgba(251,146,60,0.5)' : 'var(--border)'}`, cursor: 'pointer',
+            color: legendOpen ? '#fb923c' : 'var(--text-dim)', border: `1px solid ${legendOpen ? 'rgba(251,146,60,0.5)' : 'var(--border)'}`, cursor: 'pointer',
           }}
         >?</span>
-        {showLegend && legendBox && createPortal(
+        {legendOpen && legendBox && createPortal(
           <div ref={legendRef} onClick={e => e.stopPropagation()} style={{
             position: 'fixed', top: legendBox.top, left: legendBox.left, zIndex: 200,
             width: LEGEND_W, maxWidth: 'calc(100vw - 2rem)',
@@ -2473,7 +2513,7 @@ const BK_ORDER   = ['pinnacle', 'unibet', 'betclic', 'betfair'];
 // EdgeBadge / OddsCell : importés de ../components/OddsCell (source unique avec MatchDetailPage
 // depuis le 22 juin 2026, voir ce fichier pour le détail).
 
-function OddsCard({ odds, home, away, league, homePlayers, awayPlayers, onRefresh, refreshing, defaultTab = 'all', gameTotalEstimate = null, resultEstimate = null, gameSpreadEstimate = null, fixture = null, onTabChange = null, onTeamChange = null, showHomeOverride = null, eventId = null }) {
+function OddsCard({ odds, home, away, league, homePlayers, awayPlayers, onRefresh, refreshing, defaultTab = 'all', gameTotalEstimate = null, resultEstimate = null, gameSpreadEstimate = null, fixture = null, onTabChange = null, onTeamChange = null, showHomeOverride = null, eventId = null, onLegendToggle = null }) {
   const navigate = useNavigate();
   const location = useLocation();
   const isEL = league === 'euroleague';
@@ -2498,6 +2538,9 @@ function OddsCard({ odds, home, away, league, homePlayers, awayPlayers, onRefres
   const [lastRefreshed, setLastRefreshed] = useState(null);
   const [propStat, setPropStat] = useState('pts');
   const [showOddsLegend, setShowOddsLegend] = useState(false);
+  // Sur l'onglet Joueurs, ce "?" doit aussi ouvrir la légende Analyse Props (composant frère,
+  // hors de cet arbre) — le parent la contrôle via forceLegendOpen, prévenu ici de chaque bascule.
+  useEffect(() => { onLegendToggle?.(showOddsLegend); }, [showOddsLegend]);
   const [oddsLegendBox, setOddsLegendBox] = useState(null);
   const oddsLegendRef = useRef(null);
   const oddsLegendBtnRef = useRef(null);
@@ -2514,10 +2557,13 @@ function OddsCard({ odds, home, away, league, homePlayers, awayPlayers, onRefres
   useEffect(() => {
     if (!showOddsLegend) return;
     const update = () => {
-      if (!oddsCardRef.current) return;
+      if (!oddsCardRef.current || !oddsLegendBtnRef.current) return;
       const r = oddsCardRef.current.getBoundingClientRect();
+      // Aligné sur le bouton "?" lui-même (même onglet que la boîte Odds), pas le haut de toute
+      // la carte — le bouton est dans la même ligne que les onglets Résultat/Points/Écart H2H.
+      const btnR = oddsLegendBtnRef.current.getBoundingClientRect();
       const gutterCenter = r.right + (window.innerWidth - r.right) / 2;
-      setOddsLegendBox({ top: r.top, left: gutterCenter - ODDS_LEGEND_W / 2 });
+      setOddsLegendBox({ top: btnR.top, left: gutterCenter - ODDS_LEGEND_W / 2 });
     };
     update();
     window.addEventListener('scroll', update, true);
@@ -2694,18 +2740,7 @@ function OddsCard({ odds, home, away, league, homePlayers, awayPlayers, onRefres
                 background: 'var(--bg-card, #11141c)', border: '1px solid var(--border)', borderRadius: 8,
                 padding: '0.6rem 0.65rem', boxShadow: '0 8px 24px rgba(0,0,0,0.4)',
               }}>
-                <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text)', marginBottom: '0.4rem' }}>Cotes — Basket</div>
-                <div style={{ fontSize: 9.5, lineHeight: 1.6, color: 'var(--text-dim)' }}>
-                  <b style={{ color: '#60a5fa' }}>Pinnacle</b> est le bookmaker de référence : ses cotes sont les plus serrées du marché (marge ~2%). On l'utilise comme baromètre de la "vraie" probabilité.
-                  <br /><br />
-                  <b style={{ color: 'var(--text)' }}>Résultat</b> : cotes victoire dom./ext. par bookmaker. Le widget <b>Modèle 1X2</b> affiche la <span style={{ color: '#a78bfa' }}>probabilité Pinnacle</span> (marge retirée) et l'écart vs les autres books.
-                  <br /><br />
-                  <b style={{ color: 'var(--text)' }}>Points</b> : ligne O/U avec cote Over / Under par bookmaker.
-                  <br /><br />
-                  <b style={{ color: 'var(--text)' }}>Joueurs</b> : lignes et cotes props joueur (Pts / Reb / Ast / 3pts). La colonne <b style={{ color: '#60a5fa' }}>Pinnacle</b> apparaît quand ses cotes props sont disponibles (NBA/WNBA).
-                  <br /><br />
-                  <b style={{ color: '#4ade80' }}>Alertes Pinnacle props</b> : déclenchées si un bookmaker (Unibet/Betclic) offre ≥ <b style={{ color: '#fbbf24' }}>20% d'edge</b> par rapport à la ligne Pinnacle, cote bookmaker ≥ <b style={{ color: '#fbbf24' }}>1.60</b> — signale une vraie erreur de cote, pas un simple écart de marge.
-                </div>
+                <OddsLegendCard tab={tab} />
               </div>,
               document.body
             )}
@@ -3131,6 +3166,7 @@ export default function BasketballDetailPage() {
   const [gameSpreadEstimate, setGameSpreadEstimate] = useState(null);
   const [showOddsDropdown, setShowOddsDropdown] = useState(fromAlert);
   const [oddsTab, setOddsTab] = useState(fromAlert ? 'joueurs' : 'all'); // onglet actif de la boîte Odds — pilote l'affichage des cartes en dessous
+  const [oddsLegendOpen, setOddsLegendOpen] = useState(false); // légende "?" de la boîte Odds ouverte — force aussi celle d'Analyse Props sur l'onglet Joueurs
   const [homeNames, setHomeNames]       = useState(Array(5).fill(''));
   const savedLineupLoaded = useRef(false);
   // Compo telle que chargée au mount (avant toute modif utilisateur) — sert à détecter les
@@ -3926,7 +3962,7 @@ export default function BasketballDetailPage() {
 
       {showOddsDropdown && (bballOdds?.found || (isEuroleague && bballOdds !== null)) && (
         <section className="detail-card compact-card" style={{ marginBottom: '0.5rem' }}>
-          <OddsCard key={fixture?.id} odds={bballOdds} home={home} away={away} league={fixture.league} homePlayers={homePlayers} awayPlayers={(awayPlayers||[]).filter(p=>!new Set((homePlayers||[]).map(p=>String(p.id))).has(String(p.id)))} onRefresh={refreshOdds} refreshing={oddsRefreshing} defaultTab={fromAlert ? 'joueurs' : 'all'} gameTotalEstimate={!isCompleted ? gameTotalEstimate : null} resultEstimate={!isCompleted ? resultEstimate : null} gameSpreadEstimate={!isCompleted ? gameSpreadEstimate : null} fixture={fixture} onTabChange={(id) => { setOddsTab(id); if (id === 'joueurs') { setShowProps(true); setPropsCollapsed(false); } else { setPropsCollapsed(true); } }} onTeamChange={setOddsTeam} showHomeOverride={oddsTeam} eventId={bballOdds?.eventId ?? null} />
+          <OddsCard key={fixture?.id} odds={bballOdds} home={home} away={away} league={fixture.league} homePlayers={homePlayers} awayPlayers={(awayPlayers||[]).filter(p=>!new Set((homePlayers||[]).map(p=>String(p.id))).has(String(p.id)))} onRefresh={refreshOdds} refreshing={oddsRefreshing} defaultTab={fromAlert ? 'joueurs' : 'all'} gameTotalEstimate={!isCompleted ? gameTotalEstimate : null} resultEstimate={!isCompleted ? resultEstimate : null} gameSpreadEstimate={!isCompleted ? gameSpreadEstimate : null} fixture={fixture} onTabChange={(id) => { setOddsTab(id); if (id === 'joueurs') { setShowProps(true); setPropsCollapsed(false); } else { setPropsCollapsed(true); } }} onTeamChange={setOddsTeam} showHomeOverride={oddsTeam} eventId={bballOdds?.eventId ?? null} onLegendToggle={setOddsLegendOpen} />
         </section>
       )}
 
@@ -3957,6 +3993,7 @@ export default function BasketballDetailPage() {
             homeNames={homeNames}
             awayNames={awayNames}
             rankSlotRef={rankSlotRef}
+            forceLegendOpen={oddsTab === 'joueurs' && oddsLegendOpen}
           />
         </div>
       )}
