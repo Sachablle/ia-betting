@@ -284,7 +284,19 @@ export async function syncBackgroundAlerts() {
       }
 
       if (!prev || (prev.status || 'pending') === 'pending') {
-        byId[a.id] = { ...a, status: prev?.status || 'pending' };
+        // Ne jamais écraser une cote déjà enrichie côté frontend (enrichUnibet, PlaceBetPage.jsx)
+        // par une valeur absente/plus ancienne du backend — sinon la cote disparaît puis
+        // enrichUnibet la rapatrie aussitôt, et le SSE (auto-déclenché par sa propre écriture)
+        // boucle cette bascule en quelques secondes (flicker Betclic constaté 12 juillet, cas
+        // Breanna Stewart — même famille que l'incident du 11 juillet référencé plus haut).
+        byId[a.id] = {
+          ...a,
+          status: prev?.status || 'pending',
+          unibetOdds:   a.unibetOdds   ?? prev?.unibetOdds   ?? null,
+          betclicOdds:  a.betclicOdds  ?? prev?.betclicOdds  ?? null,
+          winamaxOdds:  a.winamaxOdds  ?? prev?.winamaxOdds  ?? null,
+          lastEnriched: prev?.lastEnriched,
+        };
         // Marquer changed seulement si quelque chose de significatif a changé
         if (!prev ||
             prev.probability !== a.probability ||

@@ -2926,7 +2926,7 @@ function OddsCard({ odds, home, away, league, homePlayers, awayPlayers, onRefres
                               }}
                               title="Voir toutes les lignes du joueur"
                               style={{ display: 'grid', gridTemplateColumns: cols, gap: '0 0.2rem', alignItems: 'center', padding: '0.2rem 0', borderBottom: '1px solid rgba(255,255,255,0.04)', cursor: 'pointer' }}>
-                              <span style={{ fontSize: 11, fontWeight: 400, color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{name}</span>
+                              <span style={{ fontSize: 11, fontWeight: 400, color: '#fff', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{name}</span>
                               <div style={{ ...cell, color: ub?.line != null ? 'rgba(255,255,255,0.85)' : 'var(--text-dim)' }}>{ub?.line ?? <span style={dim}>—</span>}</div>
                               <div style={{ ...cell, display: 'flex', justifyContent: 'center', gap: 2 }}>
                                 <span style={{ color: ub?.over != null ? '#4ade80' : 'var(--text-dim)' }}>{ub?.over != null ? ub.over.toFixed(2) : '—'}</span>

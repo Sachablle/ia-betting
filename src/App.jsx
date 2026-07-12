@@ -126,9 +126,22 @@ function useAlertCount() {
     const cloudSync = () => loadFromCloud().then(() => { refresh(); syncAll(); window.dispatchEvent(new Event('cloud_synced')); });
     cloudSync();
 
-    // SSE : dès qu'un autre appareil modifie MongoDB, on recharge immédiatement.
+    // SSE : dès qu'un autre appareil modifie MongoDB, on recharge immédiatement. Garde-fou anti-
+    // boucle (12 juillet 2026) : une écriture locale (ex. accepter une alerte) peut elle-même
+    // déclencher ce SSE en écho — sans throttle, ça repart en cloudSync → syncBackgroundAlerts →
+    // dispatch 'nba_alerts_updated' → enrichUnibet → écriture → SSE → cloudSync → ... en boucle
+    // quasi immédiate, saturant le thread JS (app qui semble figée, plus aucun clic ne répond —
+    // incident constaté sur l'acceptation d'une alerte props WNBA). Un SSE qui arrive à moins de
+    // 3s du précédent est ignoré : la synchro suivante (tick 2min, ou le prochain vrai événement
+    // distant) rattrapera de toute façon l'état.
     const es = new EventSource('/api/sync-events');
-    es.onmessage = () => cloudSync();
+    let lastSseSync = 0;
+    es.onmessage = () => {
+      const now = Date.now();
+      if (now - lastSseSync < 3000) return;
+      lastSseSync = now;
+      cloudSync();
+    };
 
     const syncTick = setInterval(cloudSync, 2 * 60_000);
 
