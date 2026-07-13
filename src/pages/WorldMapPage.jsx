@@ -632,19 +632,17 @@ export default function WorldMapPage() {
         }
       `}</style>
 
-      {/* Bouton matchs à venir — haut droite */}
+      {/* Mention "Matchs à venir" — même format/position que le titre "Carte championnats"
+          (Base de données) : texte gras blanc en haut à gauche, plus un bouton/pill. */}
       {todayCount !== null && (
-        <div style={{ position:'absolute', top:'calc(20px + 2.2cm)', right:20, zIndex:10, animation:'mapReveal 0.8s ease-out 0.2s both' }}>
-          <button onClick={()=>setMatchOpen(o=>!o)} style={{ display:'flex', alignItems:'center', gap:7, background:'rgba(0,5,18,0.8)', border:'1px solid rgba(255,255,255,0.1)', borderRadius:8, padding:'7px 14px', cursor:'pointer', transition:'border-color .15s' }}
-            onMouseEnter={e=>e.currentTarget.style.borderColor='rgba(255,255,255,0.22)'}
-            onMouseLeave={e=>e.currentTarget.style.borderColor='rgba(255,255,255,0.1)'}
-          >
+        <div style={{ position:'absolute', top:20, left:24, zIndex:10, animation:'mapReveal 0.8s ease-out 0.2s both' }}>
+          <div onClick={()=>setMatchOpen(o=>!o)} style={{ display:'flex', alignItems:'center', gap:7, cursor:'pointer', width:'fit-content' }}>
             <div style={{ width:6, height:6, borderRadius:'50%', background:'#60a5fa', flexShrink:0, animation: todayCount.total > 0 ? 'dotBlink 1.4s ease-in-out infinite' : 'none' }}/>
-            <span style={{ fontSize:11, fontWeight:600, color:'rgba(255,255,255,0.7)' }}>Matchs à venir</span>
-          </button>
+            <span style={{ fontSize:13, fontWeight:700, color:'#fff' }}>Matchs à venir</span>
+          </div>
 
           {matchOpen && (
-            <div style={{ position:'absolute', top:'calc(100% + 6px)', right:0, background:'rgba(0,5,18,0.95)', border:'1px solid rgba(255,255,255,0.1)', borderRadius:8, padding:'8px 12px', boxShadow:'0 6px 20px rgba(0,0,0,0.6)', animation:'fadeCountry .15s ease-out', display:'flex', flexDirection:'column', gap:5 }}>
+            <div style={{ position:'absolute', top:'calc(100% + 6px)', left:0, background:'rgba(0,5,18,0.95)', border:'1px solid rgba(255,255,255,0.1)', borderRadius:8, padding:'8px 12px', boxShadow:'0 6px 20px rgba(0,0,0,0.6)', animation:'fadeCountry .15s ease-out', display:'flex', flexDirection:'column', gap:5 }}>
               <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:20 }}>
                 <div style={{ display:'flex', alignItems:'center', gap:5 }}>
                   <span style={{ fontSize:12 }}>🏀</span>

@@ -2081,6 +2081,15 @@ app.get('/api/wnba/players/:teamId', async (req, res) => {
       stats:    statsArr[i],
     })).sort((a, b) => (b.stats?.pts ?? -1) - (a.stats?.pts ?? -1));
     const result = { teamId, players };
+    // Ne pas figer 6h un raté transitoire d'ESPN (ex: rate-limit sur les N requêtes stats en
+    // parallèle) — si AUCUN joueur du roster n'a de stats, ce n'est pas une vraie donnée à cacher,
+    // c'est un échec de fetch déguisé (cas réel : Phoenix Mercury + Atlanta Dream mis en cache à
+    // 5h03 avec stats:null sur tout l'effectif, "Analyse Props" vide pendant 6h alors qu'ESPN
+    // renvoyait déjà les bonnes stats en direct — 13 juillet 2026).
+    if (players.length > 0 && players.every(p => !p.stats)) {
+      res.json(result);
+      return;
+    }
     _espnCache[cacheKey] = { data: result, ts: Date.now() };
     _saveEspnPlayersToDisk();
     res.json(result);
