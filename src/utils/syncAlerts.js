@@ -146,7 +146,15 @@ export async function syncSettlements() {
 export async function syncBackgroundAlerts() {
   try {
     const { alerts: bgAlerts } = await fetch('/api/nba/background-alerts').then(r => r.json());
-    if (!bgAlerts?.length) return;
+    // bgAlerts=[] est une réponse valide (aucune alerte ne qualifie ce cycle) et doit quand même
+    // atteindre la purge des orphelins pending plus bas — seul un fetch/parse raté (bgAlerts
+    // null/undefined) doit court-circuiter. Avant ce fix (14 juillet 2026), une réponse totalement
+    // vide empêchait TOUTE synchro de tourner, y compris la purge : une alerte locale pending dont
+    // le pendant backend disparaît (ex: titulaire passée Q/GTD) restait figée indéfiniment tant que
+    // le backend renvoyait au moins une alerte d'un autre type — et disparaissait carrément dès que
+    // le backend tombait à zéro alerte au total (cas réel : alerte spread Indiana Fever/Caitlin
+    // Clark toujours visible côté utilisateur alors que le backend ne la renvoyait plus).
+    if (!bgAlerts) return;
     const existing = JSON.parse(localStorage.getItem(ALERT_KEY) || '[]');
     const history = JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]');
     // On cherche dans existing + history pour bloquer les re-générations post-dismiss
@@ -440,9 +448,16 @@ export async function syncBackgroundAlerts() {
 export async function syncGameTotalAlerts() {
   try {
     const { alerts: bgAlerts } = await fetch('/api/nba/background-alerts').then(r => r.json());
-    if (!bgAlerts?.length) return;
+    // bgAlerts=[] est une réponse valide (aucune alerte ne qualifie ce cycle) et doit quand même
+    // atteindre la purge des orphelins pending plus bas — seul un fetch/parse raté (bgAlerts
+    // null/undefined) doit court-circuiter. Avant ce fix (14 juillet 2026), une réponse totalement
+    // vide empêchait TOUTE synchro de tourner, y compris la purge : une alerte locale pending dont
+    // le pendant backend disparaît (ex: titulaire passée Q/GTD) restait figée indéfiniment tant que
+    // le backend renvoyait au moins une alerte d'un autre type — et disparaissait carrément dès que
+    // le backend tombait à zéro alerte au total (cas réel : alerte spread Indiana Fever/Caitlin
+    // Clark toujours visible côté utilisateur alors que le backend ne la renvoyait plus).
+    if (!bgAlerts) return;
     const totalAlerts = bgAlerts.filter(a => a.type === 'game_total' && a.prob > 0);
-    if (!totalAlerts.length) return;
 
     const existing = JSON.parse(localStorage.getItem(GAME_TOTAL_KEY) || '[]');
 
@@ -525,9 +540,16 @@ export async function syncGameTotalAlerts() {
 export async function syncBballPinnacleAlerts() {
   try {
     const { alerts: bgAlerts } = await fetch('/api/nba/background-alerts').then(r => r.json());
-    if (!bgAlerts?.length) return;
+    // bgAlerts=[] est une réponse valide (aucune alerte ne qualifie ce cycle) et doit quand même
+    // atteindre la purge des orphelins pending plus bas — seul un fetch/parse raté (bgAlerts
+    // null/undefined) doit court-circuiter. Avant ce fix (14 juillet 2026), une réponse totalement
+    // vide empêchait TOUTE synchro de tourner, y compris la purge : une alerte locale pending dont
+    // le pendant backend disparaît (ex: titulaire passée Q/GTD) restait figée indéfiniment tant que
+    // le backend renvoyait au moins une alerte d'un autre type — et disparaissait carrément dès que
+    // le backend tombait à zéro alerte au total (cas réel : alerte spread Indiana Fever/Caitlin
+    // Clark toujours visible côté utilisateur alors que le backend ne la renvoyait plus).
+    if (!bgAlerts) return;
     const pinAlerts = bgAlerts.filter(a => a.type === 'basketball_pinnacle_edge' && a.prob > 0);
-    if (!pinAlerts.length) return;
 
     const existing = JSON.parse(localStorage.getItem(BBALL_PINNACLE_KEY) || '[]');
     const sameFixture = (a, b) => {
@@ -591,9 +613,16 @@ const BBALL_PINNACLE_PROPS_KEY = 'bball_pinnacle_props_alerts';
 export async function syncBballPinnaclePropsAlerts() {
   try {
     const { alerts: bgAlerts } = await fetch('/api/nba/background-alerts').then(r => r.json());
-    if (!bgAlerts?.length) return;
+    // bgAlerts=[] est une réponse valide (aucune alerte ne qualifie ce cycle) et doit quand même
+    // atteindre la purge des orphelins pending plus bas — seul un fetch/parse raté (bgAlerts
+    // null/undefined) doit court-circuiter. Avant ce fix (14 juillet 2026), une réponse totalement
+    // vide empêchait TOUTE synchro de tourner, y compris la purge : une alerte locale pending dont
+    // le pendant backend disparaît (ex: titulaire passée Q/GTD) restait figée indéfiniment tant que
+    // le backend renvoyait au moins une alerte d'un autre type — et disparaissait carrément dès que
+    // le backend tombait à zéro alerte au total (cas réel : alerte spread Indiana Fever/Caitlin
+    // Clark toujours visible côté utilisateur alors que le backend ne la renvoyait plus).
+    if (!bgAlerts) return;
     const pinProps = bgAlerts.filter(a => a.type === 'basketball_pinnacle_props');
-    if (!pinProps.length) return;
 
     const existing = JSON.parse(localStorage.getItem(BBALL_PINNACLE_PROPS_KEY) || '[]');
     let changed = false;
@@ -640,9 +669,16 @@ export function saveBballPinnaclePropsAlerts(arr) {
 export async function syncBasketballResultAlerts() {
   try {
     const { alerts: bgAlerts } = await fetch('/api/nba/background-alerts').then(r => r.json());
-    if (!bgAlerts?.length) return;
+    // bgAlerts=[] est une réponse valide (aucune alerte ne qualifie ce cycle) et doit quand même
+    // atteindre la purge des orphelins pending plus bas — seul un fetch/parse raté (bgAlerts
+    // null/undefined) doit court-circuiter. Avant ce fix (14 juillet 2026), une réponse totalement
+    // vide empêchait TOUTE synchro de tourner, y compris la purge : une alerte locale pending dont
+    // le pendant backend disparaît (ex: titulaire passée Q/GTD) restait figée indéfiniment tant que
+    // le backend renvoyait au moins une alerte d'un autre type — et disparaissait carrément dès que
+    // le backend tombait à zéro alerte au total (cas réel : alerte spread Indiana Fever/Caitlin
+    // Clark toujours visible côté utilisateur alors que le backend ne la renvoyait plus).
+    if (!bgAlerts) return;
     const resultAlerts = bgAlerts.filter(a => a.type === 'basketball_result' && a.probability > 0);
-    if (!resultAlerts.length) return;
 
     const existing = JSON.parse(localStorage.getItem(BASKETBALL_RESULT_KEY) || '[]');
 
@@ -706,9 +742,16 @@ export async function syncBasketballResultAlerts() {
 export async function syncBasketballSpreadAlerts() {
   try {
     const { alerts: bgAlerts } = await fetch('/api/nba/background-alerts').then(r => r.json());
-    if (!bgAlerts?.length) return;
+    // bgAlerts=[] est une réponse valide (aucune alerte ne qualifie ce cycle) et doit quand même
+    // atteindre la purge des orphelins pending plus bas — seul un fetch/parse raté (bgAlerts
+    // null/undefined) doit court-circuiter. Avant ce fix (14 juillet 2026), une réponse totalement
+    // vide empêchait TOUTE synchro de tourner, y compris la purge : une alerte locale pending dont
+    // le pendant backend disparaît (ex: titulaire passée Q/GTD) restait figée indéfiniment tant que
+    // le backend renvoyait au moins une alerte d'un autre type — et disparaissait carrément dès que
+    // le backend tombait à zéro alerte au total (cas réel : alerte spread Indiana Fever/Caitlin
+    // Clark toujours visible côté utilisateur alors que le backend ne la renvoyait plus).
+    if (!bgAlerts) return;
     const spreadAlerts = bgAlerts.filter(a => a.type === 'basketball_spread' && a.probability > 0);
-    if (!spreadAlerts.length) return;
 
     const existing = JSON.parse(localStorage.getItem(BASKETBALL_SPREAD_KEY) || '[]');
 
@@ -768,7 +811,15 @@ export async function syncBasketballSpreadAlerts() {
 export async function syncFootballAlerts() {
   try {
     const { alerts: bgAlerts } = await fetch('/api/nba/background-alerts').then(r => r.json());
-    if (!bgAlerts?.length) return;
+    // bgAlerts=[] est une réponse valide (aucune alerte ne qualifie ce cycle) et doit quand même
+    // atteindre la purge des orphelins pending plus bas — seul un fetch/parse raté (bgAlerts
+    // null/undefined) doit court-circuiter. Avant ce fix (14 juillet 2026), une réponse totalement
+    // vide empêchait TOUTE synchro de tourner, y compris la purge : une alerte locale pending dont
+    // le pendant backend disparaît (ex: titulaire passée Q/GTD) restait figée indéfiniment tant que
+    // le backend renvoyait au moins une alerte d'un autre type — et disparaissait carrément dès que
+    // le backend tombait à zéro alerte au total (cas réel : alerte spread Indiana Fever/Caitlin
+    // Clark toujours visible côté utilisateur alors que le backend ne la renvoyait plus).
+    if (!bgAlerts) return;
     const ORPHAN_GRACE_MS = 25 * 60_000;
     // Le backend ne génère des alertes CDM que dans les 24h avant coup d'envoi (CDM_ALERT_WINDOW_MS,
     // server.js) — pour éviter que la proba dérive avec le pool de matchs encore programmés. Une
@@ -781,7 +832,8 @@ export async function syncFootballAlerts() {
 
     // BTTS
     const bttsAlerts = bgAlerts.filter(a => a.type === 'football_btts' && a.probability > 0);
-    if (bttsAlerts.length) {
+    { // bttsAlerts peut être vide (0 alerte BTTS ce cycle) — la purge des orphelins doit quand
+      // même tourner (14 juillet 2026, cf. commentaire sur bgAlerts plus haut).
       const existing = JSON.parse(localStorage.getItem(FB_BTTS_KEY) || '[]');
       let changed = false;
       const result = [...existing];
@@ -829,7 +881,7 @@ export async function syncFootballAlerts() {
 
     // Over/Under
     const totalAlerts = bgAlerts.filter(a => a.type === 'football_total' && a.probability > 0);
-    if (totalAlerts.length) {
+    { // idem — purge même si totalAlerts est vide ce cycle
       const existing = JSON.parse(localStorage.getItem(FB_TOTAL_KEY) || '[]');
       let changed = false;
       const result = [...existing];
@@ -872,7 +924,7 @@ export async function syncFootballAlerts() {
 
     // Résultat 1X2 (chaque issue dom./nul/ext. traitée comme un pari oui/non, même format que Over/Under)
     const resultAlerts = bgAlerts.filter(a => a.type === 'football_result' && a.probability > 0);
-    if (resultAlerts.length) {
+    { // idem — purge même si resultAlerts est vide ce cycle
       const existing = JSON.parse(localStorage.getItem(FB_RESULT_KEY) || '[]');
       let changed = false;
       const result = [...existing];
@@ -918,7 +970,7 @@ export async function syncFootballAlerts() {
     // CDM uniquement (seule compétition où Pinnacle est scrapé). Même format de sync que les 3
     // autres types foot, clé localStorage séparée pour rester visuellement/structurellement distinct.
     const pinnacleAlerts = bgAlerts.filter(a => a.type === 'football_pinnacle_edge' && a.probability > 0);
-    if (pinnacleAlerts.length) {
+    { // idem — purge même si pinnacleAlerts est vide ce cycle
       const existing = JSON.parse(localStorage.getItem(FB_PINNACLE_KEY) || '[]');
       let changed = false;
       const result = [...existing];
@@ -964,7 +1016,7 @@ export async function syncFootballAlerts() {
     const dcLogicalKey = a => `${(a.home||'').toLowerCase()}__${(a.away||'').toLowerCase()}__${(a.fixtureDate||'').slice(0,10)}__${a.direction}`;
 
     const dcBttsAlerts = bgAlerts.filter(a => a.type === 'football_dc_btts' && a.probability > 0);
-    if (dcBttsAlerts.length) {
+    { // idem — purge même si dcBttsAlerts est vide ce cycle
       const existing = JSON.parse(localStorage.getItem(FB_DC_BTTS_KEY) || '[]');
       // Nettoyer les doublons logiques déjà en stock (garde le plus récent / non-pending en priorité)
       const deduped = [];
@@ -997,7 +1049,7 @@ export async function syncFootballAlerts() {
 
     // DC & Over 1.5
     const dcOuAlerts = bgAlerts.filter(a => a.type === 'football_dc_ou' && a.probability > 0);
-    if (dcOuAlerts.length) {
+    { // idem — purge même si dcOuAlerts est vide ce cycle
       const existing = JSON.parse(localStorage.getItem(FB_DC_OU_KEY) || '[]');
       const deduped2 = [];
       const seenKeys2 = new Set();

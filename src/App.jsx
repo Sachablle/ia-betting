@@ -83,14 +83,20 @@ function useAlertCount() {
         if (!cur || rank(a.status) > rank(cur.status)) byKey[key] = a;
       }
       basket = Object.values(byKey).filter(a => (a.status || 'pending') === 'pending').length;
-      try {
-        const totals = JSON.parse(localStorage.getItem('nba_game_total_alerts') || '[]');
-        basket += totals.filter(a => {
-          if ((a.status || 'pending') !== 'pending') return false;
-          const t = new Date(a.date).getTime();
-          return isNaN(t) || t > now;
-        }).length;
-      } catch {}
+      // nba_game_total_alerts, basketball_result_alerts, basketball_spread_alerts partagent le
+      // même format simple (status + date) — basketball_result/spread manquaient ici depuis leur
+      // création (19 juin/9 juillet), le badge ne comptait jamais leurs alertes pending (trouvé
+      // le 14 juillet sur une alerte spread Écart H2H invisible dans le badge).
+      ['nba_game_total_alerts', 'basketball_result_alerts', 'basketball_spread_alerts'].forEach(key => {
+        try {
+          const arr = JSON.parse(localStorage.getItem(key) || '[]');
+          basket += arr.filter(a => {
+            if ((a.status || 'pending') !== 'pending') return false;
+            const t = new Date(a.date).getTime();
+            return isNaN(t) || t > now;
+          }).length;
+        } catch {}
+      });
     } catch { basket = 0; }
 
     let foot = 0;

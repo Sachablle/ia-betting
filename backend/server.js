@@ -9554,6 +9554,22 @@ function refreshOrDropPendingById(newAlerts, alertId, newProbabilityValue, oddsS
   newAlerts.push({ ...existing, ...update });
 }
 
+// Retire toute alerte Résultat/Écart H2H déjà pending sur cette game dès qu'une titulaire devient
+// Q/GTD après coup — le garde-fou hasQRes/hasQEU bloque bien la création d'une NOUVELLE alerte,
+// mais son `continue` saute directement à la game suivante et n'exécute jamais le
+// refreshOrDropPendingById qui aurait normalement fait tomber une alerte déjà créée avant le
+// changement de statut. Sans ça elle reste figée indéfiniment (trouvé 14 juillet 2026, cas
+// Caitlin Clark passée Q après la création de l'alerte spread Indiana Fever). N'affecte jamais une
+// alerte déjà acceptée (même règle que refreshOrDropPendingById : un pari accepté n'est jamais
+// annulé automatiquement).
+function dropPendingOnKeyPlayerQ(gameId, idPrefix) {
+  for (const suffix of ['result_home', 'result_away', 'spread_home', 'spread_away']) {
+    const alertId = `${gameId}_${idPrefix}_${suffix}`;
+    const existing = backgroundAlerts.find(a => a.id === alertId && (a.status || 'pending') === 'pending');
+    if (existing) { _staleAlertIds.add(alertId); _bgLog.push(`alert-refresh: drop ${alertId} — titulaire Q/GTD`); }
+  }
+}
+
 async function generateBackgroundAlerts() {
   _bgLastRun = Date.now();
   _bgLog = ['started'];
@@ -10763,7 +10779,7 @@ async function generateBackgroundAlerts() {
           const hasQEU = [...(homePlayersR?.players || []), ...(awayPlayersR?.players || [])].some(p =>
             (homeStartersEU.has(String(p.id)) || awayStartersEU.has(String(p.id))) && Q_STATUSES_TOTAL.includes(p.injury)
           );
-          if (hasQEU) { _bgLog.push(`${euLeague} result skip ${g.home.short}v${g.away.short}: titulaire Q/GTD`); continue; }
+          if (hasQEU) { _bgLog.push(`${euLeague} result skip ${g.home.short}v${g.away.short}: titulaire Q/GTD`); dropPendingOnKeyPlayerQ(g.id, 'eu'); continue; }
 
           // Exclut les absences saison entière avant la pénalité Out — sinon double-comptage avec
           // la baseline déjà sans elles (8 juillet 2026).
@@ -10933,7 +10949,7 @@ async function generateBackgroundAlerts() {
             const hasQRes = [...(homePlayers || []), ...(awayPlayers || [])].some(p =>
               (homeStartersRes.has(String(p.id)) || awayStartersRes.has(String(p.id))) && Q_STATUSES_TOTAL.includes(p.injury)
             );
-            if (hasQRes) { _bgLog.push(`${leagueKey} result skip ${g.home.short}v${g.away.short}: titulaire Q/GTD`); continue; }
+            if (hasQRes) { _bgLog.push(`${leagueKey} result skip ${g.home.short}v${g.away.short}: titulaire Q/GTD`); dropPendingOnKeyPlayerQ(g.id, leagueKey); continue; }
 
             // Exclut les absences saison entière (ex: Napheesa Collier) avant la pénalité Out —
             // sinon double-comptage avec la baseline déjà sans elles (8 juillet 2026).
