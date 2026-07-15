@@ -2421,6 +2421,11 @@ async function fetchRotoWireWNBALineups() {
   if (!resp.ok) throw new Error(`RotoWire WNBA lineups ${resp.status}`);
   const html = await resp.text();
   const result = {};
+  // Reset avant repeuplement — Object.assign plus bas ne faisait qu'ajouter/écraser des clés,
+  // jamais retirer une joueuse qui n'est plus "may not play" au scrape suivant. Une fois ajoutée
+  // à _wnbaLineupInjuries, elle y restait indéfiniment (prioritaire sur rotoInj dans le merge de
+  // /api/wnba/injuries) même après confirmation qu'elle joue — cas réel Caitlin Clark, 16 juil. 2026.
+  for (const k of Object.keys(_wnbaLineupInjuries)) delete _wnbaLineupInjuries[k];
   const boxes = html.split(/(?=<[^>]*class="lineup__box")/).slice(1);
   for (const box of boxes) {
     const homeMatch  = box.match(/data-team="(\w+)"[^>]*data-home="1"/);

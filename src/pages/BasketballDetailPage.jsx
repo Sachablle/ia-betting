@@ -7,7 +7,7 @@ import { formatFullDate, formatMatchTime, formatCapacity } from '../utils/format
 import FormStrip from '../components/FormStrip';
 import StatBar from '../components/StatBar';
 import { OddsCell, EdgeBadge } from '../components/OddsCell';
-import { cachedFetch } from '../utils/fetchCache';
+import { cachedFetch, invalidateCache } from '../utils/fetchCache';
 
 // ── ESPN WNBA lookup (name → teamId) ─────────────────────────────────────────
 const ESPN_WNBA = {
@@ -1674,14 +1674,25 @@ function PropsSection({ fixture, homePlayers, awayPlayers, rosterLoading, isComp
     });
   }, [fixture.id]);
 
-  // Fetch rapport de blessures (RotoWire injuries page + MAY NOT PLAY lineups)
+  // Fetch rapport de blessures (RotoWire injuries page + MAY NOT PLAY lineups).
+  // Rafraîchi toutes les 5 min tant que le match n'est pas terminé — sinon un statut Q qui
+  // se résout (ex: Caitlin Clark repassée disponible) reste figé dans Analyse Props tant que
+  // l'utilisateur ne quitte pas et ne revient pas sur la page (16 juil. 2026).
   useEffect(() => {
     if (isCompleted || fixture.league === 'euroleague' || EURO_LEAGUES_IDS.includes(fixture.league)) return;
     const injBase = fixture.league === 'wnba' ? '/api/wnba' : '/api/nba';
-    cachedFetch(`${injBase}/injuries`, 10 * 60_000)
-      .then(d => setInjuryData(d || {}))
-      .catch(() => {});
-  }, [fixture.id]);
+    const url = `${injBase}/injuries`;
+    // invalidateCache force un vrai fetch réseau à chaque tick — sinon le cache client (TTL 10 min,
+    // partagé entre tous les composants qui appellent cette URL) sert la même réponse périmée à
+    // chaque poll de 5 min, rendant l'auto-refresh inopérant (cas Caitlin Clark, 16 juil. 2026).
+    const fetchInjuries = (fresh = false) => {
+      if (fresh) invalidateCache(url);
+      return cachedFetch(url, 10 * 60_000).then(d => setInjuryData(d || {})).catch(() => {});
+    };
+    fetchInjuries();
+    const id = setInterval(() => fetchInjuries(true), 5 * 60_000);
+    return () => clearInterval(id);
+  }, [fixture.id, isCompleted]);
 
   // Compo EU confirmée (ACB/LNB/BBL) : joueur déclaré OUT au moment du remplacement — merge
   // dans injuryData pour réutiliser la redistribution déjà existante (même mécanisme que
@@ -3191,10 +3202,17 @@ export default function BasketballDetailPage() {
 
   useEffect(() => {
     if (staticFixture?.league === 'euroleague') return;
+    const doneStatic = staticFixture?.round?.includes('Terminé') || (staticFixture?.date && new Date(staticFixture.date) < new Date());
+    if (doneStatic) return;
     const injBase = isWNBA ? '/api/wnba' : '/api/nba';
-    cachedFetch(`${injBase}/injuries`, 10 * 60_000)
-      .then(d => setOuterInjuryData(d || {}))
-      .catch(() => {});
+    const url = `${injBase}/injuries`;
+    const fetchInjuries = (fresh = false) => {
+      if (fresh) invalidateCache(url);
+      return cachedFetch(url, 10 * 60_000).then(d => setOuterInjuryData(d || {})).catch(() => {});
+    };
+    fetchInjuries();
+    const id = setInterval(() => fetchInjuries(true), 5 * 60_000);
+    return () => clearInterval(id);
   }, [staticFixture?.id]);
 
   // Fetch match européen depuis api-sports.io si pas de fixture statique
