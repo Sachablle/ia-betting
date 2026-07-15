@@ -65,6 +65,24 @@ function isConsistentStat(games, key) {
   return (std / mean) <= CONSISTENCY_CV_CUTOFF[key];
 }
 
+// Moyenne "effective" pour le garde-fou marge saison↔ligne (SEASON_MARGIN) : mélange la moyenne
+// saison figée avec la forme récente (n derniers matchs), pondérée par la confiance dans
+// l'échantillon récent (mêmes principes que shrinkFactor du modèle foot — confidence = n/(n+k)).
+// But : un joueur en série chaude/froide sur ses derniers matchs ne doit pas rester bloqué par
+// une moyenne saison qui ne reflète plus son niveau actuel (cf. cas McBride, 15 juil. 2026 —
+// 17.0 pts moyenne saison vs 26.2 sur les 5 derniers matchs, alerte points bloquée à tort).
+function blendedSeasonAvg(games, key, seasonAvg, n = 10, k = 5) {
+  if (seasonAvg == null) return seasonAvg;
+  const vals = (games || [])
+    .filter(g => g.min > 10 && g[key] != null && !(key === 'pts' && g.pts === 0 && g.min >= 12))
+    .slice(0, n)
+    .map(g => g[key]);
+  if (!vals.length) return seasonAvg;
+  const recentAvg = vals.reduce((s, v) => s + v, 0) / vals.length;
+  const confidence = vals.length / (vals.length + k);
+  return seasonAvg * (1 - confidence) + recentAvg * confidence;
+}
+
 // Plafonne les n matchs les plus récents (poids EWA les plus forts, decay=0.82 → ~52-60%
 // du poids total sur les 3 derniers) à [moyenne saison ± cap×écart-type].
 // Un seul match exceptionnel (ex: 8 rebonds pour une joueuse à 3.27 de moyenne, std=2.28)
@@ -578,4 +596,4 @@ function computeEstimate(player, isHome, oppGames, myGames, gamelogs, oppAbbr, g
   };
 }
 
-export { computeEstimate, calcStd, isConsistentStat, winsorizeRecent, getShotVolumeAnchor, probAtLeast, tCDF4, getRestFactor, getScheduleDensityFactor, isPlayoffRound, toDefCat, getDefByPosFactor };
+export { computeEstimate, calcStd, isConsistentStat, blendedSeasonAvg, winsorizeRecent, getShotVolumeAnchor, probAtLeast, tCDF4, getRestFactor, getScheduleDensityFactor, isPlayoffRound, toDefCat, getDefByPosFactor };
