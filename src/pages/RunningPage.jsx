@@ -80,10 +80,10 @@ function groupAlerts(raw) {
         league: a.league || 'nba', stats: [], maxProb: 0, ids: [],
         status: a.status || 'pending', acceptedAt: 0,
         acceptedBookmaker: a.acceptedBookmaker || null,
-        probDropWarning: false, currentProbability: null,
+        probDropWarning: false, currentProbability: null, driftReason: null,
       };
     }
-    if (a.probDropWarning) { map[key].probDropWarning = true; map[key].currentProbability = a.currentProbability; }
+    if (a.probDropWarning) { map[key].probDropWarning = true; map[key].currentProbability = a.currentProbability; map[key].driftReason = a.driftReason ?? null; }
     const entry = {
       stat: a.stat, direction: a.direction, line: a.line,
       estimate: a.estimate, probability: a.probability,
@@ -556,7 +556,7 @@ function AlertCard({ group, playerStats, onDismiss }) {
         <span style={{ fontSize: 10, fontWeight: 800, color: '#60a5fa', minWidth: 28, textAlign: 'right' }}>{group.maxProb}%</span>
         {group.probDropWarning && (
           <span
-            title={`Recalculé depuis l'acceptation : ${group.currentProbability}% (était ${group.maxProb}%)`}
+            title={`Recalculé depuis l'acceptation : ${group.currentProbability}% (était ${group.maxProb}%)${group.driftReason ? `\n${group.driftReason}` : ''}`}
             style={{ fontSize: 10, fontWeight: 800, color: '#f87171', flexShrink: 0 }}
           >⚠ {group.currentProbability}%</span>
         )}

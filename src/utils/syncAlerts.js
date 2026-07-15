@@ -247,6 +247,9 @@ export async function syncBackgroundAlerts() {
             estimate:    a.estimate    ?? acceptedMatch.estimate,
             probDropWarning: a.probDropWarning ?? false,
             currentProbability: a.probDropWarning ? a.currentProbability : null,
+            // Raison lisible de la dérive (ex. "Cameron Brink : Out → Questionable") quand le
+            // backend a pu l'attribuer à un changement de statut adverse (15 juillet 2026).
+            driftReason: a.probDropWarning ? (a.driftReason ?? null) : null,
           };
           changed = true;
         }
@@ -350,6 +353,7 @@ export async function syncBackgroundAlerts() {
             estimate:    a.estimate    ?? prev.estimate,
             probDropWarning: a.probDropWarning ?? false,
             currentProbability: a.probDropWarning ? a.currentProbability : null,
+            driftReason: a.probDropWarning ? (a.driftReason ?? null) : null,
           };
           changed = true;
         }

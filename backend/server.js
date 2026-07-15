@@ -9504,7 +9504,28 @@ let _staleAlertIds = new Set();
 // informatif — n'annule jamais le pari (déjà placé chez le bookmaker), juste un signal visuel.
 const ACCEPTED_DRIFT_WARNING_PTS = 10;
 
-function refreshOrDropPendingProp(newAlerts, eventId, playerName, stat, { pOver, pUnder, overOdds, underOdds }) {
+// Compare deux snapshots de blessures adverses (liste { name, status } des joueurs Out/Q côté
+// adversaire, celle qui alimente le boost de redistribution) et renvoie une phrase lisible du
+// changement le plus probable derrière une dérive de probabilité — ex. "Cameron Brink : Out →
+// Questionable" — au lieu d'un simple pourcentage sans explication (15 juillet 2026, cas Olivia
+// Miles/Cameron Brink). Renvoie null si rien n'a changé ou si on n'a pas de snapshot précédent
+// (première fois qu'on compare, ou ligue sans mécanisme de boost adverse — ex. EU basket).
+function diffInjurySnapshot(prev, curr) {
+  if (!prev || !prev.length) return null;
+  const prevMap = new Map(prev.map(p => [p.name, p.status]));
+  const currMap = new Map((curr || []).map(p => [p.name, p.status]));
+  const changes = [];
+  for (const [name, status] of prevMap) {
+    const now = currMap.get(name) ?? 'disponible';
+    if (now !== status) changes.push(`${name} : ${status} → ${now}`);
+  }
+  for (const [name, status] of currMap) {
+    if (!prevMap.has(name)) changes.push(`${name} : disponible → ${status}`);
+  }
+  return changes.length ? changes.join(', ') : null;
+}
+
+function refreshOrDropPendingProp(newAlerts, eventId, playerName, stat, { pOver, pUnder, overOdds, underOdds, oppInjurySnapshot = null }) {
   if (newAlerts.some(a => a.type === 'player_prop' && a.eventId === eventId && a.player === playerName && a.stat === stat)) return;
   const existing = backgroundAlerts.find(a => a.type === 'player_prop' && a.eventId === eventId && a.player === playerName && a.stat === stat && ['pending', 'accepted'].includes(a.status || 'pending'));
   if (!existing) return;
@@ -9514,8 +9535,9 @@ function refreshOrDropPendingProp(newAlerts, eventId, playerName, stat, { pOver,
   if (existing.status === 'accepted') {
     const drop = existing.probability - newProbability;
     if (drop >= ACCEPTED_DRIFT_WARNING_PTS) {
-      _bgLog.push(`accepted-drift: ${playerName} ${stat} ${existing.direction} ${existing.line} ${existing.probability}% → ${newProbability}%`);
-      newAlerts.push({ ...existing, currentProbability: newProbability, probDropWarning: true });
+      const driftReason = diffInjurySnapshot(existing.oppInjurySnapshot, oppInjurySnapshot);
+      _bgLog.push(`accepted-drift: ${playerName} ${stat} ${existing.direction} ${existing.line} ${existing.probability}% → ${newProbability}%${driftReason ? ` — ${driftReason}` : ''}`);
+      newAlerts.push({ ...existing, currentProbability: newProbability, probDropWarning: true, driftReason, oppInjurySnapshot });
     }
     return;
   }
@@ -9527,7 +9549,7 @@ function refreshOrDropPendingProp(newAlerts, eventId, playerName, stat, { pOver,
   if (!oddsStillValid) { _staleAlertIds.add(existing.id); _bgLog.push(`prop-refresh: drop ${playerName} ${stat} ${existing.direction} ${existing.line} — cote plus valable`); return; }
   if (newProbability !== existing.probability) _bgLog.push(`prop-refresh: ${playerName} ${stat} ${existing.direction} ${existing.line} ${existing.probability}% → ${newProbability}%`);
   const capFn = dirIsOver ? capOdds : capUnderOdds;
-  newAlerts.push({ ...existing, probability: newProbability, unibetOdds: capFn(odds?.unibet ?? null), winamaxOdds: capFn(odds?.winamax ?? null), betclicOdds: capFn(odds?.betclic ?? null) });
+  newAlerts.push({ ...existing, probability: newProbability, unibetOdds: capFn(odds?.unibet ?? null), winamaxOdds: capFn(odds?.winamax ?? null), betclicOdds: capFn(odds?.betclic ?? null), oppInjurySnapshot });
 }
 
 // Générique (total/résultat — champs de proba différents selon le type : `prob` vs `probability`),
@@ -9892,6 +9914,7 @@ async function generateBackgroundAlerts() {
                 pOver: disp?.pOver ?? pOver, pUnder: disp?.pUnder ?? pUnder,
                 overOdds: { unibet: refLine.over ?? null, winamax: wmLine?.over ?? null, betclic: bcLine?.over ?? null },
                 underOdds: { unibet: refLine.under ?? null, winamax: wmLine?.under ?? null, betclic: bcLine?.under ?? null },
+                oppInjurySnapshot: (oppPlayers_ || []).filter(p => p.injury === 'Out' || Q_STATUSES.includes(p.injury)).map(p => ({ name: p.name, status: p.injury })),
               });
             }
             continue;
@@ -10034,6 +10057,7 @@ async function generateBackgroundAlerts() {
               pOver: disp?.pOver ?? pOver, pUnder: disp?.pUnder ?? pUnder,
               overOdds: { unibet: refLine.over ?? null, winamax: wmLine?.over ?? null, betclic: bcLine?.over ?? null },
               underOdds: { unibet: refLine.under ?? null, winamax: wmLine?.under ?? null, betclic: bcLine?.under ?? null },
+              oppInjurySnapshot: (oppPlayers_ || []).filter(p => p.injury === 'Out' || Q_STATUSES.includes(p.injury)).map(p => ({ name: p.name, status: p.injury })),
             });
           }
         }
@@ -10268,6 +10292,7 @@ async function generateBackgroundAlerts() {
                     pOver: disp?.pOver ?? pOver, pUnder: disp?.pUnder ?? pUnder,
                     overOdds: { unibet: refLine.over ?? null, winamax: wmLine?.over ?? null, betclic: bcLine?.over ?? null },
                     underOdds: { unibet: refLine.under ?? null, winamax: wmLine?.under ?? null, betclic: bcLine?.under ?? null },
+                    oppInjurySnapshot: (oppPlayersWNBA_ || []).filter(p => p.injury === 'Out' || Q_STATUSES_WNBA.includes(p.injury)).map(p => ({ name: p.name, status: p.injury })),
                   });
                 }
               }
@@ -10410,6 +10435,7 @@ async function generateBackgroundAlerts() {
               pOver: disp?.pOver ?? pOver, pUnder: disp?.pUnder ?? pUnder,
               overOdds: { unibet: refLine.over ?? null, winamax: wmLine?.over ?? null, betclic: bcLine?.over ?? null },
               underOdds: { unibet: refLine.under ?? null, winamax: wmLine?.under ?? null, betclic: bcLine?.under ?? null },
+              oppInjurySnapshot: (oppPlayersWNBA_ || []).filter(p => p.injury === 'Out' || Q_STATUSES_WNBA.includes(p.injury)).map(p => ({ name: p.name, status: p.injury })),
             });
           }
         }

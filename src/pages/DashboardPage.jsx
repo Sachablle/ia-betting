@@ -10,6 +10,52 @@ const FB_RESULT_KEY   = 'fb_result_alerts';
 const FB_DC_BTTS_KEY  = 'fb_dc_btts_alerts';
 const FB_DC_OU_KEY    = 'fb_dc_ou_alerts';
 const BBALL_RESULT_KEY = 'basketball_result_alerts';
+// Manquait ici (même gap que le badge nav, cf. useAlertCount) — le graphique "Paris acceptés"
+// ignorait tous les paris Écart H2H (14 juillet 2026).
+const BBALL_SPREAD_KEY = 'basketball_spread_alerts';
+
+const PROP_STAT_LABEL = { pts: 'Pts', reb: 'Reb', ast: 'Ast', tpm: '3pts' };
+
+// Libellé court affiché dans l'infobulle du graphique "Paris acceptés" — un format par type
+// d'alerte (props, total, résultat basket/foot, écart, BTTS, double chance...).
+function betLabel(a) {
+  if (a.player && a.stat) {
+    const dir = a.direction === 'over' ? 'Over' : 'Under';
+    return `${dir} ${a.line} ${PROP_STAT_LABEL[a.stat] ?? a.stat} — ${a.player}`;
+  }
+  switch (a.type) {
+    case 'game_total': {
+      const dir = a.direction === 'over' ? 'Over' : 'Under';
+      return `${dir} ${a.line} Pts — ${a.homeShort ?? a.home} vs ${a.awayShort ?? a.away}`;
+    }
+    case 'basketball_result':
+      return `Victoire ${a.teamShort ?? a.teamName}`;
+    case 'basketball_spread': {
+      const sign = a.line > 0 ? '+' : '';
+      return `Écart ${sign}${a.line} — ${a.teamShort ?? a.teamName}`;
+    }
+    case 'football_btts':
+      return `BTTS Oui — ${a.home} vs ${a.away}`;
+    case 'football_total': {
+      const dir = a.direction === 'over' ? 'Over' : 'Under';
+      return `${dir} ${a.line} buts — ${a.home} vs ${a.away}`;
+    }
+    case 'football_result': {
+      const team = a.direction === 'home' ? a.home : a.direction === 'away' ? a.away : 'Match nul';
+      return a.direction === 'draw' ? team : `Victoire ${team}`;
+    }
+    case 'football_dc_btts': {
+      const dc = a.direction === '1x' ? '1X' : a.direction === 'x2' ? 'X2' : '12';
+      return `DC ${dc} + BTTS — ${a.home} vs ${a.away}`;
+    }
+    case 'football_dc_ou': {
+      const dc = a.direction === '1x' ? '1X' : a.direction === 'x2' ? 'X2' : '12';
+      return `DC ${dc} + Over ${a.line ?? 1.5} — ${a.home} vs ${a.away}`;
+    }
+    default:
+      return a.home && a.away ? `${a.home} vs ${a.away}` : 'Pari';
+  }
+}
 
 // ── Widget : Countdown prochain match ────────────────────────────────────────
 const LIVE_WINDOW_MS  = 3 * 60 * 60 * 1000; // 3h — un match basket dure max ~3h
@@ -33,6 +79,7 @@ function CountdownWidget() {
       try { local = [...local, ...JSON.parse(localStorage.getItem(FB_DC_BTTS_KEY) || '[]')]; } catch {}
       try { local = [...local, ...JSON.parse(localStorage.getItem(FB_DC_OU_KEY) || '[]')]; } catch {}
       try { local = [...local, ...JSON.parse(localStorage.getItem(BBALL_RESULT_KEY) || '[]')]; } catch {}
+      try { local = [...local, ...JSON.parse(localStorage.getItem(BBALL_SPREAD_KEY) || '[]')]; } catch {}
 
       // Normalise l'ID : tronque après 'over'/'under' pour fusionner ancien format (avec ligne) et nouveau
       const normId = id => {
@@ -822,6 +869,8 @@ function AlertsChart({ accepted, days: numDays = 30 }) {
   const padL = 52, padR = 10, padT = 20, padB = 36;
   const cW = W - padL - padR;
   const cH = H - padT - padB;
+  const [hoverIdx, setHoverIdx] = useState(null);
+  const [tooltipPos, setTooltipPos] = useState(null);
 
   const now = new Date();
   // Minimum 2 points pour que la courbe SVG soit visible
@@ -833,6 +882,8 @@ function AlertsChart({ accepted, days: numDays = 30 }) {
   });
 
   const byDay = {};
+  // Détail gagnant/perdant/void/en cours par jour — affiché au survol de chaque point (14 juillet).
+  const breakdownByDay = {};
   accepted.forEach(a => {
     // Priorité : acceptedAt → savedAt → settledAt → fixtureDate (si déjà réglé, donc forcément
     // dans le passé) → maintenant en tout dernier recours. D'anciennes alertes foot n'ont ni
@@ -843,6 +894,12 @@ function AlertsChart({ accepted, days: numDays = 30 }) {
     const raw = new Date(ts);
     const day = new Date(raw.getTime() - raw.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
     byDay[day] = (byDay[day] || 0) + 1;
+    const b = breakdownByDay[day] ??= { won: 0, lost: 0, void: 0, pending: 0, items: [] };
+    if (a.status === 'won') b.won++;
+    else if (a.status === 'lost') b.lost++;
+    else if (a.status === 'void') b.void++;
+    else b.pending++;
+    b.items.push({ status: a.status || 'accepted', label: betLabel(a) });
   });
 
   const vals = days.map(d => byDay[d] || 0);
@@ -864,39 +921,93 @@ function AlertsChart({ accepted, days: numDays = 30 }) {
   const xIdxs = [...new Set([0, clamp(Math.round(n * 0.25)), clamp(Math.round(n * 0.5)), clamp(Math.round(n * 0.75)), n - 1])];
 
   return (
-    <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={H} style={{ display: 'block' }}>
-      <defs>
-        <linearGradient id="dash-grad" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor="#60a5fa" stopOpacity="0.75" />
-          <stop offset="60%" stopColor="#60a5fa" stopOpacity="0.25" />
-          <stop offset="100%" stopColor="#60a5fa" stopOpacity="0" />
-        </linearGradient>
-      </defs>
+    <div style={{ position: 'relative' }}>
+      <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={H} style={{ display: 'block' }}>
+        <defs>
+          <linearGradient id="dash-grad" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#60a5fa" stopOpacity="0.75" />
+            <stop offset="60%" stopColor="#60a5fa" stopOpacity="0.25" />
+            <stop offset="100%" stopColor="#60a5fa" stopOpacity="0" />
+          </linearGradient>
+        </defs>
 
-      {yTicks.map(v => (
-        <line key={v} x1={padL} y1={py(v)} x2={W - padR} y2={py(v)}
-          stroke="rgba(255,255,255,0.05)" strokeWidth="1" />
-      ))}
+        {yTicks.map(v => (
+          <line key={v} x1={padL} y1={py(v)} x2={W - padR} y2={py(v)}
+            stroke="rgba(255,255,255,0.05)" strokeWidth="1" />
+        ))}
 
-      <path d={areaPath} fill="url(#dash-grad)" />
-      <path d={linePath} fill="none" stroke="#60a5fa" strokeWidth="2.5"
-        strokeLinecap="round" strokeLinejoin="round" />
-      {pts.map(([x, y], i) => (
-        <circle key={i} cx={x} cy={y} r="4" fill="#60a5fa" stroke="#0d1117" strokeWidth="2" />
-      ))}
+        <path d={areaPath} fill="url(#dash-grad)" />
+        <path d={linePath} fill="none" stroke="#60a5fa" strokeWidth="2.5"
+          strokeLinecap="round" strokeLinejoin="round" />
+        {pts.map(([x, y], i) => (
+          <circle key={i} cx={x} cy={y} r={hoverIdx === i ? 6 : 4} fill="#60a5fa" stroke="#0d1117" strokeWidth="2"
+            style={{ transition: 'r 0.1s' }} />
+        ))}
+        {/* Zone de survol invisible plus large que le point visible — plus facile à cibler */}
+        {pts.map(([x, y], i) => (
+          <circle key={`hit-${i}`} cx={x} cy={y} r="14" fill="transparent" style={{ cursor: 'pointer' }}
+            onMouseEnter={(e) => {
+              setHoverIdx(i);
+              const r = e.currentTarget.getBoundingClientRect();
+              setTooltipPos({ x: r.left + r.width / 2, y: r.top });
+            }}
+            onMouseLeave={() => { setHoverIdx(null); setTooltipPos(null); }}
+          />
+        ))}
 
-      {yTicks.map(v => (
-        <text key={v} x={padL - 10} y={py(v) + 4} textAnchor="end"
-          fontSize="11" fill="rgba(255,255,255,0.3)" fontFamily="inherit">{v}</text>
-      ))}
+        {yTicks.map(v => (
+          <text key={v} x={padL - 10} y={py(v) + 4} textAnchor="end"
+            fontSize="11" fill="rgba(255,255,255,0.3)" fontFamily="inherit">{v}</text>
+        ))}
 
-      {xIdxs.map(i => (
-        <text key={i} x={px(i)} y={H - 8} textAnchor="middle"
-          fontSize="11" fill="rgba(255,255,255,0.3)" fontFamily="inherit">
-          {new Date(days[i]).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' })}
-        </text>
-      ))}
-    </svg>
+        {xIdxs.map(i => (
+          <text key={i} x={px(i)} y={H - 8} textAnchor="middle"
+            fontSize="11" fill="rgba(255,255,255,0.3)" fontFamily="inherit">
+            {new Date(days[i]).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' })}
+          </text>
+        ))}
+      </svg>
+
+      {hoverIdx !== null && tooltipPos && (() => {
+        const day = days[hoverIdx];
+        const b = breakdownByDay[day] || { won: 0, lost: 0, void: 0, pending: 0, items: [] };
+        const STATUS_COLOR = { won: '#4ade80', lost: '#ef4444', void: '#94a3b8', accepted: '#60a5fa' };
+        const STATUS_LABEL = { won: 'Gagné', lost: 'Perdu', void: 'Void', accepted: 'En cours' };
+        const MAX_ITEMS = 8;
+        const shown = b.items.slice(0, MAX_ITEMS);
+        const hidden = b.items.length - shown.length;
+        return (
+          <div style={{
+            position: 'fixed', left: tooltipPos.x, top: tooltipPos.y, transform: 'translate(-50%, -100%) translateY(-10px)',
+            background: 'rgba(0,5,18,0.97)', border: '1px solid rgba(96,165,250,0.3)', borderRadius: 8,
+            padding: '0.5rem 0.7rem', boxShadow: '0 8px 24px rgba(0,0,0,0.5)', pointerEvents: 'none', zIndex: 20,
+            maxWidth: 320,
+          }}>
+            <div style={{ fontSize: 10, fontWeight: 700, color: '#fff', marginBottom: '0.35rem', whiteSpace: 'nowrap' }}>
+              {new Date(day).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long' })}
+            </div>
+            {b.items.length === 0 ? (
+              <div style={{ fontSize: 10, color: 'var(--text-dim)', whiteSpace: 'nowrap' }}>Aucun pari accepté</div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                {shown.map((it, i) => (
+                  <div key={i} style={{ display: 'flex', alignItems: 'flex-start', gap: 6, fontSize: 10 }}>
+                    <span style={{ width: 6, height: 6, borderRadius: '50%', background: STATUS_COLOR[it.status] ?? '#60a5fa', flexShrink: 0, marginTop: 3 }} />
+                    <span style={{ color: '#fff' }}>{it.label}</span>
+                    <span style={{ marginLeft: 'auto', flexShrink: 0, color: STATUS_COLOR[it.status] ?? '#60a5fa', fontSize: 8.5, fontWeight: 700, textTransform: 'uppercase' }}>
+                      {STATUS_LABEL[it.status] ?? it.status}
+                    </span>
+                  </div>
+                ))}
+                {hidden > 0 && (
+                  <div style={{ fontSize: 9, color: 'var(--text-dim)', marginTop: 2 }}>+{hidden} autre{hidden > 1 ? 's' : ''}</div>
+                )}
+              </div>
+            )}
+          </div>
+        );
+      })()}
+    </div>
   );
 }
 
@@ -1142,6 +1253,8 @@ export default function DashboardPage() {
   const [alerts, setAlerts]           = useState([]);
   const [totalAlerts, setTotalAlerts] = useState([]);
   const [resultAlerts, setResultAlerts] = useState([]);
+  // Manquait ici (même gap que le badge nav et CountdownWidget) — 14 juillet 2026.
+  const [spreadAlerts, setSpreadAlerts] = useState([]);
   // Toutes les alertes foot (BTTS/O-U/Résultat/DC) — le graphique "Paris acceptés" les ignorait
   // entièrement avant ce fix (7 juillet 2026), ne comptant que les props/totaux basket.
   const [footballAlerts, setFootballAlerts] = useState([]);
@@ -1160,6 +1273,8 @@ export default function DashboardPage() {
     catch { setTotalAlerts([]); }
     try { setResultAlerts(JSON.parse(localStorage.getItem(BBALL_RESULT_KEY) || '[]')); }
     catch { setResultAlerts([]); }
+    try { setSpreadAlerts(JSON.parse(localStorage.getItem(BBALL_SPREAD_KEY) || '[]')); }
+    catch { setSpreadAlerts([]); }
     try {
       const fb = [FB_BTTS_KEY, FB_TOTAL_KEY, FB_RESULT_KEY, FB_DC_BTTS_KEY, FB_DC_OU_KEY]
         .flatMap(k => { try { return JSON.parse(localStorage.getItem(k) || '[]'); } catch { return []; } })
@@ -1195,6 +1310,7 @@ export default function DashboardPage() {
   // à tort plusieurs matchs/marchés différents ensemble.
   const acceptedFootball    = footballAlerts.filter(a => RESOLVED.includes(a.status));
   const acceptedBballResult = resultAlerts.filter(a => RESOLVED.includes(a.status));
+  const acceptedBballSpread = spreadAlerts.filter(a => RESOLVED.includes(a.status));
   const allDedupAlerts  = dedupAlerts(alerts);
 
   return (
@@ -1241,7 +1357,7 @@ export default function DashboardPage() {
             ))}
           </select>
         </div>
-        <AlertsChart accepted={[...accepted, ...acceptedTotals, ...acceptedFootball, ...acceptedBballResult]} days={period} />
+        <AlertsChart accepted={[...accepted, ...acceptedTotals, ...acceptedFootball, ...acceptedBballResult, ...acceptedBballSpread]} days={period} />
       </div>
 
       {/* Grid 2 colonnes : chaque ligne partage la même hauteur */}
