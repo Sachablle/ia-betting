@@ -10,6 +10,26 @@ function telegramConfigured() {
   return !!(TG_TOKEN && TG_CHAT_ID);
 }
 
+// Vérifie la santé réelle du tunnel/webhook — interroge l'API Telegram elle-même (getWebhookInfo)
+// plutôt que de pinguer le tunnel en local : ça confirme que Telegram ARRIVE VRAIMENT à joindre le
+// webhook, pas juste que le process cloudflared tourne encore (le watchdog du tunnel a déjà eu le cas
+// d'un process vivant mais devenu injoignable côté edge, cf. telegram-tunnel-watchdog.sh).
+async function checkTelegramWebhookHealth() {
+  if (!telegramConfigured()) return { ok: false, reason: 'not_configured' };
+  try {
+    const res = await fetch(`${TG_API}/getWebhookInfo`, { signal: AbortSignal.timeout(8000) });
+    const data = await res.json();
+    if (!data?.ok) return { ok: false, reason: 'api_error' };
+    const info = data.result;
+    const hasUrl = !!info.url;
+    const errorAgeMs = info.last_error_date ? Date.now() - info.last_error_date * 1000 : null;
+    const recentError = errorAgeMs !== null && errorAgeMs < 6 * 60_000;
+    return { ok: hasUrl && !recentError, url: info.url || null, lastErrorMessage: info.last_error_message || null };
+  } catch (e) {
+    return { ok: false, reason: 'fetch_failed' };
+  }
+}
+
 // Envoie un message avec boutons inline [{text, callback_data}] optionnels.
 // Renvoie le message_id Telegram (utile pour éditer le message après un clic), ou null si échec.
 async function sendTelegramMessage(text, buttons = null) {
@@ -243,5 +263,5 @@ function resolveCallbackToken(callbackData) {
 export {
   telegramConfigured, sendTelegramMessage, editTelegramMessage, answerCallbackQuery,
   getAlertTypeMeta, bestOdds, notifyNewAlert, resolveCallbackToken, recordAction, getActionsSince,
-  _debugTokensForId,
+  _debugTokensForId, checkTelegramWebhookHealth,
 };

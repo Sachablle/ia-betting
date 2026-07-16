@@ -323,7 +323,7 @@ function compute1X2(lambda_home, lambda_away, kMax = 10, rho = 0) {
       else pAway += p;
     }
   }
-  const MAX_PROB = 75; // plafond — même valeur que FB_RESULT_MAX_PROB backend
+  const MAX_PROB = 80; // plafond — même valeur que FB_RESULT_MAX_PROB backend (server.js)
   return {
     pHome: Math.min(Math.round(pHome * 100), MAX_PROB),
     pDraw: Math.min(Math.round(pDraw * 100), MAX_PROB),
@@ -658,6 +658,8 @@ function FootballOddsBox({ markets, bttsResult, home, away, frozen, onRefresh, r
               Cotes comparées : Unibet/Betclic uniquement (Winamax exclu). Générées automatiquement toutes les 20 min — pas besoin d'ouvrir cette page.
               <br /><br />
               Dans le widget <b>Modèle 1X2</b>, le <span style={{ color: '#4ade80', fontWeight: 700 }}>+Xpt</span>/<span style={{ color: '#f87171', fontWeight: 700 }}>−Xpt</span> indique l'écart entre la probabilité du modèle et celle du marché (cotes bookmaker, marge retirée) pour cette issue — rien à voir avec les flèches ▲▼ de tendance de cote vues ailleurs sur cette page.
+              <br /><br />
+              La mention <span style={{ color: '#fb923c', fontWeight: 700 }}>· estimation site</span> (BTTS/O-U/1X2, hors CDM) signale que ce % vient d'un modèle plus riche que celui des alertes — il ajoute le taux BTTS récent à domicile/extérieur et l'historique face-à-face, en plus du modèle Poisson. Il peut donc légèrement différer du % affiché sur une alerte pour le même match, qui utilise un modèle Poisson plus simple. Pour les matchs CDM, les deux modèles sont identiques — pas de mention.
             </div>
           </div>,
           document.body
@@ -795,6 +797,7 @@ function FootballOddsBox({ markets, bttsResult, home, away, frozen, onRefresh, r
           <div style={{ borderTop: '1px solid var(--border)', marginTop: '0.5rem', paddingTop: '0.5rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem', flexWrap: 'nowrap' }}>
             <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-dim)', flexShrink: 0 }}>
               Modèle O/U {totalsLine}<span style={{ fontSize: 9, color: 'var(--text-dim)', marginLeft: 4, fontWeight: 400 }}>λ={lambda_total}</span>
+              {!bttsResult?.isCdm && <span style={{ fontSize: 8, color: '#fb923c', marginLeft: 5, fontWeight: 400 }} title="Estimation du site (forme récente + face-à-face) — peut différer du % utilisé pour générer une alerte, qui utilise un modèle plus simple.">· estimation site</span>}
             </span>
             <div style={{ display: 'flex', alignItems: 'center', gap: '1.1rem', flexWrap: 'nowrap', flexShrink: 0 }}>
               <span style={{ display: 'flex', alignItems: 'center', gap: 5, position: 'relative' }}>
@@ -831,7 +834,10 @@ function FootballOddsBox({ markets, bttsResult, home, away, frozen, onRefresh, r
         const bcH = h2h?.bookmakers?.betclic;
         return (
           <div style={{ borderTop: '1px solid var(--border)', marginTop: '0.9rem', paddingTop: '0.85rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem', flexWrap: 'nowrap' }}>
-            <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-dim)', flexShrink: 0 }}>Modèle 1X2</span>
+            <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-dim)', flexShrink: 0 }}>
+              Modèle 1X2
+              {!bttsResult?.isCdm && <span style={{ fontSize: 8, color: '#fb923c', marginLeft: 5, fontWeight: 400 }} title="Estimation du site (forme récente + face-à-face) — peut différer du % utilisé pour générer une alerte, qui utilise un modèle plus simple.">· estimation site</span>}
+            </span>
             <div style={{ display: 'flex', alignItems: 'center', gap: '1.1rem', flexWrap: 'nowrap', flexShrink: 0 }}>
               {items.map(it => {
                 const probColor = it.prob >= 62 ? '#10b981' : it.prob >= 52 ? '#f59e0b' : '#ef4444';
@@ -892,7 +898,8 @@ function FootballOddsBox({ markets, bttsResult, home, away, frozen, onRefresh, r
         return (
           <div style={{ borderTop: '1px solid var(--border)', marginTop: '0.5rem', paddingTop: '0.5rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem', flexWrap: 'nowrap' }}>
             <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-dim)', flexShrink: 0 }}>
-              Modèle BTTS{isStatic ? <span style={{ fontSize: 9, color: 'var(--text-dim)', marginLeft: 4, fontWeight: 400 }}>stats saison</span> : ''}
+              Modèle BTTS{isStatic && !bttsResult?.isCdm ? <span style={{ fontSize: 9, color: 'var(--text-dim)', marginLeft: 4, fontWeight: 400 }}>stats saison</span> : ''}
+              {!bttsResult?.isCdm && <span style={{ fontSize: 8, color: '#fb923c', marginLeft: 5, fontWeight: 400 }} title="Estimation du site (forme récente + face-à-face) — peut différer du % utilisé pour générer une alerte, qui utilise un modèle plus simple.">· estimation site</span>}
             </span>
             <div style={{ display: 'flex', alignItems: 'center', gap: '1.1rem', flexWrap: 'nowrap', flexShrink: 0 }}>
               <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}>

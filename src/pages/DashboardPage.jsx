@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
 import { cachedFetch, getCached } from '../utils/fetchCache';
 
@@ -260,6 +261,67 @@ function CountdownWidget() {
 // ── Section : Santé du système ────────────────────────────────────────────────
 const BG_INTERVAL_MS = 20 * 60 * 1000;
 
+// Bouton "?" + popup légende — même pattern que FootballOddsBox (MatchDetailPage.jsx) et
+// PropsSection (BasketballDetailPage.jsx), factorisé ici car réutilisé deux fois de suite
+// (widgets "Cotes & Données" et "Taux de scraping").
+function LegendButton({ title, children, width = 230 }) {
+  const [open, setOpen] = useState(false);
+  const [box, setBox] = useState(null);
+  const btnRef = useRef(null);
+  const popRef = useRef(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDocClick = (e) => {
+      if (popRef.current?.contains(e.target) || btnRef.current?.contains(e.target)) return;
+      setOpen(false);
+    };
+    document.addEventListener('mousedown', onDocClick, true);
+    return () => document.removeEventListener('mousedown', onDocClick, true);
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const update = () => {
+      if (!btnRef.current) return;
+      const r = btnRef.current.getBoundingClientRect();
+      const left = Math.min(r.right - width, window.innerWidth - width - 12);
+      setBox({ top: r.bottom + 6, left: Math.max(12, left) });
+    };
+    update();
+    window.addEventListener('scroll', update, true);
+    window.addEventListener('resize', update);
+    return () => { window.removeEventListener('scroll', update, true); window.removeEventListener('resize', update); };
+  }, [open, width]);
+
+  return (
+    <>
+      <span
+        ref={btnRef}
+        onClick={(e) => { e.stopPropagation(); setOpen(v => !v); }}
+        style={{
+          width: 14, height: 14, borderRadius: '50%', fontSize: 9, fontWeight: 700,
+          display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+          color: open ? '#fb923c' : 'var(--text-dim)', border: `1px solid ${open ? 'rgba(251,146,60,0.5)' : 'var(--border)'}`,
+          cursor: 'pointer', flexShrink: 0,
+        }}
+      >?</span>
+      {open && box && createPortal(
+        <div ref={popRef} onClick={e => e.stopPropagation()} style={{
+          position: 'fixed', top: box.top, left: box.left, zIndex: 200,
+          width, maxWidth: 'calc(100vw - 2rem)',
+          background: 'var(--bg-card, #11141c)', border: '1px solid var(--border)', borderRadius: 8,
+          padding: '0.6rem 0.65rem', boxShadow: '0 8px 24px rgba(0,0,0,0.4)',
+        }}>
+          {title && <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text)', marginBottom: '0.35rem' }}>{title}</div>}
+          <div style={{ fontSize: 9.5, lineHeight: 1.55, color: 'var(--text-dim)' }}>{children}</div>
+        </div>,
+        document.body
+      )}
+    </>
+  );
+}
+
 // Icône signal futuriste WiFi-style — 3 niveaux d'arcs + point central
 function SignalIcon({ label, ts, ok, lastOk, greenMs = 10 * 60_000, yellowMs = 20 * 60_000 }) {
   const now       = Date.now();
@@ -439,6 +501,17 @@ function SystemHealthSection() {
           {/* Bouton + horodatage réduits et mis côte à côte (pas empilés) — pour rester dans la
               hauteur de la ligne sans déborder sur le trait de séparation du dessous. */}
           <div style={{ position: 'absolute', right: 0, top: '50%', transform: 'translateY(-50%)', display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+            <LegendButton title="Légende des couleurs" width={230}>
+              Basé sur l'ancienneté du dernier succès de chaque source.
+              <br /><br />
+              <b style={{ color: '#4ade80' }}>Vert</b> : dernier succès il y a moins de 10 min (22 min pour Pinnacle).
+              <br />
+              <b style={{ color: '#facc15' }}>Jaune</b> : entre 10 et 20 min (22-45 min pour Pinnacle).
+              <br />
+              <b style={{ color: '#f87171' }}>Rouge</b> : plus de 20 min (45 min pour Pinnacle), ou jamais réussi.
+              <br /><br />
+              Le chiffre sous l'icône = temps écoulé depuis ce dernier succès.
+            </LegendButton>
             {lastRefreshed && (
               <span style={{ fontSize: 7, color: 'var(--text-dim)' }}>
                 {lastRefreshed.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
@@ -472,6 +545,7 @@ function SystemHealthSection() {
               <SignalIcon label="ESPN"     ts={sc.espn?.ts}     ok={sc.espn?.ok}     lastOk={sc.espn?.lastOk}     />
               <SignalIcon label="RotoWire" ts={sc.rotowire?.ts} ok={sc.rotowire?.ok} lastOk={sc.rotowire?.lastOk} />
               <SignalIcon label="ACB"      ts={sc.acb?.ts}      ok={sc.acb?.ok}      lastOk={sc.acb?.lastOk}      />
+              <SignalIcon label="Telegram" ts={sc.telegram?.ts} ok={sc.telegram?.ok} lastOk={sc.telegram?.lastOk} />
             </div>
           </div>
         </div>
@@ -610,7 +684,20 @@ function ScrapingRatePanel({ sc }) {
 
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-      <div style={{ fontSize: 8, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--text-sub)', borderBottom: '1px solid var(--border)', paddingBottom: '0.3rem' }}>Taux de scraping</div>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid var(--border)', paddingBottom: '0.3rem' }}>
+        <span style={{ fontSize: 8, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--text-sub)' }}>Taux de scraping</span>
+        <LegendButton title="Légende des couleurs" width={220}>
+          Basé sur le taux de réussite des 10 dernières vérifications de chaque source.
+          <br /><br />
+          <b style={{ color: '#4ade80' }}>Vert</b> : ≥ 90% de réussite.
+          <br />
+          <b style={{ color: '#facc15' }}>Jaune</b> : entre 60% et 89%.
+          <br />
+          <b style={{ color: '#f87171' }}>Rouge</b> : moins de 60%, ou aucune donnée.
+          <br /><br />
+          Bookmakers : moyenne fusionnée foot + basket (survolez l'icône pour le détail par sport).
+        </LegendButton>
+      </div>
       <div style={{ flex: 1, display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: '0.5rem' }}>
         <WifiStat label="Pinnacle" pct={pctMerged('pinnacle_foot', 'pinnacle_wnba')} detail={detailFor('pinnacle_foot', 'pinnacle_wnba')} />
         <WifiStat label="Unibet"   pct={pctMerged('unibet_foot', 'unibet')}           detail={detailFor('unibet_foot', 'unibet')} />

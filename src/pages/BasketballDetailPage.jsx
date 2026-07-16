@@ -484,6 +484,10 @@ function PropLegendCard({ league }) {
           : <>Alerte si <b style={{ color: '#4a9b6f' }}>seuil vert</b> + cotes Unibet/Betclic ≥ 1,60 + minutes ≥ 10/match. 3pts Over : moy ≥ 1,5/match.</>
         }
       </div>
+      <div style={{ fontSize: 9, lineHeight: 1.45, color: 'var(--text-dim)', borderTop: '1px solid var(--border)', paddingTop: '0.4rem', marginTop: '0.4rem' }}>
+        <span style={{ display: 'inline-block', fontSize: 8, fontWeight: 800, padding: '1px 4px', borderRadius: 3, background: 'rgba(251,146,60,0.12)', color: '#fb923c', border: '1px solid rgba(251,146,60,0.35)', marginRight: 4 }}>≈</span>
+        à côté d'un nom : le backend n'a pas encore de calcul figé pour ce match (nom pas encore matché, ou cycle pas encore passé) — la projection/% affichés viennent d'un calcul de secours côté site, qui peut différer de celui d'une alerte pour la même joueuse une fois le calcul backend disponible.
+      </div>
     </div>
   );
 }
@@ -543,18 +547,37 @@ function tCDF4(t) {
   return 1 - tCDF4(-t);
 }
 
+// Facteurs de prudence basés sur la taille de l'échantillon (gamelogs disponibles) — copie
+// exacte de backend/compute.js (même nom, même valeurs) : moins de matchs = moins fiable =
+// on élargit le std et on shrink plus vers la ligne bookmaker.
+function getSampleScale(n) {
+  if (n < 6)  return { stdScale: 1.40, shrinkExtra: 0.15 };
+  if (n < 10) return { stdScale: 1.20, shrinkExtra: 0.10 };
+  if (n < 15) return { stdScale: 1.05, shrinkExtra: 0.05 };
+  return { stdScale: 1.0, shrinkExtra: 0.0 };
+}
+
 // P(joueur marque ≥ threshold) — t-dist df=4 + shrinkage vers la ligne + std élargi
 // deviation: |adjMult - 1| — plus la projection s'écarte de la moyenne saison (empilement
 // de facteurs), plus on élargit le std : une projection "extrême" est moins fiable que
 // son écart à la ligne ne le suggère.
-function probAtLeast(estimate, std, threshold, stat = null, deviation = 0) {
-  const SHRINK = { pts: 0.28, reb: 0.12, ast: 0.10, tpm: 0.20 };
-  const FLOOR  = { pts: 4.0,  reb: 2.0,  ast: 1.5,  tpm: 1.0  };
-  const alpha  = SHRINK[stat] ?? 0.15;
-  const floor  = FLOOR[stat]  ?? 2.0;
-  const shrunk = estimate + alpha * (threshold - estimate);
-  const devBoost = 1 + Math.min(1.0, deviation * 2.5);
-  const adjStd = Math.max(floor, (std || 0) * 1.5 * devBoost);
+// Fallback uniquement (utilisé quand le snapshot backend n'existe pas encore pour ce joueur) —
+// alignée sur backend/compute.js le 16 juillet 2026 pour ne plus diverger de la proba d'alerte
+// une fois le snapshot disponible (cas réel : J. Shepard WNBA 64% ici vs 73% côté alerte,
+// causé par des constantes de shrink/std et l'absence de sampleScale/isWNBA dans cette copie).
+function probAtLeast(estimate, std, threshold, stat = null, deviation = 0, isWNBA = false, sampleSize = 20) {
+  const { stdScale, shrinkExtra } = getSampleScale(sampleSize);
+
+  const shrinkBase = stat === 'pts' ? 0.35 : stat === 'reb' ? 0.12 : stat === 'ast' ? 0.20 : stat === 'tpm' ? 0.25 : 0.20;
+  const shrinkA    = Math.min(0.55, shrinkBase + shrinkExtra);
+  const shrunk     = estimate + shrinkA * (threshold - estimate);
+
+  const stdFloorBase = stat === 'pts' ? 4.0 : stat === 'reb' ? 2.0 : stat === 'ast' ? 1.5 : stat === 'tpm' ? 1.0 : 3.0;
+  const statSizeScale = isWNBA ? 0.80 : 1.0;
+  const stdFloor   = stdFloorBase * statSizeScale * stdScale;
+  const devBoost   = 1 + Math.min(1.0, deviation * 2.5);
+  const adjStd     = Math.max(stdFloor, (std || stdFloor) * 1.5 * devBoost);
+
   const t = (threshold - 0.5 - shrunk) / adjStd;
   return Math.max(0.01, Math.min(0.99, 1 - tCDF4(t)));
 }
@@ -580,7 +603,7 @@ function generateThresholds(estimate, step) {
   return thresholds;
 }
 
-function ProbabilityBars({ estimate, std, label, step = 5, bookmakerLine = null, stat = null }) {
+function ProbabilityBars({ estimate, std, label, step = 5, bookmakerLine = null, stat = null, isWNBA = false, sampleSize = 20 }) {
   if (!estimate || estimate <= 0) return null;
   const thresholds = generateThresholds(estimate, step);
   const bLine = bookmakerLine != null ? Math.ceil(bookmakerLine) : null;
@@ -591,7 +614,7 @@ function ProbabilityBars({ estimate, std, label, step = 5, bookmakerLine = null,
     <div className="prob-section">
       <div className="prob-section-title">{label} — probabilité de dépasser</div>
       {allThresholds.map(t => {
-        const p   = probAtLeast(estimate, std, t, stat);
+        const p   = probAtLeast(estimate, std, t, stat, 0, isWNBA, sampleSize);
         const pct = Math.round(p * 100);
         const cls = pct >= 65 ? 'prob-fill--high' : pct >= 40 ? 'prob-fill--mid' : 'prob-fill--low';
         const isBkLine = t === bLine;
@@ -2054,7 +2077,7 @@ function PropsSection({ fixture, homePlayers, awayPlayers, rosterLoading, isComp
         const std = rawStd != null ? rawStd * minInflation * staleInflation : fallbackStd;
         const threshold = Math.ceil(ref.line);
         const deviation = est.deviation?.[stat] ?? 0;
-        const rawPOver  = probAtLeast(est[stat], std, threshold, stat, deviation);
+        const rawPOver  = probAtLeast(est[stat], std, threshold, stat, deviation, isWNBA, glogs.length);
         // Sanity check : projection >25% loin de la ligne → cap 75%
         const gap = Math.abs(est[stat] - ref.line) / ref.line;
         const sanityMax = gap > 0.25 ? 0.75 : 1.0;
@@ -2409,6 +2432,16 @@ function PropsSection({ fixture, homePlayers, awayPlayers, rosterLoading, isComp
                   const bc    = isOut ? 'rgba(239,68,68,0.4)'  : 'rgba(251,146,60,0.4)';
                   return <span style={{ flexShrink: 0, fontSize: 8, fontWeight: 800, padding: '1px 4px', borderRadius: 3, background: bg, color: c, border: `1px solid ${bc}` }}>{lbl}</span>;
                 })()}
+                {/* Estimation provisoire (16 juillet 2026) — le backend n'a pas encore de snapshot figé
+                    pour ce joueur sur ce match (nom pas encore matché, ou cycle pas encore passé) :
+                    la projection/% affichés viennent d'un calcul de secours côté site, qui peut
+                    différer de celui d'une alerte pour la même joueuse une fois le snapshot arrivé. */}
+                {est && !snapshotMatch.current.has(String(p.id)) && (
+                  <span
+                    title="Estimation provisoire — le backend n'a pas encore calculé ce joueur pour ce match. Ce %/valeur peut différer de celui d'une alerte."
+                    style={{ flexShrink: 0, fontSize: 8, fontWeight: 800, padding: '1px 4px', borderRadius: 3, background: 'rgba(251,146,60,0.12)', color: '#fb923c', border: '1px solid rgba(251,146,60,0.35)' }}
+                  >≈</span>
+                )}
               </span>
 
               {/* Projeté — computeEstimate si dispo, sinon moyenne saison */}
@@ -2501,9 +2534,9 @@ function PropsSection({ fixture, homePlayers, awayPlayers, rosterLoading, isComp
                     </div>
                   )}
                   {/* Barres de distribution */}
-                  <ProbabilityBars estimate={est.pts} std={prob?.pts?.std ?? calcStd(glogs, 'pts')} label="Points" step={5} bookmakerLine={prob?.pts?.line} stat="pts" />
-                  {est.reb != null && <ProbabilityBars estimate={est.reb} std={prob?.reb?.std ?? calcStd(glogs, 'reb')} label="Rebonds" step={2} bookmakerLine={prob?.reb?.line} stat="reb" />}
-                  {est.ast != null && <ProbabilityBars estimate={est.ast} std={prob?.ast?.std ?? calcStd(glogs, 'ast')} label="Passes" step={2} bookmakerLine={prob?.ast?.line} stat="ast" />}
+                  <ProbabilityBars estimate={est.pts} std={prob?.pts?.std ?? calcStd(glogs, 'pts')} label="Points" step={5} bookmakerLine={prob?.pts?.line} stat="pts" isWNBA={isWNBA} sampleSize={glogs.length} />
+                  {est.reb != null && <ProbabilityBars estimate={est.reb} std={prob?.reb?.std ?? calcStd(glogs, 'reb')} label="Rebonds" step={2} bookmakerLine={prob?.reb?.line} stat="reb" isWNBA={isWNBA} sampleSize={glogs.length} />}
+                  {est.ast != null && <ProbabilityBars estimate={est.ast} std={prob?.ast?.std ?? calcStd(glogs, 'ast')} label="Passes" step={2} bookmakerLine={prob?.ast?.line} stat="ast" isWNBA={isWNBA} sampleSize={glogs.length} />}
                 </div>
               );
             })()}

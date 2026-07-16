@@ -9,7 +9,7 @@ import { MongoClient } from 'mongodb';
 import { promises as dnsPromises } from 'dns';
 import { computeEstimate, calcStd, isConsistentStat, blendedSeasonAvg, winsorizeRecent, getShotVolumeAnchor, probAtLeast, tCDF4, getRestFactor, getScheduleDensityFactor, isPlayoffRound, toDefCat, getDefByPosFactor } from './compute.js';
 import { computeLambdas, computeBTTSProb, computeOUProb, compute1X2Probs, computeDCBTTSProbs, computeDCOverProbs } from './computeFootball.js';
-import { telegramConfigured, answerCallbackQuery, editTelegramMessage, getAlertTypeMeta, notifyNewAlert, resolveCallbackToken, recordAction, getActionsSince, _debugTokensForId } from './telegram.js';
+import { telegramConfigured, answerCallbackQuery, editTelegramMessage, getAlertTypeMeta, notifyNewAlert, resolveCallbackToken, recordAction, getActionsSince, _debugTokensForId, checkTelegramWebhookHealth } from './telegram.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const CACHE_DIR   = join(__dirname, 'cache');
@@ -7962,12 +7962,20 @@ const _scraperHealth = {
   winamax_foot:{ ts: null, ok: false, lastOk: null, history: [] },
   pinnacle_foot:{ ts: null, ok: false, lastOk: null, history: [] },
   pinnacle_wnba:{ ts: null, ok: false, lastOk: null, history: [] },
+  telegram:    { ts: null, ok: false, lastOk: null, history: [] },
 };
 function _updateScraper(name, ok) {
   const now = Date.now();
   const prev = _scraperHealth[name] ?? { history: [] };
   const history = [...(prev.history || []), ok ? 1 : 0].slice(-10);
   _scraperHealth[name] = { ts: now, ok, lastOk: ok ? now : (prev.lastOk ?? null), history };
+}
+
+// Vérifie que Telegram arrive réellement à joindre le webhook (getWebhookInfo côté API Telegram,
+// pas juste "le process cloudflared tourne") — voir checkTelegramWebhookHealth dans telegram.js.
+async function _checkTelegramHealth() {
+  const r = await checkTelegramWebhookHealth();
+  _updateScraper('telegram', r.ok);
 }
 
 // Quotas API — mis à jour à chaque appel réel (pas depuis le cache)
@@ -12762,6 +12770,7 @@ async function runAutoSettle() {
 // aux sources non-bookmaker (RotoWire, ACB) ; Unibet/Betclic gardent leur propre cadence,
 // jamais déclenchés manuellement ici pour ne pas ajouter de charge de scraping sur eux.
 const _manualHealthRefreshers = {};
+_manualHealthRefreshers.telegram = _checkTelegramHealth;
 
 // Déclenche un cycle de génération d'alertes immédiatement (appelé par /lanceapp au démarrage)
 let _warmupRunning = false;
@@ -12819,6 +12828,10 @@ app.listen(PORT, () => {
   // Watchdog réseau — ping DNS léger toutes les 2 min (voir commentaire à la définition)
   setInterval(_networkWatchdog, 2 * 60 * 1000);
   _networkWatchdog();
+
+  // Santé Telegram — vérifie toutes les 2 min que le webhook est bien joignable par Telegram
+  setInterval(() => _checkTelegramHealth().catch(() => {}), 2 * 60 * 1000);
+  _checkTelegramHealth().catch(() => {});
 
   // Auto-settle : toutes les 3 min
   setInterval(() => runAutoSettle().catch(() => {}), 3 * 60 * 1000);
