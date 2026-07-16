@@ -23,6 +23,13 @@ IMPORTANT : Le répertoire du projet contient un espace final dans son nom. Util
    curl -s -X POST http://localhost:3001/api/system/warmup
    ```
 
-6. Affiche uniquement :
+6. Lance le tunnel Cloudflare + notifications Telegram en arrière-plan (run_in_background: true) :
+   ```
+   cd ~/Desktop/"Claude projets"/"Projets betting "/backend && ./scripts/start-telegram-tunnel.sh
+   ```
+   Attends ~10 secondes puis lis la sortie de cette tâche pour récupérer la ligne "Tunnel actif : https://...trycloudflare.com". Si le script échoue (pas de TELEGRAM_BOT_TOKEN, pas de connexion), continue quand même — ce n'est pas bloquant pour l'app elle-même, seulement pour les notifs Telegram.
+
+7. Affiche uniquement :
    - Le lien de l'app (ex: http://localhost:5173 ou le port effectif si 5173 était pris)
    - "Backend OK — cotes en cours de chargement (~2 min)" ou "Backend KO"
+   - "Notifications Telegram actives" ou "Notifications Telegram indisponibles" selon le résultat de l'étape 6
