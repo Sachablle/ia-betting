@@ -155,6 +155,7 @@ function resultAlertToGroup(a) {
     status: a.status || 'pending', acceptedAt: a.acceptedAt || 0,
     acceptedBookmaker: a.bookmaker || null,
     probDropWarning: a.probDropWarning || false, currentProbability: a.currentProbability ?? null,
+    matchCorrelation: a.matchCorrelation || null,
   };
 }
 

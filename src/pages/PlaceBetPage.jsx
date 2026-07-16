@@ -798,7 +798,7 @@ function BasketballPinnaclePropsCard({ alert, onAccept, onReject, onDismiss }) {
 }
 
 function BasketballResultCard({ alert, onAccept, onReject, onDismiss }) {
-  const { id, home, away, homeShort, awayShort, date, teamName, teamShort, probability, edge, odds, bookmaker, status, league, eventId } = alert;
+  const { id, home, away, homeShort, awayShort, date, teamName, teamShort, probability, edge, odds, bookmaker, status, league, eventId, matchCorrelation } = alert;
   const navigate   = useNavigate();
   const isPending  = status === 'pending';
   const isAccepted = status === 'accepted';
@@ -855,6 +855,11 @@ function BasketballResultCard({ alert, onAccept, onReject, onDismiss }) {
           P(victoire) <b style={{ color: 'var(--text)' }}>{probability}%</b>
           {edge != null && <> · <b style={{ color: '#fbbf24' }}>{edge > 0 ? '+' : ''}{edge}%</b></>}
         </div>
+        {matchCorrelation && (
+          <div title="Une alerte Écart H2H porte sur le même sens de ce match — même ressource (marge de victoire), pas un edge indépendant" style={{ fontSize: 9, fontWeight: 700, color: '#fbbf24', marginTop: 4, padding: '2px 6px', borderRadius: 4, background: 'rgba(251,191,36,0.1)', border: '1px solid rgba(251,191,36,0.35)', display: 'inline-block' }}>
+            ⚠ Corrélée — Écart H2H {matchCorrelation.status === 'accepted' ? 'déjà accepté' : 'aussi proposé'} ({matchCorrelation.probability}%)
+          </div>
+        )}
       </div>
       <div className="bc-stats" style={{ margin: '0.3rem 0' }}>
         <div className="bc-prob">
@@ -943,8 +948,8 @@ function BasketballSpreadCard({ alert, onAccept, onReject, onDismiss }) {
           P(couvre) <b style={{ color: 'var(--text)' }}>{probability}%</b>
         </div>
         {matchCorrelation && (
-          <div title="Une alerte Résultat déjà acceptée porte sur le même sens de ce match — même ressource (marge de victoire), pas un edge indépendant" style={{ fontSize: 9, fontWeight: 700, color: '#fbbf24', marginTop: 4, padding: '2px 6px', borderRadius: 4, background: 'rgba(251,191,36,0.1)', border: '1px solid rgba(251,191,36,0.35)', display: 'inline-block' }}>
-            ⚠ Corrélée — Résultat déjà accepté ({matchCorrelation.probability}%)
+          <div title="Une alerte Résultat porte sur le même sens de ce match — même ressource (marge de victoire), pas un edge indépendant" style={{ fontSize: 9, fontWeight: 700, color: '#fbbf24', marginTop: 4, padding: '2px 6px', borderRadius: 4, background: 'rgba(251,191,36,0.1)', border: '1px solid rgba(251,191,36,0.35)', display: 'inline-block' }}>
+            ⚠ Corrélée — Résultat {matchCorrelation.status === 'accepted' ? 'déjà accepté' : 'aussi proposé'} ({matchCorrelation.probability}%)
           </div>
         )}
       </div>

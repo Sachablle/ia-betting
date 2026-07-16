@@ -4419,6 +4419,11 @@ async function fetchRotoWireAllLineups() {
   if (!resp.ok) throw new Error(`RotoWire HTML ${resp.status}`);
   const html = await resp.text();
 
+  // Reset avant repeuplement — même bug que côté WNBA corrigé le 16 juillet 2026
+  // (project_wnba_injury_stuck_q_fix_juillet16) : Object.assign plus bas ne fait qu'ajouter/
+  // écraser des clés, jamais retirer un joueur qui n'est plus "may not play" au scrape suivant.
+  // Dormant tant que la NBA est en pause, à corriger avant la reprise (octobre).
+  for (const k of Object.keys(_lineupInjuries)) delete _lineupInjuries[k];
   const result = {};
 
   // Découper par bloc lineup__box (un par match)
@@ -9677,7 +9682,30 @@ async function generateBackgroundAlerts() {
       if (livePairs.has(k)) continue;
       if (!earliestByPair[k] || new Date(g.date) < new Date(earliestByPair[k].date)) earliestByPair[k] = g;
     }
-    const upcoming = Object.values(earliestByPair);
+    // N'autoriser la génération d'alertes que si les compos sont postées sur RotoWire (16 juillet
+    // 2026) — un cutoff fixe (36h) laissait passer des matchs encore loin dans le temps, où les
+    // infos blessures/effectif sont par nature volatiles (cas réel Chicago Sky vs LA Sparks, -28h,
+    // 82.4%→68.7% après plusieurs annonces de blessures en cascade). Les compos RotoWire ne
+    // sortent typiquement que quelques heures avant le coup d'envoi — utiliser leur disponibilité
+    // comme signal plutôt qu'un nombre d'heures arbitraire. Le cutoff 36h reste en amont comme
+    // filet de sécurité (évite de scanner des matchs à des semaines de distance).
+    // fetchFailed distingue "RotoWire indisponible ce cycle" (ne doit RIEN filtrer, sinon une
+    // panne RotoWire coupe toute génération d'alertes NBA) de "compos pas encore postées pour ce
+    // match précis" (filtrage normal, voulu).
+    let nbaLineupFetchFailed = false;
+    const nbaLineupsForGate = await fetchRotoWireAllLineups().catch(() => { nbaLineupFetchFailed = true; return {}; });
+    const hasLineupNba = g => {
+      const h = nbaLineupsForGate[g.home.short?.toUpperCase()];
+      const a = nbaLineupsForGate[g.away.short?.toUpperCase()];
+      return !!(h && a && h.opponent === g.away.short?.toUpperCase() && a.opponent === g.home.short?.toUpperCase());
+    };
+    if (nbaLineupFetchFailed) _bgLog.push('nba lineup gate: fetch RotoWire échoué ce cycle — repli sur le cutoff 36h seul');
+    const upcoming = Object.values(earliestByPair).filter(g => {
+      if (nbaLineupFetchFailed) return true;
+      const ok = hasLineupNba(g);
+      if (!ok) _bgLog.push(`nba skip ${g.home.short}v${g.away.short}: compos pas encore postées sur RotoWire`);
+      return ok;
+    });
 
     // For each upcoming game pair, find the most recent completed game in the series (to validate gamelogs)
     const allNormalized = allEvents.map(normalizeGame).filter(Boolean);
@@ -10189,7 +10217,22 @@ async function generateBackgroundAlerts() {
       if (wnbaLivePairs.has(k)) continue;
       if (!wnbaEarliestByPair[k] || new Date(g.date) < new Date(wnbaEarliestByPair[k].date)) wnbaEarliestByPair[k] = g;
     }
-    const wnbaGamesNext = Object.values(wnbaEarliestByPair);
+    // Même garde-fou "compos disponibles" que côté NBA ci-dessus (16 juillet 2026) — cf. commentaire
+    // détaillé plus haut.
+    let wnbaLineupFetchFailed = false;
+    const wnbaLineupsForGate = await fetchRotoWireWNBALineups().catch(() => { wnbaLineupFetchFailed = true; return {}; });
+    const hasLineupWnba = g => {
+      const h = wnbaLineupsForGate[g.home.short?.toUpperCase()];
+      const a = wnbaLineupsForGate[g.away.short?.toUpperCase()];
+      return !!(h && a && h.opponent === g.away.short?.toUpperCase() && a.opponent === g.home.short?.toUpperCase());
+    };
+    if (wnbaLineupFetchFailed) _bgLog.push('wnba lineup gate: fetch RotoWire échoué ce cycle — repli sur le cutoff 36h seul');
+    const wnbaGamesNext = Object.values(wnbaEarliestByPair).filter(g => {
+      if (wnbaLineupFetchFailed) return true;
+      const ok = hasLineupWnba(g);
+      if (!ok) _bgLog.push(`wnba skip ${g.home.short}v${g.away.short}: compos pas encore postées sur RotoWire`);
+      return ok;
+    });
     _bgLog.push(`wnba upcoming: ${wnbaGamesNext.map(g => g.home.short + 'v' + g.away.short).join(', ') || 'none'}`);
 
     const scaleGames = (gs, factor) => gs.map(g => g.ptsScored != null
@@ -11920,6 +11963,28 @@ async function generateBackgroundAlerts() {
       );
       a.teammateOverlap = teammateAccepted
         ? { player: teammateAccepted.player, direction: teammateAccepted.direction, line: teammateAccepted.line, probability: teammateAccepted.probability }
+        : null;
+    });
+
+    // Avertissement corrélation Résultat / Écart H2H (16 juillet 2026) — victoire nette et
+    // couverture du handicap sur le même match/sens sont quasiment le même pari (si l'équipe gagne
+    // confortablement, les deux passent ensemble ; sinon les deux ratent ensemble), pas deux edges
+    // indépendants. Contrairement au chevauchement coéquipière ci-dessus (qui ne se déclenche
+    // qu'après acceptation), les deux alertes sortent typiquement dans le MÊME cycle avant que
+    // l'utilisateur n'ait pu en accepter une seule — donc averti dès que les deux sont pending,
+    // dans les deux sens (Résultat ↔ Écart), pas seulement accepté → pending. Cas réel : Chicago Sky
+    // vs LA Sparks, Résultat 82.4%/1.73 et Écart CHI+1.5 84.5%/1.60 générés ensemble sans avertissement.
+    const RS_LIVE_STATUSES = new Set(['pending', 'accepted']);
+    const resultAndSpreadAlerts = Object.values(byId).filter(x =>
+      (x.type === 'basketball_result' || x.type === 'basketball_spread') && RS_LIVE_STATUSES.has(x.status || 'pending')
+    );
+    resultAndSpreadAlerts.forEach(a => {
+      const otherType = a.type === 'basketball_result' ? 'basketball_spread' : 'basketball_result';
+      const overlap = resultAndSpreadAlerts.find(x =>
+        x.type === otherType && x.eventId === a.eventId && x.direction === a.direction
+      );
+      a.matchCorrelation = overlap
+        ? { type: overlap.type, probability: overlap.probability, line: overlap.line ?? null, status: overlap.status || 'pending' }
         : null;
     });
 
