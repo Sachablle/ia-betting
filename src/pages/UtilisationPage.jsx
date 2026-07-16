@@ -799,6 +799,9 @@ export default function UtilisationPage() {
           <p className="util-intro">
             <strong>Marge moyenne saison ↔ ligne — 22 juin 2026 :</strong> en plus du % de confiance, la moyenne de la joueuse/du joueur sur toute la saison doit elle aussi confirmer le sens du pari, avec une marge de sécurité : <strong>points 0.6 · rebonds 0.3 · passes 0.25 · 3pts 0.15</strong> (rebonds inchangé depuis le 16 juin en WNBA, les 3 autres ajoutées ce jour). Concrètement : pour un Over, la moyenne saison doit dépasser la ligne + cette marge ; pour un Under, être sous la ligne − cette marge. Sinon bloqué même si l'estimation du soir est haute — évite de déclencher sur une forme ponctuelle (boost adversaire affaibli, retour de blessure) que le fond de saison ne confirme pas encore. Remplace l'ancien plafond fixe « passes : ligne ≥4.5 = bloqué » (WNBA), plus grossier (il bloquait pareil une passeuse à 8 passes de moyenne et une à 3). Le 3pts garde en plus son propre filtre minimum (moyenne saison ≥1.5 panier, sinon bloqué quelle que soit la ligne — réservé aux vraies tireuses). Initialement WNBA seulement, étendue le même jour à la <strong>NBA et aux 4 ligues EU</strong> (mêmes valeurs partout — la volatilité relative par stat s'est révélée quasi identique entre groupes de ligues, cf. seuils « spécialiste » ci-dessus).
           </p>
+          <p className="util-intro">
+            <strong>Pondération forme récente — 15 juillet 2026 :</strong> la marge ci-dessus comparait la ligne à la moyenne saison <em>brute et figée</em>, aveugle à une série chaude ou froide récente. Cas réel : Kayla McBride, 17.0 pts de moyenne saison mais 26.2 pts sur ses 5 derniers matchs — son alerte points restait bloquée malgré une vraie série en cours. La moyenne utilisée dans ce garde-fou est désormais un mélange saison + 10 derniers matchs, pondéré par la confiance dans l'échantillon récent (même principe que le lissage petit-échantillon du modèle foot). N'affecte que ce garde-fou précis : le plancher de confiance, le filtre 3pts et l'edge minimum restent basés sur la moyenne saison brute.
+          </p>
 
           <div style={{ overflowX: 'auto', marginTop: '0.75rem' }}>
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
@@ -1256,9 +1259,12 @@ export default function UtilisationPage() {
         </div>
 
         <div className="util-subsection">
-          <h3 className="util-subsection-title">Ligne alternative (18 juin 2026)</h3>
+          <h3 className="util-subsection-title">Ligne alternative (18 juin 2026, étendue le 16 juillet 2026)</h3>
           <p className="util-intro">
-            Si la ligne principale d'un joueur a une bonne probabilité mais une cote trop juste (&lt; 1.60 partout), le serveur regarde automatiquement les autres lignes disponibles pour ce joueur (visibles sur la page « Toutes les lignes ») — uniquement dans le sens qui fait monter la cote du côté favorisé (ligne plus haute pour un Over, plus basse pour un Under). La probabilité est recalculée entièrement pour chaque ligne testée (jamais réutilisée). Parmi les lignes qui repassent à la fois le seuil de cote et le seuil de confiance, la plus sûre (probabilité la plus haute) est retenue. L'alerte générée affiche alors cette ligne ajustée plutôt que la ligne « par défaut ».
+            Si la ligne principale d'un joueur a une bonne probabilité mais une cote trop juste (&lt; 1.60 partout), le serveur regarde automatiquement les autres lignes disponibles pour ce joueur (visibles sur la page « Toutes les lignes ») — dans le sens qui fait monter la cote du côté favorisé (ligne plus haute pour un Over, plus basse pour un Under). La probabilité est recalculée entièrement pour chaque ligne testée (jamais réutilisée). Parmi les lignes qui repassent à la fois le seuil de cote et le seuil de confiance, la plus sûre (probabilité la plus haute) est retenue. L'alerte générée affiche alors cette ligne ajustée plutôt que la ligne « par défaut ».
+          </p>
+          <p className="util-intro">
+            <strong>Sens inverse ajouté le 16 juillet 2026 :</strong> le mécanisme ne cherchait qu'une ligne qui améliore la <em>cote</em> — jamais l'inverse. Un bookmaker pouvait proposer sa propre ligne plus facile qui, recalculée depuis zéro, passerait le seuil de confiance, sans que le système ne la considère jamais. Cas réel : Aliyah Boston rebonds, ligne de référence Unibet 9.5 bloquée à ~72%, alors que Betclic proposait sa propre ligne 8.5 à 1.61 qui passe à 75% une fois recalculée. Le système cherche désormais aussi dans ce sens (ligne plus basse pour un Over, plus haute pour un Under) quand c'est la <em>probabilité</em> qui coince, pas la cote — toujours soumis au même plancher de cote jouable (1.60).
           </p>
         </div>
 
@@ -1362,6 +1368,20 @@ export default function UtilisationPage() {
               <tr><td><strong>1 alerte par match ?</strong></td><td>Oui</td><td>Oui (mathématiquement, dom + ext ne peuvent pas dépasser 80% en même temps)</td><td>Oui par côté (dom/ext) — signalé si le Résultat est déjà accepté dans le même sens (corrélation)</td></tr>
             </tbody>
           </table>
+        </div>
+
+        <div className="util-subsection">
+          <h3 className="util-subsection-title">Alertes conditionnées aux compos RotoWire, plus de cutoff fixe (16 juillet 2026)</h3>
+          <p className="util-intro">
+            NBA/WNBA n'évaluaient un match pour alerte (props, Résultat, Écart H2H) que s'il était programmé dans les 36h — un cutoff fixe qui laissait passer des matchs encore loin dans le temps, où les infos blessures/effectif sont par nature volatiles et changent plusieurs fois avant le coup d'envoi. Cas réel : Chicago Sky vs LA Sparks, alerte Résultat à 82,4% générée à -28h, retombée à 68,7% une heure plus tard après l'annonce de 3 absences côté Chicago d'un coup. Le cutoff 36h est remplacé par une condition sur la <strong>disponibilité des compos RotoWire</strong> pour les deux équipes (typiquement publiées 1 à 3h avant le coup d'envoi) — un match reste ignoré tant que RotoWire n'a pas encore posté sa page. Filet de sécurité : si RotoWire est indisponible (panne, pas juste "pas encore posté"), le système ne bloque pas toute la génération d'alertes, il retombe sur l'ancien cutoff 36h pour ce cycle.
+          </p>
+        </div>
+
+        <div className="util-subsection">
+          <h3 className="util-subsection-title">Corrélation Résultat / Écart H2H (16 juillet 2026)</h3>
+          <p className="util-intro">
+            Une victoire nette et une couverture de petit handicap sur la même équipe/match sont quasiment le même pari : si l'équipe gagne confortablement, les deux passent ensemble ; sinon les deux ratent ensemble — accepter les deux double l'exposition sur un seul edge plutôt que de diversifier. Un avertissement "⚠ Corrélée" s'affiche désormais sur les deux cartes dès qu'elles coexistent, même toutes les deux encore en attente (avant ce fix, l'avertissement ne se déclenchait qu'une fois l'une des deux déjà acceptée). Ne bloque rien, juste un signal — à l'utilisateur de garder celle avec la meilleure valeur espérée (proba × cote), pas forcément la plus grosse cote ou la plus grosse proba.
+          </p>
         </div>
 
         <div className="util-subsection">
