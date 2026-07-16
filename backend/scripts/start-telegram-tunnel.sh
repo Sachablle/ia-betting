@@ -40,9 +40,23 @@ fi
 
 echo "Tunnel actif : $URL"
 echo "Enregistrement du webhook Telegram..."
-curl -s -X POST "https://api.telegram.org/bot${TOKEN}/setWebhook" \
-  -d "url=${URL}/api/telegram/webhook" \
-  -d "secret_token=${SECRET}"
+# Le nom de domaine trycloudflare.com d'un tunnel fraîchement créé peut mettre plusieurs minutes à
+# se propager sur les résolveurs DNS que Telegram utilise (constaté le 16 juillet 2026 sur 4 tunnels
+# de suite : ~10s, ~10s, ~2min, puis ~7-8min pour le dernier — très variable, pas juste une histoire
+# de secondes). Budget large (15 min) car ça tourne en tâche de fond sans bloquer le reste de l'app.
+SET_OK=0
+for i in $(seq 1 60); do
+  RES=$(curl -s -X POST "https://api.telegram.org/bot${TOKEN}/setWebhook" \
+    -d "url=${URL}/api/telegram/webhook" \
+    -d "secret_token=${SECRET}")
+  echo "$RES"
+  if echo "$RES" | grep -q '"ok":true'; then SET_OK=1; break; fi
+  echo "(pas encore propagé, nouvelle tentative dans 15s...)"
+  sleep 15
+done
+if [ "$SET_OK" -ne 1 ]; then
+  echo "ÉCHEC — le webhook n'a pas pu être enregistré après 15 min. Le tunnel tourne quand même, réessaie l'enregistrement manuellement plus tard si besoin."
+fi
 echo ""
 echo "OK — le tunnel tourne en arrière-plan (PID $TUNNEL_PID). Laisse ce terminal ouvert."
 echo "Logs du tunnel : $LOG_FILE"

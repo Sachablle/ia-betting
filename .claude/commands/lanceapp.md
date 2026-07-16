@@ -25,9 +25,9 @@ IMPORTANT : Le répertoire du projet contient un espace final dans son nom. Util
 
 6. Lance le tunnel Cloudflare + notifications Telegram en arrière-plan (run_in_background: true) :
    ```
-   cd ~/Desktop/"Claude projets"/"Projets betting "/backend && ./scripts/start-telegram-tunnel.sh
+   cd ~/Desktop/"Claude projets"/"Projets betting "/backend && ./scripts/telegram-tunnel-watchdog.sh
    ```
-   Attends ~10 secondes puis lis la sortie de cette tâche pour récupérer la ligne "Tunnel actif : https://...trycloudflare.com". Si le script échoue (pas de TELEGRAM_BOT_TOKEN, pas de connexion), continue quand même — ce n'est pas bloquant pour l'app elle-même, seulement pour les notifs Telegram.
+   Ce script démarre le tunnel ET le surveille en continu (relance automatique + ré-enregistrement du webhook s'il tombe, vérifié toutes les 90s — les tunnels gratuits Cloudflare n'ont aucune garantie de disponibilité). Attends ~15 secondes puis lis la sortie de cette tâche pour récupérer la ligne "nouveau tunnel : https://...trycloudflare.com". Si le script échoue (pas de TELEGRAM_BOT_TOKEN, pas de connexion), continue quand même — ce n'est pas bloquant pour l'app elle-même, seulement pour les notifs Telegram.
 
 7. Affiche uniquement :
    - Le lien de l'app (ex: http://localhost:5173 ou le port effectif si 5173 était pris)
