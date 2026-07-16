@@ -29,7 +29,14 @@ IMPORTANT : Le répertoire du projet contient un espace final dans son nom. Util
    ```
    Ce script démarre le tunnel ET le surveille en continu (relance automatique + ré-enregistrement du webhook s'il tombe, vérifié toutes les 90s — les tunnels gratuits Cloudflare n'ont aucune garantie de disponibilité). Attends ~15 secondes puis lis la sortie de cette tâche pour récupérer la ligne "nouveau tunnel : https://...trycloudflare.com". Si le script échoue (pas de TELEGRAM_BOT_TOKEN, pas de connexion), continue quand même — ce n'est pas bloquant pour l'app elle-même, seulement pour les notifs Telegram.
 
-7. Affiche uniquement :
+7. Empêche le Mac de s'endormir par inactivité, capot ouvert (écran peut quand même s'éteindre tout seul, aucun impact) — sinon backend/tunnel/notifs Telegram s'arrêtent dès que le Mac se met en veille (run_in_background: true) :
+   ```
+   caffeinate -i
+   ```
+   Ne bloque rien d'autre, tourne indéfiniment tant que le Mac est allumé. Rappel à donner à l'utilisateur si pertinent : ça ne fonctionne QUE capot ouvert — capot fermé sur batterie, macOS force la veille profonde quoi qu'il arrive (branché sur secteur uniquement dans ce cas).
+
+8. Affiche uniquement :
    - Le lien de l'app (ex: http://localhost:5173 ou le port effectif si 5173 était pris)
    - "Backend OK — cotes en cours de chargement (~2 min)" ou "Backend KO"
    - "Notifications Telegram actives" ou "Notifications Telegram indisponibles" selon le résultat de l'étape 6
+   - "Mac maintenu éveillé (capot ouvert requis)" pour rappeler la condition de l'étape 7
