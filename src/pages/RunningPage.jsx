@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { BBALL_FIXTURES } from '../utils/basketball';
-import { syncBackgroundAlerts, syncSettlements, syncGameTotalAlerts, syncBballPinnacleAlerts, syncBasketballResultAlerts, syncBasketballSpreadAlerts, syncOddsDrift, syncFootballAlerts, resolveCompletedFootballAlerts, postAcceptedAlertReliably, persistAlertsKey, FB_DC_BTTS_KEY, FB_DC_OU_KEY } from '../utils/syncAlerts';
+import { syncBackgroundAlerts, syncSettlements, syncGameTotalAlerts, syncBballPinnacleAlerts, syncBasketballResultAlerts, syncBasketballSpreadAlerts, syncOddsDrift, syncFootballAlerts, resolveCompletedFootballAlerts, postAcceptedAlertReliably, persistAlertsKey, FB_DC_BTTS_KEY, FB_DC_OU_KEY, syncTelegramActions } from '../utils/syncAlerts';
 import { setItem as cloudSet } from '../utils/cloudStorage';
 import { cachedFetch } from '../utils/fetchCache';
 
@@ -783,6 +783,7 @@ export default function RunningPage() {
     syncBballPinnacleAlerts().then(reloadFromStorage);
     syncOddsDrift().then(reloadFromStorage);
     syncFootballAlerts().then(reloadFootball);
+    syncTelegramActions().then(reloadFromStorage);
     const syncTimer = setInterval(() => {
       syncBackgroundAlerts().then(reloadFromStorage);
       syncGameTotalAlerts().then(reloadFromStorage);
@@ -791,6 +792,7 @@ export default function RunningPage() {
       syncBballPinnacleAlerts().then(reloadFromStorage);
       syncOddsDrift().then(reloadFromStorage);
       syncFootballAlerts().then(reloadFootball);
+      syncTelegramActions().then(reloadFromStorage);
     }, 2 * 60 * 1000);
 
     // Filet de rattrapage : renvoie au backend les alertes accepted qui n'auraient pas

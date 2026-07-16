@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, Fragment } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { BBALL_FIXTURES } from '../utils/basketball';
-import { syncBackgroundAlerts, syncGameTotalAlerts, syncBasketballResultAlerts, syncBasketballSpreadAlerts, syncBballPinnacleAlerts, syncBballPinnaclePropsAlerts, loadBballPinnaclePropsAlerts, saveBballPinnaclePropsAlerts, syncOddsDrift, syncFootballAlerts, resolveCompletedFootballAlerts, postAcceptedAlertReliably, persistAlertsKey, FB_DC_BTTS_KEY, FB_DC_OU_KEY } from '../utils/syncAlerts';
+import { syncBackgroundAlerts, syncGameTotalAlerts, syncBasketballResultAlerts, syncBasketballSpreadAlerts, syncBballPinnacleAlerts, syncBballPinnaclePropsAlerts, loadBballPinnaclePropsAlerts, saveBballPinnaclePropsAlerts, syncOddsDrift, syncFootballAlerts, resolveCompletedFootballAlerts, postAcceptedAlertReliably, persistAlertsKey, FB_DC_BTTS_KEY, FB_DC_OU_KEY, syncTelegramActions } from '../utils/syncAlerts';
 import { BTTSAlertCard, FootballTotalCard, FootballResultCard, PinnacleEdgeCard, DCBTTSAlertCard, DCOUAlertCard, FootballGroupCard } from '../components/FootballAlertCards';
 import { setItem as cloudSet } from '../utils/cloudStorage';
 import { cachedFetch } from '../utils/fetchCache';
@@ -2151,6 +2151,7 @@ export default function PlaceBetPage() {
     syncBballPinnaclePropsAlerts();
     loadBballPinnaclePropsAlertsState();
     syncFootballAlerts();
+    syncTelegramActions();
     syncOddsDrift().then(loadAlerts);
     applySettlements();
     // Sync initiale : remonte toutes les alertes accepted du localStorage vers le backend
@@ -2183,7 +2184,7 @@ export default function PlaceBetPage() {
     window.addEventListener('bball_pinnacle_alerts_updated', loadBballPinnacleAlerts);
     window.addEventListener('bball_pinnacle_props_alerts_updated', loadBballPinnaclePropsAlertsState);
     // Refresh cotes toutes les 2 min (mouvements de cotes sur alertes en jeu)
-    const timer = setInterval(() => { loadAlerts(); loadTotalAlerts(); loadResultAlerts(); loadSpreadAlerts(); fetchBackgroundAlerts(); syncGameTotalAlerts(); syncBasketballResultAlerts(); syncBasketballSpreadAlerts(); syncBballPinnacleAlerts(); syncBballPinnaclePropsAlerts(); syncFootballAlerts(); syncOddsDrift().then(loadAlerts); applySettlements(); }, 2 * 60 * 1000);
+    const timer = setInterval(() => { loadAlerts(); loadTotalAlerts(); loadResultAlerts(); loadSpreadAlerts(); fetchBackgroundAlerts(); syncGameTotalAlerts(); syncBasketballResultAlerts(); syncBasketballSpreadAlerts(); syncBballPinnacleAlerts(); syncBballPinnaclePropsAlerts(); syncFootballAlerts(); syncTelegramActions(); syncOddsDrift().then(loadAlerts); applySettlements(); }, 2 * 60 * 1000);
     // Aussi au retour sur la page (changement d'onglet / navigation)
     const onVisible = () => { if (document.visibilityState === 'visible') fetchBackgroundAlerts(); };
     document.addEventListener('visibilitychange', onVisible);

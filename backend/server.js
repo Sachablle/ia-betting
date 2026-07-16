@@ -9,6 +9,7 @@ import { MongoClient } from 'mongodb';
 import { promises as dnsPromises } from 'dns';
 import { computeEstimate, calcStd, isConsistentStat, blendedSeasonAvg, winsorizeRecent, getShotVolumeAnchor, probAtLeast, tCDF4, getRestFactor, getScheduleDensityFactor, isPlayoffRound, toDefCat, getDefByPosFactor } from './compute.js';
 import { computeLambdas, computeBTTSProb, computeOUProb, compute1X2Probs, computeDCBTTSProbs, computeDCOverProbs } from './computeFootball.js';
+import { telegramConfigured, answerCallbackQuery, editTelegramMessage, getAlertTypeMeta, notifyNewAlert, resolveCallbackToken, recordAction, getActionsSince, _debugTokensForId } from './telegram.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const CACHE_DIR   = join(__dirname, 'cache');
@@ -7855,6 +7856,12 @@ const ESPN_WNBA_MAP = {
 const WNBA_SCALE = 114.5 / 87.0; // normalize WNBA pts to NBA-equivalent for computeEstimate
 
 let backgroundAlerts = [];
+// backgroundAlerts repart vide à chaque redémarrage backend (dev --watch, déploiement) — sans ce
+// garde-fou, le premier cycle de generateBackgroundAlerts() après un restart considérerait TOUTES
+// les alertes valides du moment comme "nouvelles" (aucune n'existe encore dans byId) et enverrait
+// une notification Telegram pour chacune d'un coup (potentiellement des dizaines). Les notifs ne
+// démarrent qu'à partir du 2e cycle, une fois qu'on a une vraie base de comparaison.
+let _bgAlertsWarm = false;
 
 // Anti-ban Betclic/Unibet/Winamax — pause un bookmaker après un 403/429 pour ne pas aggraver
 // un blocage CDN (cf. project_winamax_ban_juin10/11). Persisté sur disque pour survivre aux
@@ -11896,6 +11903,10 @@ async function generateBackgroundAlerts() {
     const byId = {};
     // Purge alerts for games no longer scheduled (completed/cancelled)
     backgroundAlerts.filter(a => upcomingIds.has(a.eventId)).forEach(a => { byId[a.id] = a; });
+    // Notifications Telegram (16 juillet 2026) — une entrée id absente de byId AVANT le merge de ce
+    // cycle est une alerte jamais vue (pas juste "re-régénérée identique"), peu importe le type —
+    // collectée ici puis notifiée une seule fois après la boucle, tous types confondus.
+    const _newForTelegram = [];
     filteredAlerts.forEach(a => {
       // Une seule alerte pending par (match, joueur, stat) — entre l'ancienne version et la
       // nouvelle, on garde celle avec la plus haute confiance (8 juillet 2026 — avant ce fix,
@@ -11926,6 +11937,7 @@ async function generateBackgroundAlerts() {
       const prev = byId[a.id];
       if (!prev || (prev.status || 'pending') === 'pending') {
         byId[a.id] = { ...a, status: prev?.status || 'pending' };
+        if (!prev) _newForTelegram.push(byId[a.id]);
       } else if (prev.status === 'rejected') {
         // Rejeté = on ne retouche jamais, même si la cote/line bouge
       } else {
@@ -11987,6 +11999,17 @@ async function generateBackgroundAlerts() {
         ? { type: overlap.type, probability: overlap.probability, line: overlap.line ?? null, status: overlap.status || 'pending' }
         : null;
     });
+
+    // Notifications Telegram — envoyées ici, après enrichissement (teammateOverlap/matchCorrelation
+    // déjà posés dessus), une par alerte réellement nouvelle. Fire-and-forget : une panne Telegram
+    // (réseau, token invalide) ne doit jamais faire échouer generateBackgroundAlerts. Coupé sur le
+    // tout premier cycle après un restart (_bgAlertsWarm) — sinon toutes les alertes déjà valides au
+    // moment du redémarrage seraient notifiées d'un coup comme si elles étaient nouvelles.
+    if (_bgAlertsWarm && telegramConfigured() && _newForTelegram.length) {
+      _newForTelegram.forEach(a => notifyNewAlert(a).catch(e => console.error('telegram notify error:', e.message)));
+      _bgLog.push(`telegram: ${_newForTelegram.length} nouvelle(s) alerte(s) notifiée(s)`);
+    }
+    _bgAlertsWarm = true;
 
     backgroundAlerts = Object.values(byId);
     _bgLog.push(`done: ${newAlerts.length} new, ${backgroundAlerts.length} total`);
@@ -12268,6 +12291,85 @@ app.delete('/api/accepted-alerts/:id', (req, res) => {
   _acceptedAlerts = _acceptedAlerts.filter(a => a.id !== req.params.id);
   _saveAccepted();
   res.json({ ok: true });
+});
+
+// ── Telegram ──────────────────────────────────────────────────────────────────
+// Webhook appelé par Telegram quand l'utilisateur clique Accepter/Rejeter sur son téléphone
+// (16 juillet 2026). Répond toujours 200 (Telegram réessaie sinon), toute la logique est protégée
+// par try/catch pour ne jamais planter sur un callback malformé.
+// Le tunnel (Cloudflare) rend cette route publique — TELEGRAM_WEBHOOK_SECRET (passé à setWebhook)
+// est renvoyé par Telegram dans cet en-tête sur chaque vrai appel ; sans lui (ou avec la mauvaise
+// valeur), n'importe qui trouvant l'URL du tunnel pourrait forger un callback_query et déclencher
+// des accept/reject arbitraires.
+app.post('/api/telegram/webhook', async (req, res) => {
+  if (process.env.TELEGRAM_WEBHOOK_SECRET && req.headers['x-telegram-bot-api-secret-token'] !== process.env.TELEGRAM_WEBHOOK_SECRET) {
+    res.status(401).json({ error: 'invalid secret' });
+    return;
+  }
+  try {
+    const cq = req.body?.callback_query;
+    if (!cq) { res.json({ ok: true }); return; }
+    const resolved = resolveCallbackToken(cq.data);
+    if (!resolved) {
+      await answerCallbackQuery(cq.id, 'Alerte introuvable ou expirée (redémarrage backend ?)');
+      res.json({ ok: true });
+      return;
+    }
+    const { action, type, id, messageId } = resolved;
+    const alert = backgroundAlerts.find(a => a.id === id) || _acceptedAlerts.find(a => a.id === id);
+    const meta = getAlertTypeMeta(type);
+    if (!alert || !meta) {
+      await answerCallbackQuery(cq.id, 'Alerte introuvable côté serveur');
+      res.json({ ok: true });
+      return;
+    }
+    if (action === 'accepted') {
+      const [bk, odds] = meta.odds(alert);
+      const acceptedFields = meta.buildAccepted(alert, bk, odds);
+      const fullAccepted = { ...alert, ...acceptedFields, status: 'accepted' };
+      if (!_acceptedAlerts.find(a => a.id === id)) {
+        _acceptedAlerts.push(fullAccepted);
+        _saveAccepted();
+      }
+      const bgEntry = backgroundAlerts.find(a => a.id === id);
+      if (bgEntry) Object.assign(bgEntry, acceptedFields, { status: 'accepted' });
+      recordAction(type, id, 'accepted');
+      await editTelegramMessage(messageId, `${meta.label(alert)}\n\n✅ <b>Acceptée</b>`);
+      await answerCallbackQuery(cq.id, 'Acceptée ✅');
+    } else {
+      const bgEntry = backgroundAlerts.find(a => a.id === id);
+      if (bgEntry) bgEntry.status = 'rejected';
+      recordAction(type, id, 'rejected');
+      await editTelegramMessage(messageId, `${meta.label(alert)}\n\n❌ Rejetée`);
+      await answerCallbackQuery(cq.id, 'Rejetée');
+    }
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('telegram webhook error:', err.message);
+    res.json({ ok: true });
+  }
+});
+
+// Polling frontend — le site ne peut pas recevoir de webhook Telegram lui-même, donc il vient
+// régulièrement chercher les actions accept/reject faites depuis le téléphone pour les répercuter
+// dans son propre localStorage (voir syncTelegramActions côté frontend).
+app.get('/api/telegram/actions', (req, res) => {
+  const since = Number(req.query.since) || 0;
+  res.json({ actions: getActionsSince(since), now: Date.now() });
+});
+
+// Debug uniquement (16 juillet 2026) — envoie une fausse alerte de test sur Telegram pour vérifier
+// le flux boutons/webhook sans attendre un vrai cycle d'alertes. À retirer une fois le tunnel
+// Cloudflare + setWebhook en place et le flux validé en conditions réelles.
+app.post('/api/telegram/test', async (req, res) => {
+  if (!telegramConfigured()) return res.status(503).json({ error: 'telegram not configured' });
+  const fakeAlert = {
+    id: 'test_' + Date.now(), type: 'player_prop', player: 'Joueur Test', stat: 'pts',
+    direction: 'over', line: 15.5, probability: 82, unibetOdds: 1.75, eventId: 'test_evt', league: 'nba',
+  };
+  backgroundAlerts.push({ ...fakeAlert, status: 'pending' });
+  await notifyNewAlert(fakeAlert);
+  res.json({ ok: true, alertId: fakeAlert.id, tokens: _debugTokensForId(fakeAlert.id) });
 });
 
 // Purge des alertes par nom de joueur (pour suppressions manuelles impossibles côté UI)

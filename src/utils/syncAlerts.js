@@ -1271,3 +1271,69 @@ export async function syncOddsDrift() {
     }
   } catch {}
 }
+
+// ── Accept/reject via Telegram (16 juillet 2026) ────────────────────────────
+// Le site ne peut pas recevoir de webhook Telegram lui-même (il tourne dans le navigateur) — il
+// vient donc régulièrement chercher les actions faites depuis le téléphone (GET /api/telegram/actions)
+// et les répercute dans le localStorage local, comme un clic Accepter/Rejeter fait depuis le site.
+// Le backend a déjà tout fait de son côté au moment du clic Telegram (poussé dans _acceptedAlerts,
+// donc le Backtesting le voit déjà) — ceci ne sert qu'à faire disparaître l'alerte du "Pending" et
+// l'afficher côté "Running" sur CE navigateur.
+const TELEGRAM_ACTIONS_TS_KEY = 'telegram_actions_last_ts';
+const TELEGRAM_TYPE_TO_KEY = {
+  player_prop: ALERT_KEY,
+  game_total: GAME_TOTAL_KEY,
+  basketball_result: BASKETBALL_RESULT_KEY,
+  basketball_spread: BASKETBALL_SPREAD_KEY,
+  basketball_pinnacle_edge: BBALL_PINNACLE_KEY,
+  basketball_pinnacle_props: BBALL_PINNACLE_KEY,
+  football_btts: FB_BTTS_KEY,
+  football_total: FB_TOTAL_KEY,
+  football_result: FB_RESULT_KEY,
+  football_dc_btts: FB_DC_BTTS_KEY,
+  football_dc_ou: FB_DC_OU_KEY,
+  football_pinnacle_edge: FB_PINNACLE_KEY,
+};
+
+export async function syncTelegramActions() {
+  try {
+    const lastTs = Number(localStorage.getItem(TELEGRAM_ACTIONS_TS_KEY) || '0');
+    const res = await fetch(`/api/telegram/actions?since=${lastTs}`);
+    if (!res.ok) return;
+    const { actions, now } = await res.json();
+    if (!actions?.length) { localStorage.setItem(TELEGRAM_ACTIONS_TS_KEY, String(now)); return; }
+
+    const byKey = {};
+    actions.forEach(a => {
+      const key = TELEGRAM_TYPE_TO_KEY[a.type];
+      if (key) (byKey[key] = byKey[key] || []).push(a);
+    });
+
+    // Une action dont l'alerte n'est pas encore dans le localStorage local (le navigateur n'a pas
+    // encore fait tourner le sync classique qui l'aurait insérée en pending) ne peut pas être
+    // appliquée tout de suite — on ne fait PAS avancer le curseur au-delà d'une action récente
+    // (<10min) non appliquée, pour la retenter au prochain polling une fois l'alerte présente.
+    // Au-delà de 10min on laisse tomber (cas extrême : app jamais rouverte depuis) plutôt que de
+    // bloquer indéfiniment la synchronisation des actions suivantes.
+    let earliestUnapplied = null;
+    for (const [key, acts] of Object.entries(byKey)) {
+      let list;
+      try { list = JSON.parse(localStorage.getItem(key) || '[]'); } catch { list = []; }
+      let changed = false;
+      acts.forEach(act => {
+        const idx = list.findIndex(x => x.id === act.id);
+        if (idx === -1) {
+          if (Date.now() - act.ts < 10 * 60_000 && (earliestUnapplied == null || act.ts < earliestUnapplied)) {
+            earliestUnapplied = act.ts;
+          }
+          return;
+        }
+        if ((list[idx].status || 'pending') !== 'pending') return; // déjà décidé localement, ne pas écraser
+        list[idx] = { ...list[idx], status: act.action };
+        changed = true;
+      });
+      if (changed) persistAlertsKey(key, list);
+    }
+    localStorage.setItem(TELEGRAM_ACTIONS_TS_KEY, String(earliestUnapplied != null ? earliestUnapplied - 1 : now));
+  } catch {}
+}

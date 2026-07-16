@@ -1385,6 +1385,14 @@ export default function UtilisationPage() {
         </div>
 
         <div className="util-subsection">
+          <h3 className="util-subsection-title">Notifications Telegram (16 juillet 2026)</h3>
+          <p className="util-intro">
+            Chaque nouvelle alerte qualifiée (les 11 types confondus : props, Total, Résultat, Écart H2H, value vs Pinnacle, BTTS, O/U foot, 1X2, double chance) déclenche automatiquement un message Telegram avec deux boutons <strong>✅ Accepter</strong> / <strong>❌ Rejeter</strong>, sans avoir besoin d'ouvrir le site. Un clic sur le téléphone est traité côté serveur exactement comme un clic sur le site : l'alerte acceptée est enregistrée immédiatement (le Backtesting la voit sans attendre que le site soit rouvert), et le site la fait disparaître de "Pending" au prochain chargement/synchronisation. La cote/bookmaker choisis à l'acceptation sont la meilleure cote disponible au moment de l'envoi (pas de choix multi-bookmaker possible depuis Telegram, contrairement au site) — la mise n'est jamais définie automatiquement, elle reste à ajouter manuellement via le badge "+ mise" de la page Running, comme pour toute alerte acceptée depuis le site.<br/><br/>
+            Fonctionne uniquement quand le backend tourne en local (pas sur Render/Vercel) — nécessite un tunnel Cloudflare pour exposer le backend en HTTPS public (Telegram ne peut pas joindre <code>localhost</code>) et un ordinateur allumé/connecté. Aucune donnée de mise ni bankroll n'est jamais transmise à Telegram.
+          </p>
+        </div>
+
+        <div className="util-subsection">
           <h3 className="util-subsection-title">Ancrage saison — Résultat équipe (9 juillet 2026)</h3>
           <p className="util-intro">
             La force nette de chaque équipe n'était calculée que sur les 8 derniers matchs (forme récente, EWA). Une série de matchs serrés récents pouvait presque égaliser deux équipes très différentes sur la saison entière — cas réel : Connecticut Sun (5-17, net saison −6) donné favori à 75% contre Minnesota Lynx (16-6, net saison +10.7) à cause d'une forme récente sur 8 matchs presque égale. Le modèle mélange désormais 40% forme récente / 60% moyenne nette de la saison entière (si ≥5 matchs disponibles) — même principe que l'ancrage historique déjà utilisé pour le Total O/U.
