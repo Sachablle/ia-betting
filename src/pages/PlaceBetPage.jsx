@@ -6,6 +6,13 @@ import { BTTSAlertCard, FootballTotalCard, FootballResultCard, PinnacleEdgeCard,
 import { setItem as cloudSet } from '../utils/cloudStorage';
 import { cachedFetch } from '../utils/fetchCache';
 import { groupAlerts } from '../utils/groupAlerts';
+import { loadBankrollState, getRecommendedStake } from '../utils/bankroll';
+
+// Mise engagée au moment de l'acceptation — mise pleine du palier courant, sans répartition
+// automatique entre plusieurs alertes du même jour (testé puis abandonné le 16 juillet 2026,
+// cf. commentaire en tête de bankroll.js). Figée sur l'alerte pour affichage dans Running ; à
+// ajuster manuellement via le badge éditable si plusieurs alertes sortent le même jour.
+const stakeAtAccept = () => getRecommendedStake(loadBankrollState().current);
 
 const ALERT_KEY        = 'nba_prop_alerts';
 const HISTORY_KEY      = 'nba_bet_history';
@@ -1377,6 +1384,7 @@ export default function PlaceBetPage() {
         acceptedUnibetOdds:   bk === 'unibet'   ? (odds ?? a.unibetOdds)   : null,
         acceptedBetclicOdds:  bk === 'betclic'  ? (odds ?? a.betclicOdds)  : null,
         acceptedWinamaxOdds:  bk === 'winamax'  ? (odds ?? a.winamaxOdds)  : null,
+        stakeAmount: stakeAtAccept(),
       } : {})
     } : a);
     saveBttsAlerts(updated);
@@ -1431,6 +1439,7 @@ export default function PlaceBetPage() {
         acceptedUnibetOdds:  bk === 'unibet'  ? (odds ?? a.unibetOdds)  : null,
         acceptedBetclicOdds: bk === 'betclic' ? (odds ?? a.betclicOdds) : null,
         acceptedWinamaxOdds: bk === 'winamax' ? (odds ?? a.winamaxOdds) : null,
+        stakeAmount: stakeAtAccept(),
       } : {})
     } : a);
     saveFbTotalAlerts(updated);
@@ -1485,6 +1494,7 @@ export default function PlaceBetPage() {
         acceptedUnibetOdds:  bk === 'unibet'  ? (odds ?? a.unibetOdds)  : null,
         acceptedBetclicOdds: bk === 'betclic' ? (odds ?? a.betclicOdds) : null,
         acceptedWinamaxOdds: bk === 'winamax' ? (odds ?? a.winamaxOdds) : null,
+        stakeAmount: stakeAtAccept(),
       } : {})
     } : a);
     saveFbResultAlerts(updated);
@@ -1537,6 +1547,7 @@ export default function PlaceBetPage() {
         acceptedUnibetOdds:  bk === 'unibet'  ? (odds ?? a.unibetOdds)  : null,
         acceptedBetclicOdds: bk === 'betclic' ? (odds ?? a.betclicOdds) : null,
         acceptedWinamaxOdds: bk === 'winamax' ? (odds ?? a.winamaxOdds) : null,
+        stakeAmount: stakeAtAccept(),
       } : {})
     } : a);
     saveFbPinnacleAlerts(updated);
@@ -1573,7 +1584,7 @@ export default function PlaceBetPage() {
   const updateDcBttsStatus = (id, status, bk = null, odds = null) => {
     if (status === 'rejected') { saveDcBttsAlerts(dcBttsAlerts.map(a => a.id === id ? { ...a, status: 'rejected', rejectedAt: Date.now() } : a)); window.dispatchEvent(new Event('fb_dc_btts_alerts_updated')); return; }
     const now = Date.now();
-    const updated = dcBttsAlerts.map(a => a.id === id ? { ...a, status, ...(status === 'accepted' && !a.acceptedAt ? { acceptedAt: now, acceptedProbability: a.probability, acceptedBookmaker: bk ?? null, acceptedUnibetOdds: bk === 'unibet' ? (odds ?? a.unibetOdds) : null, acceptedBetclicOdds: bk === 'betclic' ? (odds ?? a.betclicOdds) : null } : {}) } : a);
+    const updated = dcBttsAlerts.map(a => a.id === id ? { ...a, status, ...(status === 'accepted' && !a.acceptedAt ? { acceptedAt: now, acceptedProbability: a.probability, acceptedBookmaker: bk ?? null, acceptedUnibetOdds: bk === 'unibet' ? (odds ?? a.unibetOdds) : null, acceptedBetclicOdds: bk === 'betclic' ? (odds ?? a.betclicOdds) : null, stakeAmount: stakeAtAccept() } : {}) } : a);
     saveDcBttsAlerts(updated);
     if (status === 'accepted') { const a = updated.find(x => x.id === id); if (a) postAcceptedAlertReliably(a); }
     window.dispatchEvent(new Event('fb_dc_btts_alerts_updated'));
@@ -1602,7 +1613,7 @@ export default function PlaceBetPage() {
   const updateDcOuStatus = (id, status, bk = null, odds = null) => {
     if (status === 'rejected') { saveDcOuAlerts(dcOuAlerts.map(a => a.id === id ? { ...a, status: 'rejected', rejectedAt: Date.now() } : a)); window.dispatchEvent(new Event('fb_dc_ou_alerts_updated')); return; }
     const now = Date.now();
-    const updated = dcOuAlerts.map(a => a.id === id ? { ...a, status, ...(status === 'accepted' && !a.acceptedAt ? { acceptedAt: now, acceptedProbability: a.probability, acceptedBookmaker: bk ?? null, acceptedUnibetOdds: bk === 'unibet' ? (odds ?? a.unibetOdds) : null, acceptedBetclicOdds: bk === 'betclic' ? (odds ?? a.betclicOdds) : null } : {}) } : a);
+    const updated = dcOuAlerts.map(a => a.id === id ? { ...a, status, ...(status === 'accepted' && !a.acceptedAt ? { acceptedAt: now, acceptedProbability: a.probability, acceptedBookmaker: bk ?? null, acceptedUnibetOdds: bk === 'unibet' ? (odds ?? a.unibetOdds) : null, acceptedBetclicOdds: bk === 'betclic' ? (odds ?? a.betclicOdds) : null, stakeAmount: stakeAtAccept() } : {}) } : a);
     saveDcOuAlerts(updated);
     if (status === 'accepted') { const a = updated.find(x => x.id === id); if (a) postAcceptedAlertReliably(a); }
     window.dispatchEvent(new Event('fb_dc_ou_alerts_updated'));
@@ -1901,6 +1912,7 @@ export default function PlaceBetPage() {
         acceptedUnibetOdds:  bk === 'unibet'  ? (odds ?? a.unibetOdds)  : null,
         acceptedBetclicOdds: bk === 'betclic' ? (odds ?? a.betclicOdds) : null,
         acceptedWinamaxOdds: bk === 'winamax' ? (odds ?? a.winamaxOdds) : null,
+        stakeAmount: stakeAtAccept(),
       } : {})
     } : a);
     try { persistAlertsKey(GAME_TOTAL_KEY, updated); } catch {}
@@ -1962,6 +1974,7 @@ export default function PlaceBetPage() {
         acceptedBookmaker:   bk ?? null,
         acceptedUnibetOdds:  bk === 'unibet'  ? (odds ?? a.unibetOdds)  : null,
         acceptedBetclicOdds: bk === 'betclic' ? (odds ?? a.betclicOdds) : null,
+        stakeAmount: stakeAtAccept(),
       } : {})
     } : a);
     saveBballPinnacleAlerts(updated);
@@ -2004,6 +2017,7 @@ export default function PlaceBetPage() {
         acceptedBookmaker:   bk ?? null,
         acceptedUnibetOdds:  bk === 'unibet'  ? (odds ?? a.unibetOdds)  : null,
         acceptedBetclicOdds: bk === 'betclic' ? (odds ?? a.betclicOdds) : null,
+        stakeAmount: stakeAtAccept(),
       } : {})
     } : a);
     saveBballPinnaclePropsAlerts(updated);
@@ -2041,7 +2055,7 @@ export default function PlaceBetPage() {
   const updateResultStatus = (id, status) => {
     const updated = rawResultAlerts.map(a => a.id === id ? {
       ...a, status,
-      ...(status === 'accepted' && !a.acceptedAt ? { acceptedAt: Date.now() } : {})
+      ...(status === 'accepted' && !a.acceptedAt ? { acceptedAt: Date.now(), stakeAmount: stakeAtAccept() } : {})
     } : a);
     try { persistAlertsKey(BASKETBALL_RESULT_KEY, updated); } catch {}
     setRawResultAlerts(updated);
@@ -2085,7 +2099,7 @@ export default function PlaceBetPage() {
   const updateSpreadStatus = (id, status) => {
     const updated = rawSpreadAlerts.map(a => a.id === id ? {
       ...a, status,
-      ...(status === 'accepted' && !a.acceptedAt ? { acceptedAt: Date.now() } : {})
+      ...(status === 'accepted' && !a.acceptedAt ? { acceptedAt: Date.now(), stakeAmount: stakeAtAccept() } : {})
     } : a);
     try { persistAlertsKey(BASKETBALL_SPREAD_KEY, updated); } catch {}
     setRawSpreadAlerts(updated);
@@ -2204,6 +2218,7 @@ export default function PlaceBetPage() {
         acceptedUnibetOdds:  bk === 'unibet'  ? (odds ?? a.unibetOdds)  : (bk ? null : a.unibetOdds  ?? null),
         acceptedBetclicOdds: bk === 'betclic' ? (odds ?? a.betclicOdds) : (bk ? null : a.betclicOdds ?? null),
         acceptedWinamaxOdds: bk === 'winamax' ? (odds ?? a.winamaxOdds) : (bk ? null : a.winamaxOdds ?? null),
+        stakeAmount: stakeAtAccept(),
       } : {}) };
       if (idSet.has(a.id)) return { ...a, ...patch };
       const dateKey = new Date(a.fixtureDate).toISOString().slice(0, 10);

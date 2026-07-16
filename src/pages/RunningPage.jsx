@@ -92,6 +92,7 @@ function groupAlerts(raw) {
       acceptedBetclicOdds: a.acceptedBetclicOdds ?? null,
       acceptedWinamaxOdds: a.acceptedWinamaxOdds ?? null,
       deviation: a.deviation ?? null, deviationCap: a.deviationCap ?? null,
+      stakeAmount: a.stakeAmount ?? null,
     };
     if (!map[key].stats.find(s => `${s.stat}__${s.direction}` === `${a.stat}__${a.direction}`))
       map[key].stats.push(entry);
@@ -119,6 +120,7 @@ function totalAlertToGroup(a) {
       acceptedUnibetOdds: a.acceptedUnibetOdds ?? null,
       acceptedBetclicOdds: a.acceptedBetclicOdds ?? null,
       acceptedWinamaxOdds: a.acceptedWinamaxOdds ?? null,
+      stakeAmount: a.stakeAmount ?? null,
     }],
     maxProb: a.prob || 0, ids: [a.id],
     status: a.status || 'pending', acceptedAt: a.acceptedAt || 0,
@@ -147,6 +149,7 @@ function resultAlertToGroup(a) {
       acceptedUnibetOdds: isUnibet ? a.odds : null,
       acceptedBetclicOdds: isBetclic ? a.odds : null,
       acceptedWinamaxOdds: null,
+      stakeAmount: a.stakeAmount ?? null,
     }],
     maxProb: a.probability || 0, ids: [a.id],
     status: a.status || 'pending', acceptedAt: a.acceptedAt || 0,
@@ -173,6 +176,7 @@ function spreadAlertToGroup(a) {
       acceptedUnibetOdds: isUnibet ? a.odds : null,
       acceptedBetclicOdds: isBetclic ? a.odds : null,
       acceptedWinamaxOdds: null,
+      stakeAmount: a.stakeAmount ?? null,
     }],
     maxProb: a.probability || 0, ids: [a.id],
     status: a.status || 'pending', acceptedAt: a.acceptedAt || 0,
@@ -200,6 +204,7 @@ function bballPinnacleAlertToGroup(a) {
       acceptedUnibetOdds: a.acceptedUnibetOdds ?? null,
       acceptedBetclicOdds: a.acceptedBetclicOdds ?? null,
       acceptedWinamaxOdds: null,
+      stakeAmount: a.stakeAmount ?? null,
     }],
     maxProb: a.prob || 0, ids: [a.id],
     status: a.status || 'pending', acceptedAt: a.acceptedAt || 0,
@@ -243,6 +248,7 @@ function footballAlertToGroup(a) {
       acceptedUnibetOdds: a.acceptedUnibetOdds ?? null,
       acceptedBetclicOdds: a.acceptedBetclicOdds ?? null,
       acceptedWinamaxOdds: a.acceptedWinamaxOdds ?? null,
+      stakeAmount: a.stakeAmount ?? null,
     }],
     maxProb: a.probability || 0, ids: [a.id],
     status: a.status || 'pending', acceptedAt: a.acceptedAt || 0,
@@ -461,8 +467,9 @@ function LiveStatRow({ group, playerStats }) {
 }
 
 // ── Carte alerte joueur ───────────────────────────────────────────────────────
-function AlertCard({ group, playerStats, onDismiss }) {
+function AlertCard({ group, playerStats, onDismiss, onEditStake }) {
   const navigate = useNavigate();
+  const [editingStake, setEditingStake] = useState(false);
   const s = group.stats[0];
   const bk = group.acceptedBookmaker;
   const acceptedOdds = bk === 'unibet' ? (s?.acceptedUnibetOdds ?? s?.unibetOdds)
@@ -541,6 +548,33 @@ function AlertCard({ group, playerStats, onDismiss }) {
         {acceptedOdds && bk && (
           <span style={{ fontSize: 10, fontWeight: 700, color: bkColor, flexShrink: 0 }}>{acceptedOdds.toFixed(2)}</span>
         )}
+        {onEditStake && (
+          editingStake ? (
+            <input
+              type="number" min="1" autoFocus defaultValue={s?.stakeAmount ?? ''}
+              placeholder="€"
+              onClick={e => e.stopPropagation()}
+              onBlur={e => {
+                const val = Math.max(1, +e.target.value || 0);
+                if (val > 0 && val !== s?.stakeAmount) onEditStake(group.ids, group, val);
+                setEditingStake(false);
+              }}
+              onKeyDown={e => {
+                if (e.key === 'Enter') { e.preventDefault(); e.currentTarget.blur(); }
+                if (e.key === 'Escape') setEditingStake(false);
+              }}
+              style={{ width: 44, fontSize: 10, fontWeight: 700, color: '#a78bfa', background: 'rgba(167,139,250,0.12)', border: '1px solid rgba(167,139,250,0.5)', borderRadius: 4, padding: '1px 3px', outline: 'none' }}
+            />
+          ) : (
+            <span
+              title={s?.stakeAmount != null ? 'Mise engagée sur ce pari — cliquer pour modifier' : 'Ajouter la mise engagée sur ce pari'}
+              onClick={e => { e.stopPropagation(); setEditingStake(true); }}
+              style={{ fontSize: 10, fontWeight: 700, color: s?.stakeAmount != null ? '#a78bfa' : 'var(--text-dim)', flexShrink: 0, padding: '1px 5px', borderRadius: 4, background: s?.stakeAmount != null ? 'rgba(167,139,250,0.12)' : 'transparent', border: `1px dashed ${s?.stakeAmount != null ? 'rgba(167,139,250,0.3)' : 'rgba(255,255,255,0.2)'}`, cursor: 'pointer' }}
+            >
+              {s?.stakeAmount != null ? `${s.stakeAmount}€` : '+ mise'}
+            </span>
+          )
+        )}
         {s?.deviation != null && s?.deviationCap > 0 && (() => {
           const ratio = Math.min(1, s.deviation / s.deviationCap);
           const gaugeColor = ratio > 0.66 ? '#f87171' : ratio > 0.33 ? '#fbbf24' : '#4ade80';
@@ -595,7 +629,7 @@ function TeamLogo({ logo, short, name, size = 40, league = 'nba' }) {
 }
 
 // ── Groupe par match ──────────────────────────────────────────────────────────
-function MatchGroup({ match, scoreData, liveStats, onDismiss }) {
+function MatchGroup({ match, scoreData, liveStats, onDismiss, onEditStake }) {
   const { homeShort, awayShort, homeTeam, awayTeam, alerts, league, fixtureDate, showDate } = match;
   const hasScores = (scoreData?.homeScore > 0 || scoreData?.awayScore > 0);
   const isLive = IN_GAME(scoreData?.status)
@@ -639,7 +673,7 @@ function MatchGroup({ match, scoreData, liveStats, onDismiss }) {
         </button>
         {open && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '0.1rem', padding: '0.3rem 0', borderTop: '1px solid rgba(255,255,255,0.06)' }}>
-            {alerts.map(g => <AlertCard key={g.key} group={g} playerStats={null} onDismiss={onDismiss} />)}
+            {alerts.map(g => <AlertCard key={g.key} group={g} playerStats={null} onDismiss={onDismiss} onEditStake={onEditStake} />)}
           </div>
         )}
       </div>
@@ -672,7 +706,7 @@ function MatchGroup({ match, scoreData, liveStats, onDismiss }) {
         <span style={{ position: 'absolute', right: 10, top: 8, fontSize: 9, color: 'var(--text-dim)' }}>{alerts.length} pari{alerts.length > 1 ? 's' : ''}</span>
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: '0.15rem', padding: '0.4rem 0' }}>
-        {alerts.map(g => <AlertCard key={g.key} group={g} playerStats={liveStats[g.key] || null} onDismiss={onDismiss} />)}
+        {alerts.map(g => <AlertCard key={g.key} group={g} playerStats={liveStats[g.key] || null} onDismiss={onDismiss} onEditStake={onEditStake} />)}
       </div>
     </div>
   );
@@ -883,6 +917,69 @@ export default function RunningPage() {
     setRawAlerts(updated);
   };
 
+  // Édition manuelle de la mise engagée sur une alerte déjà acceptée (16 juillet 2026) — même
+  // dispatch par type que dismiss() ci-dessus. Re-poste au backend pour que la correction survive
+  // dans le registre de paris (bet-history), lu ensuite par le suivi bankroll.
+  const updateStake = (ids, group, newStake) => {
+    const idSet = new Set(ids);
+    const patch = a => idSet.has(a.id) ? { ...a, stakeAmount: newStake } : a;
+    const postIfNeeded = updated => { const a = updated.find(x => idSet.has(x.id)); if (a) postAcceptedAlertReliably(a); };
+    if (group?.type === 'game_total') {
+      const updated = rawTotalAlerts.map(patch);
+      try { persistAlertsKey(GAME_TOTAL_KEY, updated); } catch {}
+      setRawTotalAlerts(updated); postIfNeeded(updated); return;
+    }
+    if (group?.type === 'basketball_result') {
+      const updated = rawResultAlerts.map(patch);
+      try { persistAlertsKey(BASKETBALL_RESULT_KEY, updated); } catch {}
+      setRawResultAlerts(updated); postIfNeeded(updated); return;
+    }
+    if (group?.type === 'basketball_spread') {
+      const updated = rawSpreadAlerts.map(patch);
+      try { persistAlertsKey(BASKETBALL_SPREAD_KEY, updated); } catch {}
+      setRawSpreadAlerts(updated); postIfNeeded(updated); return;
+    }
+    if (group?.type === 'football_btts') {
+      const updated = bttsAlerts.map(patch);
+      try { persistAlertsKey(FB_BTTS_KEY, updated); } catch {}
+      setBttsAlerts(updated); postIfNeeded(updated); return;
+    }
+    if (group?.type === 'football_total') {
+      const updated = fbTotalAlerts.map(patch);
+      try { persistAlertsKey(FB_TOTAL_KEY, updated); } catch {}
+      setFbTotalAlerts(updated); postIfNeeded(updated); return;
+    }
+    if (group?.type === 'football_result') {
+      const updated = fbResultAlerts.map(patch);
+      try { persistAlertsKey(FB_RESULT_KEY, updated); } catch {}
+      setFbResultAlerts(updated); postIfNeeded(updated); return;
+    }
+    if (group?.type === 'football_pinnacle_edge') {
+      const updated = fbPinnacleAlerts.map(patch);
+      try { persistAlertsKey(FB_PINNACLE_KEY, updated); } catch {}
+      setFbPinnacleAlerts(updated); postIfNeeded(updated); return;
+    }
+    if (group?.type === 'football_dc_btts') {
+      const updated = dcBttsAlerts.map(patch);
+      try { persistAlertsKey(FB_DC_BTTS_KEY, updated); } catch {}
+      setDcBttsAlerts(updated); postIfNeeded(updated); return;
+    }
+    if (group?.type === 'football_dc_ou') {
+      const updated = dcOuAlerts.map(patch);
+      try { persistAlertsKey(FB_DC_OU_KEY, updated); } catch {}
+      setDcOuAlerts(updated); postIfNeeded(updated); return;
+    }
+    if (group?.type === 'basketball_pinnacle_edge') {
+      const updated = bballPinnacleAlerts.map(patch);
+      try { persistAlertsKey(BBALL_PINNACLE_KEY, updated); } catch {}
+      setBballPinnacleAlerts(updated); postIfNeeded(updated); return;
+    }
+    // props (défaut)
+    const updated = rawAlerts.map(patch);
+    cloudSet(ALERT_KEY, JSON.stringify(updated));
+    setRawAlerts(updated); postIfNeeded(updated);
+  };
+
   const dismissBtts = (id) => {
     const updated = bttsAlerts.filter(a => a.id !== id);
     try { persistAlertsKey(FB_BTTS_KEY, updated); } catch {}
@@ -951,7 +1048,7 @@ export default function RunningPage() {
               <div style={{ display: 'flex', flexDirection: 'row', flexWrap: 'wrap', gap: '0.75rem', alignItems: 'flex-start' }}>
                 {liveGroups.map(m => (
                   <div key={m.matchKey} style={{ width: 300, flexShrink: 0 }}>
-                    <MatchGroup match={m} scoreData={scoreData[m.matchKey] || null} liveStats={liveStats} onDismiss={dismiss} />
+                    <MatchGroup match={m} scoreData={scoreData[m.matchKey] || null} liveStats={liveStats} onDismiss={dismiss} onEditStake={updateStake} />
                   </div>
                 ))}
               </div>
@@ -960,7 +1057,7 @@ export default function RunningPage() {
               <div style={{ position: 'fixed', bottom: 24, left: 236, zIndex: 200, display: 'flex', flexDirection: 'row', flexWrap: 'wrap', gap: '0.4rem', maxWidth: '70vw' }}>
                 {scheduledGroups.map(m => (
                   <div key={m.matchKey} style={{ width: 340 }}>
-                    <MatchGroup match={m} scoreData={scoreData[m.matchKey] || null} liveStats={liveStats} onDismiss={dismiss} />
+                    <MatchGroup match={m} scoreData={scoreData[m.matchKey] || null} liveStats={liveStats} onDismiss={dismiss} onEditStake={updateStake} />
                   </div>
                 ))}
               </div>

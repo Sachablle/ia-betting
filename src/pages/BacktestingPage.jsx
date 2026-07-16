@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo } from 'react';
 import { syncSettlements, resolveCompletedFootballAlerts } from '../utils/syncAlerts';
+import { BANKROLL_BRACKETS, BANKROLL_TARGET, getRecommendedStake, getEngagedToday, getBracketLabel, loadBankrollState, recordBet, resetBankroll, syncBankrollFromHistory, seedBaselineIfNeeded } from '../utils/bankroll';
 
 const ROLLING_N = 20;
 const DEFAULT_ODDS = 1.9;
@@ -411,6 +412,171 @@ function exportCSV(bets) {
 }
 
 // ── Composants visuels ─────────────────────────────────────────────────────
+
+// Suivi bankroll + plan de mise progressif (16 juillet 2026) — objectif 10 000€ depuis 250€.
+// La mise recommandée dépend uniquement du bankroll actuel (jamais de l'émotion du moment) : elle
+// ne change qu'en passant un palier, à la hausse comme à la baisse. cf. src/utils/bankroll.js.
+function BankrollTracker() {
+  const [state, setState] = useState(loadBankrollState);
+  const [oddsInput, setOddsInput] = useState('1.70');
+  const [showTools, setShowTools] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
+  const [showResetConfirm, setShowResetConfirm] = useState(false);
+  const [resetAmount, setResetAmount] = useState('250');
+  const [syncing, setSyncing] = useState(false);
+
+  // Auto-sync depuis le registre de paris backend (source de vérité) — au montage, puis toutes les
+  // 2 min tant que la page reste ouverte. Chaque pari won/lost non encore traité (processedIds) est
+  // appliqué automatiquement, plus besoin de cliquer Gagné/Perdu à la main (16 juillet 2026).
+  useEffect(() => {
+    let cancelled = false;
+    const run = () => {
+      setSyncing(true);
+      seedBaselineIfNeeded(loadBankrollState())
+        .then(syncBankrollFromHistory)
+        .then(next => {
+          if (!cancelled) setState(next);
+          setSyncing(false);
+        });
+    };
+    run();
+    const id = setInterval(run, 2 * 60_000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, []);
+
+  const bk = state.current;
+  const stake = getRecommendedStake(bk);
+  const bracket = getBracketLabel(bk);
+  const progressPct = Math.min(100, (bk / BANKROLL_TARGET) * 100);
+  const reachedTarget = bk >= BANKROLL_TARGET;
+  const engagedToday = getEngagedToday();
+  const remaining = Math.max(0, stake - engagedToday.total);
+
+  const applyBet = won => {
+    const odds = Math.max(1.01, +oddsInput || 1.70);
+    setState(recordBet(state, { won, odds }));
+  };
+  const doReset = () => {
+    const amount = Math.max(1, +resetAmount || 250);
+    setShowResetConfirm(false);
+    resetBankroll(state, amount).then(setState);
+  };
+
+  return (
+    <div style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 16, padding: '1.25rem 1.5rem', marginBottom: '1.5rem' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '1rem', marginBottom: '1rem' }}>
+        <div>
+          <span style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: '#3b82f6' }}>Suivi Bankroll</span>
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: '0.6rem', marginTop: '0.3rem' }}>
+            <span style={{ fontSize: 30, fontWeight: 800, color: 'var(--text)', fontVariantNumeric: 'tabular-nums' }}>{bk.toFixed(0)}€</span>
+            <span style={{ fontSize: 13, color: 'var(--text-dim)' }}>/ objectif {BANKROLL_TARGET.toLocaleString('fr-FR')}€</span>
+          </div>
+        </div>
+        <div style={{ textAlign: 'right' }}>
+          <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-dim)' }}>Mise recommandée</div>
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, justifyContent: 'flex-end' }}>
+            <span style={{ fontSize: 24, fontWeight: 800, color: '#4ade80' }}>{remaining}€</span>
+            <span style={{ fontSize: 10, color: 'var(--text-dim)' }}>(~{bracket.pct} du BK)</span>
+          </div>
+          {engagedToday.stakes.length > 0 && (
+            <div title={engagedToday.stakes.map(s => `${s}€`).join(' + ')} style={{ fontSize: 11, fontWeight: 700, color: engagedToday.total > stake ? '#fbbf24' : 'var(--text-dim)', marginTop: 4 }}>
+              {engagedToday.stakes.join('€ + ')}€ engagés aujourd'hui (sur {stake}€)
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Barre de progression */}
+      <div style={{ height: 8, background: 'rgba(255,255,255,0.06)', borderRadius: 4, overflow: 'hidden', marginBottom: '1rem' }}>
+        <div style={{ height: '100%', width: `${progressPct}%`, background: reachedTarget ? '#4ade80' : 'linear-gradient(90deg,#3b82f6,#60a5fa)', transition: 'width 0.3s' }} />
+      </div>
+
+      {reachedTarget && (
+        <div style={{ fontSize: 13, fontWeight: 700, color: '#4ade80', marginBottom: '1rem' }}>🎉 Objectif atteint !</div>
+      )}
+
+      {/* Synchro auto depuis le registre de paris — tout le reste (ajout manuel, historique,
+          réinitialiser) est secondaire et repoussé sous un menu déroulant (16 juillet 2026) */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.4rem', marginBottom: showTools ? '0.75rem' : 0 }}>
+        <span style={{ fontSize: 10, color: syncing ? '#60a5fa' : 'var(--text-dim)' }}>
+          {syncing ? '⟳ Synchronisation...' : '✓ Mis à jour automatiquement après chaque pari réglé'}
+        </span>
+        <button onClick={() => setShowTools(v => !v)} style={{ padding: '4px 8px', borderRadius: 8, border: '1px solid rgba(255,255,255,0.1)', background: 'transparent', color: 'var(--text-dim)', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>
+          ⚙ Options {showTools ? '▲' : '▼'}
+        </button>
+      </div>
+
+      {showTools && (
+      <>
+      {/* Ajustement manuel (secours — pari hors système, correction...) */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', flexWrap: 'wrap', marginBottom: '0.75rem' }}>
+        <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>Ajout manuel — cote :</span>
+        <input type="number" step="0.01" min="1.01" value={oddsInput} onChange={e => setOddsInput(e.target.value)}
+          style={{ width: 64, background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 8, color: 'var(--text)', fontSize: 12, fontWeight: 600, padding: '4px 8px', outline: 'none' }} />
+        <button onClick={() => applyBet(true)} style={{ padding: '6px 14px', borderRadius: 8, border: '1px solid rgba(74,222,128,0.4)', background: 'rgba(74,222,128,0.12)', color: '#4ade80', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
+          ✓ Gagné (mise {stake}€)
+        </button>
+        <button onClick={() => applyBet(false)} style={{ padding: '6px 14px', borderRadius: 8, border: '1px solid rgba(239,68,68,0.4)', background: 'rgba(239,68,68,0.12)', color: '#ef4444', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
+          ✗ Perdu (mise {stake}€)
+        </button>
+        <button onClick={() => setShowHistory(v => !v)} style={{ marginLeft: 'auto', padding: '6px 10px', borderRadius: 8, border: '1px solid rgba(255,255,255,0.12)', background: 'transparent', color: 'var(--text-dim)', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>
+          {showHistory ? 'Masquer' : 'Historique'} ({state.history.filter(h => h.type !== 'reset').length})
+        </button>
+        <button onClick={() => setShowResetConfirm(v => !v)} style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid rgba(255,255,255,0.12)', background: 'transparent', color: 'var(--text-dim)', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>
+          Réinitialiser
+        </button>
+      </div>
+      </>
+      )}
+
+      {showTools && showResetConfirm && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.6rem', background: 'rgba(251,146,60,0.08)', border: '1px solid rgba(251,146,60,0.3)', borderRadius: 10, marginBottom: '0.75rem' }}>
+          <span style={{ fontSize: 11, color: '#fb923c' }}>Nouveau bankroll de départ :</span>
+          <input type="number" min="1" value={resetAmount} onChange={e => setResetAmount(e.target.value)}
+            style={{ width: 72, background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 8, color: 'var(--text)', fontSize: 12, fontWeight: 600, padding: '4px 8px', outline: 'none' }} />
+          <button onClick={doReset} style={{ padding: '5px 12px', borderRadius: 8, border: '1px solid rgba(251,146,60,0.5)', background: 'rgba(251,146,60,0.15)', color: '#fb923c', fontSize: 11, fontWeight: 700, cursor: 'pointer' }}>Confirmer</button>
+          <button onClick={() => setShowResetConfirm(false)} style={{ padding: '5px 12px', borderRadius: 8, border: '1px solid rgba(255,255,255,0.12)', background: 'transparent', color: 'var(--text-dim)', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>Annuler</button>
+        </div>
+      )}
+
+      {/* Table des paliers */}
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.4rem', marginBottom: showHistory ? '0.75rem' : 0 }}>
+        {BANKROLL_BRACKETS.map((b, i) => {
+          const next = BANKROLL_BRACKETS[i + 1];
+          const isCurrent = bk >= b.min && (!next || bk < next.min);
+          const label = b.stake != null ? `${b.stake}€` : '5% BK';
+          return (
+            <div key={b.min} style={{
+              fontSize: 10, padding: '3px 8px', borderRadius: 6,
+              background: isCurrent ? 'rgba(59,130,246,0.18)' : 'rgba(255,255,255,0.03)',
+              border: `1px solid ${isCurrent ? 'rgba(59,130,246,0.5)' : 'rgba(255,255,255,0.08)'}`,
+              color: isCurrent ? '#60a5fa' : 'var(--text-dim)', fontWeight: isCurrent ? 700 : 500,
+            }}>
+              {b.min}€+ → {label}
+            </div>
+          );
+        })}
+      </div>
+
+      {showTools && showHistory && (
+        <div style={{ maxHeight: 220, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '0.3rem' }}>
+          {state.history.filter(h => h.type !== 'reset').length === 0 && <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>Aucun pari enregistré pour l'instant.</span>}
+          {[...state.history].filter(h => h.type !== 'reset').reverse().map((h, i) => (
+            <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: 11, padding: '0.35rem 0.5rem', background: 'rgba(255,255,255,0.02)', borderRadius: 6 }}>
+              <span style={{ color: 'var(--text-dim)', minWidth: 90 }}>{new Date(h.date).toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}</span>
+              <span style={{ color: h.type === 'win' ? '#4ade80' : '#ef4444', fontWeight: 700, whiteSpace: 'nowrap' }}>
+                {h.type === 'win' ? '✓' : '✗'} mise {h.stake}€ @ {h.odds}
+              </span>
+              {h.betLabel && <span style={{ color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{h.betLabel}</span>}
+              <span style={{ color: h.profit >= 0 ? '#4ade80' : '#ef4444' }}>{h.profit >= 0 ? '+' : ''}{h.profit}€</span>
+              <span style={{ marginLeft: 'auto', color: 'var(--text-dim)', whiteSpace: 'nowrap' }}>→ {h.balanceAfter}€</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function KpiCard({ label, value, sub, color, small, pinnacle }) {
   return (
@@ -1062,6 +1228,8 @@ export default function BacktestingPage() {
           ))}
         </div>
       </div>
+
+      <BankrollTracker />
 
       {/* Filtres */}
       <div style={{ display: 'flex', alignItems: 'flex-end', gap: '0.75rem', marginBottom: '1.25rem', flexWrap: 'wrap' }}>

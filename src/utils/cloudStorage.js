@@ -18,6 +18,7 @@ const SYNC_KEYS = new Set([
   'nba_bet_history',
   'nba_has_history',
   'bet_notes',
+  'bankroll_tracker',
 ]);
 
 // Protège une clé contre l'écrasement par loadFromCloud pendant 90s après un setItem local.
