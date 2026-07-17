@@ -70,9 +70,27 @@ export async function postAcceptedAlertReliably(alert) {
 
 // Réessaie les alertes acceptées jamais confirmées côté serveur (3 tentatives épuisées) — appelé
 // au chargement de PlaceBetPage/RunningPage via syncSettlements.
+// Un pending resté bloqué (échecs répétés au moment de l'acceptation, ex: coupure backend) ne doit
+// jamais rejouer un "accepted" périmé si l'utilisateur a annulé/rejeté ce pari entre-temps — sinon
+// le prochain flush (à chaque montage de page) ressuscite un pari déjà annulé avec son état d'origine
+// (cas réel : alerte Jessica Shepard reportée, annulée plusieurs fois, revenue à chaque fois avec le
+// même acceptedAt d'origine — 17 juillet 2026).
+const REVOKED_STATUSES = new Set(['void', 'rejected', 'won', 'lost']);
+function isNowRevoked(id) {
+  for (const key of SETTLEABLE_KEYS) {
+    try {
+      const arr = JSON.parse(localStorage.getItem(key) || '[]');
+      const found = arr.find(a => a.id === id);
+      if (found && REVOKED_STATUSES.has(found.status)) return true;
+    } catch {}
+  }
+  return false;
+}
+
 export async function flushPendingAlertSync() {
   const pending = readPendingSync();
   for (const alert of pending) {
+    if (isNowRevoked(alert.id)) { writePendingSync(readPendingSync().filter(a => a.id !== alert.id)); continue; }
     try {
       const res = await fetch('/api/accepted-alerts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(alert) });
       if (res.ok) writePendingSync(readPendingSync().filter(a => a.id !== alert.id));

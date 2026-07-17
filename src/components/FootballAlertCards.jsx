@@ -19,6 +19,7 @@ export const FB_LEAGUE_META = {
   bundes:     { name: 'Bundesliga',     flag: '🇩🇪' },
   seriea:     { name: 'Serie A',        flag: '🇮🇹' },
   cdm:        { name: 'Coupe du Monde', flag: '🌍' },
+  bresil:     { name: 'Brasileirão',    flag: '🇧🇷' },
 };
 
 export function BTTSAlertCard({ alert, onAccept, onReject, onDismiss }) {

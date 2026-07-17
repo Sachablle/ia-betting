@@ -23,7 +23,15 @@ start_tunnel() {
   echo "$(date '+%H:%M:%S') — échec démarrage tunnel, voir $START_LOG"
 }
 
-start_tunnel
+# Si un tunnel sain tourne déjà (ex: watchdog relancé après une réparation manuelle), ne pas le
+# détruire pour rien — sinon chaque relance du watchdog fait repartir tout le cycle de propagation
+# DNS (jusqu'à plusieurs minutes) alors que tout fonctionnait déjà.
+EXISTING_URL=$(cat "$STATE_FILE" 2>/dev/null)
+if [ -n "$EXISTING_URL" ] && curl -sf --max-time 8 "$EXISTING_URL/api/health" > /dev/null 2>&1; then
+  echo "$(date '+%H:%M:%S') — tunnel existant sain ($EXISTING_URL), pas de relance"
+else
+  start_tunnel
+fi
 
 while true; do
   sleep "$CHECK_INTERVAL"

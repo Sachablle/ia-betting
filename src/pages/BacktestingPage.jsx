@@ -1413,63 +1413,6 @@ export default function BacktestingPage() {
 
       </>)}
 
-      {/* ── Encadré Alertes vs Pinnacle (hors bilan global) ────────────────── */}
-      <div style={{
-        marginTop: '2rem',
-        border: '1px solid rgba(96,165,250,0.35)',
-        borderRadius: 16,
-        overflow: 'hidden',
-        background: 'rgba(96,165,250,0.04)',
-      }}>
-        {/* Header */}
-        <div style={{ padding: '1rem 1.25rem', borderBottom: '1px solid rgba(96,165,250,0.2)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.5rem' }}>
-          <div>
-            <span style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.09em', color: '#60a5fa' }}>
-              💎 Alertes vs Pinnacle
-            </span>
-            <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 3 }}>
-              Alertes issues du différentiel bookmaker / cotes Pinnacle — bilan indépendant, non inclus dans les stats ci-dessus.
-            </div>
-          </div>
-        </div>
-
-        <div style={{ padding: '1.25rem' }}>
-          {pinMetrics.total === 0 ? (
-            <div style={{ textAlign: 'center', padding: '1.5rem 0', color: 'var(--text-dim)', fontSize: 12 }}>
-              Aucune alerte vs Pinnacle résolue sur cette période.
-            </div>
-          ) : (<>
-            {/* KPIs */}
-            <div style={{ display: 'flex', gap: '0.6rem', flexWrap: 'wrap', marginBottom: '1.25rem' }}>
-              {[
-                { label: 'Paris résolus', value: pinMetrics.total,   sub: `${pinMetrics.won}W · ${pinMetrics.lost}L`, color: 'var(--text)' },
-                { label: 'Win Rate',  value: pinMetrics.winRate != null ? `${pinMetrics.winRate.toFixed(1)}%` : '—', sub: `${pinMetrics.won + pinMetrics.lost} non-void`, color: pinMetrics.winRate == null ? 'var(--text-dim)' : pinMetrics.winRate >= 50 ? '#4ade80' : '#ef4444' },
-                { label: 'ROI',       value: pinMetrics.roi != null ? `${pinMetrics.roi >= 0 ? '+' : ''}${pinMetrics.roi.toFixed(1)}%` : '—', sub: `flat ${stake}€/pari`, color: pinMetrics.roi == null ? 'var(--text-dim)' : pinMetrics.roi >= 0 ? '#4ade80' : '#ef4444' },
-                { label: 'P&L',       value: `${pinMetrics.pl >= 0 ? '+' : ''}${(pinMetrics.pl * stake).toFixed(0)}€`, sub: `mise ${stake}€/alerte`, color: pinMetrics.pl >= 0 ? '#4ade80' : '#ef4444' },
-              ].map(({ label, value, sub, color }) => (
-                <div key={label} style={{ flex: '1 1 100px', background: 'rgba(96,165,250,0.07)', border: '1px solid rgba(96,165,250,0.18)', borderRadius: 12, padding: '0.75rem 1rem' }}>
-                  <div style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.09em', color: '#60a5fa', marginBottom: 4 }}>{label}</div>
-                  <div style={{ fontSize: 22, fontWeight: 800, color, fontVariantNumeric: 'tabular-nums', lineHeight: 1.1 }}>{value}</div>
-                  <div style={{ fontSize: 10, color: 'var(--text-dim)', marginTop: 2 }}>{sub}</div>
-                </div>
-              ))}
-            </div>
-
-            {/* Liste paris */}
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
-              <span style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.07em', color: 'var(--text-dim)' }}>
-                Historique ({pinnacleFiltered.length} paris)
-              </span>
-            </div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', maxHeight: 360, overflowY: 'auto' }}>
-              {[...pinnacleFiltered].reverse().map((bet, i) => (
-                <BetRow key={`${bet.date}_${bet.label}_${bet.sub}`} bet={bet} rank={pinnacleFiltered.length - i} stake={stake} />
-              ))}
-            </div>
-          </>)}
-        </div>
-      </div>
-
     </div>
   );
 }

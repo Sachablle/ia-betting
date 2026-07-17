@@ -63,11 +63,17 @@ async function postUserDataReliably(key, parsed) {
 export async function flushPendingUserData() {
   const pending = readPendingUserData();
   for (const { key, value } of pending) {
+    // Repart de la version localStorage ACTUELLE, pas de l'instantané figé au moment de la mise en
+    // file — un pending resté bloqué des heures (ex: coupure backend passagère) rejouait sinon un
+    // état obsolète et écrasait des changements faits entre-temps (cas réel : une alerte annulée
+    // après coup se faisait ré-accepter par un vieux pending jamais purgé, 17 juillet 2026).
+    let fresh = value;
+    try { const raw = localStorage.getItem(key); if (raw != null) fresh = JSON.parse(raw); } catch {}
     try {
       const res = await fetch('/api/userdata', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ key, value }),
+        body: JSON.stringify({ key, value: fresh }),
       });
       if (res.ok) writePendingUserData(readPendingUserData().filter(p => p.key !== key));
     } catch {}

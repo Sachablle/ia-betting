@@ -160,6 +160,31 @@ const LEAGUES = [
     ],
   },
   {
+    id: 'bresil', flag: '🇧🇷', name: 'Brasileirão', country: 'Brésil', espnLeague: 'bra.1',
+    teams: [
+      { name: 'Athletico-PR',        espnId: 3458 },
+      { name: 'Atlético-MG',         espnId: 7632 },
+      { name: 'Bahia',               espnId: 9967 },
+      { name: 'Botafogo',            espnId: 6086 },
+      { name: 'Chapecoense',         espnId: 9318 },
+      { name: 'Corinthians',         espnId: 874  },
+      { name: 'Coritiba',            espnId: 3456 },
+      { name: 'Cruzeiro',            espnId: 2022 },
+      { name: 'Flamengo',            espnId: 819  },
+      { name: 'Fluminense',          espnId: 3445 },
+      { name: 'Grêmio',              espnId: 6273 },
+      { name: 'Internacional',       espnId: 1936 },
+      { name: 'Mirassol',            espnId: 9169 },
+      { name: 'Palmeiras',           espnId: 2029 },
+      { name: 'Red Bull Bragantino', espnId: 6079 },
+      { name: 'Remo',                espnId: 4936 },
+      { name: 'Santos',              espnId: 2674 },
+      { name: 'São Paulo',           espnId: 2026 },
+      { name: 'Vasco da Gama',       espnId: 3454 },
+      { name: 'Vitória',             espnId: 3457 },
+    ],
+  },
+  {
     id: 'nba', flag: '🇺🇸', name: 'NBA', country: 'États-Unis',
     teams: NBA_TEAMS,
   },
@@ -518,11 +543,14 @@ function EULeagueItem({ league }) {
 const POS_ORDER = { G: 0, D: 1, M: 2, F: 3 };
 const POS_LABEL = { G: 'Gardiens', D: 'Défenseurs', M: 'Milieux', F: 'Attaquants' };
 
+const normPlayerName = s => (s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+
 function FootballRosterPanel({ teamName, espnId, espnLeague, onClose }) {
   const cacheKey = `${espnLeague}:${espnId}`;
   const [data, setData]       = useState(sofascoreCache[cacheKey] ?? null);
   const [loading, setLoading] = useState(!sofascoreCache[cacheKey]);
   const [error, setError]     = useState(null);
+  const [search, setSearch]   = useState('');
 
   useEffect(() => {
     if (!espnId) { setLoading(false); return; }
@@ -539,8 +567,12 @@ function FootballRosterPanel({ teamName, espnId, espnLeague, onClose }) {
       .catch(e => { setError(e.message); setLoading(false); });
   }, [espnId, espnLeague]);
 
+  const searchNorm = normPlayerName(search.trim());
+  const filteredPlayers = data
+    ? (searchNorm ? data.players.filter(p => normPlayerName(p.shortName ?? p.name).includes(searchNorm)) : data.players)
+    : [];
   const grouped = data ? Object.entries(
-    data.players.reduce((acc, p) => {
+    filteredPlayers.reduce((acc, p) => {
       const pos = p.position || 'M';
       if (!acc[pos]) acc[pos] = [];
       acc[pos].push(p);
@@ -555,9 +587,28 @@ function FootballRosterPanel({ teamName, espnId, espnLeague, onClose }) {
         <button className="ef-roster-close" onClick={onClose}>✕</button>
       </div>
 
+      {data && (
+        <input
+          type="text"
+          className="ef-roster-search"
+          placeholder="Rechercher un joueur…"
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+          style={{
+            width: '100%', boxSizing: 'border-box', margin: '0.5rem 0', padding: '0.45rem 0.7rem',
+            borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-elevated, rgba(255,255,255,0.04))',
+            color: 'var(--text)', fontSize: 13,
+          }}
+        />
+      )}
+
       {!espnId  && <div className="ef-roster-state ef-roster-error">Effectif non disponible</div>}
       {loading  && <div className="ef-roster-state">Chargement…</div>}
       {error    && <div className="ef-roster-state ef-roster-error">Erreur : {error}</div>}
+
+      {data && grouped.length === 0 && (
+        <div className="ef-roster-state">Aucun joueur trouvé</div>
+      )}
 
       {data && (
         <div className="ef-fb-roster">

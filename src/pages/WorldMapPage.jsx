@@ -15,16 +15,17 @@ const COVERED = {
   '276': { name: 'Allemagne',  flag: '🇩🇪', leagues: ['bundes','bbl'] },
   '380': { name: 'Italie',     flag: '🇮🇹', leagues: ['seriea','legaa'] },
   '826': { name: 'Angleterre', flag: '🏴󠁧󠁢󠁥󠁮󠁧󠁿', leagues: ['pl'] },
+  '076': { name: 'Brésil',     flag: '🇧🇷', leagues: ['bresil'] },
 };
 
 const LEAGUE_META = {
   nba: 'NBA', wnba: 'WNBA', lnb: 'Betclic Élite',
   acb: 'ACB', bbl:  'BBL',  legaa: 'Lega A',
   ligue1: 'Ligue 1', laliga: 'La Liga', bundes: 'Bundesliga', seriea: 'Serie A', pl: 'Premier League',
-  euroleague: 'EuroLeague', cdm: 'Coupe du Monde',
+  euroleague: 'EuroLeague', cdm: 'Coupe du Monde', bresil: 'Brasileirão',
 };
 
-const FOOTBALL_LEAGUES = new Set(['ligue1','laliga','bundes','seriea','pl','cdm']);
+const FOOTBALL_LEAGUES = new Set(['ligue1','laliga','bundes','seriea','pl','cdm','bresil']);
 
 const _ESPN_WNBA = { 'Atlanta Dream':20,'Chicago Sky':19,'Connecticut Sun':18,'Dallas Wings':3,'Golden State Valkyries':129689,'Indiana Fever':5,'Las Vegas Aces':17,'Los Angeles Sparks':6,'Minnesota Lynx':8,'New York Liberty':9,'Phoenix Mercury':11,'Portland Fire':132052,'Seattle Storm':14,'Toronto Tempo':131935,'Washington Mystics':16 };
 const _ESPN_NBA  = { 'Atlanta Hawks':1,'Boston Celtics':2,'New Orleans Pelicans':3,'Chicago Bulls':4,'Cleveland Cavaliers':5,'Dallas Mavericks':6,'Denver Nuggets':7,'Detroit Pistons':8,'Golden State Warriors':9,'Houston Rockets':10,'Indiana Pacers':11,'LA Clippers':12,'Los Angeles Lakers':13,'Miami Heat':14,'Milwaukee Bucks':15,'Minnesota Timberwolves':16,'Brooklyn Nets':17,'New York Knicks':18,'Orlando Magic':19,'Philadelphia 76ers':20,'Phoenix Suns':21,'Portland Trail Blazers':22,'Sacramento Kings':23,'San Antonio Spurs':24,'Oklahoma City Thunder':25,'Utah Jazz':26,'Washington Wizards':27,'Toronto Raptors':28,'Memphis Grizzlies':29,'Charlotte Hornets':30 };
@@ -55,6 +56,8 @@ function _prefetchCountry(country) {
       cachedFetch('/api/acb/leaders',   6*3_600_000).catch(()=>{});
     } else if (l === 'cdm') {
       cachedFetch('/api/fd/worldcup', 30_000).catch(()=>{});
+    } else if (l === 'bresil') {
+      cachedFetch('/api/fd/bresil', 30_000).catch(()=>{});
     } else if (l === 'euroleague') {
       cachedFetch('/api/euroleague/scoreboard', 20_000).catch(()=>{});
     } else if (FOOTBALL_LEAGUES.has(l)) {
@@ -205,8 +208,8 @@ function Panel({ country, onClose, statsLeague, setStatsLeague, onOpenBasketStat
       const KEEP_MS = 48*3600_000;
       const UPCOMING_MS = 30*3600_000; // page principale = matchs imminents (<30h) ; onglet "À venir" = matchs programmés à 30h ou plus
       const splitGames = games => ({
-        soon:     games.filter(g=>g.status!=='STATUS_FINAL' && new Date(g.date).getTime()-Date.now() < UPCOMING_MS),
-        upcoming: games.filter(g=>g.status!=='STATUS_FINAL' && new Date(g.date).getTime()-Date.now() >= UPCOMING_MS),
+        soon:     games.filter(g=>g.status!=='STATUS_FINAL' && g.status!=='STATUS_POSTPONED' && new Date(g.date).getTime()-Date.now() < UPCOMING_MS),
+        upcoming: games.filter(g=>g.status!=='STATUS_FINAL' && g.status!=='STATUS_POSTPONED' && new Date(g.date).getTime()-Date.now() >= UPCOMING_MS),
         done:     games.filter(g=>g.status==='STATUS_FINAL'&&Date.now()-new Date(g.date).getTime()<KEEP_MS).slice(0,3),
       });
       if (l === 'nba')  return cachedFetch('/api/nba/scoreboard', 20_000).then(d=>{const s=splitGames(d.games||[]);return{l,...s};});
@@ -216,7 +219,7 @@ function Panel({ country, onClose, statsLeague, setStatsLeague, onOpenBasketStat
       // via useFootballFixtures, cf. src/utils/useFootballFixtures.js). Seuls les matchs SCHEDULED
       // sont renvoyés par /api/fd/matches (pas encore de source de score final pour ces 5 ligues,
       // contrairement à la CDM) — l'onglet "Terminés" restera vide pour elles, comme documenté.
-      if (FOOTBALL_LEAGUES.has(l) && l !== 'cdm') return cachedFetch('/api/fd/matches', 30_000).then(d=>{
+      if (FOOTBALL_LEAGUES.has(l) && l !== 'cdm' && l !== 'bresil') return cachedFetch('/api/fd/matches', 30_000).then(d=>{
         const all=(d.matches||[]).filter(f=>f.league===l).map(f=>({
           id:`fd_${f.id}`,date:f.date,status:'STATUS_SCHEDULED',round:f.round,
           home:{name:f.home?.name,short:f.home?.short,logo:f.home?.logoId,score:null},
@@ -227,6 +230,16 @@ function Panel({ country, onClose, statsLeague, setStatsLeague, onOpenBasketStat
       if (l === 'cdm') return cachedFetch('/api/fd/worldcup', 30_000).then(d => {
         const games = (d.games || []).map(g => ({ ...g, id: `fdcdm_${g.id}` }));
         return {l, ...splitGames(games)};
+      });
+      // Brasileirão (17 juillet 2026) — source isolée /api/fd/bresil, même prefixe fdbr_ que
+      // generateBackgroundAlerts (server.js) pour que fixtureId corresponde partout.
+      if (l === 'bresil') return cachedFetch('/api/fd/bresil', 30_000).then(d => {
+        const all=(d.matches||[]).map(f=>({
+          id:`fdbr_${f.id}`,date:f.date,status:'STATUS_SCHEDULED',round:f.round,
+          home:{name:f.home?.name,short:f.home?.short,logo:f.home?.logoId,score:null},
+          away:{name:f.away?.name,short:f.away?.short,logo:f.away?.logoId,score:null},
+        }));
+        return{l,...splitGames(all)};
       });
       return cachedFetch(`/api/euro/${l}/scoreboard`, 20_000).then(d=>{const s=splitGames(d.games||[]);return{l,...s};});
     };

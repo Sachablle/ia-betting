@@ -4,7 +4,7 @@ import GEO_DATA from 'world-atlas/countries-110m.json';
 import { LEAGUES, renderLeagueItem } from './EffectifPage';
 
 const GEO_URL = GEO_DATA;
-const FOOTBALL_IDS = new Set(['ligue1', 'pl', 'laliga', 'bundes', 'seriea']);
+const FOOTBALL_IDS = new Set(['ligue1', 'pl', 'laliga', 'bundes', 'seriea', 'bresil']);
 
 // LNB/BBL/Lega A n'ont pas de liste d'équipes statique dans EffectifPage (seul l'ACB y était) —
 // on la récupère dynamiquement via /api/euro/:league/standings (même source que les alertes props
@@ -23,11 +23,13 @@ const COVERED = {
   '276': { name: 'Allemagne',  flag: '🇩🇪' },
   '380': { name: 'Italie',     flag: '🇮🇹' },
   '826': { name: 'Angleterre', flag: '🏴󠁧󠁢󠁥󠁮󠁧󠁿' },
+  '076': { name: 'Brésil',     flag: '🇧🇷' },
 };
 
 const ZOOM_ORIGIN = {
   '840': '18% 33%', '250': '50% 28%', '724': '47% 32%',
   '276': '52% 26%', '380': '53% 31%', '826': '48% 23%',
+  '076': '34% 72%',
 };
 
 export default function DatabaseMapPage() {

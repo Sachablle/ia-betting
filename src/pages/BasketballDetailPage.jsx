@@ -2309,7 +2309,7 @@ function PropsSection({ fixture, homePlayers, awayPlayers, rosterLoading, isComp
                 {[['pts', 'PTS', '#60a5fa'], ['reb', 'REB', '#4ade80'], ['ast', 'AST', '#fb923c'], ['tpm', '3PM', '#a78bfa']].map(([stat, label, color], ci) => {
                   const top5 = rankLeaders[stat] || [];
                   const full = rankLeaders.full?.[stat] || [];
-                  const matchesPlayer = l => String(l.id) === String(rankPlayer.id) || (lastName(l.name) && lastName(l.name) === lastName(rankPlayer.name));
+                  const matchesPlayer = l => String(l.id) === String(rankPlayer.id) || euNameEq(l.name, rankPlayer.name);
                   const top5Entry = top5.find(matchesPlayer);
                   const fullEntry = !top5Entry ? full.find(matchesPlayer) : null;
                   const headEntry = top5Entry || fullEntry;

@@ -201,6 +201,7 @@ export default function BasketballPage() {
   const allNba = [...games]
     .filter(g => {
       if (g.home.name === 'TBD' || g.away.name === 'TBD') return false;
+      if (g.status === 'STATUS_POSTPONED') return false;
       const done = g.status === 'STATUS_FINAL';
       if (done) return (now - new Date(g.date)) < KEEP_MS;
       if (g.status === 'STATUS_SCHEDULED') return (new Date(g.date) - now) < UPCOMING_MS;
@@ -214,6 +215,7 @@ export default function BasketballPage() {
   const allWnba = [...wnbaGames]
     .filter(g => {
       if (g.home.name === 'TBD' || g.away.name === 'TBD') return false;
+      if (g.status === 'STATUS_POSTPONED') return false;
       const done = g.status === 'STATUS_FINAL';
       if (done) return (now - new Date(g.date)) < KEEP_MS;
       if (g.status === 'STATUS_SCHEDULED') return (new Date(g.date) - now) < KEEP_MS;

@@ -17,8 +17,8 @@ const FB_PINNACLE_KEY = 'fb_pinnacle_alerts';
 const STAT_LABEL     = { pts: 'Pts', reb: 'Reb', ast: 'Ast', total: 'Total', btts: 'BTTS', result: 'Résultat', pinnacle_edge: 'Pinnacle', dc_btts: 'DC+BTTS', dc_ou: 'DC+1.5' };
 
 // Ligues football — affichées dans les mêmes "MatchGroup" compacts que le basket
-const FB_LEAGUES = new Set(['cdm', 'ligue1', 'pl', 'laliga', 'bundes', 'seriea']);
-const FB_LEAGUE_LABEL = { cdm: 'CDM', ligue1: 'L1', pl: 'PL', laliga: 'Liga', bundes: 'BL', seriea: 'SA' };
+const FB_LEAGUES = new Set(['cdm', 'ligue1', 'pl', 'laliga', 'bundes', 'seriea', 'bresil']);
+const FB_LEAGUE_LABEL = { cdm: 'CDM', ligue1: 'L1', pl: 'PL', laliga: 'Liga', bundes: 'BL', seriea: 'SA', bresil: 'BRA' };
 
 const IN_GAME = s => s === 'STATUS_IN_PROGRESS' || s === 'STATUS_END_PERIOD' || s === 'STATUS_HALFTIME' || s === 'STATUS_END_OF_PERIOD';
 
@@ -867,6 +867,10 @@ export default function RunningPage() {
   }, [matchGroups, scoreData]);
 
   const dismiss = (ids, group) => {
+    // Nettoie aussi le registre backend séparé (accepted_alerts.json, utilisé pour le règlement
+    // auto) — sinon l'entrée y reste "accepted" indéfiniment, orpheline (trouvé le 17 juillet 2026,
+    // cas Jessica Shepard/match reporté : jamais nettoyée malgré l'annulation côté UI).
+    ids.forEach(id => { fetch(`/api/accepted-alerts/${id}`, { method: 'DELETE' }).catch(() => {}); });
     if (group?.type === 'game_total') {
       const idSet = new Set(ids);
       const updated = rawTotalAlerts.map(a => idSet.has(a.id) ? { ...a, status: 'void' } : a);

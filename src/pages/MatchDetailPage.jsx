@@ -984,6 +984,15 @@ const CDM_NAME_ALIASES = {
   unitedstates: 'etatsunis', etatsunis: 'etatsunis', usa: 'etatsunis',
 };
 
+// Alias clubs Brasileirão (17 juillet 2026) — même besoin/même contenu que côté backend
+// (server.js, BRESIL_TEAM_ALIASES) : football-data.org préfixe (EC Bahia), les bookmakers
+// suffixent souvent la ville à la place (Bahia Salvador) — ni l'un ni l'autre n'est une
+// sous-chaîne de l'autre malgré fuzzy(), donc alias vers un nom canonique partagé.
+const BRESIL_TEAM_ALIASES = {
+  ecbahia: 'bahia', bahiasalvador: 'bahia',
+  rbbragantino: 'bragantino', bragantinosp: 'bragantino',
+};
+
 function findInTable(table, name) {
   const q = normTeam(name);
   return table.find(t => {
@@ -1296,7 +1305,7 @@ export default function MatchDetailPage() {
         .replace(/\b(as|fc|sc|rc|ogc|afc|ac|stade|club|island|islands)\b/g, '')
         .replace(/\bst\b/g, 'saint')
         .replace(/[^a-z]/g, '');
-      return CDM_NAME_ALIASES[base] || base;
+      return CDM_NAME_ALIASES[base] || BRESIL_TEAM_ALIASES[base] || base;
     };
     const fuzzy = (a, b) => { const na = norm(a), nb = norm(b); return na.includes(nb) || nb.includes(na); };
     return cachedFetch('/api/odds', 30_000)
@@ -1403,6 +1412,10 @@ export default function MatchDetailPage() {
   // finit purgée comme orpheline par syncFootballAlerts dès qu'un autre match génère une alerte
   // backend, ce qui la fait disparaître sans explication côté UI).
   useEffect(() => {
+    // Brasileirão (17 juillet 2026) — implémentation en cours de revue, même interrupteur que
+    // BRESIL_ALERTS_ENABLED côté backend (server.js) : ce générateur client tourne pour toutes les
+    // ligues indépendamment du backend, donc il a besoin de son propre gate ici aussi.
+    if (fixture?.league === 'bresil') return;
     if (!bttsResult || !fixture || bttsResult.prob < 70) return;
     const unibetOdds = matchOdds?.btts?.bookmakers?.unibet?.yes || null;
     const betclicOdds = matchOdds?.btts?.bookmakers?.betclic?.yes || null;

@@ -18,6 +18,7 @@ const SNAPSHOT_FILE   = join(CACHE_DIR, 'projections-snapshot.json');
 const LINES_FILE      = join(CACHE_DIR, 'player-lines-snapshot.json');
 const EURO_LINEUPS_FILE    = join(CACHE_DIR, 'euro_lineups.json');
 const WORLDCUP_CACHE_FILE  = join(CACHE_DIR, 'worldcup.json');
+const BRESIL_CACHE_FILE    = join(CACHE_DIR, 'bresil_matches.json');
 const FD_MATCHES_CACHE_FILE = join(CACHE_DIR, 'fd_matches.json');
 const GAMELOGS_CACHE_FILE  = join(CACHE_DIR, 'gamelogs_cache.json');
 const SCRAPER_BLOCK_FILE   = join(CACHE_DIR, 'scraper_blocks.json');
@@ -234,6 +235,17 @@ const COUNTRY_ALIASES = {
   unitedstates: 'etatsunis', etatsunis: 'etatsunis', usa: 'etatsunis',
 };
 
+// Alias clubs Brasileirão (17 juillet 2026) — football-data.org utilise un préfixe (EC Bahia,
+// CR Flamengo, RB Bragantino...) alors que les bookmakers ajoutent souvent un suffixe ville/état
+// à la place (Bahia Salvador, Bragantino SP...) : les deux noms partagent le nom du club mais ont
+// chacun leur propre texte autour, donc ni l'un ni l'autre n'est une sous-chaîne de l'autre malgré
+// fuzzy() — repéré en vérifiant le vrai matching sur les cotes déjà scrapées (Betclic/Unibet).
+// Construit au fil des vrais cas rencontrés, même principe que COUNTRY_ALIASES ci-dessus.
+const BRESIL_TEAM_ALIASES = {
+  ecbahia: 'bahia', bahiasalvador: 'bahia',
+  rbbragantino: 'bragantino', bragantinosp: 'bragantino',
+};
+
 // Normalisation/fuzzy-matching de noms d'équipes — utilisé pour fusionner les cotes
 // scrapées (Unibet/Betclic/Winamax) avec les fixtures (FD leagues + CDM)
 const normTeam = s => {
@@ -242,7 +254,7 @@ const normTeam = s => {
     .replace(/\b(as|fc|sc|rc|ogc|afc|ac|stade|club|island|islands)\b/g, '')
     .replace(/\bst\b/g, 'saint')
     .replace(/[^a-z]/g, '');
-  return COUNTRY_ALIASES[base] || base;
+  return COUNTRY_ALIASES[base] || BRESIL_TEAM_ALIASES[base] || base;
 };
 const fuzzy = (a, b) => {
   if (!a || !b) return false;
@@ -252,7 +264,12 @@ const fuzzy = (a, b) => {
 
 // ── Alertes football BTTS + Over/Under (Poisson) ─────────────────────────────
 // Buts/équipe/match attendus — référence pour les facteurs attaque/défense
-const FB_LEAGUE_AVG_GOALS = { ligue1: 1.35, pl: 1.45, laliga: 1.35, bundes: 1.55, seriea: 1.35 };
+// bresil : calculé le 17 juillet 2026 sur le classement BSA en cours (475 buts / 358 matchs joués = 1.327)
+const FB_LEAGUE_AVG_GOALS = { ligue1: 1.35, pl: 1.45, laliga: 1.35, bundes: 1.55, seriea: 1.35, bresil: 1.33 };
+// Interrupteur Brasileirão (17 juillet 2026) — implémentation en cours de revue par l'utilisateur.
+// Le fetch fixtures/cotes tourne déjà (isolé, zéro impact sur les 5 grands championnats), mais tant
+// que ce flag est à false, aucune alerte BTTS/Total/Résultat n'est générée pour cette ligue.
+const BRESIL_ALERTS_ENABLED = false;
 const CDM_AVG_GOALS = 1.30;
 // Fallback si aucune stat CDM disponible (avgGF/avgGA normalement calculés dynamiquement
 // sur le pool d'équipes programmées, cf section 4d) — anciennes moyennes observées (~17 sélections).
@@ -455,6 +472,69 @@ app.get('/api/fd/worldcup', async (req, res) => {
     _cdmErrorUntil = Date.now() + 60 * 1000;
     res.json(_cdmCache || { games: [] });
   }
+});
+
+// ── Brasileirão (football-data.org, BSA) — 17 juillet 2026 ────────────────────
+// Complètement isolé de _fdCache/FD_LEAGUES (les 5 grands championnats) : cache, TTL et
+// gestion d'erreur séparés, pour qu'un souci sur cette route ne puisse jamais dégrader la
+// fiabilité des 5 ligues existantes. Même principe déjà validé par /api/fd/worldcup (CDM)
+// ci-dessus, qui partage aussi le quota FD (10 req/min) sans jamais avoir posé de problème.
+let _bresilCache = null, _bresilCacheTs = 0, _bresilErrorUntil = 0;
+try {
+  if (existsSync(BRESIL_CACHE_FILE)) {
+    const parsed = JSON.parse(readFileSync(BRESIL_CACHE_FILE, 'utf8'));
+    if (parsed?.matches) { _bresilCache = { matches: parsed.matches, count: parsed.matches.length }; _bresilCacheTs = parsed.ts || 0; }
+  }
+} catch {}
+
+// Fonction partagée route + generateBackgroundAlerts (section 4d) — un seul endroit qui parle
+// réellement à football-data.org pour le Brésil, tout le monde relit le même cache derrière.
+async function _getBresilMatches() {
+  if (!FD_KEY) return { matches: [], count: 0 };
+  if (_bresilCache && Date.now() - _bresilCacheTs < 30 * 60 * 1000) return _bresilCache;
+  if (Date.now() < _bresilErrorUntil) return _bresilCache || { matches: [], count: 0 };
+  try {
+    const matchesRes = await fdGet('/competitions/BSA/matches?status=SCHEDULED');
+    await new Promise(r => setTimeout(r, 600));
+    const standingsRes = await fdGet('/competitions/BSA/standings');
+
+    const table = standingsRes.standings?.find(s => s.type === 'TOTAL')?.table || [];
+    const statsMap = {};
+    for (const s of table) {
+      statsMap[s.team.id] = {
+        position: s.position, points: s.points, played: s.playedGames,
+        wins: s.won, draws: s.draw, losses: s.lost,
+        goalsFor: s.goalsFor, goalsAgainst: s.goalsAgainst,
+        form: (s.form || '').split('').filter(c => 'WDL'.includes(c)).slice(-5),
+      };
+    }
+
+    const upcoming = (matchesRes.matches || []).slice(0, 10);
+    const allMatches = upcoming.map(m => {
+      const hId = m.homeTeam.id, aId = m.awayTeam.id;
+      return {
+        id: String(m.id), league: 'bresil', round: m.matchday ? `Journée ${m.matchday}` : '',
+        date: m.utcDate, venue: null, weather: null, isLive: true,
+        home: { id: hId, name: m.homeTeam.name, short: m.homeTeam.tla || abbrev(m.homeTeam.name), logoId: m.homeTeam.crest, upcoming: [], ...(statsMap[hId] || {}) },
+        away: { id: aId, name: m.awayTeam.name, short: m.awayTeam.tla || abbrev(m.awayTeam.name), logoId: m.awayTeam.crest, upcoming: [], ...(statsMap[aId] || {}) },
+        h2h: [], markets: {},
+      };
+    });
+
+    const result = { matches: allMatches, count: allMatches.length };
+    _bresilCache = result; _bresilCacheTs = Date.now();
+    try { writeFileSync(BRESIL_CACHE_FILE, JSON.stringify({ matches: allMatches, ts: _bresilCacheTs }), 'utf8'); } catch {}
+    return result;
+  } catch (err) {
+    console.error('football-data.org bresil error:', err.message);
+    _bresilErrorUntil = Date.now() + 60 * 1000;
+    return _bresilCache || { matches: [], count: 0 };
+  }
+}
+
+app.get('/api/fd/bresil', async (req, res) => {
+  if (!FD_KEY) return res.status(503).json({ error: 'FD_API_KEY not configured' });
+  res.json(await _getBresilMatches());
 });
 
 // Récupère un match CDM précis par ID, sans la fenêtre de 48h de /api/fd/worldcup — filet de
@@ -5653,6 +5733,7 @@ const BETCLIC_LEAGUES = [
   'ned-eredivisie-c11',
   'top-football-europeen-p0',
   'coupe-du-monde-2026-c1',
+  'bresil-serie-a-c187', // Brasileirão (17 juillet 2026) — vérifié manuellement, page accessible et parsable
 ];
 
 // ── Outrights (paris longterme vainqueur de compétition) — Betclic uniquement ──
@@ -5882,6 +5963,7 @@ const PINNACLE_FOOT_LEAGUE_IDS = [
   2196,  // Spain La Liga
   1842,  // Germany Bundesliga
   2436,  // Italy Serie A
+  1834,  // Brazil Serie A (Brasileirão) — 17 juillet 2026, vérifié manuellement (17 matchups, 594 marchés)
 ];
 
 const PINNACLE_BASKET_LEAGUE_IDS = [
@@ -10342,12 +10424,21 @@ async function generateBackgroundAlerts() {
       // Bloque dès qu'une titulaire est Q/GTD, peu importe la distance au match — se débloque tout
       // seul dès que le statut est mis à jour (cycle ~20min). Bloque par équipe, pas par match :
       // l'équipe adverse continue à générer des alertes normalement.
-      const homeGatedWNBA = homePatch.some(p => homeStartersWNBA.has(String(p.id)) && Q_STATUSES_WNBA.includes(p.injury));
-      const awayGatedWNBA = awayPatch.some(p => awayStartersWNBA.has(String(p.id)) && Q_STATUSES_WNBA.includes(p.injury));
+      // hasPlayedForTeamWNBA (17 juillet 2026) — le tri "titulaire" se base sur les pts saison du
+      // roster ESPN, qui peuvent venir d'avant un transfert en cours de saison (0 match avec
+      // l'équipe actuelle malgré une moyenne saison élevée héritée). Même principe que le filtre déjà
+      // appliqué à la redistribution OUT (cf. wnbaOutPlayed ci-dessus, cas Collier) : une "titulaire"
+      // qui n'a jamais joué pour cette équipe ne doit pas bloquer toutes ses coéquipières si elle
+      // passe Q (cas réel : Brionna Jones à Atlanta, 12,8 pts hérités, 0 match joué avec le club).
+      const wnbaGamelogById = {};
+      allWnba16.forEach((p, i) => { wnbaGamelogById[String(p.id)] = allWnbaGamelogs[i]; });
+      const hasPlayedForTeamWNBA = p => (wnbaGamelogById[String(p.id)]?.length ?? 1) > 0;
+      const homeGatedWNBA = homePatch.some(p => homeStartersWNBA.has(String(p.id)) && Q_STATUSES_WNBA.includes(p.injury) && hasPlayedForTeamWNBA(p));
+      const awayGatedWNBA = awayPatch.some(p => awayStartersWNBA.has(String(p.id)) && Q_STATUSES_WNBA.includes(p.injury) && hasPlayedForTeamWNBA(p));
       if (homeGatedWNBA || awayGatedWNBA) {
         const names = [
-          ...homePatch.filter(p => homeStartersWNBA.has(String(p.id)) && Q_STATUSES_WNBA.includes(p.injury)).map(p => `${p.name}(Q/home)`),
-          ...awayPatch.filter(p => awayStartersWNBA.has(String(p.id)) && Q_STATUSES_WNBA.includes(p.injury)).map(p => `${p.name}(Q/away)`),
+          ...homePatch.filter(p => homeStartersWNBA.has(String(p.id)) && Q_STATUSES_WNBA.includes(p.injury) && hasPlayedForTeamWNBA(p)).map(p => `${p.name}(Q/home)`),
+          ...awayPatch.filter(p => awayStartersWNBA.has(String(p.id)) && Q_STATUSES_WNBA.includes(p.injury) && hasPlayedForTeamWNBA(p)).map(p => `${p.name}(Q/away)`),
         ].join(', ');
         _bgLog.push(`wnba gate ${game.home.short}v${game.away.short}: ${names}`);
       }
@@ -11547,6 +11638,22 @@ async function generateBackgroundAlerts() {
         });
       }
 
+      // Brasileirão (17 juillet 2026) — isolé de _fdCache, gate BRESIL_ALERTS_ENABLED tant que
+      // l'implémentation n'a pas été validée par l'utilisateur (voir commentaire sur le flag).
+      if (BRESIL_ALERTS_ENABLED) {
+        const bresilData = await _getBresilMatches().catch(() => ({ matches: [] }));
+        for (const m of (bresilData?.matches || [])) {
+          if (!m.home || !m.away) continue;
+          fbFixtures.push({
+            fixtureId: `fdbr_${m.id}`, league: m.league, date: m.date, round: m.round,
+            home: m.home, away: m.away,
+            homeGF: m.home.goalsFor, homeGA: m.home.goalsAgainst, homePlayed: m.home.played,
+            awayGF: m.away.goalsFor, awayGA: m.away.goalsAgainst, awayPlayed: m.away.played,
+            leagueAvgGoals: FB_LEAGUE_AVG_GOALS.bresil,
+          });
+        }
+      }
+
       // CDM : la moyenne de référence (avgGF/avgGA) se recalcule à chaque cycle selon le pool
       // de matchs encore programmés, donc la proba d'un match peut dériver de jour en jour
       // sans rapport avec ce match lui-même. On limite la génération d'alertes CDM aux
@@ -11784,8 +11891,10 @@ async function generateBackgroundAlerts() {
             }
           }
 
-          // Over/Under — ligne 2.5 prioritaire, fallback 1.5
-          for (const line of ['2.5', '1.5']) {
+          // Over/Under — ligne 2.5 prioritaire, fallback 1.5 (championnats habituels).
+          // Brésil (17 juillet 2026) : ordre inversé — championnat plus fermé, ligne 1.5 privilégiée.
+          const OU_LINES = f.league === 'bresil' ? ['1.5', '2.5'] : ['2.5', '1.5'];
+          for (const line of OU_LINES) {
             const ou = computeOUProb(lambdaHome, lambdaAway, parseFloat(line));
             const bestP = Math.max(ou.pOver, ou.pUnder);
             if (bestP < FB_OU_ALERT_PROB) continue;
@@ -12205,7 +12314,8 @@ app.get('/api/football/standings/:league', async (req, res) => {
   if (!FD_KEY) return res.status(503).json({ error: 'FD_API_KEY not configured' });
 
   const { league } = req.params;
-  const fdLeague = FD_LEAGUES.find(l => l.key === league);
+  // 'bresil' résolu séparément — n'ajoute rien à FD_LEAGUES (zéro impact sur les 5 grands championnats)
+  const fdLeague = FD_LEAGUES.find(l => l.key === league) || (league === 'bresil' ? { code: 'BSA', key: 'bresil' } : null);
   if (!fdLeague) return res.status(400).json({ error: `Unknown league: ${league}` });
 
   const hit = _fdStandingsCache[league];

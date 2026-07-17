@@ -46,9 +46,11 @@ echo "Enregistrement du webhook Telegram..."
 # de secondes). Budget large (15 min) car ça tourne en tâche de fond sans bloquer le reste de l'app.
 SET_OK=0
 for i in $(seq 1 60); do
-  RES=$(curl -s -X POST "https://api.telegram.org/bot${TOKEN}/setWebhook" \
+  # || true — un simple timeout réseau passager ne doit pas faire planter tout le script (set -e),
+  # sinon la tentative s'arrête après le premier hoquet au lieu d'utiliser le budget de 15 min complet.
+  RES=$(curl -s --max-time 10 -X POST "https://api.telegram.org/bot${TOKEN}/setWebhook" \
     -d "url=${URL}/api/telegram/webhook" \
-    -d "secret_token=${SECRET}")
+    -d "secret_token=${SECRET}" || true)
   echo "$RES"
   if echo "$RES" | grep -q '"ok":true'; then SET_OK=1; break; fi
   echo "(pas encore propagé, nouvelle tentative dans 15s...)"

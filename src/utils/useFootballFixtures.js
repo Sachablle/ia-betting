@@ -133,13 +133,67 @@ function useFdFixtures() {
   return fixtures;
 }
 
-// FIXTURES (statiques) + 5 championnats (live, football-data.org) + CDM (live)
+// ── Brasileirão (live, football-data.org BSA) — 17 juillet 2026 ──────────────
+// Isolé de _fdFixtures/useFdFixtures (5 grands championnats) : source séparée /api/fd/bresil,
+// même prefixe fdbr_ que generateBackgroundAlerts (server.js) et WorldMapPage pour que le
+// fixtureId d'une alerte pointe bien vers le même match ici.
+function mapBrMatch(m) {
+  return {
+    id: `fdbr_${m.id}`,
+    league: 'bresil',
+    round: m.round || '',
+    date: m.date,
+    status: 'STATUS_SCHEDULED',
+    venue: { name: 'À définir', city: '', capacity: 0 },
+    weather: { icon: '⚽', temp: 0, condition: '—', wind: 0, humidity: 0 },
+    home: mapFdTeam(m.home),
+    away: mapFdTeam(m.away),
+    h2h: m.h2h || [],
+  };
+}
+
+let _brFixtures = null;
+let _brFetching = false;
+let _brListeners = new Set();
+
+function notifyBr() {
+  _brListeners.forEach(fn => fn(_brFixtures));
+}
+
+async function fetchAndApplyBr() {
+  if (_brFetching) return;
+  _brFetching = true;
+  try {
+    const d = await fetch('/api/fd/bresil').then(r => r.json());
+    _brFixtures = (d.matches || []).map(mapBrMatch);
+  } catch {
+    _brFixtures = _brFixtures || [];
+  }
+  _brFetching = false;
+  notifyBr();
+}
+
+function useBresilFixtures() {
+  const [fixtures, setFixtures] = useState(_brFixtures || []);
+
+  useEffect(() => {
+    _brListeners.add(setFixtures);
+    if (_brFixtures) setFixtures(_brFixtures);
+    else if (!_brFetching) fetchAndApplyBr();
+    return () => _brListeners.delete(setFixtures);
+  }, []);
+
+  return fixtures;
+}
+
+// FIXTURES (statiques) + 5 championnats (live, football-data.org) + CDM (live) + Brasileirão (live)
 // Pour une ligue donnée, les fixtures live remplacent les statiques dès qu'elles
 // sont disponibles (sinon fallback statique, ex: hors-saison).
 export function useFootballFixtures() {
   const { fixtures: cdm, loaded: cdmLoaded } = useCdmFixtures();
   const fd = useFdFixtures();
-  const liveLeagues = new Set(fd.map(f => f.league));
+  const br = useBresilFixtures();
+  const liveLeagues = new Set([...fd.map(f => f.league), ...br.map(f => f.league)]);
   const staticFixtures = FIXTURES.filter(f => !liveLeagues.has(f.league));
-  return { fixtures: [...staticFixtures, ...fd, ...cdm], loading: !cdmLoaded };
+  return { fixtures: [...staticFixtures, ...fd, ...br, ...cdm], loading: !cdmLoaded };
 }

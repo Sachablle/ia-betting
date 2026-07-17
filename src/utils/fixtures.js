@@ -7,6 +7,7 @@ export const LEAGUES = [
   { id: 'seriea',     name: 'Serie A',         country: 'Italy',       accent: '#024494', flag: '🇮🇹', standingsUrl: 'https://www.legaseriea.it/en/serie-a/standing' },
   { id: 'eredivisie', name: 'Eredivisie',      country: 'Netherlands', accent: '#ff6600', flag: '🇳🇱', standingsUrl: 'https://www.eredivisie.nl/stand' },
   { id: 'cdm',        name: 'Coupe du Monde', country: 'International', accent: '#FFD700', flag: '🌍', standingsUrl: 'https://www.fifa.com/en/tournaments/mens/worldcup/canadamexicousa2026' },
+  { id: 'bresil',     name: 'Brasileirão',    country: 'Brazil',        accent: '#009c3b', flag: '🇧🇷', standingsUrl: 'https://ge.globo.com/futebol/brasileirao-serie-a/' },
 ];
 
 function team(name, short, logoId, position, points, played, wins, draws, losses, gf, ga, xG, xGA, spg, sot, poss, form, upcoming) {
