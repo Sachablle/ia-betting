@@ -2183,6 +2183,19 @@ export default function PlaceBetPage() {
     window.addEventListener('fb_dc_ou_alerts_updated', loadDcOuAlerts);
     window.addEventListener('bball_pinnacle_alerts_updated', loadBballPinnacleAlerts);
     window.addEventListener('bball_pinnacle_props_alerts_updated', loadBballPinnaclePropsAlertsState);
+    // Accept/reject fait depuis Telegram (18 juillet 2026) — sans ça, l'onglet Alertes ne reflétait
+    // un clic fait sur le téléphone qu'au prochain polling (jusqu'à 2 min) ou à un refresh manuel,
+    // cf. cas réel Jonquel Jones (acceptée sur Telegram, encore visible ici jusqu'à un rechargement
+    // forcé). Le backend diffuse un SSE ('cloud_synced' déjà câblé côté App.jsx) dès qu'un
+    // accept/reject Telegram est traité ; on va chercher la nouvelle action puis on recharge tout.
+    const onTelegramSync = () => {
+      syncTelegramActions().then(() => {
+        loadAlerts(); loadTotalAlerts(); loadResultAlerts(); loadSpreadAlerts();
+        loadBttsAlerts(); loadFbTotalAlerts(); loadFbResultAlerts(); loadFbPinnacleAlerts();
+        loadDcBttsAlerts(); loadDcOuAlerts(); loadBballPinnacleAlerts(); loadBballPinnaclePropsAlertsState();
+      });
+    };
+    window.addEventListener('cloud_synced', onTelegramSync);
     // Refresh cotes toutes les 2 min (mouvements de cotes sur alertes en jeu)
     const timer = setInterval(() => { loadAlerts(); loadTotalAlerts(); loadResultAlerts(); loadSpreadAlerts(); fetchBackgroundAlerts(); syncGameTotalAlerts(); syncBasketballResultAlerts(); syncBasketballSpreadAlerts(); syncBballPinnacleAlerts(); syncBballPinnaclePropsAlerts(); syncFootballAlerts(); syncTelegramActions(); syncOddsDrift().then(loadAlerts); applySettlements(); }, 2 * 60 * 1000);
     // Aussi au retour sur la page (changement d'onglet / navigation)
@@ -2202,6 +2215,7 @@ export default function PlaceBetPage() {
       window.removeEventListener('fb_dc_ou_alerts_updated', loadDcOuAlerts);
       window.removeEventListener('bball_pinnacle_alerts_updated', loadBballPinnacleAlerts);
       window.removeEventListener('bball_pinnacle_props_alerts_updated', loadBballPinnaclePropsAlertsState);
+      window.removeEventListener('cloud_synced', onTelegramSync);
       clearInterval(timer);
     };
   }, []);

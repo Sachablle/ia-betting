@@ -210,7 +210,7 @@ function Panel({ country, onClose, statsLeague, setStatsLeague, onOpenBasketStat
       const splitGames = games => ({
         soon:     games.filter(g=>g.status!=='STATUS_FINAL' && g.status!=='STATUS_POSTPONED' && new Date(g.date).getTime()-Date.now() < UPCOMING_MS),
         upcoming: games.filter(g=>g.status!=='STATUS_FINAL' && g.status!=='STATUS_POSTPONED' && new Date(g.date).getTime()-Date.now() >= UPCOMING_MS),
-        done:     games.filter(g=>g.status==='STATUS_FINAL'&&Date.now()-new Date(g.date).getTime()<KEEP_MS).slice(0,3),
+        done:     games.filter(g=>g.status==='STATUS_FINAL'&&Date.now()-new Date(g.date).getTime()<KEEP_MS).slice(0,8),
       });
       if (l === 'nba')  return cachedFetch('/api/nba/scoreboard', 20_000).then(d=>{const s=splitGames(d.games||[]);return{l,...s};});
       if (l === 'wnba') return cachedFetch('/api/wnba/scoreboard', 20_000).then(d=>{const s=splitGames(d.games||[]);return{l,...s};});
@@ -235,9 +235,9 @@ function Panel({ country, onClose, statsLeague, setStatsLeague, onOpenBasketStat
       // generateBackgroundAlerts (server.js) pour que fixtureId corresponde partout.
       if (l === 'bresil') return cachedFetch('/api/fd/bresil', 30_000).then(d => {
         const all=(d.matches||[]).map(f=>({
-          id:`fdbr_${f.id}`,date:f.date,status:'STATUS_SCHEDULED',round:f.round,
-          home:{name:f.home?.name,short:f.home?.short,logo:f.home?.logoId,score:null},
-          away:{name:f.away?.name,short:f.away?.short,logo:f.away?.logoId,score:null},
+          id:`fdbr_${f.id}`,date:f.date,status:f.status||'STATUS_SCHEDULED',round:f.round,
+          home:{name:f.home?.name,short:f.home?.short,logo:f.home?.logoId,score:f.home?.score ?? null},
+          away:{name:f.away?.name,short:f.away?.short,logo:f.away?.logoId,score:f.away?.score ?? null},
         }));
         return{l,...splitGames(all)};
       });

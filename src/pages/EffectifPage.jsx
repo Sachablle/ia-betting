@@ -248,6 +248,7 @@ function RosterPanel({ team, onClose }) {
   const [players, setPlayers] = useState(rosterCache[team.bdlId] ?? null);
   const [loading, setLoading] = useState(!rosterCache[team.bdlId]);
   const [error, setError]     = useState(null);
+  const [search, setSearch]   = useState('');
 
   useEffect(() => {
     if (rosterCache[team.bdlId]) {
@@ -275,11 +276,15 @@ function RosterPanel({ team, onClose }) {
         <button className="ef-roster-close" onClick={onClose}>✕</button>
       </div>
 
+      {players && <RosterSearchBar value={search} onChange={setSearch} />}
+
       {loading && <div className="ef-roster-state">Chargement…</div>}
       {error   && <div className="ef-roster-state ef-roster-error">Erreur : {error}</div>}
 
       {players && (() => {
-        const sorted = [...players].sort((a, b) => (b.stats?.pts ?? -1) - (a.stats?.pts ?? -1));
+        const searchNorm = normPlayerName(search.trim());
+        const filtered = searchNorm ? players.filter(p => normPlayerName(p.name).includes(searchNorm)) : players;
+        const sorted = [...filtered].sort((a, b) => (b.stats?.pts ?? -1) - (a.stats?.pts ?? -1));
         return (
           <div className="ef-roster-table">
             <div className="ef-roster-row ef-roster-head">
@@ -364,6 +369,7 @@ function WNBARosterPanel({ team, onClose }) {
   const [players, setPlayers] = useState(wnbaRosterCache[team.wnbaId] ?? null);
   const [loading, setLoading] = useState(!wnbaRosterCache[team.wnbaId]);
   const [error, setError]     = useState(null);
+  const [search, setSearch]   = useState('');
 
   useEffect(() => {
     if (wnbaRosterCache[team.wnbaId]) { setPlayers(wnbaRosterCache[team.wnbaId]); setLoading(false); return; }
@@ -380,10 +386,13 @@ function WNBARosterPanel({ team, onClose }) {
         <span className="ef-roster-title">{team.name}</span>
         <button className="ef-roster-close" onClick={onClose}>✕</button>
       </div>
+      {players && <RosterSearchBar value={search} onChange={setSearch} placeholder="Rechercher une joueuse…" />}
       {loading && <div className="ef-roster-state">Chargement…</div>}
       {error   && <div className="ef-roster-state ef-roster-error">Erreur : {error}</div>}
       {players && (() => {
-        const sorted = [...players].sort((a, b) => (b.stats?.pts ?? -1) - (a.stats?.pts ?? -1));
+        const searchNorm = normPlayerName(search.trim());
+        const filtered = searchNorm ? players.filter(p => normPlayerName(p.name).includes(searchNorm)) : players;
+        const sorted = [...filtered].sort((a, b) => (b.stats?.pts ?? -1) - (a.stats?.pts ?? -1));
         return (
           <div className="ef-roster-table">
             <div className="ef-roster-row ef-roster-head">
@@ -459,6 +468,7 @@ function EURosterPanel({ team, league, onClose }) {
   const [players, setPlayers] = useState(euRosterCache[ck] ?? null);
   const [loading, setLoading] = useState(!euRosterCache[ck]);
   const [error, setError]     = useState(null);
+  const [search, setSearch]   = useState('');
 
   useEffect(() => {
     if (euRosterCache[ck]) { setPlayers(euRosterCache[ck]); setLoading(false); return; }
@@ -475,10 +485,13 @@ function EURosterPanel({ team, league, onClose }) {
         <span className="ef-roster-title">{team.name}</span>
         <button className="ef-roster-close" onClick={onClose}>✕</button>
       </div>
+      {players && <RosterSearchBar value={search} onChange={setSearch} />}
       {loading && <div className="ef-roster-state">Chargement…</div>}
       {error   && <div className="ef-roster-state ef-roster-error">Erreur : {error}</div>}
       {players && (() => {
-        const sorted = [...players].sort((a, b) => (b.stats?.pts ?? -1) - (a.stats?.pts ?? -1));
+        const searchNorm = normPlayerName(search.trim());
+        const filtered = searchNorm ? players.filter(p => normPlayerName(p.name).includes(searchNorm)) : players;
+        const sorted = [...filtered].sort((a, b) => (b.stats?.pts ?? -1) - (a.stats?.pts ?? -1));
         return (
           <div className="ef-roster-table">
             <div className="ef-roster-row ef-roster-head">
@@ -545,6 +558,25 @@ const POS_LABEL = { G: 'Gardiens', D: 'Défenseurs', M: 'Milieux', F: 'Attaquant
 
 const normPlayerName = s => (s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
 
+// Barre de recherche partagée par les 4 panneaux d'effectif (NBA/WNBA/EU basket/foot) — 18 juillet 2026.
+function RosterSearchBar({ value, onChange, placeholder = 'Rechercher un joueur…' }) {
+  return (
+    <div className="ef-roster-search-wrap">
+      <svg className="ef-roster-search-icon" width="15" height="15" viewBox="0 0 24 24" fill="none">
+        <circle cx="11" cy="11" r="7" stroke="currentColor" strokeWidth="2"/>
+        <path d="M21 21l-4.35-4.35" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+      </svg>
+      <input
+        type="text"
+        className="ef-roster-search"
+        placeholder={placeholder}
+        value={value}
+        onChange={e => onChange(e.target.value)}
+      />
+    </div>
+  );
+}
+
 function FootballRosterPanel({ teamName, espnId, espnLeague, onClose }) {
   const cacheKey = `${espnLeague}:${espnId}`;
   const [data, setData]       = useState(sofascoreCache[cacheKey] ?? null);
@@ -587,20 +619,7 @@ function FootballRosterPanel({ teamName, espnId, espnLeague, onClose }) {
         <button className="ef-roster-close" onClick={onClose}>✕</button>
       </div>
 
-      {data && (
-        <input
-          type="text"
-          className="ef-roster-search"
-          placeholder="Rechercher un joueur…"
-          value={search}
-          onChange={e => setSearch(e.target.value)}
-          style={{
-            width: '100%', boxSizing: 'border-box', margin: '0.5rem 0', padding: '0.45rem 0.7rem',
-            borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-elevated, rgba(255,255,255,0.04))',
-            color: 'var(--text)', fontSize: 13,
-          }}
-        />
-      )}
+      {data && <RosterSearchBar value={search} onChange={setSearch} />}
 
       {!espnId  && <div className="ef-roster-state ef-roster-error">Effectif non disponible</div>}
       {loading  && <div className="ef-roster-state">Chargement…</div>}

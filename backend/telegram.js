@@ -2,6 +2,10 @@
 // boutons Accepter/Rejeter (16 juillet 2026). Fichier séparé exprès : aucune fonction ici ne touche
 // à la logique d'alertes existante, uniquement l'envoi/réception Telegram.
 
+import { existsSync, readFileSync, writeFileSync } from 'fs';
+import { dirname, join } from 'path';
+import { fileURLToPath } from 'url';
+
 const TG_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TG_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 const TG_API = TG_TOKEN ? `https://api.telegram.org/bot${TG_TOKEN}` : null;
@@ -197,10 +201,24 @@ function getAlertTypeMeta(type) {
 // avec player+stat+date concaténés) peut dépasser cette limite, donc on ne met jamais l'id réel dans
 // le bouton. À la place : un token court aléatoire → {type, id} en mémoire. _actionLog garde la trace
 // des accept/reject pour que le frontend (qui ne peut pas recevoir de webhook Telegram lui-même)
-// puisse les découvrir par polling (GET /api/telegram/actions?since=). Perdu au redémarrage backend —
-// sans conséquence : un redémarrage backend perd aussi les boutons actifs (les alertes seront de
-// toute façon régénérées et re-notifiées au cycle suivant si toujours pending).
+// puisse les découvrir par polling (GET /api/telegram/actions?since=).
+// Persisté sur disque depuis le 18 juillet 2026 — avant ça, _tokenMap était perdu à chaque
+// redémarrage backend et un bouton Accepter/Rejeter déjà envoyé devenait mort ("Alerte introuvable
+// ou expirée") sans jamais être renvoyé automatiquement (le fix _telegramNotifiedIds côté server.js,
+// qui dédup par ID déjà notifié plutôt que par "1er cycle après restart", empêche justement une
+// re-notification qui aurait pu régénérer un token valide — cas réel constaté le 18 juillet 2026,
+// alerte Jonquel Jones). Avec le watchdog backend qui peut redémarrer le process tout seul, ce
+// n'est plus un cas rare de session de dev — les boutons doivent survivre à un redémarrage normal.
+const TOKEN_MAP_FILE = join(dirname(fileURLToPath(import.meta.url)), 'cache', 'telegram_tokens.json');
 const _tokenMap = new Map(); // token -> { type, id, messageId }
+try {
+  if (existsSync(TOKEN_MAP_FILE)) {
+    for (const [k, v] of JSON.parse(readFileSync(TOKEN_MAP_FILE, 'utf8'))) _tokenMap.set(k, v);
+  }
+} catch {}
+function _saveTokenMap() {
+  try { writeFileSync(TOKEN_MAP_FILE, JSON.stringify([..._tokenMap.entries()]), 'utf8'); } catch {}
+}
 const _actionLog = []; // { type, id, action, ts }
 const ACTION_LOG_MAX = 500;
 
@@ -244,6 +262,7 @@ async function notifyNewAlert(alert) {
     const messageId = await sendTelegramMessage(text, buttons);
     _tokenMap.set(acceptToken, { type: alert.type, id: alert.id, messageId });
     _tokenMap.set(rejectToken, { type: alert.type, id: alert.id, messageId });
+    _saveTokenMap();
   } catch (e) { console.error('notifyNewAlert error:', e.message); }
 }
 
@@ -257,6 +276,7 @@ function resolveCallbackToken(callbackData) {
   const entry = _tokenMap.get(token);
   if (!action || !entry) return null;
   _tokenMap.delete(token);
+  _saveTokenMap();
   return { action, ...entry };
 }
 

@@ -75,7 +75,7 @@ const NEUTRAL_ADV_STATS = { xG: 0, xGA: 0, shotsPerGame: 0, shotsOnTarget: 0, po
 
 function mapFdTeam(t) {
   return {
-    name: t?.name, short: t?.short, logoId: t?.logoId, score: null,
+    name: t?.name, short: t?.short, logoId: t?.logoId, score: t?.score ?? null,
     position: t?.position ?? null, points: t?.points ?? null, played: t?.played ?? 0,
     wins: t?.wins ?? 0, draws: t?.draws ?? 0, losses: t?.losses ?? 0,
     goalsFor: t?.goalsFor ?? 0, goalsAgainst: t?.goalsAgainst ?? 0,
@@ -143,7 +143,7 @@ function mapBrMatch(m) {
     league: 'bresil',
     round: m.round || '',
     date: m.date,
-    status: 'STATUS_SCHEDULED',
+    status: m.status || 'STATUS_SCHEDULED',
     venue: { name: 'À définir', city: '', capacity: 0 },
     weather: { icon: '⚽', temp: 0, condition: '—', wind: 0, humidity: 0 },
     home: mapFdTeam(m.home),

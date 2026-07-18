@@ -15,6 +15,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const CACHE_DIR   = join(__dirname, 'cache');
 const ODDS_CACHE_FILE = join(CACHE_DIR, 'odds.json');
 const SNAPSHOT_FILE   = join(CACHE_DIR, 'projections-snapshot.json');
+const PROJECTION_ACCURACY_FILE = join(CACHE_DIR, 'projection_accuracy.json');
 const LINES_FILE      = join(CACHE_DIR, 'player-lines-snapshot.json');
 const EURO_LINEUPS_FILE    = join(CACHE_DIR, 'euro_lineups.json');
 const WORLDCUP_CACHE_FILE  = join(CACHE_DIR, 'worldcup.json');
@@ -489,12 +490,25 @@ try {
 
 // Fonction partagée route + generateBackgroundAlerts (section 4d) — un seul endroit qui parle
 // réellement à football-data.org pour le Brésil, tout le monde relit le même cache derrière.
+// Statuts football-data.org → statuts internes app — même mapping que /api/fd/worldcup (CDM).
+const FD_STATUS_MAP_BRESIL = {
+  SCHEDULED: 'STATUS_SCHEDULED', TIMED: 'STATUS_SCHEDULED',
+  IN_PLAY: 'STATUS_IN_PROGRESS', PAUSED: 'STATUS_IN_PROGRESS', LIVE: 'STATUS_IN_PROGRESS',
+  FINISHED: 'STATUS_FINAL', AWARDED: 'STATUS_FINAL',
+};
+
 async function _getBresilMatches() {
   if (!FD_KEY) return { matches: [], count: 0 };
   if (_bresilCache && Date.now() - _bresilCacheTs < 30 * 60 * 1000) return _bresilCache;
   if (Date.now() < _bresilErrorUntil) return _bresilCache || { matches: [], count: 0 };
   try {
-    const matchesRes = await fdGet('/competitions/BSA/matches?status=SCHEDULED');
+    // Pas de filtre status : fenêtre de dates couvrant les 2 derniers jours (matchs à régler,
+    // scores) jusqu'à 14 jours à venir — même principe que /api/fd/worldcup (CDM), qui garde les
+    // matchs terminés 48h avant de les faire disparaître. Sans ça, un match joué disparaissait
+    // juste de la liste (filtre SCHEDULED) au lieu de passer en "Terminé" avec le score (18 juillet 2026).
+    const dateFrom = new Date(Date.now() - 2 * 86400_000).toISOString().slice(0, 10);
+    const dateTo   = new Date(Date.now() + 14 * 86400_000).toISOString().slice(0, 10);
+    const matchesRes = await fdGet(`/competitions/BSA/matches?dateFrom=${dateFrom}&dateTo=${dateTo}`);
     await new Promise(r => setTimeout(r, 600));
     const standingsRes = await fdGet('/competitions/BSA/standings');
 
@@ -509,14 +523,26 @@ async function _getBresilMatches() {
       };
     }
 
-    const upcoming = (matchesRes.matches || []).slice(0, 10);
-    const allMatches = upcoming.map(m => {
+    const KEEP_MS = 48 * 3600_000;
+    const now = Date.now();
+    const relevant = (matchesRes.matches || [])
+      .filter(m => {
+        const mapped = FD_STATUS_MAP_BRESIL[m.status];
+        if (!mapped) return false; // POSTPONED, CANCELLED, SUSPENDED
+        if (mapped === 'STATUS_FINAL') return (now - new Date(m.utcDate).getTime()) < KEEP_MS;
+        return true;
+      })
+      .slice(0, 15);
+    const allMatches = relevant.map(m => {
       const hId = m.homeTeam.id, aId = m.awayTeam.id;
+      const status = FD_STATUS_MAP_BRESIL[m.status] || 'STATUS_SCHEDULED';
+      const ftHome = m.score?.fullTime?.home ?? null;
+      const ftAway = m.score?.fullTime?.away ?? null;
       return {
         id: String(m.id), league: 'bresil', round: m.matchday ? `Journée ${m.matchday}` : '',
-        date: m.utcDate, venue: null, weather: null, isLive: true,
-        home: { id: hId, name: m.homeTeam.name, short: m.homeTeam.tla || abbrev(m.homeTeam.name), logoId: m.homeTeam.crest, upcoming: [], ...(statsMap[hId] || {}) },
-        away: { id: aId, name: m.awayTeam.name, short: m.awayTeam.tla || abbrev(m.awayTeam.name), logoId: m.awayTeam.crest, upcoming: [], ...(statsMap[aId] || {}) },
+        date: m.utcDate, venue: null, weather: null, isLive: true, status,
+        home: { id: hId, name: m.homeTeam.name, short: m.homeTeam.tla || abbrev(m.homeTeam.name), logoId: m.homeTeam.crest, score: ftHome, upcoming: [], ...(statsMap[hId] || {}) },
+        away: { id: aId, name: m.awayTeam.name, short: m.awayTeam.tla || abbrev(m.awayTeam.name), logoId: m.awayTeam.crest, score: ftAway, upcoming: [], ...(statsMap[aId] || {}) },
         h2h: [], markets: {},
       };
     });
@@ -7938,12 +7964,22 @@ const ESPN_WNBA_MAP = {
 const WNBA_SCALE = 114.5 / 87.0; // normalize WNBA pts to NBA-equivalent for computeEstimate
 
 let backgroundAlerts = [];
-// backgroundAlerts repart vide à chaque redémarrage backend (dev --watch, déploiement) — sans ce
+// backgroundAlerts repart vide à chaque redémarrage backend (dev --watch, déploiement) — sans
 // garde-fou, le premier cycle de generateBackgroundAlerts() après un restart considérerait TOUTES
 // les alertes valides du moment comme "nouvelles" (aucune n'existe encore dans byId) et enverrait
-// une notification Telegram pour chacune d'un coup (potentiellement des dizaines). Les notifs ne
-// démarrent qu'à partir du 2e cycle, une fois qu'on a une vraie base de comparaison.
-let _bgAlertsWarm = false;
+// une notification Telegram pour chacune d'un coup (potentiellement des dizaines).
+// Fix du 18 juillet 2026 : l'ancien garde-fou (_bgAlertsWarm, coupait tout le 1er cycle post-restart)
+// avalait silencieusement pour de bon toute alerte devenue valide juste avant un restart — jamais
+// notifiée, ni au 1er cycle (coupé), ni aux suivants (déjà dans byId dès le 1er cycle donc plus
+// "nouvelle"). Cas réel : alerte Jonquel Jones jamais notifiée, avalée par un restart pendant une
+// session de dev avec plusieurs redémarrages backend. Remplacé par un set d'IDs déjà notifiés
+// persisté sur disque (survit aux restarts) — dédup par ID réel plutôt que par "1er cycle ou pas".
+const TELEGRAM_NOTIFIED_FILE = join(CACHE_DIR, 'telegram_notified.json');
+let _telegramNotifiedIds = new Set();
+try { if (existsSync(TELEGRAM_NOTIFIED_FILE)) _telegramNotifiedIds = new Set(JSON.parse(readFileSync(TELEGRAM_NOTIFIED_FILE, 'utf8'))); } catch {}
+function _saveTelegramNotifiedIds() {
+  try { writeFileSync(TELEGRAM_NOTIFIED_FILE, JSON.stringify([..._telegramNotifiedIds].slice(-2000)), 'utf8'); } catch {}
+}
 
 // Anti-ban Betclic/Unibet/Winamax — pause un bookmaker après un 403/429 pour ne pas aggraver
 // un blocage CDN (cf. project_winamax_ban_juin10/11). Persisté sur disque pour survivre aux
@@ -8088,6 +8124,74 @@ function _saveSnapshot() {
     _snapshotLastUpdate = Date.now();
   }, 2000);
 }
+
+// ── Suivi projeté vs réalisé (18 juillet 2026) ────────────────────────────────
+// Compare, pour chaque match terminé, la projection figée (_projectionsSnapshot) au vrai résultat
+// (box score) — indépendamment des alertes/paris (couvre TOUTES les joueuses avec projection, pas
+// seulement celles pariées). Sert de base à un bilan hebdomadaire de calibration du modèle.
+let _projectionAccuracy = [];
+let _accuracyProcessedGames = new Set();
+try {
+  if (existsSync(PROJECTION_ACCURACY_FILE)) {
+    const parsed = JSON.parse(readFileSync(PROJECTION_ACCURACY_FILE, 'utf8'));
+    _projectionAccuracy = parsed.rows || [];
+    _accuracyProcessedGames = new Set(parsed.processedGames || []);
+  }
+} catch {}
+function _saveProjectionAccuracy() {
+  try { writeFileSync(PROJECTION_ACCURACY_FILE, JSON.stringify({ rows: _projectionAccuracy, processedGames: [..._accuracyProcessedGames] }), 'utf8'); } catch {}
+}
+
+async function _logProjectionAccuracy() {
+  const base = `http://localhost:${process.env.PORT || 3001}`;
+  for (const league of ['nba', 'wnba']) {
+    try {
+      const sb = await fetch(`${base}/api/${league}/scoreboard`).then(r => r.ok ? r.json() : null).catch(() => null);
+      const finished = (sb?.games || []).filter(g => g.status === 'STATUS_FINAL');
+      for (const g of finished) {
+        if (_accuracyProcessedGames.has(g.id)) continue;
+        const snap = _projectionsSnapshot[g.id];
+        if (!snap || !Object.keys(snap).length) { _accuracyProcessedGames.add(g.id); continue; }
+        try {
+          const bsUrl = `${base}/api/${league}/boxscore?date=${encodeURIComponent(g.date)}&home=${encodeURIComponent(g.home.short)}&away=${encodeURIComponent(g.away.short)}`;
+          const bs = await fetch(bsUrl).then(r => r.ok ? r.json() : null).catch(() => null);
+          if (!bs || bs.error) continue; // réessaiera au prochain cycle (pas marqué traité)
+          const bsKeys = Object.keys(bs).filter(k => !['gameId', 'status', 'homeScore', 'awayScore', 'error'].includes(k));
+          const realizedPlayers = bsKeys.flatMap(k => bs[k] || []);
+          for (const [pid, pdata] of Object.entries(snap)) {
+            const r = realizedPlayers.find(x => String(x.id) === String(pid)) || realizedPlayers.find(x => x.name === pdata.name);
+            if (!r || r.dnp) continue;
+            for (const stat of ['pts', 'reb', 'ast', 'tpm']) {
+              const projv = pdata[stat];
+              if (projv == null) continue;
+              let realv = r.stats?.[stat];
+              if (typeof realv === 'string' && realv.includes('-')) realv = parseInt(realv.split('-')[0]) || 0;
+              if (realv == null) continue;
+              _projectionAccuracy.push({
+                gameId: g.id, league, date: g.date,
+                player: pdata.name, team: pdata.team, stat,
+                proj: projv, real: realv, delta: +(realv - projv).toFixed(2),
+                savedAt: Date.now(),
+              });
+            }
+          }
+          _accuracyProcessedGames.add(g.id);
+        } catch {}
+      }
+    } catch {}
+  }
+  // Purge : garde 90 jours d'historique, évite une croissance infinie du fichier
+  const cutoff = Date.now() - 90 * 86400_000;
+  _projectionAccuracy = _projectionAccuracy.filter(r => r.savedAt > cutoff);
+  _saveProjectionAccuracy();
+}
+
+app.get('/api/analysis/projection-accuracy', (req, res) => {
+  const days = Math.min(parseInt(req.query.days) || 7, 90);
+  const cutoff = Date.now() - days * 86400_000;
+  const rows = _projectionAccuracy.filter(r => r.savedAt > cutoff);
+  res.json({ rows, count: rows.length });
+});
 
 // Lines snapshot — lignes bookmaker pré-match persistées sur disque
 const _linesSnapshot = (() => {
@@ -11643,6 +11747,10 @@ async function generateBackgroundAlerts() {
       if (BRESIL_ALERTS_ENABLED) {
         const bresilData = await _getBresilMatches().catch(() => ({ matches: [] }));
         for (const m of (bresilData?.matches || [])) {
+          // _getBresilMatches() renvoie maintenant aussi les matchs terminés/en cours (pour
+          // l'affichage "Terminé" + score, 18 juillet 2026) — ne garder que les matchs pas encore
+          // joués pour le calcul d'alertes, comme _fdCache (5 ligues) qui ne contient que du SCHEDULED.
+          if (m.status && m.status !== 'STATUS_SCHEDULED') continue;
           if (!m.home || !m.away) continue;
           fbFixtures.push({
             fixtureId: `fdbr_${m.id}`, league: m.league, date: m.date, round: m.round,
@@ -12119,14 +12227,16 @@ async function generateBackgroundAlerts() {
 
     // Notifications Telegram — envoyées ici, après enrichissement (teammateOverlap/matchCorrelation
     // déjà posés dessus), une par alerte réellement nouvelle. Fire-and-forget : une panne Telegram
-    // (réseau, token invalide) ne doit jamais faire échouer generateBackgroundAlerts. Coupé sur le
-    // tout premier cycle après un restart (_bgAlertsWarm) — sinon toutes les alertes déjà valides au
-    // moment du redémarrage seraient notifiées d'un coup comme si elles étaient nouvelles.
-    if (_bgAlertsWarm && telegramConfigured() && _newForTelegram.length) {
-      _newForTelegram.forEach(a => notifyNewAlert(a).catch(e => console.error('telegram notify error:', e.message)));
-      _bgLog.push(`telegram: ${_newForTelegram.length} nouvelle(s) alerte(s) notifiée(s)`);
+    // (réseau, token invalide) ne doit jamais faire échouer generateBackgroundAlerts. Dédup par ID
+    // déjà notifié (persisté sur disque, cf. _telegramNotifiedIds) — pas par "1er cycle après
+    // restart", qui avalait silencieusement les alertes nées juste avant un redémarrage (18 juillet 2026).
+    const _toNotify = _newForTelegram.filter(a => !_telegramNotifiedIds.has(a.id));
+    if (telegramConfigured() && _toNotify.length) {
+      _toNotify.forEach(a => notifyNewAlert(a).catch(e => console.error('telegram notify error:', e.message)));
+      _toNotify.forEach(a => _telegramNotifiedIds.add(a.id));
+      _saveTelegramNotifiedIds();
+      _bgLog.push(`telegram: ${_toNotify.length} nouvelle(s) alerte(s) notifiée(s)`);
     }
-    _bgAlertsWarm = true;
 
     backgroundAlerts = Object.values(byId);
     _bgLog.push(`done: ${newAlerts.length} new, ${backgroundAlerts.length} total`);
@@ -12461,6 +12571,13 @@ app.post('/api/telegram/webhook', async (req, res) => {
       await editTelegramMessage(messageId, `${meta.label(alert)}\n\n❌ Rejetée`);
       await answerCallbackQuery(cq.id, 'Rejetée');
     }
+    // Notifie les onglets ouverts en direct (18 juillet 2026) — sans ça, un accept/reject fait
+    // depuis Telegram n'était reflété dans l'app qu'au prochain polling (jusqu'à 2 min) ou à un
+    // rechargement manuel, cf. cas réel Jonquel Jones (acceptée sur le téléphone, encore visible
+    // dans l'onglet Alertes jusqu'à un refresh forcé). Même mécanisme SSE déjà utilisé pour les
+    // écritures MongoDB (/api/userdata) — le frontend doit juste aussi rappeler syncTelegramActions()
+    // en réaction (cf. RunningPage.jsx/PlaceBetPage.jsx).
+    _sseClients.forEach(c => { try { c.write('data: sync\n\n'); } catch {} });
     res.json({ ok: true });
   } catch (err) {
     console.error('telegram webhook error:', err.message);
@@ -12934,6 +13051,10 @@ app.listen(PORT, () => {
   // Start background alert job: first run after 2s, then every 20min
   setTimeout(generateBackgroundAlerts, 2_000);
   setInterval(generateBackgroundAlerts, 20 * 60 * 1000);
+
+  // Suivi projeté vs réalisé — cycle indépendant, ne touche jamais generateBackgroundAlerts
+  setTimeout(() => _logProjectionAccuracy().catch(() => {}), 15_000);
+  setInterval(() => _logProjectionAccuracy().catch(() => {}), 20 * 60 * 1000);
 
   // Watchdog réseau — ping DNS léger toutes les 2 min (voir commentaire à la définition)
   setInterval(_networkWatchdog, 2 * 60 * 1000);

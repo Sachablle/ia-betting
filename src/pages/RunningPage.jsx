@@ -822,7 +822,10 @@ export default function RunningPage() {
     // de résolution client séparée nécessaire, syncSettlements() ci-dessus suffit (BBALL_PINNACLE_KEY
     // est dans SETTLEABLE_KEYS).
 
-    const onCloudSynced = () => { reloadFromStorage(); reloadFootball(); };
+    // syncTelegramActions() d'abord (18 juillet 2026) — sans ça, un SSE déclenché par un accept/reject
+    // Telegram ne faisait que relire le localStorage tel quel (déjà périmé), au lieu d'aller chercher
+    // la nouvelle action avant de recharger. Cf. commentaire équivalent dans PlaceBetPage.jsx.
+    const onCloudSynced = () => { syncTelegramActions().then(reloadFromStorage); reloadFootball(); };
     window.addEventListener('cloud_synced', onCloudSynced);
 
     return () => {
