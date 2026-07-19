@@ -952,6 +952,15 @@ function BasketballSpreadCard({ alert, onAccept, onReject, onDismiss }) {
             ⚠ Corrélée — Résultat {matchCorrelation.status === 'accepted' ? 'déjà accepté' : 'aussi proposé'} ({matchCorrelation.probability}%)
           </div>
         )}
+        {/* 19 juillet 2026 — certains bookmakers (Betclic constaté) proposent ce marché en seuil
+            entier inclusif ("gagne de X ou +") plutôt qu'en handicap .5 classique, plus facile à
+            couvrir (X pile suffit, pas besoin de X+1). Pure mention informative, pas de cote réelle
+            suivie pour ce marché — cas réel : ligne -8.5 perdue, "gagne de 8 ou +" gagnée chez Betclic. */}
+        {line < 0 && (
+          <div style={{ fontSize: 10, fontWeight: 700, color: '#4ade80', marginTop: 4 }}>
+            ⚠️ Prioriser le {Math.floor(Math.abs(line))} ou +
+          </div>
+        )}
       </div>
       <div className="bc-stats" style={{ margin: '0.3rem 0' }}>
         <div className="bc-prob">

@@ -5,12 +5,22 @@ import { BANKROLL_BRACKETS, BANKROLL_TARGET, getRecommendedStake, getEngagedToda
 const ROLLING_N = 20;
 const DEFAULT_ODDS = 1.9;
 
-// Séparation ancien / nouveau modèle — déplacée le 22 juin 2026 (12h51 UTC) : plancher de confiance
-// unifié à 80%/75% (spécialiste), marge moyenne saison↔ligne + minimum volume 3pts étendus à
-// NBA/WNBA/EU, win rate réel audité à 50.5% sur l'historique pré-22 juin (cf. audit calibration).
-// Remplace l'ancien point de bascule du 10 juin 2026 (match Toronto Tempo @ Connecticut Sun),
-// désormais regroupé dans "ancien modèle" — ce changement-ci est jugé plus significatif.
-const MODEL_SPLIT_MS = new Date('2026-06-22T12:51:00Z').getTime();
+// Mises réelles pour l'onglet "BK 500€" (19 juillet 2026) — affichage uniquement, ne touche jamais
+// stakeAmount stocké côté serveur (demande explicite : garder "Tous les paris" et le bankroll global
+// inchangés). Jonquel Jones n'avait aucune mise enregistrée sur l'alerte (stakeAmount absent) ; la
+// vraie mise placée était 60€. Dallas a déjà stakeAmount=50 en base, ajouté ici pour être explicite.
+const BK500_STAKE_OVERRIDES = {
+  '401857077_2999101_reb_over_8.5': 60,
+  '401857080_wnba_spread_home': 50,
+};
+const realStakeFor = (bet, fallback) => BK500_STAKE_OVERRIDES[bet._alertId] ?? bet.stakeAmount ?? fallback;
+
+// Séparation ancien / nouveau modèle — supprimée le 19 juillet 2026 à la demande explicite de
+// l'utilisateur (tous les paris regroupés sous un seul onglet, cf. le nouvel onglet "BK 500€" qui
+// répond au vrai besoin de séparation utile). MODEL_SPLIT_MS neutralisé plutôt que retiré du code
+// (ancien point de bascule du 22 juin 2026, 12h51 UTC — recalibration réelle documentée) pour garder
+// une trace si jamais un besoin similaire revient, mais plus aucune branche ne le lit désormais.
+const MODEL_SPLIT_MS = 0;
 
 // ── Chargement & normalisation ─────────────────────────────────────────────
 
@@ -92,6 +102,8 @@ function mapLedgerEntry(a) {
     date: a.fixtureDate ?? a.date, status: a.status, odds: getBetOdds(a),
     probability: a.acceptedProbability ?? a.probability ?? a.prob,
     bookmaker: a.acceptedBookmaker ?? a.bookmaker,
+    acceptedAt: a.acceptedAt ?? null,
+    stakeAmount: a.stakeAmount ?? null,
     _sourceKey: 'bet_ledger', _alertId: a.id,
   };
   switch (a.type) {
@@ -161,10 +173,24 @@ async function loadAllResolved(periodDays, model = 'new') {
   const endCutoff = model === 'old' ? MODEL_SPLIT_MS : Infinity;
 
   const ledger = await fetch('/api/bet-history').then(r => r.ok ? r.json() : []).catch(() => []);
-  return ledger
+  const mapped = ledger
     .filter(a => ['won', 'lost'].includes(a.status))
     .map(mapLedgerEntry)
-    .filter(Boolean)
+    .filter(Boolean);
+
+  // BK 500€ (19 juillet 2026) — filtre sur la date d'ACCEPTATION du pari, pas la date du match : un
+  // pari accepté juste avant la remise à zéro du bankroll (ex: Aliyah Boston, acceptée le 15/07 23h58,
+  // match le 16/07 — remise à 500€ le 16/07 10h36) ne fait pas partie du bankroll actuel même si le
+  // match lui-même a eu lieu après. Comparaison précise à bankroll_tracker.startDate, sans passer par
+  // l'approximation en jours utilisée pour les autres modes.
+  if (model === 'bk500') {
+    const bkStart = new Date(loadBankrollState().startDate).getTime();
+    return mapped
+      .filter(a => a.acceptedAt != null && a.acceptedAt >= bkStart)
+      .sort((a, b) => a.acceptedAt - b.acceptedAt);
+  }
+
+  return mapped
     .filter(a => { const t = new Date(a.date).getTime(); return !isNaN(t) && t >= cutoff && t < endCutoff; })
     .sort((a, b) => new Date(a.date) - new Date(b.date));
 }
@@ -1083,9 +1109,15 @@ function Section({ title, children, mb = true, defaultOpen = true, pinnacle = fa
 // ── Page principale ────────────────────────────────────────────────────────
 
 export default function BacktestingPage() {
-  const [model,         setModel]         = useState('new');
+  const [model,         setModel]         = useState('bk500');
   const [timelineLabel, setTimelineLabel] = useState('Tous');
-  const period = TIMELINE.find(t => t.label === timelineLabel)?.days ?? 1;
+  // Onglet "BK 500€" (19 juillet 2026) — ignore la séparation ancien/nouveau modèle (22 juin) et ne
+  // garde que les paris depuis le vrai début du bankroll actuel (bankroll_tracker.startDate, mis à
+  // jour à chaque reset). Recalculé en jours pour rester compatible avec loadAllResolved/countAccepted
+  // qui filtrent sur un nombre de jours, pas une date absolue — model !== 'new'/'old' fait déjà
+  // tomber ces deux fonctions sur rawCutoff/Infinity (comportement "tout fusionner" déjà existant).
+  const bkStartDays = model === 'bk500' ? Math.max(1, Math.ceil((Date.now() - new Date(loadBankrollState().startDate).getTime()) / 86400_000)) : null;
+  const period = model === 'bk500' ? bkStartDays : (TIMELINE.find(t => t.label === timelineLabel)?.days ?? 1);
   const [sportFilter, setSportFilter] = useState('all');
   const [compFilter,  setCompFilter]  = useState('all');
   const [typeFilter,  setTypeFilter]  = useState('all');
@@ -1160,6 +1192,17 @@ export default function BacktestingPage() {
     return true;
   }), [allBets, sportFilter, compFilter, typeFilter]);
 
+  // P&L en mises réelles (BK 500€ uniquement) — remplace le flat `stake` par stakeAmount réel de
+  // chaque pari (avec BK500_STAKE_OVERRIDES en repli), sans toucher calcMetrics ni "Tous les paris".
+  const bk500RealPL = useMemo(() => {
+    if (model !== 'bk500') return null;
+    return filtered.filter(b => b.status !== 'void').reduce((sum, b) => {
+      const stk = realStakeFor(b, stake);
+      const o = b.odds ?? DEFAULT_ODDS;
+      return sum + (b.status === 'won' ? (o - 1) * stk : -stk);
+    }, 0);
+  }, [filtered, model, stake]);
+
   const metrics    = useMemo(() => calcMetrics(filtered),       [filtered]);
   const dd         = useMemo(() => calcDrawdown(filtered),           [filtered]);
   const sig        = useMemo(() => calcSignificance(filtered),        [filtered]);
@@ -1225,15 +1268,15 @@ export default function BacktestingPage() {
         </div>
         {/* Toggle modèle */}
         <div style={{ display: 'flex', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 12, padding: 3, gap: 2, alignSelf: 'flex-start', marginTop: '0.5rem' }}>
-          {[{ key: 'new', label: 'Nouveau modèle', sub: 'depuis le 22 juin' }, { key: 'old', label: 'Ancien modèle', sub: 'avant le 22 juin' }].map(m => (
+          {[{ key: 'bk500', label: 'BK 500€', sub: 'depuis le 16 juil.', color: '#4ade80' }, { key: 'new', label: 'Tous les paris', sub: 'historique complet', color: '#60a5fa' }].map(m => (
             <button key={m.key} onClick={() => handleModelChange(m.key)} style={{
-              background: model === m.key ? (m.key === 'new' ? 'rgba(96,165,250,0.18)' : 'rgba(148,163,184,0.12)') : 'transparent',
-              border: model === m.key ? `1px solid ${m.key === 'new' ? 'rgba(96,165,250,0.4)' : 'rgba(148,163,184,0.2)'}` : '1px solid transparent',
+              background: model === m.key ? `${m.color}2e` : 'transparent',
+              border: model === m.key ? `1px solid ${m.color}66` : '1px solid transparent',
               borderRadius: 9, padding: '0.45rem 1rem', cursor: 'pointer',
               display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 1,
               transition: 'all 0.15s',
             }}>
-              <span style={{ fontSize: 11, fontWeight: 700, color: model === m.key ? (m.key === 'new' ? '#60a5fa' : '#94a3b8') : 'var(--text-dim)', whiteSpace: 'nowrap' }}>{m.label}</span>
+              <span style={{ fontSize: 11, fontWeight: 700, color: model === m.key ? m.color : 'var(--text-dim)', whiteSpace: 'nowrap' }}>{m.label}</span>
               <span style={{ fontSize: 9, color: 'var(--text-dim)', whiteSpace: 'nowrap' }}>{m.sub}</span>
             </button>
           ))}
@@ -1248,11 +1291,13 @@ export default function BacktestingPage() {
         <DropdownFilter label="Sport"       options={SPORT_FILTERS} value={sportFilter} onChange={handleSportChange} />
         <DropdownFilter label="Compétition" options={compOptions}   value={compFilter}  onChange={setCompFilter} />
         <DropdownFilter label="Type"        options={typeOptions}   value={typeFilter}  onChange={setTypeFilter} />
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-          <span style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.09em', color: 'var(--text-dim)' }}>Mise (€)</span>
-          <input type="number" min="1" value={stake} onChange={e => setStake(Math.max(1, +e.target.value || 10))}
-            style={{ width: 72, background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 8, color: 'var(--text)', fontSize: 12, fontWeight: 600, padding: '5px 10px', outline: 'none' }} />
-        </div>
+        {model !== 'bk500' && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <span style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.09em', color: 'var(--text-dim)' }}>Mise (€)</span>
+            <input type="number" min="1" value={stake} onChange={e => setStake(Math.max(1, +e.target.value || 10))}
+              style={{ width: 72, background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 8, color: 'var(--text)', fontSize: 12, fontWeight: 600, padding: '5px 10px', outline: 'none' }} />
+          </div>
+        )}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
           <span style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.09em', color: 'var(--text-dim)' }}>Données</span>
           <button
@@ -1301,8 +1346,8 @@ export default function BacktestingPage() {
         <div style={{ display: 'flex', gap: '0.6rem', flexWrap: 'wrap', marginBottom: '0.6rem' }}>
           <KpiCard pinnacle={showPinnacle} label="Paris résolus" value={D.metrics.total} sub={`${D.metrics.won}W · ${D.metrics.lost}L`} />
           <KpiCard pinnacle={showPinnacle} label="Win Rate"  value={D.metrics.winRate != null ? `${D.metrics.winRate.toFixed(1)}%` : '—'} sub={`${D.metrics.won + D.metrics.lost} non-void`} color={D.metrics.winRate == null ? 'var(--text-dim)' : D.metrics.winRate >= 50 ? '#4ade80' : '#ef4444'} />
-          <KpiCard pinnacle={showPinnacle} label="ROI"       value={D.metrics.roi != null ? `${D.metrics.roi >= 0 ? '+' : ''}${D.metrics.roi.toFixed(1)}%` : '—'} sub={`flat ${stake}€/pari`} color={D.metrics.roi == null ? 'var(--text-dim)' : D.metrics.roi >= 0 ? '#4ade80' : '#ef4444'} />
-          <KpiCard pinnacle={showPinnacle} label="P&L"       value={`${D.metrics.pl >= 0 ? '+' : ''}${(D.metrics.pl * stake).toFixed(0)}€`} sub={`mise ${stake}€/alerte`} color={D.metrics.pl >= 0 ? '#4ade80' : '#ef4444'} />
+          <KpiCard pinnacle={showPinnacle} label="ROI"       value={D.metrics.roi != null ? `${D.metrics.roi >= 0 ? '+' : ''}${D.metrics.roi.toFixed(1)}%` : '—'} sub={model === 'bk500' ? 'mises réelles' : `flat ${stake}€/pari`} color={D.metrics.roi == null ? 'var(--text-dim)' : D.metrics.roi >= 0 ? '#4ade80' : '#ef4444'} />
+          <KpiCard pinnacle={showPinnacle} label="P&L"       value={`${bk500RealPL != null ? (bk500RealPL >= 0 ? '+' : '') + bk500RealPL.toFixed(0) : (D.metrics.pl >= 0 ? '+' : '') + (D.metrics.pl * stake).toFixed(0)}€`} sub={model === 'bk500' ? 'mises réelles' : `mise ${stake}€/alerte`} color={(bk500RealPL ?? D.metrics.pl) >= 0 ? '#4ade80' : '#ef4444'} />
         </div>
 
         {/* KPIs ligne 2 — séries + significativité */}
@@ -1344,7 +1389,7 @@ export default function BacktestingPage() {
                     ))}
                   </div>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', maxHeight: 240, overflowY: 'auto' }}>
-                    {[...D.rolling].reverse().map((bet, i) => <BetRow key={`${bet.date}_${bet.label}_${bet.sub}`} bet={bet} rank={D.rolling.length - i} stake={stake} />)}
+                    {[...D.rolling].reverse().map((bet, i) => <BetRow key={`${bet.date}_${bet.label}_${bet.sub}`} bet={bet} rank={D.rolling.length - i} stake={model === 'bk500' ? realStakeFor(bet, stake) : stake} />)}
                   </div>
                 </>
             }
@@ -1416,7 +1461,7 @@ export default function BacktestingPage() {
             )}
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', maxHeight: 480, overflowY: 'auto' }}>
-            {[...D.bets].reverse().map((bet, i) => <BetRow key={`${bet.date}_${bet.label}_${bet.sub}`} bet={bet} rank={D.bets.length - i} stake={stake} />)}
+            {[...D.bets].reverse().map((bet, i) => <BetRow key={`${bet.date}_${bet.label}_${bet.sub}`} bet={bet} rank={D.bets.length - i} stake={model === 'bk500' ? realStakeFor(bet, stake) : stake} />)}
           </div>
         </Section>
 
