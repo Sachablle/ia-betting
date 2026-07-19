@@ -550,7 +550,7 @@ function AlertCard({ group, playerStats, onDismiss, onEditStake }) {
           </span>
         ) : s && s.stat === 'spread' ? (
           <span style={{ fontSize: 11, fontWeight: 700, color: '#fbbf24', flexShrink: 0 }}>
-            📏 {s.direction === 'home' ? (group.homeShort || group.homeTeam) : (group.awayShort || group.awayTeam)} {s.line > 0 ? '+' : ''}{s.line}
+            ▲ {s.direction === 'home' ? (group.homeShort || group.homeTeam) : (group.awayShort || group.awayTeam)} {s.line > 0 ? '+' : ''}{s.line}
           </span>
         ) : s && (s.stat === 'dc_btts' || s.stat === 'dc_ou') ? null : s && (
           <span style={{ fontSize: 11, fontWeight: 700, color: s.direction === 'over' ? '#4ade80' : '#f87171', flexShrink: 0 }}>

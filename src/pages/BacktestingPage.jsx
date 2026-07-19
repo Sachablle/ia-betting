@@ -86,6 +86,8 @@ function countAccepted(periodDays, sportFilter, typeFilter, model = 'new') {
 }
 
 const DC_DIR = { '1x': '1X', 'x2': 'X2', '12': '12' };
+// Nom complet un peu trop long à l'affichage (19 juillet 2026) — "Los Angeles X" → "LA X".
+const shortTeamName = n => (n || '').replace(/^Los Angeles\b/, 'LA');
 
 // `?? a.odds` en dernier repli (19 juillet 2026) — basketball_result/basketball_spread stockent
 // leur cote dans un champ plat, jamais dans les champs par bookmaker ci-dessus (même défaut que
@@ -123,8 +125,12 @@ function mapLedgerEntry(a) {
         direction: a.direction, league: a.league || 'nba' };
     case 'basketball_spread':
       return { ...base, type: 'spread', sport: a.league || 'nba',
-        label: `${a.homeShort || a.home} vs ${a.awayShort || a.away}`,
-        sub: `📏 ${a.direction === 'home' ? (a.homeShort || a.home) : (a.awayShort || a.away)} ${a.line > 0 ? '+' : ''}${a.line}`,
+        label: `${shortTeamName(a.home) || a.homeShort} vs ${shortTeamName(a.away) || a.awayShort}`,
+        // 19 juillet 2026 — favori (ligne < 0) affiché "Gagne de X ou +" (seuil entier inclusif, cf.
+        // mention ajoutée sur les cartes d'alerte) plutôt que le handicap .5 brut, pour rester
+        // cohérent avec le marché réellement pris chez le bookmaker.
+        sub: a.line < 0 ? `▲ Gagne de ${Math.floor(Math.abs(a.line))} ou +`
+          : `▲ ${a.direction === 'home' ? (a.homeShort || a.home) : (a.awayShort || a.away)} ${a.line > 0 ? '+' : ''}${a.line}`,
         actual: a.actualHomeScore != null && a.actualAwayScore != null ? `${a.actualHomeScore}-${a.actualAwayScore}` : null,
         direction: a.direction, line: a.line, league: a.league || 'nba' };
     case 'football_btts':

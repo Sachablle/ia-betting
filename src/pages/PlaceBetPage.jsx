@@ -919,7 +919,7 @@ function BasketballSpreadCard({ alert, onAccept, onReject, onDismiss }) {
         <button onClick={e => { e.stopPropagation(); onDismiss(id); }} style={{ position: 'absolute', top: 8, right: 10, background: 'none', border: 'none', color: 'var(--text-dim)', cursor: 'pointer', fontSize: 16, lineHeight: 1, padding: 0 }}>×</button>
       )}
       <div className="bc-header">
-        <span className="bc-flag">📏</span>
+        <span className="bc-flag">▲</span>
         <span className="bc-league">{leagueLabel}</span>
         <div style={{ marginLeft: 'auto', marginRight: 24, display: 'flex', alignItems: 'center', gap: 6 }}>
           <span className={`bc-edge-badge ${probability >= 90 ? 'high' : 'mid'}`}>{probability}%</span>
@@ -942,7 +942,7 @@ function BasketballSpreadCard({ alert, onAccept, onReject, onDismiss }) {
       </div>
       <div style={{ margin: '0.3rem 0' }}>
         <span style={{ fontSize: 12, fontWeight: 700, color: '#fbbf24', background: 'rgba(251,191,36,0.12)', padding: '0.25rem 0.5rem', borderRadius: 6, display: 'inline-block', maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          📏 {teamShort || teamName} {line > 0 ? '+' : ''}{line}
+          🏆 {teamShort || teamName} {line > 0 ? '+' : ''}{line}
         </span>
         <div style={{ fontSize: 10, color: 'var(--text-dim)', marginTop: 3 }}>
           P(couvre) <b style={{ color: 'var(--text)' }}>{probability}%</b>
