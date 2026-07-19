@@ -2528,7 +2528,10 @@ const ROTO_WNBA_LINEUPS_URL  = 'https://www.rotowire.com/wnba/lineups.php';
 const ROTO_WNBA_INJURIES_URL = 'https://www.rotowire.com/basketball/wnba-injuries.php';
 const _wnbaLineupInjuries = {};
 // RotoWire utilise des abréviations différentes d'ESPN pour certaines équipes WNBA
-const ROTO_WNBA_ABBR = { LVA: 'LV', GSV: 'GS', WAS: 'WSH', NYL: 'NY', PHO: 'PHX' };
+// LAS ajouté le 19 juillet 2026 — LA Sparks restait bloquée "compos pas postées" alors qu'elles
+// l'étaient réellement sur RotoWire (abréviation LAS jamais reconnue, tombait dans le fallback
+// toUpperCase() qui la laissait telle quelle au lieu de la ramener à notre 'LA' interne).
+const ROTO_WNBA_ABBR = { LVA: 'LV', GSV: 'GS', WAS: 'WSH', NYL: 'NY', PHO: 'PHX', LAS: 'LA' };
 const normWnbaAbbr = a => ROTO_WNBA_ABBR[a?.toUpperCase()] || a?.toUpperCase() || '';
 
 async function fetchRotoWireWNBALineups() {
@@ -8265,6 +8268,59 @@ app.get('/api/analysis/near-miss', (req, res) => {
   res.json({ rows, count: rows.length });
 });
 
+// Même suivi que ci-dessus, étendu au foot (BTTS/Total/Résultat) le 19 juillet 2026 — demande
+// explicite de l'utilisateur d'avoir la même analyse de calibration sur les deux sports.
+const NEAR_MISS_FOOT_FILE = join(CACHE_DIR, 'near_miss_football.json');
+let _nearMissFootball = [];
+try {
+  if (existsSync(NEAR_MISS_FOOT_FILE)) _nearMissFootball = JSON.parse(readFileSync(NEAR_MISS_FOOT_FILE, 'utf8')).rows || [];
+} catch {}
+function _saveNearMissFootball() {
+  try { writeFileSync(NEAR_MISS_FOOT_FILE, JSON.stringify({ rows: _nearMissFootball }), 'utf8'); } catch {}
+}
+function _logFootballNearMiss({ fixtureId, league, market, direction, line, probability, floor }) {
+  if (probability >= floor || probability < floor - NEAR_MISS_BAND) return;
+  const id = `${fixtureId}_${market}_${direction}_${line ?? ''}`;
+  if (_nearMissFootball.some(c => c.id === id)) return;
+  _nearMissFootball.push({ id, fixtureId, league, market, direction, line: line ?? null, probability: +(probability * 100).toFixed(1), floor: +(floor * 100).toFixed(1), status: 'pending', savedAt: Date.now() });
+}
+const FOOT_MATCH_ENDPOINT = { fd: '/api/fd/matches', fdcdm: '/api/fd/worldcup', fdbr: '/api/fd/bresil' };
+async function _resolveFootballNearMiss() {
+  const base = `http://localhost:${process.env.PORT || 3001}`;
+  const pending = _nearMissFootball.filter(c => c.status === 'pending');
+  if (!pending.length) return;
+  const cache = {};
+  for (const c of pending) {
+    const prefix = c.fixtureId.startsWith('fdcdm_') ? 'fdcdm' : c.fixtureId.startsWith('fdbr_') ? 'fdbr' : 'fd';
+    const rawId = c.fixtureId.replace(`${prefix}_`, '');
+    try {
+      if (!cache[prefix]) cache[prefix] = await fetch(`${base}${FOOT_MATCH_ENDPOINT[prefix]}`).then(r => r.ok ? r.json() : null).catch(() => null);
+      const list = cache[prefix]?.matches || cache[prefix]?.games || [];
+      const m = list.find(x => String(x.id) === rawId);
+      if (!m || m.status !== 'STATUS_FINAL') continue;
+      const hs = m.home?.score, as = m.away?.score;
+      if (hs == null || as == null) continue;
+      let cleared;
+      if (c.market === 'btts') cleared = hs >= 1 && as >= 1;
+      else if (c.market === 'total') cleared = c.direction === 'over' ? (hs + as) > c.line : (hs + as) < c.line;
+      else if (c.market === 'result') {
+        const outcome = hs > as ? 'home' : hs < as ? 'away' : 'draw';
+        cleared = outcome === c.direction;
+      }
+      c.status = cleared ? 'won' : 'lost';
+    } catch {}
+  }
+  const cutoff = Date.now() - 90 * 86400_000;
+  _nearMissFootball = _nearMissFootball.filter(c => c.savedAt > cutoff);
+  _saveNearMissFootball();
+}
+app.get('/api/analysis/near-miss-football', (req, res) => {
+  const days = Math.min(parseInt(req.query.days) || 30, 90);
+  const cutoff = Date.now() - days * 86400_000;
+  const rows = _nearMissFootball.filter(r => r.savedAt > cutoff);
+  res.json({ rows, count: rows.length });
+});
+
 // Lines snapshot — lignes bookmaker pré-match persistées sur disque
 const _linesSnapshot = (() => {
   try { if (existsSync(LINES_FILE)) return JSON.parse(readFileSync(LINES_FILE, 'utf8')); } catch {}
@@ -11932,6 +11988,7 @@ async function generateBackgroundAlerts() {
 
           // BTTS — id identique à celui généré côté client (MatchDetailPage) → dédup au sync
           const bttsProb = computeBTTSProb(lambdaHome, lambdaAway);
+          _logFootballNearMiss({ fixtureId: f.fixtureId, league: f.league, market: 'btts', direction: 'yes', line: null, probability: bttsProb, floor: FB_BTTS_ALERT_PROB });
           if (bttsProb >= FB_BTTS_ALERT_PROB) {
             const bestBk = FB_BOOKS.find(bk => (bttsBk[bk]?.yes ?? 0) >= FB_BTTS_OU_MIN_ODDS);
             if (bestBk) {
@@ -11978,6 +12035,7 @@ async function generateBackgroundAlerts() {
           ];
           for (const { key, prob } of RESULT_OUTCOMES) {
             if (isCdmJ3) continue; // J3 CDM bloqué — enjeux tactiques imprévisibles
+            _logFootballNearMiss({ fixtureId: f.fixtureId, league: f.league, market: 'result', direction: key, line: null, probability: prob, floor: FB_RESULT_ALERT_PROB });
             if (prob < FB_RESULT_ALERT_PROB) continue;
             const bestBk = FB_BOOKS.find(bk => (h2hBk[bk]?.[key] ?? 0) >= FB_RESULT_MIN_ODDS);
             if (!bestBk) continue;
@@ -12104,6 +12162,7 @@ async function generateBackgroundAlerts() {
           for (const line of OU_LINES) {
             const ou = computeOUProb(lambdaHome, lambdaAway, parseFloat(line));
             const bestP = Math.max(ou.pOver, ou.pUnder);
+            _logFootballNearMiss({ fixtureId: f.fixtureId, league: f.league, market: 'total', direction: ou.pOver >= ou.pUnder ? 'over' : 'under', line: parseFloat(line), probability: bestP, floor: FB_OU_ALERT_PROB });
             if (bestP < FB_OU_ALERT_PROB) continue;
             const direction = ou.pOver >= ou.pUnder ? 'over' : 'under';
             const bestBk = FB_BOOKS.find(bk => (totalsBk[bk]?.[line]?.[direction] ?? 0) >= FB_BTTS_OU_MIN_ODDS);
@@ -12336,6 +12395,12 @@ async function generateBackgroundAlerts() {
       _saveTelegramNotifiedIds();
       _bgLog.push(`telegram: ${_toNotify.length} nouvelle(s) alerte(s) notifiée(s)`);
     }
+
+    // SSE (19 juillet 2026) — jusqu'ici un onglet ouvert ne découvrait une alerte tout juste générée
+    // qu'à son prochain sync périodique (jusqu'à 2 min), alors que Telegram la recevait tout de suite.
+    // Diffuse un signal dès qu'au moins une alerte réellement nouvelle sort de ce cycle, même sans
+    // Telegram configuré, pour que le site se resynchronise aussi vite que la notification Telegram.
+    if (_newForTelegram.length) _sseClients.forEach(c => { try { c.write('data: sync\n\n'); } catch {} });
 
     backgroundAlerts = Object.values(byId);
     _bgLog.push(`done: ${newAlerts.length} new, ${backgroundAlerts.length} total`);
@@ -12607,6 +12672,14 @@ app.post('/api/accepted-alerts', (req, res) => {
     a.fixtureDate && alert.fixtureDate &&
     Math.abs(new Date(a.fixtureDate).getTime() - new Date(alert.fixtureDate).getTime()) < 36 * 3600_000
   );
+  // Garde-fou 19 juillet 2026 — même défaut que celui corrigé le matin même sur /api/userdata, mais
+  // sur ce stockage séparé (_acceptedAlerts) qu'on avait oublié : un DELETE effacé toute trace du
+  // règlement réel, donc un onglet resté ouvert avec un ancien statut "accepted" en mémoire pouvait
+  // repousser l'alerte ici sans plus rien pour s'y opposer (cas réel Jessica Shepard, revenue après
+  // chaque suppression). Un règlement terminal existant (won/lost/void) n'est plus jamais écrasé.
+  const TERMINAL_STATUSES = new Set(['won', 'lost', 'void']);
+  const existingTerminal = _acceptedAlerts.find(a => a.id === alert.id && TERMINAL_STATUSES.has(a.status));
+  if (existingTerminal) { res.json({ ok: true }); return; }
   if (!isFingerprintDup && !_acceptedAlerts.find(a => a.id === alert.id)) {
     _acceptedAlerts.push(alert);
     _saveAccepted();
@@ -13158,6 +13231,10 @@ app.listen(PORT, () => {
   // Suivi des "presque-alertes" (19 juillet 2026) — même principe, cycle indépendant
   setTimeout(() => _resolveNearMissCandidates().catch(() => {}), 18_000);
   setInterval(() => _resolveNearMissCandidates().catch(() => {}), 20 * 60 * 1000);
+
+  // Même suivi étendu au foot (19 juillet 2026)
+  setTimeout(() => _resolveFootballNearMiss().catch(() => {}), 21_000);
+  setInterval(() => _resolveFootballNearMiss().catch(() => {}), 20 * 60 * 1000);
 
   // Watchdog réseau — ping DNS léger toutes les 2 min (voir commentaire à la définition)
   setInterval(_networkWatchdog, 2 * 60 * 1000);

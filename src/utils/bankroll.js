@@ -157,10 +157,18 @@ export async function resetBankroll(state, amount) {
   return saveBankrollState({ startAmount: amount, startDate: entry.date, current: amount, history: [...state.history, entry], processedIds: existingIds, baselineSeeded: true });
 }
 
-const pickOdds = b => b.acceptedBookmaker === 'unibet' ? (b.acceptedUnibetOdds ?? b.unibetOdds)
+// Fix 19 juillet 2026 — basketball_result/basketball_spread stockent leur cote dans un champ plat
+// `odds` (ex: {odds: 1.59, bookmaker: 'betclic'}), jamais dans les champs par bookmaker
+// (acceptedUnibetOdds/acceptedBetclicOdds/...) que ce sélecteur cherchait exclusivement. Comme
+// updateResultStatus/updateSpreadStatus (PlaceBetPage.jsx) ne posent jamais acceptedBookmaker à
+// l'accept, TOUS les paris Résultat/Écart H2H depuis leur création tombaient dans aucune des
+// branches ci-dessous → odds toujours undefined → syncBankrollFromHistory les marquait "traités"
+// sans jamais appliquer leur gain/perte au bankroll, silencieusement. `?? b.odds` en toute fin
+// couvre ce cas sans changer le comportement existant (les props/foot ont déjà une valeur avant ce point).
+const pickOdds = b => (b.acceptedBookmaker === 'unibet' ? (b.acceptedUnibetOdds ?? b.unibetOdds)
   : b.acceptedBookmaker === 'betclic' ? (b.acceptedBetclicOdds ?? b.betclicOdds)
   : b.acceptedBookmaker === 'winamax' ? (b.acceptedWinamaxOdds ?? b.winamaxOdds)
-  : (b.acceptedUnibetOdds ?? b.acceptedBetclicOdds ?? b.acceptedWinamaxOdds ?? b.unibetOdds ?? b.betclicOdds ?? b.winamaxOdds);
+  : (b.acceptedUnibetOdds ?? b.acceptedBetclicOdds ?? b.acceptedWinamaxOdds ?? b.unibetOdds ?? b.betclicOdds ?? b.winamaxOdds)) ?? b.odds;
 
 function labelFor(b) {
   if (b.player && b.stat) return `${b.player} ${b.direction === 'over' ? 'Over' : 'Under'} ${b.line} ${b.stat}`;

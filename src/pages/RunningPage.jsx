@@ -66,6 +66,14 @@ function _prefetchMatchData(league, homeTeam, awayTeam) {
 }
 
 // ── Groupement alertes ────────────────────────────────────────────────────────
+// Priorité de statut (19 juillet 2026) — si deux entrées localStorage partagent la même clé
+// (cas réel : onglet resté ouvert des heures qui garde une copie périmée "accepted" alors qu'un
+// règlement plus récent won/lost/void existe déjà côté serveur), le groupe ne doit JAMAIS afficher
+// le statut le moins final des deux. Avant ce fix, le statut du groupe était celui de la PREMIÈRE
+// entrée rencontrée dans le tableau, peu importe laquelle — un pur hasard d'ordre pouvait donc
+// afficher "accepted" (pending pour l'utilisateur) sur une alerte pourtant réglée void depuis des
+// jours (cas Jessica Shepard, 4e occurrence du même symptôme visuel malgré un serveur toujours sain).
+const STATUS_RANK = { pending: 0, rejected: 1, accepted: 2, won: 3, lost: 3, void: 3 };
 function groupAlerts(raw) {
   const map = {};
   for (const a of raw) {
@@ -82,6 +90,9 @@ function groupAlerts(raw) {
         acceptedBookmaker: a.acceptedBookmaker || null,
         probDropWarning: false, currentProbability: null, driftReason: null,
       };
+    } else {
+      const incoming = a.status || 'pending';
+      if ((STATUS_RANK[incoming] ?? 0) > (STATUS_RANK[map[key].status] ?? 0)) map[key].status = incoming;
     }
     if (a.probDropWarning) { map[key].probDropWarning = true; map[key].currentProbability = a.currentProbability; map[key].driftReason = a.driftReason ?? null; }
     const entry = {

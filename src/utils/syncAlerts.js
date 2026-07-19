@@ -5,6 +5,7 @@
 // (cf. memory feedback_session_08juin_bugs_recurrents #4, divergence Clark/Bridges/Castle/Brunson).
 
 import { setItem as cloudSet } from './cloudStorage.js';
+import { getRecommendedStake, loadBankrollState } from './bankroll.js';
 
 // Écrit `alerts` dans la clé localStorage `key` en préservant toute entrée déjà en storage dont le
 // statut est décisif (accepted/rejected/won/lost/void) et absente du sous-ensemble écrit. Sans ça,
@@ -1347,7 +1348,15 @@ export async function syncTelegramActions() {
           return;
         }
         if ((list[idx].status || 'pending') !== 'pending') return; // déjà décidé localement, ne pas écraser
-        list[idx] = { ...list[idx], status: act.action };
+        // Fix 19 juillet 2026 — un accept fait depuis Telegram ne posait que `status`, jamais
+        // `acceptedAt`/`stakeAmount` (contrairement à un accept fait directement sur le site,
+        // cf. PlaceBetPage.jsx) : la carte apparaissait bien "acceptée" mais restait invisible du
+        // Suivi Bankroll (qui groupe "engagé aujourd'hui" par date d'acceptation) — cas réel Écart
+        // H2H Dallas Wings, accepté via Telegram, absent du total engagé du jour.
+        const extra = act.action === 'accepted' && !list[idx].acceptedAt
+          ? { acceptedAt: Date.now(), stakeAmount: list[idx].stakeAmount ?? getRecommendedStake(loadBankrollState().current) }
+          : {};
+        list[idx] = { ...list[idx], status: act.action, ...extra };
         changed = true;
       });
       if (changed) persistAlertsKey(key, list);

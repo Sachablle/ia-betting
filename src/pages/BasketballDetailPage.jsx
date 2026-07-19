@@ -2236,7 +2236,7 @@ function PropsSection({ fixture, homePlayers, awayPlayers, rosterLoading, isComp
     );
   }
 
-  const COL = '26px 1fr 36px 36px 36px 36px 8px 36px 36px 36px';
+  const COL = '26px 1fr 36px 36px 36px 36px 8px 36px 36px 36px 36px';
   const statStyle = (dim, green) => ({
     textAlign: 'right', fontSize: 12, fontWeight: dim ? 500 : 700,
     fontVariantNumeric: 'tabular-nums',
@@ -2370,7 +2370,7 @@ function PropsSection({ fixture, homePlayers, awayPlayers, rosterLoading, isComp
         <div /><div />
         <div style={{ gridColumn: 'span 4', fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-dim)', textAlign: 'center' }}>Projetées</div>
         <div />
-        <div style={{ gridColumn: 'span 3', fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em', color: isCompleted ? '#22c55e' : 'var(--text-dim)', textAlign: 'center' }}>Réalisées</div>
+        <div style={{ gridColumn: 'span 4', fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em', color: isCompleted ? '#22c55e' : 'var(--text-dim)', textAlign: 'center' }}>Réalisées</div>
       </div>
       <div ref={propsHeaderRef} style={{ display: 'grid', gridTemplateColumns: COL, gap: '0 0.25rem', padding: '0 0.5rem 0.35rem', borderBottom: '1px solid var(--border)' }}>
         <div /><div />
@@ -2382,6 +2382,7 @@ function PropsSection({ fixture, homePlayers, awayPlayers, rosterLoading, isComp
         <div style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', color: isCompleted ? '#22c55e' : 'var(--text-dim)', textAlign: 'right' }}>Pts</div>
         <div style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', color: isCompleted ? '#22c55e' : 'var(--text-dim)', textAlign: 'right' }}>Rebs</div>
         <div style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', color: isCompleted ? '#22c55e' : 'var(--text-dim)', textAlign: 'right' }}>Asst</div>
+        <div style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', color: isCompleted ? '#22c55e' : 'var(--text-dim)', textAlign: 'right' }}>3pts</div>
       </div>
 
       {/* Liste unifiée */}
@@ -2456,19 +2457,21 @@ function PropsSection({ fixture, homePlayers, awayPlayers, rosterLoading, isComp
               {/* Séparateur */}
               <div style={{ borderLeft: '1px solid var(--border)', height: '70%', alignSelf: 'center' }} />
 
-              {/* Réalisé */}
+              {/* Réalisé — tpm arrive au format boxscore "faits-tentés" (ex: "2-4"), jamais un nombre
+                  simple comme pts/reb/ast : il faut extraire le premier nombre avant affichage. */}
               {boxscoreLoading ? (
-                <><span style={statStyle(true, false)}>…</span><span style={statStyle(true, false)}>…</span><span style={statStyle(true, false)}>…</span></>
+                <><span style={statStyle(true, false)}>…</span><span style={statStyle(true, false)}>…</span><span style={statStyle(true, false)}>…</span><span style={statStyle(true, false)}>…</span></>
               ) : isDNP ? (
-                <span style={{ gridColumn: 'span 3', fontSize: 10, color: 'var(--text-dim)', textAlign: 'right' }}>DNP</span>
+                <span style={{ gridColumn: 'span 4', fontSize: 10, color: 'var(--text-dim)', textAlign: 'right' }}>DNP</span>
               ) : hasReal ? (
                 <>
                   <span style={statStyle(false, true)}>{real.stats.pts}</span>
                   <span style={statStyle(true,  false)}>{real.stats.reb}</span>
                   <span style={statStyle(true,  false)}>{real.stats.ast}</span>
+                  <span style={statStyle(true,  false)}>{real.stats.tpm != null ? String(real.stats.tpm).split('-')[0] : '—'}</span>
                 </>
               ) : (
-                <><span style={statStyle(true, false)}>—</span><span style={statStyle(true, false)}>—</span><span style={statStyle(true, false)}>—</span></>
+                <><span style={statStyle(true, false)}>—</span><span style={statStyle(true, false)}>—</span><span style={statStyle(true, false)}>—</span><span style={statStyle(true, false)}>—</span></>
               )}
             </div>
             {isExpanded && est && (() => {

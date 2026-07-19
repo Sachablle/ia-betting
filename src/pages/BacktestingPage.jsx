@@ -77,9 +77,12 @@ function countAccepted(periodDays, sportFilter, typeFilter, model = 'new') {
 
 const DC_DIR = { '1x': '1X', 'x2': 'X2', '12': '12' };
 
+// `?? a.odds` en dernier repli (19 juillet 2026) — basketball_result/basketball_spread stockent
+// leur cote dans un champ plat, jamais dans les champs par bookmaker ci-dessus (même défaut que
+// pickOdds, src/utils/bankroll.js — corrigé au même moment).
 const getBetOdds = a =>
   a.acceptedUnibetOdds ?? a.acceptedBetclicOdds ?? a.acceptedWinamaxOdds ?? a.acceptedPinnacleOdds ??
-  a.unibetOdds ?? a.betclicOdds ?? a.winamaxOdds ?? a.pinnacleOdds ?? null;
+  a.unibetOdds ?? a.betclicOdds ?? a.winamaxOdds ?? a.pinnacleOdds ?? a.odds ?? null;
 
 // Transforme une entrée du registre permanent (backend /api/bet-history) dans le format d'affichage
 // attendu par cette page — un seul mapping par type d'alerte, au lieu d'un bloc dupliqué par clé
@@ -106,6 +109,12 @@ function mapLedgerEntry(a) {
         label: `${a.homeShort || a.home} vs ${a.awayShort || a.away}`,
         sub: `🏆 Victoire ${a.direction === 'home' ? (a.homeShort || a.home) : (a.awayShort || a.away)}`,
         direction: a.direction, league: a.league || 'nba' };
+    case 'basketball_spread':
+      return { ...base, type: 'spread', sport: a.league || 'nba',
+        label: `${a.homeShort || a.home} vs ${a.awayShort || a.away}`,
+        sub: `📏 ${a.direction === 'home' ? (a.homeShort || a.home) : (a.awayShort || a.away)} ${a.line > 0 ? '+' : ''}${a.line}`,
+        actual: a.actualHomeScore != null && a.actualAwayScore != null ? `${a.actualHomeScore}-${a.actualAwayScore}` : null,
+        direction: a.direction, line: a.line, league: a.league || 'nba' };
     case 'football_btts':
       return { ...base, type: 'btts', sport: 'football',
         label: a.fixture || `${a.homeShort || a.home} vs ${a.awayShort || a.away}`,
@@ -294,6 +303,7 @@ function byTypeStats(bets) {
     'Total O/U':   bets.filter(b => b.type === 'total'),
     'BTTS':        bets.filter(b => b.type === 'btts'),
     'Résultat':    bets.filter(b => b.type === 'result'),
+    'Écart':       bets.filter(b => b.type === 'spread'),
   };
   return Object.entries(groups).map(([label, arr]) => ({ label, ...calcMetrics(arr) })).filter(g => g.total > 0);
 }
@@ -331,6 +341,7 @@ function categoryKey(b) {
   if (b.type === 'total')  return b.sport === 'football' ? 'Foot · O/U' : `${(b.sport || '?').toUpperCase()} · O/U`;
   if (b.type === 'btts')   return 'Foot · BTTS';
   if (b.type === 'result') return 'Foot · Résultat';
+  if (b.type === 'spread') return `${(b.sport || '?').toUpperCase()} · Écart`;
   return 'Autre';
 }
 
