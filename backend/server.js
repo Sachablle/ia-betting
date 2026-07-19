@@ -16,6 +16,7 @@ const CACHE_DIR   = join(__dirname, 'cache');
 const ODDS_CACHE_FILE = join(CACHE_DIR, 'odds.json');
 const SNAPSHOT_FILE   = join(CACHE_DIR, 'projections-snapshot.json');
 const PROJECTION_ACCURACY_FILE = join(CACHE_DIR, 'projection_accuracy.json');
+const NEAR_MISS_FILE = join(CACHE_DIR, 'near_miss_candidates.json');
 const LINES_FILE      = join(CACHE_DIR, 'player-lines-snapshot.json');
 const EURO_LINEUPS_FILE    = join(CACHE_DIR, 'euro_lineups.json');
 const WORLDCUP_CACHE_FILE  = join(CACHE_DIR, 'worldcup.json');
@@ -267,10 +268,9 @@ const fuzzy = (a, b) => {
 // Buts/équipe/match attendus — référence pour les facteurs attaque/défense
 // bresil : calculé le 17 juillet 2026 sur le classement BSA en cours (475 buts / 358 matchs joués = 1.327)
 const FB_LEAGUE_AVG_GOALS = { ligue1: 1.35, pl: 1.45, laliga: 1.35, bundes: 1.55, seriea: 1.35, bresil: 1.33 };
-// Interrupteur Brasileirão (17 juillet 2026) — implémentation en cours de revue par l'utilisateur.
-// Le fetch fixtures/cotes tourne déjà (isolé, zéro impact sur les 5 grands championnats), mais tant
-// que ce flag est à false, aucune alerte BTTS/Total/Résultat n'est générée pour cette ligue.
-const BRESIL_ALERTS_ENABLED = false;
+// Interrupteur Brasileirão (17 juillet 2026, activé le 19 juillet 2026 après revue utilisateur).
+// Le fetch fixtures/cotes tourne déjà (isolé, zéro impact sur les 5 grands championnats).
+const BRESIL_ALERTS_ENABLED = true;
 const CDM_AVG_GOALS = 1.30;
 // Fallback si aucune stat CDM disponible (avgGF/avgGA normalement calculés dynamiquement
 // sur le pool d'équipes programmées, cf section 4d) — anciennes moyennes observées (~17 sélections).
@@ -737,13 +737,25 @@ app.post('/api/userdata', async (req, res) => {
     // côté client (cf. perte des résultats basket du 6 juillet). Point d'écriture unique côté serveur :
     // si la valeur écrite est un tableau d'alertes, un règlement déjà acquis (won/lost/void) absent du
     // nouveau tableau est automatiquement réintégré au lieu d'être perdu.
+    // Étendu le 17 juillet 2026 : ça ne couvrait que l'ID ABSENT du tableau entrant. Un onglet resté
+    // ouvert des heures (jamais rechargé) renvoie son propre ID avec un statut périmé ('accepted')
+    // qui écrase alors un règlement plus récent ('void') — cas réel Jessica Shepard, 3 occurrences.
+    // Un règlement terminal (won/lost/void) ne doit donc jamais être regressé par une valeur entrante,
+    // que l'ID soit absent OU présent avec un statut différent.
     if (Array.isArray(value) && value.every(v => v && typeof v === 'object' && 'id' in v)) {
       const doc = await db.collection('userdata').findOne({ _id: 'main' });
       const existing = doc?.data?.[key];
       if (Array.isArray(existing)) {
+        const TERMINAL = new Set(['won', 'lost', 'void']);
+        const existingById = new Map(existing.filter(v => v && v.id != null).map(v => [v.id, v]));
         const incomingIds = new Set(value.map(v => v.id));
-        const preserved = existing.filter(v => v && ['won', 'lost', 'void'].includes(v.status) && !incomingIds.has(v.id));
-        if (preserved.length) toStore = [...value, ...preserved];
+        const preserved = existing.filter(v => v && TERMINAL.has(v.status) && !incomingIds.has(v.id));
+        const merged = value.map(v => {
+          const prev = existingById.get(v.id);
+          if (prev && TERMINAL.has(prev.status) && prev.status !== v.status) return prev;
+          return v;
+        });
+        toStore = preserved.length ? [...merged, ...preserved] : merged;
       }
     }
     await db.collection('userdata').updateOne(
@@ -8193,6 +8205,66 @@ app.get('/api/analysis/projection-accuracy', (req, res) => {
   res.json({ rows, count: rows.length });
 });
 
+// Suivi des "presque-alertes" (19 juillet 2026) — l'utilisateur demande une vraie réponse chiffrée
+// sur "est-ce que le seuil de 77% est le bon" avant d'y toucher (cf. le fix rebonds du même jour,
+// décidé sur 13 vrais paris plutôt qu'au pif). Enregistre tout candidat props (NBA+WNBA, toutes
+// stats) qui approche le seuil sans le franchir (floor-20 à floor exclu), puis règle le résultat
+// réel une fois le match terminé (même mécanisme que _logProjectionAccuracy) — accumule un
+// échantillon de validation bien plus grand que les seules alertes réellement acceptées.
+let _nearMissCandidates = [];
+try {
+  if (existsSync(NEAR_MISS_FILE)) _nearMissCandidates = JSON.parse(readFileSync(NEAR_MISS_FILE, 'utf8')).rows || [];
+} catch {}
+function _saveNearMiss() {
+  try { writeFileSync(NEAR_MISS_FILE, JSON.stringify({ rows: _nearMissCandidates }), 'utf8'); } catch {}
+}
+const NEAR_MISS_BAND = 0.20; // ne garde que [floor-20pts, floor) — évite le bruit des cas trop loin
+function _logNearMissCandidate({ gameId, league, player, stat, direction, line, probability, floor }) {
+  if (probability >= floor || probability < floor - NEAR_MISS_BAND) return;
+  const id = `${gameId}_${player}_${stat}_${direction}_${line}`;
+  if (_nearMissCandidates.some(c => c.id === id)) return; // déjà loggé ce cycle/les précédents
+  _nearMissCandidates.push({ id, gameId, league, player, stat, direction, line, probability: +(probability * 100).toFixed(1), floor: +(floor * 100).toFixed(1), status: 'pending', savedAt: Date.now() });
+}
+async function _resolveNearMissCandidates() {
+  const base = `http://localhost:${process.env.PORT || 3001}`;
+  const pending = _nearMissCandidates.filter(c => c.status === 'pending');
+  if (!pending.length) return;
+  const byGame = {};
+  pending.forEach(c => { (byGame[`${c.league}_${c.gameId}`] ??= []).push(c); });
+  for (const key of Object.keys(byGame)) {
+    const [league, gameId] = [key.split('_')[0], key.split('_').slice(1).join('_')];
+    try {
+      const sb = await fetch(`${base}/api/${league}/scoreboard`).then(r => r.ok ? r.json() : null).catch(() => null);
+      const game = (sb?.games || []).find(g => String(g.id) === String(gameId));
+      if (!game || game.status !== 'STATUS_FINAL') continue;
+      const bsUrl = `${base}/api/${league}/boxscore?date=${encodeURIComponent(game.date)}&home=${encodeURIComponent(game.home.short)}&away=${encodeURIComponent(game.away.short)}`;
+      const bs = await fetch(bsUrl).then(r => r.ok ? r.json() : null).catch(() => null);
+      if (!bs || bs.error) continue;
+      const bsKeys = Object.keys(bs).filter(k => !['gameId', 'status', 'homeScore', 'awayScore', 'error'].includes(k));
+      const realizedPlayers = bsKeys.flatMap(k => bs[k] || []);
+      for (const c of byGame[key]) {
+        const r = realizedPlayers.find(x => x.name === c.player);
+        if (!r || r.dnp) { c.status = 'void'; continue; }
+        let realv = r.stats?.[c.stat];
+        if (typeof realv === 'string' && realv.includes('-')) realv = parseInt(realv.split('-')[0]) || 0;
+        if (realv == null) { c.status = 'void'; continue; }
+        c.actualStat = realv;
+        const cleared = c.direction === 'over' ? realv > c.line : realv < c.line;
+        c.status = cleared ? 'won' : 'lost';
+      }
+    } catch {}
+  }
+  const cutoff = Date.now() - 90 * 86400_000;
+  _nearMissCandidates = _nearMissCandidates.filter(c => c.savedAt > cutoff);
+  _saveNearMiss();
+}
+app.get('/api/analysis/near-miss', (req, res) => {
+  const days = Math.min(parseInt(req.query.days) || 30, 90);
+  const cutoff = Date.now() - days * 86400_000;
+  const rows = _nearMissCandidates.filter(r => r.savedAt > cutoff);
+  res.json({ rows, count: rows.length });
+});
+
 // Lines snapshot — lignes bookmaker pré-match persistées sur disque
 const _linesSnapshot = (() => {
   try { if (existsSync(LINES_FILE)) return JSON.parse(readFileSync(LINES_FILE, 'utf8')); } catch {}
@@ -9126,7 +9198,13 @@ function computeEUEstimate(player, isHome, oppGames, myGames, gamelogs, gameDate
   const allMult = restFactor * locFactor * streakFactor * minNormFactor * fgFactor * h2hFactor * densityFactor * injReturnFactor;
 
   const multPts = Math.min(1.35, Math.max(0.72, formFactor    * paceFactor * defFactor    * allMult));
-  const multReb = Math.min(1.25, Math.max(0.78, formFactorReb *              defFactorReb * allMult));
+  // Cap resserré 19 juillet 2026 — même correctif que NBA/WNBA (compute.js, computeEstimate) : reb
+  // n'a jamais reçu d'ancrage volume×efficacité comme pts, donc rien ne ramène l'estimation vers une
+  // valeur crédible quand plusieurs facteurs (forme, défense adverse, historique H2H) boostent tous
+  // dans le même sens. Constaté sur 13 paris reb WNBA réglés : 11/13 surestimés, +3,6 rebonds de
+  // moyenne d'écart — même défaut structurel ici, jamais encore mesuré sur ces ligues faute d'alertes
+  // reb EU générées à ce jour, mais corrigé par cohérence avant que ça arrive.
+  const multReb = Math.min(1.12, Math.max(0.78, formFactorReb *              defFactorReb * allMult));
   const multAst = Math.min(1.25, Math.max(0.78, formFactorAst * paceFactor * defFactorAst * allMult));
   const multTpm = Math.min(1.25, Math.max(0.78, formFactorTpm * paceFactor * defFactorTpm * allMult));
   const estimatedRaw = basePts * multPts;
@@ -9621,7 +9699,16 @@ function displayProb(estVal, rawStd, fallbackStd, gamelog, refLineLine, stat, de
   const threshold = Math.ceil(refLineLine);
   const rawPOver = probAtLeast(estVal, std, threshold, stat, deviation, isWNBA, (gamelog || []).length);
   const gap = Math.abs(estVal - refLineLine) / refLineLine;
-  const sanityMax = gap > 0.25 ? 0.75 : 1.0;
+  // Fix 19 juillet 2026 — ce plafond était fixé à 0.75, AU-DESSUS du plancher "spécialiste" (0.72),
+  // censé être le seuil le plus bas de tout le système. Résultat : au lieu de bloquer les cas où
+  // l'estimation s'écarte de plus de 25% de la ligne (signal de méfiance), le plafond les laissait
+  // passer en affichant un 75% en apparence raisonnable — masquant le vrai problème plutôt que de le
+  // filtrer. Constaté sur l'outil de calibration du site : la tranche 75-85% n'a que 50% de réussite
+  // réelle (8/16), et CHAQUE alerte rebonds récente affichait exactement 75%, jamais une autre valeur
+  // — preuve que ce plafond se déclenchait systématiquement plutôt que de refléter un vrai calcul.
+  // Abaissé sous le plus bas plancher existant (0.72) pour qu'il bloque réellement au lieu de
+  // simplement "adoucir" un chiffre déjà peu fiable.
+  const sanityMax = gap > 0.25 ? 0.65 : 1.0;
   const minVarianceAdj = minCV > 0.35 ? -0.08 : 0;
   const pOver = Math.max(0, Math.min(sanityMax, rawPOver) + minVarianceAdj);
   return { pOver, pUnder: Math.max(0, 1 - pOver) };
@@ -10159,6 +10246,9 @@ async function generateBackgroundAlerts() {
               // Moyenne "effective" mélangeant saison + forme récente — cf. blendedSeasonAvg (compute.js), 15 juil. 2026
               const _frozenMarginAvg = blendedSeasonAvg(gamelog, stat, _frozenSeasonAvg);
               const _frozenEdge = Math.abs(estVal - refLine.line);
+              _logNearMissCandidate({ gameId: game.id, league: 'nba', player: player.name, stat,
+                direction: (disp?.pOver ?? pOver) >= (disp?.pUnder ?? pUnder) ? 'over' : 'under',
+                line: refLine.line, probability: Math.max(disp?.pOver ?? pOver, disp?.pUnder ?? pUnder), floor: _frozenFloor });
               // Marge moyenne saison ↔ ligne + minimum de volume TPM — étendu de la WNBA à la NBA le 22 juin 2026
               const _frozenMarginOverOk  = _frozenMarginAvg == null || _frozenMarginAvg >= refLine.line + SEASON_MARGIN[stat];
               const _frozenMarginUnderOk = _frozenMarginAvg == null || _frozenMarginAvg <= refLine.line - SEASON_MARGIN[stat];
@@ -10318,6 +10408,9 @@ async function generateBackgroundAlerts() {
             // Plancher abaissé à 75% si le joueur est "spécialiste" de cette stat — voir isConsistentStat (compute.js)
             const _nbaFloor = isConsistentStat(gamelog, stat) ? 0.75 : (_nbaIsStarter ? NBA_ALERT_FLOOR[stat] : NBA_ALERT_FLOOR_BENCH[stat]);
             const _nbaEdge = Math.abs(estVal - refLine.line);
+            _logNearMissCandidate({ gameId: game.id, league: 'nba', player: player.name, stat,
+              direction: (disp?.pOver ?? pOver) >= (disp?.pUnder ?? pUnder) ? 'over' : 'under',
+              line: refLine.line, probability: Math.max(disp?.pOver ?? pOver, disp?.pUnder ?? pUnder), floor: _nbaFloor });
             // Moyenne "effective" mélangeant saison + forme récente — cf. blendedSeasonAvg (compute.js), 15 juil. 2026
             const _nbaMarginAvg = blendedSeasonAvg(gamelog, stat, seasonAvgStat);
             // Marge moyenne saison ↔ ligne + minimum de volume TPM — étendu de la WNBA à la NBA le 22 juin 2026
@@ -10615,6 +10708,9 @@ async function generateBackgroundAlerts() {
                   // Moyenne "effective" mélangeant saison + forme récente — cf. blendedSeasonAvg (compute.js), 15 juil. 2026
                   const _wnbaFrozenMarginAvg = blendedSeasonAvg(gamelog, stat, _wnbaFrozenSeasonAvg);
                   const _wnbaFrozenEdge = Math.abs(estVal - refLine.line);
+                  _logNearMissCandidate({ gameId: game.id, league: 'wnba', player: player.name, stat,
+                    direction: (disp?.pOver ?? pOver) >= (disp?.pUnder ?? pUnder) ? 'over' : 'under',
+                    line: refLine.line, probability: Math.max(disp?.pOver ?? pOver, disp?.pUnder ?? pUnder), floor: _wnbaFrozenFloor });
                   const _wnbaFrozenMarginOverOk  = _wnbaFrozenMarginAvg == null || _wnbaFrozenMarginAvg >= refLine.line + WNBA_SEASON_MARGIN[stat];
                   const _wnbaFrozenMarginUnderOk = _wnbaFrozenMarginAvg == null || _wnbaFrozenMarginAvg <= refLine.line - WNBA_SEASON_MARGIN[stat];
                   const _wnbaFrozenTpmVolOk = stat !== 'tpm' || (_wnbaFrozenSeasonAvg??0) >= WNBA_TPM_MIN_SEASON_AVG;
@@ -10774,6 +10870,9 @@ async function generateBackgroundAlerts() {
             // Moyenne "effective" mélangeant saison + forme récente — cf. blendedSeasonAvg (compute.js), 15 juil. 2026
             const _wnbaMarginAvg = blendedSeasonAvg(gamelog, stat, _wnbaSeasonAvg);
             const _wnbaEdge = Math.abs(estVal - refLine.line);
+            _logNearMissCandidate({ gameId: game.id, league: 'wnba', player: player.name, stat,
+              direction: (disp?.pOver ?? pOver) >= (disp?.pUnder ?? pUnder) ? 'over' : 'under',
+              line: refLine.line, probability: Math.max(disp?.pOver ?? pOver, disp?.pUnder ?? pUnder), floor: alertFloor });
             _bgLog.push(`wnba dbg ${player.name} ${stat}: est=${estVal?.toFixed(1)} line=${refLine.line} std=${std?.toFixed(1)} pOver=${Math.round(rawPOver*100)}% pUnder=${Math.round(rawPUnder*100)}% adj=${minVarianceAdj}`);
             const _wnbaMarginOverOk  = _wnbaMarginAvg == null || _wnbaMarginAvg >= refLine.line + WNBA_SEASON_MARGIN[stat];
             const _wnbaMarginUnderOk = _wnbaMarginAvg == null || _wnbaMarginAvg <= refLine.line - WNBA_SEASON_MARGIN[stat];
@@ -13055,6 +13154,10 @@ app.listen(PORT, () => {
   // Suivi projeté vs réalisé — cycle indépendant, ne touche jamais generateBackgroundAlerts
   setTimeout(() => _logProjectionAccuracy().catch(() => {}), 15_000);
   setInterval(() => _logProjectionAccuracy().catch(() => {}), 20 * 60 * 1000);
+
+  // Suivi des "presque-alertes" (19 juillet 2026) — même principe, cycle indépendant
+  setTimeout(() => _resolveNearMissCandidates().catch(() => {}), 18_000);
+  setInterval(() => _resolveNearMissCandidates().catch(() => {}), 20 * 60 * 1000);
 
   // Watchdog réseau — ping DNS léger toutes les 2 min (voir commentaire à la définition)
   setInterval(_networkWatchdog, 2 * 60 * 1000);

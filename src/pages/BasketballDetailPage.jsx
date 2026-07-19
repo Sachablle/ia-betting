@@ -484,10 +484,6 @@ function PropLegendCard({ league }) {
           : <>Alerte si <b style={{ color: '#4a9b6f' }}>seuil vert</b> + cotes Unibet/Betclic ≥ 1,60 + minutes ≥ 10/match. 3pts Over : moy ≥ 1,5/match.</>
         }
       </div>
-      <div style={{ fontSize: 9, lineHeight: 1.45, color: 'var(--text-dim)', borderTop: '1px solid var(--border)', paddingTop: '0.4rem', marginTop: '0.4rem' }}>
-        <span style={{ display: 'inline-block', fontSize: 8, fontWeight: 800, padding: '1px 4px', borderRadius: 3, background: 'rgba(251,146,60,0.12)', color: '#fb923c', border: '1px solid rgba(251,146,60,0.35)', marginRight: 4 }}>≈</span>
-        à côté d'un nom : le backend n'a pas encore de calcul figé pour ce match (nom pas encore matché, ou cycle pas encore passé) — la projection/% affichés viennent d'un calcul de secours côté site, qui peut différer de celui d'une alerte pour la même joueuse une fois le calcul backend disponible.
-      </div>
     </div>
   );
 }
@@ -2432,16 +2428,6 @@ function PropsSection({ fixture, homePlayers, awayPlayers, rosterLoading, isComp
                   const bc    = isOut ? 'rgba(239,68,68,0.4)'  : 'rgba(251,146,60,0.4)';
                   return <span style={{ flexShrink: 0, fontSize: 8, fontWeight: 800, padding: '1px 4px', borderRadius: 3, background: bg, color: c, border: `1px solid ${bc}` }}>{lbl}</span>;
                 })()}
-                {/* Estimation provisoire (16 juillet 2026) — le backend n'a pas encore de snapshot figé
-                    pour ce joueur sur ce match (nom pas encore matché, ou cycle pas encore passé) :
-                    la projection/% affichés viennent d'un calcul de secours côté site, qui peut
-                    différer de celui d'une alerte pour la même joueuse une fois le snapshot arrivé. */}
-                {est && !snapshotMatch.current.has(String(p.id)) && (
-                  <span
-                    title="Estimation provisoire — le backend n'a pas encore calculé ce joueur pour ce match. Ce %/valeur peut différer de celui d'une alerte."
-                    style={{ flexShrink: 0, fontSize: 8, fontWeight: 800, padding: '1px 4px', borderRadius: 3, background: 'rgba(251,146,60,0.12)', color: '#fb923c', border: '1px solid rgba(251,146,60,0.35)' }}
-                  >≈</span>
-                )}
               </span>
 
               {/* Projeté — computeEstimate si dispo, sinon moyenne saison */}

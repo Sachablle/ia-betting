@@ -25,9 +25,15 @@ LOG_FILE=$(mktemp)
 TUNNEL_PID=$!
 
 # Attend que l'URL apparaisse dans les logs (jusqu'à ~20s)
+# 18 juillet 2026 : "api.trycloudflare.com" est le domaine de contrôle de Cloudflare, pas une URL de
+# tunnel — il apparaît aussi dans les lignes d'ERREUR quand la création du tunnel échoue (ex: panne
+# réseau/DNS passagère : "failed to request quick Tunnel: Post https://api.trycloudflare.com/tunnel:
+# dial tcp: lookup api.trycloudflare.com: no such host"). L'ancien regex matchait cette ligne d'erreur
+# et enregistrait un faux "succès" avec un webhook pointant vers nulle part. On exclut ce domaine
+# explicitement et on ignore les lignes contenant "fail"/"error".
 URL=""
 for i in $(seq 1 20); do
-  URL=$(grep -o 'https://[a-zA-Z0-9.-]*\.trycloudflare\.com' "$LOG_FILE" | head -1)
+  URL=$(grep -vi "fail\|error" "$LOG_FILE" | grep -o 'https://[a-zA-Z0-9.-]*\.trycloudflare\.com' | grep -v '^https://api\.trycloudflare\.com$' | head -1)
   if [ -n "$URL" ]; then break; fi
   sleep 1
 done

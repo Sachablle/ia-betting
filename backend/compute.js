@@ -531,7 +531,10 @@ function computeEstimate(player, isHome, oppGames, myGames, gamelogs, oppAbbr, g
     const rawMultAst = defAst.val * sharedMult * h2hAstCapped;
     const rawMultTpm = defTpm.val * sharedMult * h2hTpmCapped;
     adjMult    = Math.min(1.30, Math.max(0.74, rawMult));
-    adjMultReb = Math.min(1.30, Math.max(0.74, rawMultReb * (1 + (orebF.val - 1) * 0.6)));
+    // Cap resserré 19 juillet 2026 — même correctif que la branche saison régulière ci-dessous
+    // (pas de playoffs en cours actuellement, corrigé par cohérence pour ne pas réintroduire le
+    // même défaut dès que les playoffs WNBA/NBA reprendront).
+    adjMultReb = Math.min(1.18, Math.max(0.74, rawMultReb * (1 + (orebF.val - 1) * 0.6)));
     adjMultAst = Math.min(1.30, Math.max(0.74, rawMultAst * toaF.val));
     adjMultTpm = Math.min(1.30, Math.max(0.74, rawMultTpm));
   } else {
@@ -548,7 +551,14 @@ function computeEstimate(player, isHome, oppGames, myGames, gamelogs, oppAbbr, g
     const rawMultAst = defAst.val * sharedMult * h2hAstCapped;
     const rawMultTpm = defTpm.val * sharedMult * h2hTpmCapped;
     adjMult    = Math.min(1.24, Math.max(0.78, rawMult));
-    adjMultReb = Math.min(1.24, Math.max(0.78, rawMultReb * orebF.val));
+    // Cap resserré 19 juillet 2026 — reb n'a jamais reçu l'équivalent de l'ancrage volume×efficacité
+    // qui recale pts (getShotVolumeAnchor, 15 juin) : sans garde-fou, les boosts (défense adverse,
+    // H2H, forme, redistribution coéquipière) s'empilent sans rien qui ramène vers une valeur crédible.
+    // Constaté sur 13 paris reb réglés (historique réel) : 11/13 surestimés, +3,6 rebonds de moyenne
+    // d'écart vs réel — le plafond 1.24 était trop large pour ce stat en particulier (pts/ast/tpm ne
+    // montrent pas ce biais, mais génèrent aussi beaucoup moins d'alertes : la surestimation reb fait
+    // franchir le seuil de probabilité artificiellement plus souvent, cf. investigation en cours sur pts).
+    adjMultReb = Math.min(1.12, Math.max(0.78, rawMultReb * orebF.val));
     adjMultAst = Math.min(1.24, Math.max(0.78, rawMultAst * toaF.val));
     adjMultTpm = Math.min(1.24, Math.max(0.78, rawMultTpm));
   }
