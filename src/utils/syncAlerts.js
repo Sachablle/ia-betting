@@ -1353,10 +1353,14 @@ export async function syncTelegramActions() {
         // cf. PlaceBetPage.jsx) : la carte apparaissait bien "acceptée" mais restait invisible du
         // Suivi Bankroll (qui groupe "engagé aujourd'hui" par date d'acceptation) — cas réel Écart
         // H2H Dallas Wings, accepté via Telegram, absent du total engagé du jour.
-        const extra = act.action === 'accepted' && !list[idx].acceptedAt
+        // act.extra (20 juillet 2026) — bookmaker/cote choisis au moment de l'accept Telegram
+        // (acceptedBookmaker/acceptedUnibetOdds/acceptedBetclicOdds/...), transporté depuis
+        // recordAction() côté serveur. Sans ça, la carte Running/Backtesting n'affichait aucune
+        // cote pour un accept fait depuis Telegram (cas réel : Total SEA-MIN, cote Betclic absente).
+        const dateExtra = act.action === 'accepted' && !list[idx].acceptedAt
           ? { acceptedAt: Date.now(), stakeAmount: list[idx].stakeAmount ?? getRecommendedStake(loadBankrollState().current) }
           : {};
-        list[idx] = { ...list[idx], status: act.action, ...extra };
+        list[idx] = { ...list[idx], status: act.action, ...dateExtra, ...(act.extra || {}) };
         changed = true;
       });
       if (changed) persistAlertsKey(key, list);

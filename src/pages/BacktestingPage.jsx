@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from 'react';
 import { syncSettlements, resolveCompletedFootballAlerts } from '../utils/syncAlerts';
-import { BANKROLL_BRACKETS, BANKROLL_TARGET, getRecommendedStake, getEngagedToday, getBracketLabel, loadBankrollState, recordBet, resetBankroll, syncBankrollFromHistory, seedBaselineIfNeeded } from '../utils/bankroll';
+import { BANKROLL_BRACKETS, BANKROLL_TARGET, getRecommendedStake, getEngagedToday, getEngagedPending, getBracketLabel, loadBankrollState, recordBet, resetBankroll, syncBankrollFromHistory, seedBaselineIfNeeded } from '../utils/bankroll';
 
 const ROLLING_N = 20;
 const DEFAULT_ODDS = 1.9;
@@ -163,6 +163,11 @@ function mapLedgerEntry(a) {
         sub: `DC ${DC_DIR[a.direction] ?? a.direction} & +${a.line ?? 1.5} buts`,
         actual: (a.actualHomeScore != null && a.actualAwayScore != null) ? a.actualHomeScore + a.actualAwayScore : null,
         line: a.line ?? 1.5, direction: 'over', league: a.league || 'cdm' };
+    // Paris long terme (outright) saisis manuellement (20 juillet 2026) — pas d'alerte générée par
+    // le modèle, juste label/sub fournis directement à la création de l'entrée dans le registre.
+    case 'outright':
+      return { ...base, type: 'outright', sport: 'football',
+        label: a.label, sub: a.sub, league: a.league || 'cdm' };
     default:
       return null;
   }
@@ -487,7 +492,12 @@ function BankrollTracker() {
     return () => { cancelled = true; clearInterval(id); };
   }, []);
 
-  const bk = state.current;
+  // Solde réellement disponible = state.current (ne bouge qu'au règlement won/lost) moins ce qui
+  // est actuellement bloqué sur des paris encore en attente (déjà débité chez le bookmaker mais pas
+  // encore rendu au tracker). Sans ça, l'affichage montre un solde supérieur à ce qui est vraiment
+  // visible sur le compte tant qu'un pari est en jeu (20 juillet 2026).
+  const pendingEngaged = getEngagedPending();
+  const bk = state.current - pendingEngaged.total;
   const stake = getRecommendedStake(bk);
   const bracket = getBracketLabel(bk);
   const progressPct = Math.min(100, (bk / BANKROLL_TARGET) * 100);
@@ -514,6 +524,11 @@ function BankrollTracker() {
             <span style={{ fontSize: 30, fontWeight: 800, color: 'var(--text)', fontVariantNumeric: 'tabular-nums' }}>{bk.toFixed(0)}€</span>
             <span style={{ fontSize: 13, color: 'var(--text-dim)' }}>/ objectif {BANKROLL_TARGET.toLocaleString('fr-FR')}€</span>
           </div>
+          {pendingEngaged.stakes.length > 0 && (
+            <div title={pendingEngaged.stakes.map(s => `${s}€`).join(' + ')} style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 2 }}>
+              (déjà déduit : {pendingEngaged.total}€ engagés sur pari{pendingEngaged.stakes.length > 1 ? 's' : ''} en cours)
+            </div>
+          )}
         </div>
         <div style={{ textAlign: 'right' }}>
           <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-dim)' }}>Mise recommandée</div>
@@ -607,9 +622,13 @@ function BankrollTracker() {
           {[...state.history].filter(h => h.type !== 'reset').reverse().map((h, i) => (
             <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: 11, padding: '0.35rem 0.5rem', background: 'rgba(255,255,255,0.02)', borderRadius: 6 }}>
               <span style={{ color: 'var(--text-dim)', minWidth: 90 }}>{new Date(h.date).toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}</span>
-              <span style={{ color: h.type === 'win' ? '#4ade80' : '#ef4444', fontWeight: 700, whiteSpace: 'nowrap' }}>
-                {h.type === 'win' ? '✓' : '✗'} mise {h.stake}€ @ {h.odds}
-              </span>
+              {h.type === 'adjustment' ? (
+                <span style={{ color: '#60a5fa', fontWeight: 700, whiteSpace: 'nowrap' }}>⚖ Ajustement manuel</span>
+              ) : (
+                <span style={{ color: h.type === 'win' ? '#4ade80' : '#ef4444', fontWeight: 700, whiteSpace: 'nowrap' }}>
+                  {h.type === 'win' ? '✓' : '✗'} mise {h.stake}€ @ {h.odds}
+                </span>
+              )}
               {h.betLabel && <span style={{ color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{h.betLabel}</span>}
               <span style={{ color: h.profit >= 0 ? '#4ade80' : '#ef4444' }}>{h.profit >= 0 ? '+' : ''}{h.profit}€</span>
               <span style={{ marginLeft: 'auto', color: 'var(--text-dim)', whiteSpace: 'nowrap' }}>→ {h.balanceAfter}€</span>

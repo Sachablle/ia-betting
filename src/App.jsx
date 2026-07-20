@@ -151,12 +151,31 @@ function useAlertCount() {
 
     const syncTick = setInterval(cloudSync, 2 * 60_000);
 
+    // Resynchro à la reprise de focus (20 juillet 2026) — les navigateurs (Safari en particulier)
+    // suspendent ou ralentissent fortement les timers d'un onglet/fenêtre resté en arrière-plan
+    // pendant longtemps, donc le syncTick 2min peut ne quasiment jamais se déclencher tant que la
+    // fenêtre n'est pas au premier plan. Sans ça, un onglet longtemps délaissé restait figé sur un
+    // état périmé (ex: statut "accepted" alors que déjà réglé void côté serveur, cas récurrent
+    // Jessica Shepard) jusqu'à un rechargement manuel — même throttle 3s que le SSE pour éviter un
+    // appel en double si le focus revient juste après un cycle déjà en cours.
+    const onVisible = () => {
+      if (document.visibilityState !== 'visible') return;
+      const now = Date.now();
+      if (now - lastSseSync < 3000) return;
+      lastSseSync = now;
+      cloudSync();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    window.addEventListener('focus', onVisible);
+
     return () => {
       window.removeEventListener('nba_alerts_updated', refresh);
       FB_ALERT_EVENTS.forEach(e => window.removeEventListener(e, refresh));
       clearInterval(tick);
       clearInterval(syncTick);
       es.close();
+      document.removeEventListener('visibilitychange', onVisible);
+      window.removeEventListener('focus', onVisible);
     };
   }, []);
   return counts;

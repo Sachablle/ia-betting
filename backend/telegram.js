@@ -226,8 +226,13 @@ function makeToken() {
   return Math.random().toString(36).slice(2, 10);
 }
 
-function recordAction(type, id, action) {
-  _actionLog.push({ type, id, action, ts: Date.now() });
+// `extra` (20 juillet 2026) — jusqu'ici seul {type,id,action} était journalisé, jamais le bookmaker
+// ni la cote choisis au moment d'un accept Telegram (acceptedFields côté webhook, server.js). Le
+// site ne pouvait donc jamais savoir laquelle afficher après coup — cote manquante sur Running/
+// Backtesting pour toute alerte acceptée depuis Telegram. `extra` transporte acceptedBookmaker/
+// acceptedUnibetOdds/acceptedBetclicOdds/... jusqu'à syncTelegramActions() côté client.
+function recordAction(type, id, action, extra = null) {
+  _actionLog.push({ type, id, action, ts: Date.now(), ...(extra ? { extra } : {}) });
   if (_actionLog.length > ACTION_LOG_MAX) _actionLog.splice(0, _actionLog.length - ACTION_LOG_MAX);
 }
 

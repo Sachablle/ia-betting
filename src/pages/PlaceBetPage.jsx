@@ -2312,7 +2312,17 @@ export default function PlaceBetPage() {
   const voidIds = (ids) => {
     const idSet = new Set(ids);
     const updated = rawAlerts.map(a => idSet.has(a.id) ? { ...a, status: 'void', actualStat: null, resolvedAt: Date.now() } : a);
-    try { persistAlertKey(updated); } catch {}
+    try {
+      persistAlertKey(updated);
+      // Miroir dans HISTORY_KEY (20 juillet) : sans ça, le double dans nba_bet_history reste
+      // "accepted" pour toujours et ressuscite l'alerte dès qu'elle est restaurée depuis l'historique
+      // (loadAlerts() ci-dessus) — cause racine de la réapparition répétée de l'alerte Jessica Shepard.
+      const history = JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]');
+      const histById = {};
+      history.forEach(a => { histById[a.id] = a; });
+      updated.forEach(a => { if (idSet.has(a.id)) histById[a.id] = a; });
+      cloudSet(HISTORY_KEY, JSON.stringify(Object.values(histById)));
+    } catch {}
     setRawAlerts(updated);
     notify();
   };

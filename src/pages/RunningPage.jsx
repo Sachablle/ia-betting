@@ -6,6 +6,7 @@ import { setItem as cloudSet } from '../utils/cloudStorage';
 import { cachedFetch } from '../utils/fetchCache';
 
 const ALERT_KEY      = 'nba_prop_alerts';
+const HISTORY_KEY    = 'nba_bet_history';
 const GAME_TOTAL_KEY = 'nba_game_total_alerts';
 const BASKETBALL_RESULT_KEY = 'basketball_result_alerts';
 const BASKETBALL_SPREAD_KEY = 'basketball_spread_alerts';
@@ -934,6 +935,19 @@ export default function RunningPage() {
       const writtenIds = new Set(updated.map(a => a.id));
       const preservedOld = current.filter(a => ['won', 'lost', 'void', 'accepted', 'rejected'].includes(a.status) && !writtenIds.has(a.id));
       cloudSet(ALERT_KEY, JSON.stringify([...updated, ...preservedOld]));
+      // Miroir dans nba_bet_history (14 juillet, réexposé 20 juillet) : cette clé sert de backup/
+      // restauration (loadAlerts() dans PlaceBetPage.jsx la utilise pour ressusciter une alerte
+      // disparue de ALERT_KEY). Si le passage à 'void' ici n'y est pas répercuté, le double y reste
+      // "accepted" indéfiniment et ressuscite l'alerte dès qu'elle est purgée puis restaurée depuis
+      // l'historique — cause racine de la réapparition de l'alerte Jessica Shepard (void) à répétition.
+      const voidedIds = new Set(updated.filter(a => idSet.has(a.id) || (a.status === 'void' && a.userDismissed)).map(a => a.id));
+      if (voidedIds.size) {
+        const history = JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]');
+        const histById = {};
+        history.forEach(a => { histById[a.id] = a; });
+        updated.forEach(a => { if (voidedIds.has(a.id)) histById[a.id] = a; });
+        cloudSet(HISTORY_KEY, JSON.stringify(Object.values(histById)));
+      }
     } catch {}
     setRawAlerts(updated);
   };

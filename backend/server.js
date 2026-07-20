@@ -9253,7 +9253,12 @@ function computeEUEstimate(player, isHome, oppGames, myGames, gamelogs, gameDate
 
   const allMult = restFactor * locFactor * streakFactor * minNormFactor * fgFactor * h2hFactor * densityFactor * injReturnFactor;
 
-  const multPts = Math.min(1.35, Math.max(0.72, formFactor    * paceFactor * defFactor    * allMult));
+  // Cap resserré 20 juillet 2026 — même correctif que NBA/WNBA (compute.js) : le suivi des
+  // "presque-alertes" a montré pts surestimé de +23 points de % (proba affichée vs réussite réelle,
+  // n=22) malgré l'ancrage volume×efficacité côté NBA/WNBA — cette version EU n'a même pas cet
+  // ancrage, donc au moins aussi exposée. Jamais d'alertes pts EU générées à ce jour (ligues en pause
+  // estivale), corrigé par cohérence avant la reprise plutôt que d'attendre un cas réel.
+  const multPts = Math.min(1.12, Math.max(0.72, formFactor    * paceFactor * defFactor    * allMult));
   // Cap resserré 19 juillet 2026 — même correctif que NBA/WNBA (compute.js, computeEstimate) : reb
   // n'a jamais reçu d'ancrage volume×efficacité comme pts, donc rien ne ramène l'estimation vers une
   // valeur crédible quand plusieurs facteurs (forme, défense adverse, historique H2H) boostent tous
@@ -12733,7 +12738,7 @@ app.post('/api/telegram/webhook', async (req, res) => {
       }
       const bgEntry = backgroundAlerts.find(a => a.id === id);
       if (bgEntry) Object.assign(bgEntry, acceptedFields, { status: 'accepted' });
-      recordAction(type, id, 'accepted');
+      recordAction(type, id, 'accepted', acceptedFields);
       await editTelegramMessage(messageId, `${meta.label(alert)}\n\n✅ <b>Acceptée</b>`);
       await answerCallbackQuery(cq.id, 'Acceptée ✅');
     } else {

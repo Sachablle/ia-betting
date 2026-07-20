@@ -530,10 +530,16 @@ function computeEstimate(player, isHome, oppGames, myGames, gamelogs, oppAbbr, g
     const rawMultReb = defReb.val * sharedMult * h2hRebCapped;
     const rawMultAst = defAst.val * sharedMult * h2hAstCapped;
     const rawMultTpm = defTpm.val * sharedMult * h2hTpmCapped;
-    adjMult    = Math.min(1.30, Math.max(0.74, rawMult));
-    // Cap resserré 19 juillet 2026 — même correctif que la branche saison régulière ci-dessous
-    // (pas de playoffs en cours actuellement, corrigé par cohérence pour ne pas réintroduire le
-    // même défaut dès que les playoffs WNBA/NBA reprendront).
+    // Cap resserré 20 juillet 2026 — pts affichait pourtant un ancrage volume×efficacité (volAnchor,
+    // censé jouer le même rôle protecteur que le fix reb du 19 juillet), mais le suivi des
+    // "presque-alertes" a montré une surestimation encore pire que reb avant son fix (+23 points de %
+    // entre proba affichée et réussite réelle, n=22). Cause tracée : basePts est déjà gonflé par
+    // l'EWA (poids fort sur les 3 derniers matchs) avant tout multiplicateur, et plusieurs facteurs de
+    // adjMult (streak, shotVol, tsF, ftRate) regardent la MÊME fenêtre récente — pas des risques
+    // indépendants qui se compensent, ils s'alignent tous en cas de série chaude. volAnchor lui-même
+    // est contaminé par ce même signal récent (recentPoss = 3 derniers matchs), donc ne corrige pas
+    // vraiment. Plafond jamais resserré jusqu'ici contrairement à reb — aligné sur le même resserrement.
+    adjMult    = Math.min(1.18, Math.max(0.74, rawMult));
     adjMultReb = Math.min(1.18, Math.max(0.74, rawMultReb * (1 + (orebF.val - 1) * 0.6)));
     adjMultAst = Math.min(1.30, Math.max(0.74, rawMultAst * toaF.val));
     adjMultTpm = Math.min(1.30, Math.max(0.74, rawMultTpm));
@@ -550,14 +556,21 @@ function computeEstimate(player, isHome, oppGames, myGames, gamelogs, oppAbbr, g
     const rawMultReb = defReb.val * sharedMult * h2hRebCapped;
     const rawMultAst = defAst.val * sharedMult * h2hAstCapped;
     const rawMultTpm = defTpm.val * sharedMult * h2hTpmCapped;
-    adjMult    = Math.min(1.24, Math.max(0.78, rawMult));
+    // Cap resserré 20 juillet 2026 — pts a pourtant un ancrage volume×efficacité (volAnchor), mais le
+    // suivi des "presque-alertes" a montré une surestimation encore pire que reb avant son fix
+    // (+23 points de % entre proba affichée et réussite réelle, n=22, vs +7pp pour reb après son fix).
+    // Cause tracée : basePts est déjà gonflé par l'EWA (poids fort sur les 3 derniers matchs) avant
+    // tout multiplicateur, et plusieurs facteurs de adjMult (streak, shotVol, tsF, ftRate) regardent
+    // la MÊME fenêtre récente — pas des risques indépendants qui se compensent, ils s'alignent tous en
+    // cas de série chaude. volAnchor est lui-même contaminé par ce même signal récent (recentPoss = 3
+    // derniers matchs), donc ne corrige pas vraiment malgré les apparences. Plafond jamais resserré
+    // jusqu'ici contrairement à reb (voir juste en dessous) — aligné sur le même resserrement.
+    adjMult    = Math.min(1.12, Math.max(0.78, rawMult));
     // Cap resserré 19 juillet 2026 — reb n'a jamais reçu l'équivalent de l'ancrage volume×efficacité
     // qui recale pts (getShotVolumeAnchor, 15 juin) : sans garde-fou, les boosts (défense adverse,
     // H2H, forme, redistribution coéquipière) s'empilent sans rien qui ramène vers une valeur crédible.
     // Constaté sur 13 paris reb réglés (historique réel) : 11/13 surestimés, +3,6 rebonds de moyenne
-    // d'écart vs réel — le plafond 1.24 était trop large pour ce stat en particulier (pts/ast/tpm ne
-    // montrent pas ce biais, mais génèrent aussi beaucoup moins d'alertes : la surestimation reb fait
-    // franchir le seuil de probabilité artificiellement plus souvent, cf. investigation en cours sur pts).
+    // d'écart vs réel — le plafond 1.24 était trop large pour ce stat en particulier.
     adjMultReb = Math.min(1.12, Math.max(0.78, rawMultReb * orebF.val));
     adjMultAst = Math.min(1.24, Math.max(0.78, rawMultAst * toaF.val));
     adjMultTpm = Math.min(1.24, Math.max(0.78, rawMultTpm));

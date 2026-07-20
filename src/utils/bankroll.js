@@ -75,6 +75,26 @@ export function getEngagedToday(iso) {
   return { total: stakes.reduce((s, v) => s + v, 0), stakes };
 }
 
+// Total réellement bloqué en ce moment sur des paris encore en attente de résultat (statut
+// 'accepted', tous types confondus, sans filtre de date) — 20 juillet 2026. `state.current` ne
+// bouge qu'au règlement (won/lost), donc pendant qu'un pari est en jeu il inclut encore de l'argent
+// qui n'est plus disponible sur le compte réel du bookmaker (déjà débité à la mise). L'affichage du
+// solde doit donc soustraire ce total pour refléter le vrai solde consultable (ex: 700€ de bankroll
+// "logique" avec 50€ engagés = 650€ réellement visibles sur Betclic tant que le pari n'est pas réglé).
+export function getEngagedPending() {
+  const stakes = [];
+  for (const key of ALERT_STORAGE_KEYS) {
+    try {
+      const arr = JSON.parse(localStorage.getItem(key) || '[]');
+      for (const a of arr) {
+        if (a.status !== 'accepted') continue;
+        if (typeof a.stakeAmount === 'number' && a.stakeAmount > 0) stakes.push(a.stakeAmount);
+      }
+    } catch { /* clé absente ou format inattendu — ignorée */ }
+  }
+  return { total: stakes.reduce((s, v) => s + v, 0), stakes };
+}
+
 export function getBracketLabel(bk) {
   let bracket = BANKROLL_BRACKETS[0], idx = 0;
   BANKROLL_BRACKETS.forEach((b, i) => { if (bk >= b.min) { bracket = b; idx = i; } });
