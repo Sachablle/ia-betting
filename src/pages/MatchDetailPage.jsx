@@ -989,8 +989,15 @@ const CDM_NAME_ALIASES = {
 // suffixent souvent la ville à la place (Bahia Salvador) — ni l'un ni l'autre n'est une
 // sous-chaîne de l'autre malgré fuzzy(), donc alias vers un nom canonique partagé.
 const BRESIL_TEAM_ALIASES = {
-  ecbahia: 'bahia', bahiasalvador: 'bahia',
+  ecbahia: 'bahia', bahiasalvador: 'bahia', bahiasalvadorba: 'bahia',
   rbbragantino: 'bragantino', bragantinosp: 'bragantino',
+  // Ajouts 21 juillet 2026 — audit complet des 20 clubs Série A, même liste que server.js.
+  camineiro: 'mineiro', atleticomineiro: 'mineiro', atleticomg: 'mineiro',
+  caparanaense: 'paranaense', athleticoparanaense: 'paranaense', atleticoparanaense: 'paranaense',
+  coritibafbc: 'coritiba', coritibapr: 'coritiba',
+  ecvitoria: 'vitoria', vitoriaba: 'vitoria',
+  gremiofbpa: 'gremio', gremiors: 'gremio',
+  crvascodagama: 'vasco', vascodagama: 'vasco', vascodegama: 'vasco',
 };
 
 function findInTable(table, name) {

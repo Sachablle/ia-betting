@@ -1,19 +1,49 @@
 import { useState, useEffect, useMemo } from 'react';
 import { syncSettlements, resolveCompletedFootballAlerts } from '../utils/syncAlerts';
-import { BANKROLL_BRACKETS, BANKROLL_TARGET, getRecommendedStake, getEngagedToday, getEngagedPending, getBracketLabel, loadBankrollState, recordBet, resetBankroll, syncBankrollFromHistory, seedBaselineIfNeeded } from '../utils/bankroll';
+import { BANKROLL_BRACKETS, BANKROLL_TARGET, getRecommendedStake, getEngagedToday, getEngagedPending, getBracketLabel, loadBankrollState, saveBankrollState, recordBet, resetBankroll, syncBankrollFromHistory, seedBaselineIfNeeded } from '../utils/bankroll';
 
 const ROLLING_N = 20;
 const DEFAULT_ODDS = 1.9;
 
-// Mises réelles pour l'onglet "BK 500€" (19 juillet 2026) — affichage uniquement, ne touche jamais
-// stakeAmount stocké côté serveur (demande explicite : garder "Tous les paris" et le bankroll global
-// inchangés). Jonquel Jones n'avait aucune mise enregistrée sur l'alerte (stakeAmount absent) ; la
-// vraie mise placée était 60€. Dallas a déjà stakeAmount=50 en base, ajouté ici pour être explicite.
-const BK500_STAKE_OVERRIDES = {
-  '401857077_2999101_reb_over_8.5': 60,
-  '401857080_wnba_spread_home': 50,
-};
-const realStakeFor = (bet, fallback) => BK500_STAKE_OVERRIDES[bet._alertId] ?? bet.stakeAmount ?? fallback;
+// Mise réelle pour l'onglet "BK 500€" (19 juillet 2026). Remplace l'ancienne map figée
+// BK500_STAKE_OVERRIDES (21 juillet 2026) : la mise se corrige maintenant directement sur le
+// registre backend (POST /api/bet-history/:id/stake, cf. badge cliquable sur BetRow) — Backtesting
+// et le tracker Bankroll (syncBankrollFromHistory) lisent tous les deux stakeAmount depuis la même
+// source, donc une correction ici se propage automatiquement aux deux sans double maintenance.
+const realStakeFor = (bet, fallback) => bet.stakeAmount ?? fallback;
+
+async function updateBetStake(alertId, stakeAmount) {
+  if (!alertId) return;
+  try {
+    await fetch(`/api/bet-history/${encodeURIComponent(alertId)}/stake`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ stakeAmount }),
+    });
+  } catch {}
+}
+
+// Corrige aussi le solde réel du tracker Bankroll (21 juillet 2026) — sans ça, corriger la mise
+// affichée ici n'avait aucun effet sur l'argent réel suivi ailleurs, alors que les deux doivent
+// toujours correspondre. Recalcule le profit de l'entrée déjà appliquée (même cote, nouvelle mise)
+// et répercute l'écart sur balanceAfter de cette entrée ET de toutes les suivantes, plus `current`.
+async function updateBetStakeAndBankroll(alertId, newStake) {
+  await updateBetStake(alertId, newStake);
+  try {
+    const state = loadBankrollState();
+    const idx = state.history.findIndex(h => h.betId === alertId);
+    if (idx === -1) return; // pas (encore) appliqué au bankroll — rien à recalculer
+    const entry = state.history[idx];
+    if (entry.type !== 'win' && entry.type !== 'loss') return;
+    const newProfit = entry.type === 'win' ? +((entry.odds - 1) * newStake).toFixed(2) : -newStake;
+    const delta = +(newProfit - entry.profit).toFixed(2);
+    if (!delta) return;
+    const newHistory = state.history.map((h, i) => {
+      if (i < idx) return h;
+      const balanceAfter = +(h.balanceAfter + delta).toFixed(2);
+      return i === idx ? { ...h, stake: newStake, profit: newProfit, balanceAfter } : { ...h, balanceAfter };
+    });
+    saveBankrollState({ ...state, history: newHistory, current: +(state.current + delta).toFixed(2) });
+  } catch {}
+}
 
 // Séparation ancien / nouveau modèle — supprimée le 19 juillet 2026 à la demande explicite de
 // l'utilisateur (tous les paris regroupés sous un seul onglet, cf. le nouvel onglet "BK 500€" qui
@@ -949,7 +979,7 @@ function _saveBetNote(key, val) {
   } catch {}
 }
 
-function BetRow({ bet, rank, stake = 10, compact = false }) {
+function BetRow({ bet, rank, stake = 10, compact = false, editableStake = false, onStakeChange }) {
   const isWon  = bet.status === 'won';
   const isVoid = bet.status === 'void';
   const statusColor = isVoid ? '#94a3b8' : isWon ? '#4ade80' : '#ef4444';
@@ -962,6 +992,7 @@ function BetRow({ bet, rank, stake = 10, compact = false }) {
   const betKey = `${bet.date}_${bet.label}_${bet.sub}`;
   const [note, setNote] = useState(() => _getBetNotes()[betKey] || '');
   const [editing, setEditing] = useState(false);
+  const [editingStake, setEditingStake] = useState(false);
   // Resync si le composant est réutilisé avec un autre pari (key=index en contexte compact)
   useEffect(() => { setNote(_getBetNotes()[betKey] || ''); }, [betKey]);
 
@@ -995,7 +1026,7 @@ function BetRow({ bet, rank, stake = 10, compact = false }) {
   }
 
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: '24px 1fr auto auto auto auto auto 22px', alignItems: 'center', gap: '0 0.5rem', padding: '0.35rem 0.75rem', borderRadius: 7, background: 'rgba(255,255,255,0.02)', borderLeft: `3px solid ${statusColor}44`, fontSize: 12 }}>
+    <div style={{ display: 'grid', gridTemplateColumns: `24px 1fr auto auto auto ${editableStake ? 'auto' : ''} auto auto 22px`, alignItems: 'center', gap: '0 0.5rem', padding: '0.35rem 0.75rem', borderRadius: 7, background: 'rgba(255,255,255,0.02)', borderLeft: `3px solid ${statusColor}44`, fontSize: 12 }}>
       <span style={{ fontSize: 10, color: 'var(--text-dim)', textAlign: 'center' }}>#{rank}</span>
       <div style={{ minWidth: 0 }}>
         <div style={{ fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{bet.label}</div>
@@ -1008,6 +1039,32 @@ function BetRow({ bet, rank, stake = 10, compact = false }) {
       <span style={{ fontSize: 11, fontWeight: 700, color: '#60a5fa', minWidth: 28, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
         {bet.odds != null ? bet.odds.toFixed(2) : '—'}
       </span>
+      {editableStake && (
+        editingStake ? (
+          <input
+            type="number" min="1" autoFocus defaultValue={stake}
+            onClick={e => e.stopPropagation()}
+            onBlur={e => {
+              const val = Math.max(1, +e.target.value || 0);
+              if (val > 0 && val !== stake && onStakeChange) onStakeChange(bet._alertId, val);
+              setEditingStake(false);
+            }}
+            onKeyDown={e => {
+              if (e.key === 'Enter') { e.preventDefault(); e.currentTarget.blur(); }
+              if (e.key === 'Escape') setEditingStake(false);
+            }}
+            style={{ width: 44, fontSize: 10, fontWeight: 700, color: '#a78bfa', background: 'rgba(167,139,250,0.12)', border: '1px solid rgba(167,139,250,0.5)', borderRadius: 4, padding: '1px 3px', outline: 'none' }}
+          />
+        ) : (
+          <span
+            title="Mise réelle sur ce pari — cliquer pour corriger"
+            onClick={() => setEditingStake(true)}
+            style={{ fontSize: 10, fontWeight: 700, color: '#a78bfa', flexShrink: 0, padding: '1px 5px', borderRadius: 4, background: 'rgba(167,139,250,0.12)', border: '1px dashed rgba(167,139,250,0.3)', cursor: 'pointer', whiteSpace: 'nowrap' }}
+          >
+            {stake}€
+          </span>
+        )
+      )}
       <span style={{ fontSize: 12, fontWeight: 800, color: statusColor, minWidth: 20, textAlign: 'center' }}>
         {isVoid ? 'V' : isWon ? '✓' : '✗'}
       </span>
@@ -1217,16 +1274,21 @@ export default function BacktestingPage() {
     return true;
   }), [allBets, sportFilter, compFilter, typeFilter]);
 
-  // P&L en mises réelles (BK 500€ uniquement) — remplace le flat `stake` par stakeAmount réel de
-  // chaque pari (avec BK500_STAKE_OVERRIDES en repli), sans toucher calcMetrics ni "Tous les paris".
+  // P&L en mises réelles (BK 500€ uniquement) — 21 juillet 2026 : calculé directement depuis
+  // l'historique du tracker Bankroll (somme des profits depuis le dernier reset), pas recalculé à
+  // côté depuis la liste de paris filtrée. Les deux divergeaient : ce recalcul filtrait par date
+  // d'acceptation stricte (>= bankroll_tracker.startDate) alors que le tracker lui-même n'applique
+  // aucun filtre de date une fois amorcé (seedBaselineIfNeeded), et ignorait les ajustements manuels
+  // (non liés à un pari) — cas réel : Shakira Austin acceptée 2min avant le startDate officiel,
+  // incluse dans le solde réel mais exclue de ce calcul, plus un ajustement +37,50€ invisible ici.
+  // Le tracker Bankroll est la source de vérité pour l'argent réel ; ce P&L doit toujours lui
+  // correspondre exactement (current - startAmount), quel que soit le détail des paris qui l'ont fait bouger.
   const bk500RealPL = useMemo(() => {
     if (model !== 'bk500') return null;
-    return filtered.filter(b => b.status !== 'void').reduce((sum, b) => {
-      const stk = realStakeFor(b, stake);
-      const o = b.odds ?? DEFAULT_ODDS;
-      return sum + (b.status === 'won' ? (o - 1) * stk : -stk);
-    }, 0);
-  }, [filtered, model, stake]);
+    const bkState = loadBankrollState();
+    const lastResetIdx = bkState.history.map(h => h.type).lastIndexOf('reset');
+    return bkState.history.slice(lastResetIdx + 1).reduce((sum, h) => sum + (h.profit || 0), 0);
+  }, [model, reloadKey]);
 
   const metrics    = useMemo(() => calcMetrics(filtered),       [filtered]);
   const dd         = useMemo(() => calcDrawdown(filtered),           [filtered]);
@@ -1414,7 +1476,7 @@ export default function BacktestingPage() {
                     ))}
                   </div>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', maxHeight: 240, overflowY: 'auto' }}>
-                    {[...D.rolling].reverse().map((bet, i) => <BetRow key={`${bet.date}_${bet.label}_${bet.sub}`} bet={bet} rank={D.rolling.length - i} stake={model === 'bk500' ? realStakeFor(bet, stake) : stake} />)}
+                    {[...D.rolling].reverse().map((bet, i) => <BetRow key={`${bet.date}_${bet.label}_${bet.sub}`} bet={bet} rank={D.rolling.length - i} stake={model === 'bk500' ? realStakeFor(bet, stake) : stake} editableStake={model === 'bk500'} onStakeChange={(id, val) => updateBetStakeAndBankroll(id, val).then(() => setReloadKey(k => k + 1))} />)}
                   </div>
                 </>
             }
@@ -1486,7 +1548,7 @@ export default function BacktestingPage() {
             )}
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', maxHeight: 480, overflowY: 'auto' }}>
-            {[...D.bets].reverse().map((bet, i) => <BetRow key={`${bet.date}_${bet.label}_${bet.sub}`} bet={bet} rank={D.bets.length - i} stake={model === 'bk500' ? realStakeFor(bet, stake) : stake} />)}
+            {[...D.bets].reverse().map((bet, i) => <BetRow key={`${bet.date}_${bet.label}_${bet.sub}`} bet={bet} rank={D.bets.length - i} stake={model === 'bk500' ? realStakeFor(bet, stake) : stake} editableStake={model === 'bk500'} onStakeChange={(id, val) => updateBetStakeAndBankroll(id, val).then(() => setReloadKey(k => k + 1))} />)}
           </div>
         </Section>
 

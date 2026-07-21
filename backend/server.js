@@ -244,8 +244,18 @@ const COUNTRY_ALIASES = {
 // fuzzy() — repéré en vérifiant le vrai matching sur les cotes déjà scrapées (Betclic/Unibet).
 // Construit au fil des vrais cas rencontrés, même principe que COUNTRY_ALIASES ci-dessus.
 const BRESIL_TEAM_ALIASES = {
-  ecbahia: 'bahia', bahiasalvador: 'bahia',
+  ecbahia: 'bahia', bahiasalvador: 'bahia', bahiasalvadorba: 'bahia',
   rbbragantino: 'bragantino', bragantinosp: 'bragantino',
+  // Ajouts 21 juillet 2026 — audit complet des 20 clubs Série A : suffixes état brésilien côté
+  // bookmakers (PR, RS, MG, BA...) vs suffixes type de club côté football-data.org (FBC, AF, EC...)
+  // ne se recoupent pas en simple sous-chaîne, contrairement aux 18 autres clubs qui matchent par
+  // chance (ex: "SC Internacional" vs "Internacional RS" partagent déjà "internacional").
+  camineiro: 'mineiro', atleticomineiro: 'mineiro', atleticomg: 'mineiro',
+  caparanaense: 'paranaense', athleticoparanaense: 'paranaense', atleticoparanaense: 'paranaense',
+  coritibafbc: 'coritiba', coritibapr: 'coritiba',
+  ecvitoria: 'vitoria', vitoriaba: 'vitoria',
+  gremiofbpa: 'gremio', gremiors: 'gremio',
+  crvascodagama: 'vasco', vascodagama: 'vasco', vascodegama: 'vasco', // "de Gama" = coquille bookmaker déjà vue
 };
 
 // Normalisation/fuzzy-matching de noms d'équipes — utilisé pour fusionner les cotes
@@ -9857,7 +9867,13 @@ function minEdgeFor(stat, direction, seasonAvgStat) {
 // moins d'alertes mais plus sélectives (win rate réel mesuré à ~50% sur l'historique, cf. audit calibration).
 const NBA_ALERT_FLOOR       = { pts: 0.80, reb: 0.80, ast: 0.80, tpm: 0.80 };
 const NBA_ALERT_FLOOR_BENCH = { pts: 0.80, reb: 0.80, ast: 0.80, tpm: 0.80 };
-const WNBA_ALERT_FLOOR       = { pts: 0.77, reb: 0.77, ast: 0.80, tpm: 0.77 }; // ast inchangé à 0.80
+// tpm abaissé 0.77→0.73 le 20 juillet 2026 — tracking near-miss (n=8, WNBA) montre un modèle
+// sous-confiant sur cette stat (probabilité affichée moyenne 59,5% pour un taux de réussite réel
+// de 75%, écart -15,5pp), contrairement aux autres stats. Échantillon encore petit mais le pool de
+// candidats tpm est structurellement rare (filtre de volume WNBA_TPM_MIN_SEASON_AVG en amont) donc
+// il grossira lentement quoi qu'il arrive — ajustement prudent plutôt qu'attente indéfinie, à
+// continuer de surveiller via /api/analysis/near-miss.
+const WNBA_ALERT_FLOOR       = { pts: 0.77, reb: 0.77, ast: 0.80, tpm: 0.73 }; // ast inchangé à 0.80
 const WNBA_ALERT_FLOOR_BENCH = { pts: 0.80, reb: 0.80, ast: 0.80, tpm: 0.80 };
 const WNBA_SPECIALIST_FLOOR  = 0.72; // spécialiste WNBA (isConsistentStat par stat) — NBA/EU restent à 0.75
 const TPM_MIN_SEASON_AVG       = 1.5;  // NBA/EU — shooteuses/tireurs élites seulement
@@ -12811,7 +12827,7 @@ app.get('/api/settlements', (req, res) => {
 // Permet au frontend de pousser un résultat déjà résolu côté client (cas du foot : BTTS/O-U/1X2
 // sont résolus dans le navigateur via /api/fd/worldcup, sans settlement auto côté backend comme
 // pour les props basket). Sans ça, aucune trace serveur d'un pari foot gagné/perdu.
-app.post('/api/settlements', (req, res) => {
+app.post('/api/settlements', async (req, res) => {
   const s = req.body;
   if (!s?.id || !s?.status) return res.status(400).json({ error: 'id and status required' });
   if (!_settlements.find(x => x.id === s.id)) {
@@ -12823,7 +12839,11 @@ app.post('/api/settlements', (req, res) => {
   // pas juste {id,status} — sinon le Backtesting ne pourrait pas afficher le match/joueur/cotes.
   const full = _acceptedAlerts.find(a => a.id === s.id);
   if (full) {
-    archiveBet(full, { status: s.status, actualHomeScore: s.actualHomeScore, actualAwayScore: s.actualAwayScore, actualStat: s.actualStat, settledAt: s.settledAt || Date.now() });
+    // Même repli stakeAmount que runAutoSettle (cf. _getUserdataStakeMap) — un accept Telegram
+    // n'a jamais posé stakeAmount côté _acceptedAlerts, seulement côté copie frontend.
+    const fullWithStake = full.stakeAmount != null ? full
+      : { ...full, stakeAmount: (await _getUserdataStakeMap(`http://localhost:${process.env.PORT || 3001}`)).get(full.id) ?? null };
+    archiveBet(fullWithStake, { status: s.status, actualHomeScore: s.actualHomeScore, actualAwayScore: s.actualAwayScore, actualStat: s.actualStat, settledAt: s.settledAt || Date.now() });
     _acceptedAlerts = _acceptedAlerts.filter(a => a.id !== s.id);
     _saveAccepted();
   }
@@ -12836,6 +12856,21 @@ app.get('/api/bet-history', (req, res) => res.json(_betLedger));
 
 app.delete('/api/bet-history/:id', (req, res) => {
   _betLedger = _betLedger.filter(b => b.id !== req.params.id);
+  _saveBetLedger();
+  res.json({ ok: true });
+});
+
+// Correction manuelle de la mise réelle sur un pari déjà réglé (21 juillet 2026) — remplace
+// BK500_STAKE_OVERRIDES (map figée côté frontend) par une vraie correction persistée sur le
+// registre : Backtesting (BK 500€) et le tracker Bankroll (syncBankrollFromHistory) lisent tous
+// les deux stakeAmount directement depuis /api/bet-history, donc une correction ici se propage
+// automatiquement aux deux sans double maintenance.
+app.post('/api/bet-history/:id/stake', (req, res) => {
+  const { stakeAmount } = req.body || {};
+  if (typeof stakeAmount !== 'number' || !(stakeAmount > 0)) return res.status(400).json({ error: 'stakeAmount must be a positive number' });
+  const entry = _betLedger.find(b => b.id === req.params.id);
+  if (!entry) return res.status(404).json({ error: 'not found' });
+  entry.stakeAmount = stakeAmount;
   _saveBetLedger();
   res.json({ ok: true });
 });
@@ -12882,6 +12917,28 @@ app.get('/api/debug/betclic-dc-probe', async (req, res) => {
   res.json({ matchId, results });
 });
 
+// Le stakeAmount réel (mise éditée à la main ou choisie à l'accept) n'existe que côté copie
+// frontend (/api/userdata) — buildAccepted() (telegram.js) ne l'a jamais posé côté _acceptedAlerts
+// pour un accept fait depuis Telegram. Sans ce repli, archiveBet() archive le pari sans stakeAmount,
+// et syncBankrollFromHistory (bankroll.js) retombe sur la mise recommandée générique du palier —
+// fausse le bankroll dès qu'elle diffère de la vraie mise (cas réel 21 juillet 2026 : Total
+// Seattle/Minnesota 50€ archivé sans mise, traité comme 75€, écart de 54€ sur le solde affiché).
+async function _getUserdataStakeMap(base) {
+  try {
+    const data = await fetch(`${base}/api/userdata`, { signal: AbortSignal.timeout(8000) }).then(r => r.ok ? r.json() : null);
+    const map = new Map();
+    if (data) {
+      for (const val of Object.values(data)) {
+        if (!Array.isArray(val)) continue;
+        for (const a of val) {
+          if (a && a.id && typeof a.stakeAmount === 'number' && a.stakeAmount > 0) map.set(a.id, a.stakeAmount);
+        }
+      }
+    }
+    return map;
+  } catch { return new Map(); }
+}
+
 async function runAutoSettle() {
   const now = Date.now();
   // Déduplique les settlements existants (évite les doublons après restart)
@@ -12890,6 +12947,8 @@ async function runAutoSettle() {
   const lastName = n => n?.split(' ').slice(-1)[0]?.toLowerCase() || '';
   const EU = new Set(['acb','lnb','bbl','legaa']);
   const base = `http://localhost:${process.env.PORT || 3001}`;
+  const idToStake = await _getUserdataStakeMap(base);
+  const withStake = a => a.stakeAmount != null ? a : { ...a, stakeAmount: idToStake.get(a.id) ?? null };
 
   // Règlement anticipé des props "Over" — dès que le cumul en direct dépasse la ligne, c'est
   // mathématiquement gagné (un stat de match ne redescend jamais en cours de partie), pas besoin
@@ -12943,7 +13002,7 @@ async function runAutoSettle() {
           );
           const settledAt1 = Date.now();
           if (!isDupSettlement) _settlements.push({ id: a.id, status: 'won', actualStat, player: a.player, stat: a.stat, direction: 'over', fixtureDate: a.fixtureDate, league: a.league, probability: a.acceptedProbability ?? a.probability, line: a.line, edge: a.edge, lineSource: a.lineSource, settledAt: settledAt1, liveEarlySettle: true });
-          archiveBet(a, { status: 'won', actualStat, settledAt: settledAt1 });
+          archiveBet(withStake(a), { status: 'won', actualStat, settledAt: settledAt1 });
           _acceptedAlerts = _acceptedAlerts.filter(x => x.id !== a.id);
           _saveAccepted(); _saveSettlements();
           settledIds.add(a.id);
@@ -13013,7 +13072,7 @@ async function runAutoSettle() {
           if (players.length > 0) {
             const settledAtVoid = Date.now();
             if (!isDupSettlement) _settlements.push({ id: a.id, status: 'void', player: a.player, stat: a.stat, direction: a.direction, fixtureDate: a.fixtureDate, settledAt: settledAtVoid });
-            archiveBet(a, { status: 'void', actualStat: null, settledAt: settledAtVoid });
+            archiveBet(withStake(a), { status: 'void', actualStat: null, settledAt: settledAtVoid });
             _acceptedAlerts = _acceptedAlerts.filter(x => x.id !== a.id);
             _saveAccepted(); _saveSettlements();
           }
@@ -13030,7 +13089,7 @@ async function runAutoSettle() {
         {
           const settledAt2 = Date.now();
           if (!isDupSettlement) _settlements.push({ id: a.id, status, actualStat, player: a.player, stat: a.stat, direction: a.direction, fixtureDate: a.fixtureDate, league: a.league, probability: a.acceptedProbability ?? a.probability, line: a.line, edge: a.edge, lineSource: a.lineSource, settledAt: settledAt2 });
-          archiveBet(a, { status, actualStat, settledAt: settledAt2 });
+          archiveBet(withStake(a), { status, actualStat, settledAt: settledAt2 });
         }
         _acceptedAlerts = _acceptedAlerts.filter(x => x.id !== a.id);
         _saveAccepted(); _saveSettlements(); // Sauvegarde immédiate anti-doublons
@@ -13063,14 +13122,14 @@ async function runAutoSettle() {
   // pour ne plus dépendre d'une visite de page (22 juin 2026).
   for (const a of totalsToCheck) {
     try {
-      const score = await fetchFinalScoreBg(a.league, a.fixtureDate, a.home, a.away, a.homeShort, a.awayShort);
+      const score = await fetchFinalScoreBg(a.league, a.fixtureDate || a.date, a.home, a.away, a.homeShort, a.awayShort);
       if (!score) continue;
       const total = score.homeScore + score.awayScore;
       if (!total) continue;
       const status = (a.direction === 'over' ? total > a.line : total < a.line) ? 'won' : 'lost';
       const settledAt3 = Date.now();
       _settlements.push({ id: a.id, status, actualStat: total, line: a.line, edge: a.edge, league: a.league, probability: a.acceptedProbability ?? a.prob, settledAt: settledAt3 });
-      archiveBet(a, { status, actualStat: total, settledAt: settledAt3 });
+      archiveBet(withStake(a), { status, actualStat: total, settledAt: settledAt3 });
       _acceptedAlerts = _acceptedAlerts.filter(x => x.id !== a.id);
       _saveAccepted(); _saveSettlements();
     } catch {}
@@ -13080,13 +13139,13 @@ async function runAutoSettle() {
   // ni navigateur ni serveur).
   for (const a of resultsToCheck) {
     try {
-      const score = await fetchFinalScoreBg(a.league, a.fixtureDate, a.home, a.away, a.homeShort, a.awayShort);
+      const score = await fetchFinalScoreBg(a.league, a.fixtureDate || a.date, a.home, a.away, a.homeShort, a.awayShort);
       if (!score) continue;
       const homeWon = score.homeScore > score.awayScore;
       const status = (a.direction === 'home' ? homeWon : !homeWon) ? 'won' : 'lost';
       const settledAt4 = Date.now();
       _settlements.push({ id: a.id, status, line: null, edge: a.edge, league: a.league, probability: a.acceptedProbability ?? a.probability, settledAt: settledAt4 });
-      archiveBet(a, { status, actualHomeScore: score.homeScore, actualAwayScore: score.awayScore, settledAt: settledAt4 });
+      archiveBet(withStake(a), { status, actualHomeScore: score.homeScore, actualAwayScore: score.awayScore, settledAt: settledAt4 });
       _acceptedAlerts = _acceptedAlerts.filter(x => x.id !== a.id);
       _saveAccepted(); _saveSettlements();
     } catch {}
@@ -13097,14 +13156,14 @@ async function runAutoSettle() {
   // a.line du point de vue du camp parié, ex: home -8.5 → couvre si marge > 8.5).
   for (const a of spreadsToCheck) {
     try {
-      const score = await fetchFinalScoreBg(a.league, a.fixtureDate, a.home, a.away, a.homeShort, a.awayShort);
+      const score = await fetchFinalScoreBg(a.league, a.fixtureDate || a.date, a.home, a.away, a.homeShort, a.awayShort);
       if (!score) continue;
       const margin = score.homeScore - score.awayScore;
       const actualMargin = a.direction === 'home' ? margin : -margin;
       const status = actualMargin > -a.line ? 'won' : 'lost';
       const settledAt5 = Date.now();
       _settlements.push({ id: a.id, status, actualStat: margin, line: a.line, league: a.league, probability: a.acceptedProbability ?? a.probability, settledAt: settledAt5 });
-      archiveBet(a, { status, actualHomeScore: score.homeScore, actualAwayScore: score.awayScore, settledAt: settledAt5 });
+      archiveBet(withStake(a), { status, actualHomeScore: score.homeScore, actualAwayScore: score.awayScore, settledAt: settledAt5 });
       _acceptedAlerts = _acceptedAlerts.filter(x => x.id !== a.id);
       _saveAccepted(); _saveSettlements();
     } catch {}
@@ -13157,7 +13216,7 @@ async function runAutoSettle() {
         if (!status) continue;
         const settledAt5 = Date.now();
         _settlements.push({ id: a.id, status, line: a.line, edge: a.edge, league: a.league, probability: a.acceptedProbability ?? a.probability, settledAt: settledAt5 });
-        archiveBet(a, { status, actualHomeScore: hs, actualAwayScore: as_, settledAt: settledAt5 });
+        archiveBet(withStake(a), { status, actualHomeScore: hs, actualAwayScore: as_, settledAt: settledAt5 });
         _acceptedAlerts = _acceptedAlerts.filter(x => x.id !== a.id);
         _saveAccepted(); _saveSettlements();
       }
