@@ -20,367 +20,6 @@ function Accordion({ title, children, defaultOpen = false }) {
   );
 }
 
-function openReviewPDF() {
-  const html = `<!DOCTYPE html>
-<html lang="fr">
-<head>
-<meta charset="UTF-8"/>
-<title>ValueBet — Review complète du projet</title>
-<style>
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: 'Segoe UI', Arial, sans-serif; font-size: 13px; line-height: 1.65; color: #1a1a2e; background: #fff; padding: 48px 56px; max-width: 900px; margin: 0 auto; }
-  h1 { font-size: 26px; font-weight: 800; color: #0f172a; margin-bottom: 6px; }
-  .subtitle { font-size: 13px; color: #64748b; margin-bottom: 36px; border-bottom: 2px solid #e2e8f0; padding-bottom: 16px; }
-  h2 { font-size: 17px; font-weight: 700; color: #1e40af; margin: 32px 0 10px; border-left: 4px solid #3b82f6; padding-left: 10px; }
-  h3 { font-size: 14px; font-weight: 700; color: #334155; margin: 20px 0 8px; }
-  p { margin-bottom: 10px; color: #334155; }
-  table { width: 100%; border-collapse: collapse; margin: 12px 0 18px; font-size: 12px; }
-  th { background: #f1f5f9; color: #475569; font-weight: 700; text-align: left; padding: 7px 10px; border: 1px solid #e2e8f0; }
-  td { padding: 6px 10px; border: 1px solid #e2e8f0; vertical-align: top; color: #334155; }
-  tr:nth-child(even) td { background: #f8fafc; }
-  .tag { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 10px; font-weight: 700; letter-spacing: .04em; margin-right: 4px; }
-  .tag-blue { background: #dbeafe; color: #1d4ed8; }
-  .tag-green { background: #dcfce7; color: #15803d; }
-  .tag-orange { background: #ffedd5; color: #c2410c; }
-  .tag-purple { background: #ede9fe; color: #7c3aed; }
-  code { background: #f1f5f9; padding: 1px 5px; border-radius: 3px; font-family: monospace; font-size: 11px; color: #be185d; }
-  .formula { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 12px 16px; font-family: monospace; font-size: 12px; margin: 12px 0; color: #0f172a; line-height: 1.9; }
-  .alert-box { background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 6px; padding: 14px 16px; margin: 10px 0; }
-  .alert-box h3 { color: #1d4ed8; margin-top: 0; }
-  .pending { background: #fffbeb; border-color: #fde68a; }
-  .pending h3 { color: #b45309; }
-  .footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid #e2e8f0; font-size: 11px; color: #94a3b8; text-align: center; }
-  @media print {
-    body { padding: 28px 36px; }
-    @page { margin: 1.5cm; size: A4; }
-    h2 { page-break-before: auto; }
-  }
-</style>
-</head>
-<body>
-<h1>ValueBet — Review complète du projet</h1>
-<p class="subtitle">État au 23 mai 2026 · Généré depuis l'application ValueBet</p>
-
-<h2>Vue d'ensemble</h2>
-<p><strong>ValueBet</strong> est un dashboard d'analyse de paris sportifs full-stack. L'objectif : comparer des projections statistiques construites from scratch aux lignes proposées par les bookmakers français, et générer des alertes automatiques quand l'écart est significatif.</p>
-<p>Stack : <strong>React 18 + Vite</strong> (port 5173) + <strong>Express</strong> (port 3001). Toutes les APIs tierces passent par le backend — le frontend ne contacte jamais aucune source externe directement.</p>
-
-<h2>Sports couverts</h2>
-<h3>Football</h3>
-<p>5 championnats : Ligue 1, Premier League, La Liga, Bundesliga, Serie A. Fixtures des 5 prochains matchs par ligue, stats de classement, cotes h2h + BTTS, détection des value bets vs Pinnacle.</p>
-<h3>Basketball</h3>
-<p>NBA + WNBA (live ESPN) + EuroLeague + 4 championnats EU : ACB (Espagne), LNB Betclic Élite (France), BBL (Allemagne), Lega A (Italie). Tous partagent la même interface : scoreboard live, OddsCard 3 tabs (Résultat / Points / Joueurs), Analyse Props, modèle O/U, compositions, forme, H2H. Cotes scrapées depuis Unibet/Betclic — auto-refresh background toutes les 5 min sans intervention.</p>
-
-<h2>Sources de données — Football</h2>
-<table>
-<thead><tr><th>Source</th><th>Ce qu'elle apporte</th><th>Limite / Cache</th></tr></thead>
-<tbody>
-<tr><td><strong>football-data.org</strong></td><td>Fixtures + standings 5 ligues (source unique depuis le 12 juillet 2026 — API-Football retiré du projet, jamais réellement branché)</td><td>10 req/min — cache 30min</td></tr>
-<tr><td><strong>The Odds API</strong></td><td>Cotes h2h + BTTS (Pinnacle, Betfair, Unibet, Betclic)</td><td>500 req/mois — cache disque 30min</td></tr>
-<tr><td><strong>Unibet (scraping HTML)</strong></td><td>Cotes h2h football FR</td><td>Sans clé</td></tr>
-</tbody>
-</table>
-
-<h2>Sources de données — Basketball</h2>
-<h3>NBA</h3>
-<table>
-<thead><tr><th>Source</th><th>Ce qu'elle apporte</th><th>Cache</th></tr></thead>
-<tbody>
-<tr><td><strong>ESPN Scoreboard</strong></td><td>Matchs du jour en live (score, statut, équipes)</td><td>30s si live, 5min sinon</td></tr>
-<tr><td><strong>ESPN Roster</strong></td><td>Effectif complet (stats saison, statut blessure, headshot)</td><td>6h</td></tr>
-<tr><td><strong>ESPN Team Schedule</strong></td><td>15 derniers matchs (pts marqués/encaissés, domicile/ext, adversaire)</td><td>6h</td></tr>
-<tr><td><strong>ESPN Player Gamelog</strong></td><td>Gamelogs par joueur : pts/reb/ast/tpm (3pts)/min/fga/fta/to/tsPct</td><td>6h</td></tr>
-<tr><td><strong>ESPN Boxscore</strong></td><td>Stats du match pour les matchs terminés</td><td>5min (corrections post-match)</td></tr>
-<tr><td><strong>stats.nba.com</strong></td><td>USG% officiel, pts encaissés par position (G/F/C) par équipe</td><td>6h</td></tr>
-<tr><td><strong>The Odds API</strong></td><td>Total Vegas + moneyline (DraftKings, FanDuel, Pinnacle)</td><td>30min</td></tr>
-<tr><td><strong>Unibet (scraping HTML)</strong></td><td>H2H + totaux (NBA + EL) + props joueurs pts/3pts O/U (NBA)</td><td>5min</td></tr>
-<tr><td><strong>Betclic (gRPC-Web)</strong></td><td>H2H + totaux (NBA + EL) + props pts O/U via catégorie <code>ca_bkb_scrs</code> (f10) + reb/ast/3pts paliers via <code>ca_bkb_pprp</code> (f15)</td><td>5min</td></tr>
-<tr><td><strong>RotoWire (scraping)</strong></td><td>Compositions probables + MAY NOT PLAY + liste blessés (NBA uniquement)</td><td>15min</td></tr>
-</tbody>
-</table>
-<h3>EuroLeague</h3>
-<table>
-<thead><tr><th>Source</th><th>Ce qu'elle apporte</th><th>Cache</th></tr></thead>
-<tbody>
-<tr><td><strong>api-live.euroleague.net</strong></td><td>Scoreboard EL en live — auto-patch des fixtures statiques</td><td>5min</td></tr>
-<tr><td><strong>bzzoiro API</strong></td><td>Rosters (stats saison L15), gamelogs, schedules, boxscores</td><td>6h</td></tr>
-<tr><td><strong>Betclic (gRPC-Web)</strong></td><td>Props joueurs pts O/U + reb/ast/3pts paliers</td><td>5min</td></tr>
-<tr><td><strong>Unibet (scraping)</strong></td><td>H2H + totaux + props joueurs</td><td>5min</td></tr>
-</tbody>
-</table>
-
-<h3>Ligues EU — ACB / LNB / BBL / Lega A</h3>
-<p><strong>Migration 22 juin 2026 :</strong> Bzzoiro coupé pour ces 4 ligues (instable, jugé peu fiable) — rosters, gamelogs et box-scores reposent désormais entièrement sur <strong>api-sports.io Basketball v1</strong>. Bzzoiro reste utilisé uniquement pour l'EuroLeague (voir tableau ci-dessus). ACB garde en plus son scraping direct acb.com (gamelogs plus riches : steals/blocks/turnovers inclus, absents d'api-sports.io).</p>
-<table>
-<thead><tr><th>Source</th><th>Ce qu'elle apporte</th><th>Cache</th></tr></thead>
-<tbody>
-<tr><td><strong>api-sports.io Basketball v1</strong></td><td>Scoreboard live, standings (ppg/oppg), H2H, team schedule, rosters + gamelogs + boxscores (LNB/BBL/Lega A + compléments ACB)</td><td>5min–6h</td></tr>
-<tr><td><strong>acb.com (scraping)</strong></td><td>Rosters + gamelogs ACB (source principale, plus complète qu'api-sports.io : inclut steals/blocks/turnovers)</td><td>6h</td></tr>
-<tr><td><strong>legabasket.it (scraping)</strong></td><td>Starters officiels Lega A via <code>sf=1</code> dans <code>__NEXT_DATA__</code></td><td>15min</td></tr>
-<tr><td><strong>Betclic (gRPC-Web)</strong></td><td>Props joueurs pts/reb/ast/3pts quand marché disponible (LNB principalement)</td><td>5min</td></tr>
-<tr><td><strong>Unibet / Betclic</strong></td><td>H2H + totaux O/U pour tous les matchs EU (auto-refresh 5 min en background)</td><td>5min</td></tr>
-</tbody>
-</table>
-<p style="font-size:0.85em; opacity:0.8">Note : api-sports.io n'expose pas de compositions confirmées pré-match pour le basket (endpoint inexistant). Les "compos probables" (ACB/LNB/BBL) restent calculées depuis l'historique de titularisations (<code>type: 'starters'</code>) des gamelogs récents — voir tableau des compositions plus bas.</p>
-
-<h2>Modèle de projection joueurs — computeEstimate</h2>
-<p>C'est le cœur de l'application. Il prend en entrée un joueur, son contexte (équipe, adversaire, date, round), et retourne une projection pts/reb/ast/tpm (3pts) ajustée. Tous les facteurs sont multiplicatifs et bornés.</p>
-<p><strong>Portée :</strong> NBA + EuroLeague. Pour l'EL, les schedules bzzoiro (ptsScored/ptsAllowed) sont scalés ×1.414 (= 114.5/81) avant d'entrer dans les fonctions modèle, de sorte que les mêmes constantes NBA fonctionnent correctement en relatif. La probabilité implicite blowout utilise Unibet H2H à la place de Pinnacle pour l'EL. Pas de blessures RotoWire pour l'EL (source inexistante).</p>
-<p><strong>3pts (tpm) — ajouté le 10 juin 2026 :</strong> même pipeline de projection que pts/reb/ast (EWA L10 + blend moyenne saison + H2H + sharedMult). Disponible pour NBA, WNBA et ACB/LNB/BBL/Lega A (gamelog 3pts au format "M-A" fourni par acb.com pour l'ACB, api-sports.io pour les 3 autres). Affiché dans la colonne "3pts" de la section Projetées d'Analyse Props.</p>
-
-<h3>Formules</h3>
-<div class="formula">pts  = s.pts  × formPPM × trend × h2h × streak × usage × sharedMult
-reb  = s.reb  × formReb × trendReb × sharedMult
-ast  = s.ast  × formAst × trendAst × sharedMult
-tpm  = s.tpm  × formTpm × h2hTpm × sharedMult
-
-sharedMult = pace × def × rest × density × location × playoff × vegasTotal × blowout × injury</div>
-
-<h3>Les 14 facteurs</h3>
-<table>
-<thead><tr><th>#</th><th>Facteur</th><th>Plage</th><th>Source</th></tr></thead>
-<tbody>
-<tr><td>1</td><td><strong>Forme pts/min EWA L7</strong> — PPM pondéré (decay 0.82) L7, normalisé par médiane des minutes. Neutralise le garbage time.</td><td>0.60–1.45</td><td>Gamelogs ESPN</td></tr>
-<tr><td>2</td><td><strong>Tendance EWA</strong> — EWA L3 vs EWA L4-10. Accélération ou décélération récente.</td><td>0.90–1.10</td><td>Gamelogs ESPN</td></tr>
-<tr><td>3</td><td><strong>Streak (série)</strong> — 3+ matchs consécutifs au-dessus/sous la moyenne → +1.5% par match supplémentaire.</td><td>0.88–1.12</td><td>Gamelogs ESPN</td></tr>
-<tr><td>4</td><td><strong>USG% récent vs historique</strong> — L5 vs L6-20. Détecte un changement de rôle (blessure partenaire, décision coach).</td><td>0.90–1.10</td><td>Gamelogs ESPN</td></tr>
-<tr><td>5</td><td><strong>H2H vs adversaire</strong> — Moyenne réelle du joueur contre cet adversaire précis dans ses gamelogs.</td><td>0.70–1.30</td><td>Gamelogs ESPN</td></tr>
-<tr><td>6</td><td><strong>Pace adversaire</strong> — Total pts/match L5 adverse vs référence 227 pts (NBA) / scores EL scalés ×1.414.</td><td>0.90–1.10</td><td>Schedule ESPN / bzzoiro</td></tr>
-<tr><td>7</td><td><strong>Défense adverse</strong> — Pts encaissés/match global, ou par position G/F/C (stats.nba.com si dispo — NBA uniquement).</td><td>0.75–1.25</td><td>Schedule + stats.nba.com</td></tr>
-<tr><td>8</td><td><strong>Repos / B2B</strong> — B2B → ×0.94 | 2j repos → ×1.00 | 3j+ → ×1.03</td><td>0.94–1.03</td><td>Schedule ESPN</td></tr>
-<tr><td>9</td><td><strong>Densité calendrier</strong> — 3 matchs en 5j → ×0.92 | 2 en 3j → ×0.96</td><td>0.92–1.00</td><td>Schedule ESPN</td></tr>
-<tr><td>10</td><td><strong>Domicile / Extérieur</strong> — Dom → ×1.025 | Ext → ×0.975</td><td>0.975–1.025</td><td>Fixture</td></tr>
-<tr><td>11</td><td><strong>Période (playoffs)</strong> — Finales ×0.93 | CF ×0.95 | 2e tour ×0.96 | 1er tour ×0.97</td><td>0.93–1.00</td><td>Fixture round</td></tr>
-<tr><td>12</td><td><strong>Total Vegas</strong> — gameTotal / 227. Si les books voient 215, tout le monde score moins.</td><td>0.85–1.10</td><td>The Odds API</td></tr>
-<tr><td>13</td><td><strong>Blowout / garbage time</strong> — Probabilité implicite &gt;82% → ×0.92 | &gt;74% → ×0.96. Source : Pinnacle H2H (NBA), Unibet H2H (EL).</td><td>0.92–1.00</td><td>Pinnacle / Unibet H2H</td></tr>
-<tr><td>14</td><td><strong>Blessure / retour</strong> — Out → null | Retour après &gt;8j → ×0.78 | Minutes réduites → ratio direct (min 0.72) | Blessé incertain → ×0.88. NBA uniquement (RotoWire).</td><td>0–1.00</td><td>RotoWire + ESPN</td></tr>
-</tbody>
-</table>
-
-<p><strong>EWA decay = 0.82 :</strong> le match le plus récent pèse ~5× plus que le 7ème. Le L3 représente ~60% du poids total.</p>
-<p><strong>Filtrage playoffs :</strong> quand le round est détecté comme playoff, les gamelogs sont filtrés aux matchs depuis le 1er avril de l'année du match. Évite la contamination saison régulière (pace plus élevé, défenses moins intenses). Fallback sur tous les matchs si moins de 3 gamelogs playoffs disponibles.</p>
-
-<h2>Modèle Total O/U — computeGameTotal</h2>
-<p>Prédit le total de points du match et le compare à la ligne du bookmaker.</p>
-
-<div class="formula">homeExpected = EWA7(homeOff) × (awayDefAllowed / 113.5)
-awayExpected = EWA7(awayOff) × (homeDefAllowed / 113.5)
-
-estimated = (homeExpected × homeLocFactor + awayExpected × awayLocFactor)
-           × ouTrendFactor × playoffFactor × avgRestFactor × avgDensityFactor
-
-P(Over) = 1 - studentT4CDF((line - estimated) / std)</div>
-
-<table>
-<thead><tr><th>Facteur</th><th>Valeurs</th></tr></thead>
-<tbody>
-<tr><td><strong>Splits domicile/extérieur</strong></td><td>±5% max selon les 5 derniers matchs chez soi/à l'extérieur</td></tr>
-<tr><td><strong>O/U trend</strong></td><td>% matchs au-dessus baseline (215 PO, 227 régulière) → 0.92–1.08</td></tr>
-<tr><td><strong>Pace matchup</strong></td><td>√(paceTotal domicile × paceTotal extérieur / (2×avgPtsAllowed)²) → 0.93–1.07. Deux équipes rapides → tempo qui s'emballe.</td></tr>
-<tr><td><strong>Momentum récent (L3)</strong></td><td>Moyenne (total des 3 derniers matchs / total habituel) pour chaque équipe → 0.95–1.05</td></tr>
-<tr><td><strong>Playoff factor renforcé</strong></td><td>Finales ×0.87 | CF ×0.90 | 2e tour ×0.93 | 1er tour ×0.95</td></tr>
-<tr><td><strong>Repos moyen</strong></td><td>Moyenne (restFactor domicile + restFactor extérieur)</td></tr>
-<tr><td><strong>Densité moyenne</strong></td><td>Moyenne (densityFactor domicile + densityFactor extérieur)</td></tr>
-<tr><td><strong>Ancrage historique</strong></td><td>estimated = 40% modèle + 60% moyenne réelle des totaux des 2 équipes (si ≥4 matchs dispo chacune) — évite les projections trop extrêmes</td></tr>
-</tbody>
-</table>
-<p>Plafond probabilité : <code>P(Over)</code> et <code>P(Under)</code> sont plafonnés à 88% (un total n'est jamais "certain").</p>
-
-<h2>Système d'alertes</h2>
-
-<h3>Vue d'ensemble — tous les seuils, tous les sports (26 juin 2026)</h3>
-<p>Tableau de référence rapide. Le détail de chaque système (modèle, garde-fous complets) suit en dessous.</p>
-
-<table>
-<thead><tr><th></th><th>Props joueurs</th><th>Total O/U</th><th>Résultat équipe</th><th>Écart H2H (Handicap)</th></tr></thead>
-<tbody>
-<tr><td><strong>Sport</strong></td><td colspan="4">Basketball</td></tr>
-<tr><td><strong>Catégories</strong></td><td>Points, Rebonds, Passes, 3pts</td><td>Points cumulés du match</td><td>Victoire équipe</td><td>Couverture de l'écart de points</td></tr>
-<tr><td><strong>Seuil de confiance</strong></td><td>NBA/ACB/EU : 80% (spécialiste : 75%) · WNBA : pts/reb/tpm 77%, ast 80% (spécialiste toutes stats : 72%)</td><td>80% (jamais affiché au-dessus de 88%)</td><td>75%</td><td>75%</td></tr>
-<tr><td><strong>Modèle</strong></td><td>Projection joueuse (EWA, forme, adversaire, blessures) → Student-t</td><td>Pace, momentum, repos, densité, playoffs, ancrage historique (40% modèle / 60% moyenne réelle), pénalité absence titulaire clé (8 juillet 2026)</td><td>Force nette (pts marqués − encaissés), ancrage saison (40% forme récente / 60% moyenne nette saison, 9 juillet 2026), repos, avantage terrain, pénalité blessure clé, playoffs → Student-t</td><td>Réutilise marge/écart-type du modèle Résultat, probabilité de couverture via Student-t (9 juillet 2026)</td></tr>
-<tr><td><strong>Cote minimum</strong></td><td colspan="2">1.60 (Unibet/Betclic)</td><td>1.50 (Unibet/Betclic)</td><td>1.60 (Unibet/Betclic)</td></tr>
-<tr><td><strong>Marge moyenne saison ↔ ligne</strong></td><td>NBA/ACB/EU : pts 0.6 / reb 0.3 / ast 0.25 / 3pts 0.15 · WNBA : pts 0.4 / reb 0.2 / ast 0.25 (inchangé) / 3pts 0.10</td><td>—</td><td>—</td><td>—</td></tr>
-<tr><td><strong>Garde-fou spécifique</strong></td><td>Min. 3pts/match : NBA/ACB/EU ≥ 1.5 moy. saison · WNBA ≥ 1.2 moy. saison</td><td>Bloqué si joueur clé (≥15pts) incertain (Q/GTD), peu importe la distance au match (8 juillet 2026)</td><td>—</td><td>Ligne alternative si la plus équilibrée ne suffit pas (même principe que les props)</td></tr>
-<tr><td><strong>Edge minimum</strong></td><td>1.0 (2.0 si joueuse « franchise » sur Under : pts≥18/reb≥9/ast≥6/3pts≥3)</td><td>Filtre rapide 5% (NBA/WNBA) ou 4% (EU) avant le modèle complet</td><td>—</td><td>—</td></tr>
-<tr><td><strong>Ligues couvertes</strong></td><td>NBA, WNBA, ACB, LNB, BBL, Lega A</td><td>NBA, WNBA, ACB, BBL, Lega A (pas LNB)</td><td>NBA, WNBA, ACB, BBL, Lega A (pas LNB)</td><td>NBA, WNBA, ACB, BBL, Lega A (pas LNB)</td></tr>
-<tr><td><strong>Cotes auto-chargées</strong></td><td>Oui depuis toujours</td><td>Oui depuis le 22 juin (avant : dépendait d'une visite de page)</td><td>Oui depuis le 22 juin</td><td>Oui depuis sa création (9 juillet)</td></tr>
-<tr><td><strong>Page = alerte, même calcul ?</strong></td><td>Oui</td><td>Oui depuis le 22 juin (unifié via <code>/api/basketball/total</code>)</td><td>Oui depuis le 19 juin (<code>/api/basketball/result</code>)</td><td>Oui depuis sa création (<code>/api/basketball/spread</code>)</td></tr>
-</tbody>
-</table>
-
-<table style="margin-top:12px">
-<thead><tr><th></th><th>BTTS</th><th>Over/Under</th><th>Résultat (1X2)</th></tr></thead>
-<tbody>
-<tr><td><strong>Sport</strong></td><td colspan="3">Football</td></tr>
-<tr><td><strong>Seuil de confiance</strong></td><td>70%</td><td>70%</td><td>70% par issue (dom/nul/ext, indépendants)</td></tr>
-<tr><td><strong>Modèle</strong></td><td colspan="3">Poisson sur les buts attendus (λ domicile + extérieur) — <code>computeLambdas</code></td></tr>
-<tr><td><strong>Détail</strong></td><td><code>(1-P(dom=0))×(1-P(ext=0))</code></td><td>Ligne 2.5 testée, repli sur 1.5</td><td>Grille Poisson i&gt;j (dom) / i=j (nul) / i&lt;j (ext)</td></tr>
-<tr><td><strong>Cote minimum</strong></td><td colspan="2">1.60 (Unibet/Betclic)</td><td>1.50 (Unibet/Betclic)</td></tr>
-<tr><td><strong>Ligues couvertes</strong></td><td colspan="3">Ligue 1, Premier League, La Liga, Bundesliga, Serie A, Coupe du Monde</td></tr>
-<tr><td><strong>Cotes auto-chargées</strong></td><td colspan="3">Oui depuis le 22 juin (avant : dépendait d'une visite de page foot)</td></tr>
-</tbody>
-</table>
-
-<div class="alert-box">
-<h3>Système 1 — Props joueurs (front-end, localStorage)</h3>
-<p>Déclencheur : l'utilisateur ouvre le panneau "Analyse Props". Conditions : (1) la probabilité dépasse le plancher — NBA/ACB/EU 80% (spécialiste 75%), WNBA pts/reb/tpm 77% / ast 80% (spécialiste toutes stats 72%) ; (2) cote Unibet OU Betclic ≥ 1.60 sur le sens choisi. Joueur Out → skippé. Stockage localStorage (<code>nba_alerts</code>) avec 3 statuts : pending / accepted / rejected.</p>
-<p>Données incluses : joueur, équipe, fixture, stat, ligne bookmaker, estimation modèle, direction, probabilité (%), cotes Unibet + Betclic, statut blessure, timestamp.</p>
-</div>
-
-<div class="alert-box">
-<h3>Système 2 — Background alerts (backend, toutes les 20 min)</h3>
-<p>Job automatique côté serveur, toutes les 20 min. Scope : NBA, WNBA, EuroLeague, ACB, LNB, BBL, Lega A. Priorité des lignes : Unibet → Betclic. Plancher : <strong>NBA/ACB/EU 80%</strong> (spécialiste : <strong>75%</strong>) · <strong>WNBA pts/reb/tpm 77% / ast 80%</strong> (spécialiste toutes stats : <strong>72%</strong>). Marge saison WNBA allégée (pts 0.4 / reb 0.2 / tpm 0.10, ast 0.25 inchangé), min. 3pts WNBA abaissé à 1.2/match. Endpoint : <code>GET /api/nba/background-alerts</code>. Merge intelligent : pas de remise en pending si l'utilisateur a déjà statué, sauf si la ligne bouge de ≥1 point ou les cotes de ≥15%.</p>
-<p><strong>Rafraîchissement des alertes en attente (15 juin 2026)</strong> : une alerte <em>pending</em> est entièrement recalculée à chaque cycle (probabilité, ligne, cotes Unibet/Betclic) — si une cote Betclic apparaît ou qu'une cote/ligne bouge, l'alerte affichée se met à jour automatiquement, sans action de l'utilisateur. Si la ligne change (nouvel identifiant d'alerte), l'ancienne version est supprimée au profit de la nouvelle (une seule alerte pending par joueur/stat). Si l'alerte ne qualifie plus du tout au cycle suivant (ligne/cote ayant trop bougé), elle reste affichée avec un badge <strong>OBSOLÈTE</strong> — à fermer manuellement via l'icône ✗.</p>
-</div>
-
-<div class="alert-box">
-<h3>Système 3 — Total O/U (background toutes les 20 min + widget de la page match)</h3>
-<p><strong>Source unique depuis le 22 juin 2026</strong> : le widget "Modèle O/U" de la page match appelle <code>POST /api/basketball/total</code>, exactement la même fonction (<code>computeGameTotalFull</code>) que les alertes en arrière-plan — avant cette date, la page avait son propre calcul local (<code>computeGameTotal</code>, frontend), qui pouvait légèrement diverger du serveur. L'ancienne fonction locale reste dans le code mais n'est plus appelée par rien.</p>
-<p>Côté serveur, exécuté toutes les 20 min pour NBA, WNBA, ACB, BBL, Lega A (pas LNB), en deux étapes :</p>
-<ol style="margin:4px 0 8px 18px; padding:0">
-<li><strong>Étape 1 (filtre rapide)</strong> : modèle simple <code>homeOff×(awayDef/leagueAvg) + awayOff×(homeDef/leagueAvg)</code> vs ligne bookmaker — edge ≥ 5% (NBA/WNBA) ou ≥ 4% (ACB/BBL/Lega A). Évite de lancer le modèle complet (pace/momentum/repos/densité = fetchs supplémentaires) sur chaque match à chaque cycle.</li>
-<li><strong>Étape 2 (modèle complet)</strong> : si l'étape 1 passe, <code>computeGameTotalFull</code> (pace matchup, momentum, repos, densité, facteur playoffs, tendance de la série en cours, ancrage historique) calcule <code>P(Over)</code> / <code>P(Under)</code>. Alerte déclenchée si <strong>max(P(Over), P(Under)) ≥ 80%</strong> (<code>TOTAL_ALERT_PROB</code>), jamais affiché au-dessus de 88% (<code>MAX_TOTAL_P</code> — un écart-type de ~12pts NBA / ~20pts WNBA rend 90%+ quasi inatteignable sur un total).</li>
-</ol>
-<p><strong>Tendance de la série (22 juin 2026)</strong> : en playoffs, deux mêmes équipes qui se rejouent voient souvent leur total baisser match après match (défenses qui se calent l'une sur l'autre) — signal distinct du momentum général de chaque équipe (qui mélange des matchs contre d'autres adversaires). Le modèle compare le dernier match de cette confrontation au pénultième ; si la tendance est connue (≥2 confrontations), elle est appliquée à l'estimation finale amortie à moitié (jamais plus de ±15%). Cas réel à l'origine de ce fix : finale ACB Barcelone-Valence, totaux combinés 225→177→168, jamais détecté faute de signal dédié à la confrontation.</p>
-<p>Filtre supplémentaire : alerte bloquée si un joueur clé (≥15 pts/match, l'un ou l'autre camp) est Questionable/GTD/Doubtful en playoffs (avril-juin) et qu'on est à ≤2h30 du tip-off. Cote minimum 1.60 (Unibet/Betclic).</p>
-<p><strong>Cotes auto-chargées (22 juin 2026)</strong> : le serveur va chercher lui-même les cotes manquantes (<code>/api/basketball/odds</code>) au lieu de dépendre d'une visite de la page du match — avant ce fix, un match jamais ouvert dans le navigateur ne générait jamais d'alerte Total, peu importe la confiance réelle.</p>
-<p>Stockage localStorage (<code>nba_game_total_alerts</code>), affiché dans Alertes (pending) puis dans le widget du match. Badge OVER/UNDER, vert (over) ou rouge (under).</p>
-</div>
-
-<div class="alert-box">
-<h3>Système 3bis — Résultat équipe (background toutes les 20 min + widget "Modèle 1X2")</h3>
-<p>Prédit la victoire de l'une des deux équipes, <strong>indépendamment des cotes du marché</strong> (contrairement au Total, le modèle ne regarde pas la ligne bookmaker pour faire sa propre estimation — il la compare seulement après, pour vérifier qu'il y a de la valeur).</p>
-<p><code>computeTeamWinProb</code> : force nette de chaque équipe (points marqués − encaissés, pondérée vers les matchs récents) ; ajustée par le repos et la densité du calendrier ; <code>−40%</code> des points moyens d'un joueur clé (≥15 pts/match) si déclaré Out ; <code>+2.5 points</code> d'avantage terrain pour l'équipe qui reçoit ; resserrée en playoffs (jeu plus défensif). Convertie en probabilité de victoire via une distribution Student-t.</p>
-<p>Alerte déclenchée si <strong>P(victoire) ≥ 75%</strong> (<code>RESULT_ALERT_PROB</code>) et cote ≥ 1.50 (<code>RESULT_MIN_ODDS</code>, Unibet/Betclic) sur le marché h2h. Une alerte par match maximum — les deux probabilités (dom + ext) totalisent 100%, une seule peut dépasser 75% à la fois.</p>
-<p>Remplace l'ancien système EarlyWin (formule empirique non calibrée, jamais réellement branché au pipeline d'alertes) depuis le 19 juin 2026. Source unique avec la page match depuis sa création : le widget "Modèle 1X2" appelle <code>POST /api/basketball/result</code>, exactement la même fonction que les alertes — jamais deux implémentations séparées comme pour le Total avant le 22 juin.</p>
-<p>Ligues : NBA, WNBA, ACB, BBL, Lega A (pas LNB — bug de clé de cache corrigé le 22 juin 2026, le Résultat des ligues EU ne trouvait jamais de cotes h2h avant ce fix, donc ne générait jamais d'alerte).</p>
-<p>Stockage localStorage (<code>basketball_result_alerts</code>), affiché dans Alertes (pending) puis dans Running.</p>
-</div>
-
-<div class="alert-box">
-<h3>Système 4 — Football BTTS / Over-Under / Résultat / DC combinés (background, toutes les 20 min)</h3>
-<p>Modèle Poisson <code>computeLambdas</code> (attaque/défense normalisées, λ rescalé par la moyenne de buts de la ligue × avantage domicile). Scope : 5 grands championnats (Ligue 1, PL, Liga, Bundesliga, Serie A) + Coupe du Monde (CDM, avgGF/avgGA recalculés dynamiquement sur le pool d'équipes qualifiées).</p>
-<table>
-<thead><tr><th>Alerte</th><th>Calcul</th><th>Seuil</th></tr></thead>
-<tbody>
-<tr><td><strong>BTTS</strong></td><td>Somme de la grille jointe (corrélée, voir ci-dessous) sur les cases i≥1 et j≥1</td><td>≥ 70% (<code>FB_BTTS_ALERT_PROB</code>) · cote ≥ 1.60</td></tr>
-<tr><td><strong>Total O/U</strong></td><td>Somme de la grille jointe sur les cases i+j ≤ ligne, ligne 2.5 puis fallback 1.5</td><td>≥ 70% (<code>FB_OU_ALERT_PROB</code>) · cote ≥ 1.60</td></tr>
-<tr><td><strong>Résultat 1X2</strong> (15 juin 2026)</td><td><code>compute1X2Probs</code> — même grille jointe, somme par i&gt;j (dom), i=j (nul), i&lt;j (ext)</td><td>≥ 70% par issue (<code>FB_RESULT_ALERT_PROB</code>) · cote ≥ 1.50</td></tr>
-<tr><td><strong>DC &amp; BTTS</strong> (29 juin 2026)</td><td><code>computeDCBTTSProbs</code> — même grille, somme des cases (DC ET BTTS) pour 1X / X2 / 12</td><td>≥ 50% (<code>FB_DC_BTTS_ALERT_PROB</code>) · cote ≥ 1.45</td></tr>
-<tr><td><strong>DC &amp; Over 1.5</strong> (29 juin 2026)</td><td><code>computeDCOverProbs</code> — même grille, somme des cases (DC ET i+j&gt;1.5) pour 1X / X2 / 12</td><td>≥ 55% (<code>FB_DC_OU_ALERT_PROB</code>) · cote ≥ 1.45</td></tr>
-</tbody>
-</table>
-<p><strong>Corrélation Dixon-Coles (25 juin 2026)</strong> : la grille jointe P(i buts dom., j buts ext.) n'est plus un simple produit de deux lois Poisson indépendantes. Les 4 cases de score bas (0-0, 1-0, 0-1, 1-1) sont corrigées par un facteur τ (ρ=0.10, valeur de référence de la littérature — Dixon &amp; Coles 1997, pas calibrée sur nos propres données) puis la grille entière est renormalisée. BTTS/Total/Résultat dérivent tous de cette même grille (cohérence interne). Avec ρ=0, le calcul redonne exactement l'ancien résultat (indépendance pure).</p>
-<p><strong>Avantage du terrain neutre — CDM (25 juin 2026)</strong> : en Coupe du Monde, l'avantage domicile (×1.10) ne s'applique plus qu'aux 3 pays hôtes du Mondial 2026 (USA, Canada, Mexique). Pour tout autre match, l'équipe "domicile" n'est qu'une étiquette arbitraire de la source de données — le terrain est neutre, donc <code>homeAdv=1.0</code>. Les 5 championnats européens (vrai domicile) gardent ×1.10 sans condition.</p>
-<p><strong>Shrinkage petit échantillon (25 juin 2026)</strong> : les facteurs attaque/défense d'une équipe à l'échantillon réduit (qualifs/amicaux peu nombreux) sont tirés vers 1.0 ("équipe moyenne") proportionnellement à la confiance <code>games/(games+5)</code> — à 3 matchs, ~37% du facteur brut est retenu ; à 20 matchs, ~80%. Évite qu'un seul résultat extrême (5-0, 0-0 chanceux) ne fausse tout le calcul pour une sélection peu rodée. Concerne surtout la CDM en début de tournoi.</p>
-<p>Le <strong>Résultat 1X2</strong> traite chaque issue (victoire dom. / nul / victoire ext.) comme un pari oui/non indépendant — exactement comme BTTS — et non comme une sélection 3 voies exclusive. Comme deux issues ne peuvent pas dépasser 70% simultanément, au maximum 1 alerte "résultat" par match. Cotes comparées : Unibet/Betclic uniquement.</p>
-<p>Cote minimale : 1.60 pour BTTS/O-U, 1.50 pour le Résultat (meilleure cote Unibet/Betclic sur le sens proposé). Une alerte par fixture et par type. Stockage localStorage : <code>fb_btts_alerts</code> / <code>fb_total_alerts</code> / <code>fb_result_alerts</code>, affichées dans Alertes (pending) puis converties en groupe compact dans Running une fois acceptées.</p>
-<p><strong>Cotes auto-chargées (22 juin 2026)</strong> : le serveur rafraîchit lui-même le cache de cotes foot s'il est froid ou absent, au lieu de dépendre d'une visite d'une page foot dans le navigateur — avant ce fix, le cache de cotes foot n'avait <em>aucun</em> rafraîchissement automatique (pire que le basket, qui avait au moins un cron séparé toutes les 10 min).</p>
-<p><strong>Règlement</strong> : seules les fixtures CDM (<code>fdcdm_*</code>, via <code>/api/fd/worldcup</code>) peuvent être réglées automatiquement aujourd'hui. Les 5 championnats européens n'ont pas encore de source de scores finaux (à combler à la reprise des championnats, ~août 2026). Le Résultat 1X2 ne peut se régler qu'au coup de sifflet final (contrairement à BTTS/O-U qui peuvent être "déjà gagnés" en live).</p>
-</div>
-
-<div class="alert-box pending">
-<h3>Value bets football (The Odds API)</h3>
-<div class="formula" style="margin:8px 0">fair_prob = (1/pinnacle_odds) / overround
-edge = bookmaker_odds × fair_prob - 1</div>
-<p>Seuil : 2% par défaut. Endpoint <code>GET /api/alerts</code>.</p>
-</div>
-
-<h2>Système blessures — NBA / WNBA / EL</h2>
-<p>Deux sources fusionnées via <code>GET /api/nba/injuries</code> (NBA) et <code>GET /api/wnba/injuries</code> (WNBA) :</p>
-<table>
-<thead><tr><th>Source</th><th>Ce qu'elle apporte</th><th>Cache</th></tr></thead>
-<tbody>
-<tr><td>RotoWire injuries page</td><td>Liste complète du roster NBA/WNBA</td><td>15min</td></tr>
-<tr><td>Section MAY NOT PLAY (page lineups)</td><td>Données spécifiques au match du jour — override prioritaire</td><td>15min</td></tr>
-</tbody>
-</table>
-<table>
-<thead><tr><th>Statut</th><th>Badge UI</th><th>Impact modèle</th></tr></thead>
-<tbody>
-<tr><td>Out</td><td>OUT (rouge)</td><td>Pas de calcul, pas d'alerte + redistribution USG aux coéquipiers actifs</td></tr>
-<tr><td>Doubtful</td><td>DTB (rouge)</td><td>×0.88</td></tr>
-<tr><td>Questionable</td><td>Q (orange)</td><td>×0.88 (ou moins si minutes réduites)</td></tr>
-<tr><td>Day-To-Day</td><td>DTD (orange)</td><td>×0.88</td></tr>
-</tbody>
-</table>
-<h3>Redistribution USG quand un joueur est OUT</h3>
-<p>Quand un joueur est déclaré OUT, ses minutes/possessions sont automatiquement redistribuées aux coéquipiers actifs, proportionnellement à leur propre poids. La proxy utilisée dépend des données disponibles par ligue :</p>
-<table>
-<thead><tr><th>Ligue</th><th>Proxy utilisé</th><th>Source</th></tr></thead>
-<tbody>
-<tr><td>NBA</td><td>USG% (usage rate officiel)</td><td>stats.nba.com</td></tr>
-<tr><td>WNBA</td><td>Minutes moyennes</td><td>ESPN WNBA</td></tr>
-<tr><td>EL</td><td>Points moyens</td><td>bzzoiro.com</td></tr>
-<tr><td>ACB / LNB / BBL</td><td>Points moyens (même mécanisme que NBA/WNBA, <code>computeRedist</code>)</td><td>Signal OUT manuel (pas de flux blessures officiel en EU — voir compositions ci-dessous)</td></tr>
-</tbody>
-</table>
-<p>Formule : <code>redistributionFactor = (activeSum + outSum) / activeSum</code>, plafonné à ×1.25. Ne s'active que si les joueurs OUT représentent plus de 10% du poids total de l'équipe.</p>
-<p><strong>Plafond combiné redistribution × matchup (8 juillet 2026)</strong> : une joueuse avec coéquipière Out ET bon matchup peut cumuler deux boosts déjà plafonnés individuellement, mais dont le produit ne l'était pas (jusqu'à +43-55%, cas Nneka Ogwumike à 12.7 rebonds projetés vs ~9 en saison). Plafond combiné ajouté (×1.30 NBA/WNBA, ×1.40 pts / ×1.32 reb-ast-tpm EU) par rapport à la valeur sans redistribution.</p>
-<p><strong>Fix double-comptage absences saison entière (8 juillet 2026)</strong> : une joueuse Out depuis le début de saison (aucun match joué) a son absence déjà intégrée dans la force nette de l'équipe — une pénalité en plus double-compte (cas Napheesa Collier, alerte Résultat faussée à 87,9%). Ces absences longue durée sont désormais exclues de la pénalité, même logique que le fix du 18 juin sur la redistribution des props.</p>
-<h3>Transition Q→OUT en cours de session</h3>
-<p>Si un joueur était <strong>Questionable</strong> (projection calculée et gelée en localStorage), puis passe <strong>OUT</strong> avant le match : le gel est automatiquement cassé pour cette équipe, les projections sont recalculées avec redistribution, et le nouveau gel remplace l'ancien. Le joueur OUT est retiré de la liste, ses coéquipiers voient leurs projections réévaluées à la hausse.</p>
-<p>Si une <strong>alerte Props</strong> avait été créée pour ce joueur, un badge <strong>! orange</strong> apparaît sur la carte avec le message "Joueur déclaré OUT après alerte".</p>
-
-<h3>Compositions par ligue — Probable vs Confirmé</h3>
-<table>
-<thead><tr><th>Ligue</th><th>Source des compos</th><th>Probable → Confirmé</th></tr></thead>
-<tbody>
-<tr><td>NBA / WNBA / EuroLeague</td><td>RotoWire lineups (15 min)</td><td>Selon la page RotoWire elle-même</td></tr>
-<tr><td>ACB / LNB / BBL</td><td>Top-5 titularisations récentes (api-sports.io) — pas de lineups pré-match natif côté API</td><td>Manuel : voir ci-dessous</td></tr>
-<tr><td>Lega A</td><td>legabasket.it (scraping officiel, dès le tip-off)</td><td>Automatique à l'heure du match</td></tr>
-</tbody>
-</table>
-<p><strong>ACB / LNB / BBL (22 juin 2026)</strong> : le report automatique du lineup du match précédent s'affiche en <strong>« Compos probables »</strong> (badge jaune). Un clic explicite sur <strong>Enregistrer</strong> marque la composition <strong>« Confirmée »</strong> (badge vert) côté serveur. Si des titulaires ont été retirés au moment d'enregistrer, un prompt demande de qualifier chacun :</p>
-<ul style="margin:4px 0 8px 18px; padding:0">
-<li><strong>OUT</strong> — ne joue pas du tout → redistribution complète façon NBA/WNBA (ci-dessus)</li>
-<li><strong>BENCH</strong> — joue toujours, juste plus titulaire → aucune redistribution (ses minutes ne sont pas perdues pour l'équipe)</li>
-</ul>
-<p>Ce signal OUT/BENCH est utilisé à la fois par les alertes en arrière-plan et par le panneau Analyse Props de la page match — jamais deux logiques séparées.</p>
-<p><strong>Lega A</strong> : la composition ne peut être annoncée « Confirmée » qu'à partir de l'heure du match (garde-fou ajouté le 22 juin) — avant le coup d'envoi, toujours affichée comme « Probable », même si le scraping renvoie une réponse, pour éviter de confondre avec un match précédent entre les deux mêmes équipes.</p>
-
-<h2>Architecture des caches</h2>
-<table>
-<thead><tr><th>Donnée</th><th>TTL</th></tr></thead>
-<tbody>
-<tr><td>ESPN roster / schedule / gamelog</td><td>6h</td></tr>
-<tr><td>ESPN scoreboard</td><td>30s (live) / 5min</td></tr>
-<tr><td>ESPN boxscore</td><td>5min</td></tr>
-<tr><td>stats.nba.com (USG%, défense par pos)</td><td>6h</td></tr>
-<tr><td>RotoWire lineups</td><td>15min</td></tr>
-<tr><td>RotoWire injuries</td><td>15min</td></tr>
-<tr><td>Basketball odds (Unibet/Betclic)</td><td>5min</td></tr>
-<tr><td>Player props</td><td>30min</td></tr>
-<tr><td>Football odds (The Odds API, disque)</td><td>30min</td></tr>
-<tr><td>Vegas game total</td><td>30min</td></tr>
-<tr><td>Background NBA odds (Pinnacle)</td><td>2h</td></tr>
-</tbody>
-</table>
-
-<h2>Ce qui reste à construire</h2>
-<table>
-<thead><tr><th>Item</th><th>Statut</th></tr></thead>
-<tbody>
-<tr><td><strong>TS% / eFG% dans le modèle</strong></td><td>Documenté, pas encore dans computeEstimate</td></tr>
-<tr><td><strong>Système 2 complet</strong> (Pinnacle vs FR books)</td><td>En attente retour des requests Pinnacle API</td></tr>
-<tr><td><strong>NBA Official Injury Report</strong> (PDF officiel)</td><td>Non implémenté — RotoWire suffit pour l'instant</td></tr>
-<tr><td><strong>Modèle moneyline</strong> (qui gagne ?)</td><td>Pas encore conçu — prochaine étape logique</td></tr>
-<tr><td><strong>Play types</strong> (isolation PPP, P&amp;R)</td><td>NBA Stats API non officielle — endpoint backend prêt</td></tr>
-</tbody>
-</table>
-
-<div class="footer">ValueBet · Généré le ${new Date().toLocaleDateString('fr-FR', { day: '2-digit', month: 'long', year: 'numeric' })} · Usage interne</div>
-</body>
-</html>`;
-
-  const win = window.open('', '_blank');
-  if (!win) return;
-  win.document.write(html);
-  win.document.close();
-  win.focus();
-  setTimeout(() => win.print(), 500);
-}
-
 export default function UtilisationPage() {
   const [sport, setSport] = useState('basketball');
   const isFoot = sport === 'football';
@@ -391,21 +30,6 @@ export default function UtilisationPage() {
       <div className="util-header">
         <h1 className="util-title">Documentation technique</h1>
         <p className="util-subtitle">Sources des données, fonctionnement des algorithmes et lexique des abréviations.</p>
-        <button
-          onClick={openReviewPDF}
-          style={{
-            marginTop: '0.75rem',
-            display: 'inline-flex', alignItems: 'center', gap: '0.4rem',
-            padding: '0.45rem 1rem', borderRadius: 7, border: '1px solid rgba(251,146,60,0.4)',
-            background: 'rgba(251,146,60,0.1)', color: '#fb923c',
-            fontSize: 12, fontWeight: 700, cursor: 'pointer', letterSpacing: '0.02em',
-          }}
-        >
-          <svg width="13" height="13" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round">
-            <path d="M7 1v8M4 6l3 3 3-3M2 11h10"/>
-          </svg>
-          Télécharger la review PDF
-        </button>
       </div>
 
       {/* Sport toggle */}
@@ -791,7 +415,10 @@ export default function UtilisationPage() {
             <strong>Passage à un plancher unique 80% — 22 juin 2026 :</strong> un audit de <code>cache/settlements.json</code> a montré un taux de réussite réel de <strong>50.5%</strong> (46 gagnés / 45 perdus). Plancher unifié à 80% pour toutes les stats et ligues (NBA/WNBA/EU), remplaçant les seuils différenciés ci-dessous. <strong>Ajustement WNBA — 26 juin 2026 :</strong> la WNBA ayant moins de matchs en base, les probabilités sont naturellement comprimées vers 50% — un 77% WNBA est aussi fiable qu'un 80% NBA. Planchers abaissés : pts/reb/tpm 77%, ast 80% inchangé, spécialiste 72% (vs 75% NBA/EU). Marges saison allégées (pts 0.4, reb 0.2, tpm 0.10 — ast 0.25 inchangé), min. 3pts abaissé à 1.2/match.
           </p>
           <p className="util-intro">
-            Les seuils différenciés par <strong>stat</strong> (pts / reb / ast / tpm) et par <strong>groupe de ligue</strong> ci-dessous datent d'avant le 22 juin et sont conservés à titre historique — le plancher réellement appliqué aujourd'hui est <strong>80% partout</strong>.
+            <strong>3pts WNBA abaissé à 73% — 21 juillet 2026 :</strong> le suivi <em>near-miss</em> (candidats sous le plancher, dont l'issue réelle est ensuite comparée au % annoncé — voir <code>/api/analysis/near-miss</code>) a montré un modèle <strong>sous-confiant</strong> sur cette stat précise : probabilité affichée moyenne 59.5% pour un taux de réussite réel de 75% sur les cas observés (échantillon encore réduit, mais le pool de candidats 3pts est structurellement petit — filtre de volume en amont — donc grossira lentement quoi qu'il arrive). Plancher WNBA 3pts abaissé de 77% à <strong>73%</strong>, seul changement — pts/reb WNBA restent à 77%, le filtre de volume minimum (1.2 panier/match) n'a pas été touché (il protège contre un problème différent : la fiabilité du modèle sur les tireuses occasionnelles, pas la calibration du plancher).
+          </p>
+          <p className="util-intro">
+            Les seuils différenciés par <strong>stat</strong> (pts / reb / ast / tpm) et par <strong>groupe de ligue</strong> ci-dessous datent d'avant le 22 juin et sont conservés à titre historique — le plancher réellement appliqué aujourd'hui est <strong>80% partout (NBA/ACB/EU), et le tableau WNBA ci-dessus pour cette ligue</strong>.
           </p>
           <p className="util-intro">
             <strong>Exception « spécialiste » — 22 juin 2026 (WNBA abaissée à 72% le 26 juin) :</strong> si une joueuse est régulière sur une catégorie précise (écart-type ÷ moyenne sur ses 10+ derniers vrais matchs — seuils : points ≤0.42, rebonds ≤0.46, passes ≤0.58, 3pts ≤0.76), le plancher descend à <strong>75% (NBA/ACB/EU)</strong> ou <strong>72% (WNBA)</strong> pour cette catégorie chez cette joueuse uniquement. Évalué <em>par stat indépendamment</em> — une joueuse peut être spécialiste en rebonds sans l'être en points. Le seuil de régularité est volontairement plus tolérant sur les 3pts : même les meilleures tireuses ont des swings importants d'un match à l'autre. Cas réel : Marina Mabrey (WNBA), rebonds sur ses 15 derniers matchs → régulière, plancher 72% au lieu de 77%.
@@ -829,7 +456,7 @@ export default function UtilisationPage() {
             </table>
           </div>
           <p className="util-intro" style={{ marginTop: '0.4rem', fontSize: 11 }}>
-            Constantes serveur : <code>NBA_ALERT_FLOOR</code> / <code>NBA_ALERT_FLOOR_BENCH</code> / <code>WNBA_ALERT_FLOOR*</code> / <code>ALERT_FLOOR</code> / <code>ALERT_FLOOR_BENCH</code> (ligues EU) — toutes fixées à <code>{`{ pts: 0.80, reb: 0.80, ast: 0.80, tpm: 0.80 }`}</code> depuis le 22 juin 2026. Mêmes valeurs côté Système 1 dans <code>BasketballDetailPage.jsx</code> (déclenché à l'ouverture d'Analyse Props).
+            Constantes serveur : <code>NBA_ALERT_FLOOR</code> / <code>NBA_ALERT_FLOOR_BENCH</code> / <code>ALERT_FLOOR</code> / <code>ALERT_FLOOR_BENCH</code> (ligues EU) — toutes fixées à <code>{`{ pts: 0.80, reb: 0.80, ast: 0.80, tpm: 0.80 }`}</code> depuis le 22 juin 2026. <code>WNBA_ALERT_FLOOR</code> diverge depuis le 26 juin (pts/reb 0.77, ast 0.80) et son <code>tpm</code> a été abaissé à <strong>0.73</strong> le 21 juillet 2026 (voir ci-dessus). Mêmes valeurs côté Système 1 dans <code>BasketballDetailPage.jsx</code> (déclenché à l'ouverture d'Analyse Props).
           </p>
 
           <div style={{ marginTop: '1rem', display: 'flex', flexDirection: 'column', gap: '0.6rem' }}>
@@ -968,7 +595,7 @@ export default function UtilisationPage() {
 
       {isFoot && <Accordion title="Alertes — BTTS / Over-Under / Résultat / DC combinés (background, toutes les 20 min)">
         <p className="util-intro">
-          Générées automatiquement par le serveur, aucune action nécessaire. Couverture : <strong>Ligue 1, Premier League, La Liga, Bundesliga, Serie A</strong> et <strong>Coupe du Monde</strong>. Modèle de Poisson sur les buts attendus (<code>computeLambdas</code>) — attaque/défense de chaque équipe normalisées, λ rescalé par la moyenne de buts de la ligue et l'avantage du terrain.
+          Générées automatiquement par le serveur, aucune action nécessaire. Couverture : <strong>Ligue 1, Premier League, La Liga, Bundesliga, Serie A</strong>, <strong>Coupe du Monde</strong> et <strong>Brasileirão</strong> (17 juillet 2026). Modèle de Poisson sur les buts attendus (<code>computeLambdas</code>) — attaque/défense de chaque équipe normalisées, λ rescalé par la moyenne de buts de la ligue et l'avantage du terrain.
         </p>
 
         <div className="util-subsection">
@@ -1113,6 +740,7 @@ export default function UtilisationPage() {
               <tr><td><strong>Bundesliga</strong></td><td>Allemagne</td><td>Rouge</td></tr>
               <tr><td><strong>Serie A</strong></td><td>Italie</td><td>Bleu foncé</td></tr>
               <tr><td><strong>Coupe du Monde</strong></td><td>International</td><td>—</td></tr>
+              <tr><td><strong>Brasileirão Série A</strong></td><td>Brésil</td><td>Vert (17 juillet 2026)</td></tr>
             </tbody>
           </table>
         </div>
@@ -1248,7 +876,7 @@ export default function UtilisationPage() {
           <table className="util-table">
             <thead><tr><th>Critère</th><th>Valeur</th></tr></thead>
             <tbody>
-              <tr><td><strong>Confiance minimum</strong></td><td>NBA/ACB/EU : 80% (spécialiste 75%) · WNBA : pts/reb/tpm 77% / ast 80% (spécialiste 72%) — voir la section « Seuils d'alertes » ci-dessus</td></tr>
+              <tr><td><strong>Confiance minimum</strong></td><td>NBA/ACB/EU : 80% (spécialiste 75%) · WNBA : pts/reb 77% / tpm 73% / ast 80% (spécialiste 72%) — voir la section « Seuils d'alertes » ci-dessus</td></tr>
               <tr><td><strong>Edge minimum</strong></td><td>Écart |projection − ligne| ≥ 1.0 (pts/reb/ast/tpm). En dessous, le pari est jugé "pile ou face" — backtest 17 paris : edge &lt; 1.0 → 0% de réussite, edge ≥ 1.0 → 62%.</td></tr>
               <tr><td><strong>Edge renforcé "Under" — franchise players</strong></td><td>Si la moyenne saison du joueur sur cette stat est élevée (pts ≥ 18, reb ≥ 9, ast ≥ 6, tpm ≥ 3 — joueur majeur de son équipe), l'edge minimum passe à 2.0 pour un Under. Ces joueurs peuvent exploser leur ligne n'importe quel soir (ex. A. Reese 9.5 proj. → 17 réel).</td></tr>
               <tr><td><strong>Cote minimum</strong></td><td>Unibet OU Betclic ≥ 1.50</td></tr>

@@ -22,6 +22,7 @@ const EURO_LINEUPS_FILE    = join(CACHE_DIR, 'euro_lineups.json');
 const WORLDCUP_CACHE_FILE  = join(CACHE_DIR, 'worldcup.json');
 const BRESIL_CACHE_FILE    = join(CACHE_DIR, 'bresil_matches.json');
 const FD_MATCHES_CACHE_FILE = join(CACHE_DIR, 'fd_matches.json');
+const FD_RESULTS_CACHE_FILE = join(CACHE_DIR, 'fd_results.json');
 const GAMELOGS_CACHE_FILE  = join(CACHE_DIR, 'gamelogs_cache.json');
 const SCRAPER_BLOCK_FILE   = join(CACHE_DIR, 'scraper_blocks.json');
 const OUTRIGHTS_CACHE_FILE = join(CACHE_DIR, 'outrights.json');
@@ -572,6 +573,56 @@ app.get('/api/fd/bresil', async (req, res) => {
   if (!FD_KEY) return res.status(503).json({ error: 'FD_API_KEY not configured' });
   res.json(await _getBresilMatches());
 });
+
+// ── Résultats des 5 grands championnats — pour le règlement automatique uniquement (21 juillet
+// 2026). /api/fd/matches interroge FD avec ?status=SCHEDULED (jamais de score, jamais de match
+// terminé) — les alertes BTTS/Total/Résultat foot sur ces 5 ligues ne se réglaient donc JAMAIS,
+// ni côté serveur ni côté navigateur (seule la Coupe du Monde, via /api/fd/worldcup, avait une
+// source de score). Fonction et cache complètement séparés de _fdCache/FD_MATCHES_CACHE_FILE —
+// même principe d'isolation déjà validé pour le Brésil ci-dessus, zéro risque sur l'affichage
+// existant des 5 championnats (fixtures à venir + classement).
+let _fdResultsCache = null, _fdResultsCacheTs = 0, _fdResultsErrorUntil = 0;
+try {
+  if (existsSync(FD_RESULTS_CACHE_FILE)) {
+    const parsed = JSON.parse(readFileSync(FD_RESULTS_CACHE_FILE, 'utf8'));
+    if (parsed?.matches) { _fdResultsCache = { matches: parsed.matches }; _fdResultsCacheTs = parsed.ts || 0; }
+  }
+} catch {}
+const FD_STATUS_MAP_RESULTS = {
+  IN_PLAY: 'STATUS_IN_PROGRESS', PAUSED: 'STATUS_IN_PROGRESS', LIVE: 'STATUS_IN_PROGRESS',
+  FINISHED: 'STATUS_FINAL', AWARDED: 'STATUS_FINAL',
+};
+async function _getFdLeaguesResults() {
+  if (!FD_KEY) return { matches: [] };
+  if (_fdResultsCache && Date.now() - _fdResultsCacheTs < 30 * 60 * 1000) return _fdResultsCache;
+  if (Date.now() < _fdResultsErrorUntil) return _fdResultsCache || { matches: [] };
+  try {
+    const dateFrom = new Date(Date.now() - 2 * 86400_000).toISOString().slice(0, 10);
+    const dateTo   = new Date(Date.now() + 1 * 86400_000).toISOString().slice(0, 10);
+    const allMatches = [];
+    for (const league of FD_LEAGUES) {
+      const matchesRes = await fdGet(`/competitions/${league.code}/matches?dateFrom=${dateFrom}&dateTo=${dateTo}`);
+      await new Promise(r => setTimeout(r, 600));
+      for (const m of (matchesRes.matches || [])) {
+        const mapped = FD_STATUS_MAP_RESULTS[m.status];
+        if (!mapped) continue; // POSTPONED, CANCELLED, SUSPENDED, SCHEDULED (pas encore joué, rien à régler)
+        allMatches.push({
+          id: String(m.id), league: league.key, status: mapped,
+          home: { score: m.score?.fullTime?.home ?? null },
+          away: { score: m.score?.fullTime?.away ?? null },
+        });
+      }
+    }
+    const result = { matches: allMatches };
+    _fdResultsCache = result; _fdResultsCacheTs = Date.now();
+    try { writeFileSync(FD_RESULTS_CACHE_FILE, JSON.stringify({ matches: allMatches, ts: _fdResultsCacheTs }), 'utf8'); } catch {}
+    return result;
+  } catch (err) {
+    console.error('football-data.org results (5 leagues) error:', err.message);
+    _fdResultsErrorUntil = Date.now() + 60 * 1000;
+    return _fdResultsCache || { matches: [] };
+  }
+}
 
 // Récupère un match CDM précis par ID, sans la fenêtre de 48h de /api/fd/worldcup — filet de
 // rattrapage pour resolveCompletedFootballAlerts (syncAlerts.js) quand une alerte accepted n'a
@@ -8294,7 +8345,12 @@ function _logFootballNearMiss({ fixtureId, league, market, direction, line, prob
   if (_nearMissFootball.some(c => c.id === id)) return;
   _nearMissFootball.push({ id, fixtureId, league, market, direction, line: line ?? null, probability: +(probability * 100).toFixed(1), floor: +(floor * 100).toFixed(1), status: 'pending', savedAt: Date.now() });
 }
-const FOOT_MATCH_ENDPOINT = { fd: '/api/fd/matches', fdcdm: '/api/fd/worldcup', fdbr: '/api/fd/bresil' };
+// 21 juillet 2026 — le 'fd' (5 grands championnats) pointait vers /api/fd/matches, qui interroge
+// FD avec ?status=SCHEDULED et ne renvoie donc JAMAIS de match terminé (même bug racine que le
+// règlement des alertes football corrigé plus tôt aujourd'hui) : 48 candidats sur 50 restaient
+// bloqués "pending" indéfiniment. _getFdLeaguesResults() (déjà construite pour ce fix-là) a bien
+// les scores finaux, appelée directement ici plutôt que via un aller-retour HTTP interne.
+const FOOT_MATCH_ENDPOINT = { fdcdm: '/api/fd/worldcup', fdbr: '/api/fd/bresil' };
 async function _resolveFootballNearMiss() {
   const base = `http://localhost:${process.env.PORT || 3001}`;
   const pending = _nearMissFootball.filter(c => c.status === 'pending');
@@ -8304,7 +8360,10 @@ async function _resolveFootballNearMiss() {
     const prefix = c.fixtureId.startsWith('fdcdm_') ? 'fdcdm' : c.fixtureId.startsWith('fdbr_') ? 'fdbr' : 'fd';
     const rawId = c.fixtureId.replace(`${prefix}_`, '');
     try {
-      if (!cache[prefix]) cache[prefix] = await fetch(`${base}${FOOT_MATCH_ENDPOINT[prefix]}`).then(r => r.ok ? r.json() : null).catch(() => null);
+      if (!cache[prefix]) {
+        if (prefix === 'fd') cache[prefix] = await _getFdLeaguesResults().catch(() => null);
+        else cache[prefix] = await fetch(`${base}${FOOT_MATCH_ENDPOINT[prefix]}`).then(r => r.ok ? r.json() : null).catch(() => null);
+      }
       const list = cache[prefix]?.matches || cache[prefix]?.games || [];
       const m = list.find(x => String(x.id) === rawId);
       if (!m || m.status !== 'STATUS_FINAL') continue;
@@ -9276,7 +9335,11 @@ function computeEUEstimate(player, isHome, oppGames, myGames, gamelogs, gameDate
   // moyenne d'écart — même défaut structurel ici, jamais encore mesuré sur ces ligues faute d'alertes
   // reb EU générées à ce jour, mais corrigé par cohérence avant que ça arrive.
   const multReb = Math.min(1.12, Math.max(0.78, formFactorReb *              defFactorReb * allMult));
-  const multAst = Math.min(1.25, Math.max(0.78, formFactorAst * paceFactor * defFactorAst * allMult));
+  // Cap resserré 21 juillet 2026 — même correctif que NBA/WNBA (compute.js), suite au tracking
+  // near-miss NBA/WNBA passé de n=13 (semblait calibré) à n=31 en une nuit : proba affichée 59,2%
+  // pour une réussite réelle de 41,9% (+17,3pp). Jamais d'alertes ast EU générées à ce jour (ligues
+  // en pause estivale), corrigé par cohérence avant la reprise, même logique que pts/reb ci-dessus.
+  const multAst = Math.min(1.12, Math.max(0.78, formFactorAst * paceFactor * defFactorAst * allMult));
   const multTpm = Math.min(1.25, Math.max(0.78, formFactorTpm * paceFactor * defFactorTpm * allMult));
   const estimatedRaw = basePts * multPts;
   const estReb    = baseReb * multReb;
@@ -13169,9 +13232,51 @@ async function runAutoSettle() {
     } catch {}
   }
 
-  // Football BTTS / Total / Résultat — seules les fixtures CDM (fdcdm_*) ont une source de score
-  // final aujourd'hui (/api/fd/worldcup). Même règle de résolution que le navigateur
-  // (resolveFootballAlertResult, src/utils/syncAlerts.js), portée ici pour ne plus en dépendre.
+  // Football BTTS / Total / Résultat / DC — décision won/lost/en attente partagée entre CDM,
+  // Brasileirão et les 5 grands championnats (21 juillet 2026, extrait de l'ancien bloc CDM
+  // uniquement). hs/as_ = score domicile/extérieur au périmètre de règlement du marché (temps
+  // réglementaire pour la CDM, temps plein sinon) ; isFinal = match terminé (sinon seul un Over/
+  // BTTS déjà acquis peut se régler "won" avant la fin, jamais un "lost").
+  const footballMarketStatus = (a, hs, as_, isFinal) => {
+    if (a.type === 'football_btts') {
+      if (hs > 0 && as_ > 0) return 'won';
+      return isFinal ? 'lost' : null;
+    }
+    if (a.type === 'football_result') {
+      if (!isFinal) return null;
+      if (a.direction === 'home') return hs > as_ ? 'won' : 'lost';
+      if (a.direction === 'away') return as_ > hs ? 'won' : 'lost';
+      return hs === as_ ? 'won' : 'lost';
+    }
+    if (a.type === 'football_dc_btts') {
+      if (!isFinal) return null;
+      const bttsOk = hs > 0 && as_ > 0;
+      const dcOk = a.direction === '1x' ? hs >= as_ : a.direction === 'x2' ? as_ >= hs : hs !== as_;
+      return bttsOk && dcOk ? 'won' : 'lost';
+    }
+    if (a.type === 'football_dc_ou') {
+      if (!isFinal) return null;
+      const ouOk = hs + as_ > (a.line ?? 1.5);
+      const dcOk = a.direction === '1x' ? hs >= as_ : a.direction === 'x2' ? as_ >= hs : hs !== as_;
+      return ouOk && dcOk ? 'won' : 'lost';
+    }
+    // football_total
+    const total = hs + as_;
+    if (a.direction === 'over') return total > a.line ? 'won' : (isFinal ? 'lost' : null);
+    return total > a.line ? 'lost' : (isFinal ? 'won' : null);
+  };
+  const settleFootballAlert = (a, hs, as_, isFinal) => {
+    if (hs == null || as_ == null) return;
+    const status = footballMarketStatus(a, hs, as_, isFinal);
+    if (!status) return;
+    const settledAt5 = Date.now();
+    _settlements.push({ id: a.id, status, line: a.line, edge: a.edge, league: a.league, probability: a.acceptedProbability ?? a.probability, settledAt: settledAt5 });
+    archiveBet(withStake(a), { status, actualHomeScore: hs, actualAwayScore: as_, settledAt: settledAt5 });
+    _acceptedAlerts = _acceptedAlerts.filter(x => x.id !== a.id);
+    _saveAccepted(); _saveSettlements();
+  };
+
+  // CDM — source de score : /api/fd/worldcup.
   const footballCdm = footballToCheck.filter(a => (a.fixtureId || a.eventId || '').startsWith('fdcdm_'));
   if (footballCdm.length) {
     try {
@@ -13183,42 +13288,43 @@ async function runAutoSettle() {
         if (!game) continue;
         // scoreReg = score du temps réglementaire (fullTime - extraTime) — ces marchés se règlent
         // sur 90min, pas sur le score final après prolongation (voir /api/fd/worldcup).
-        const hs = game.home?.scoreReg ?? game.home?.score, as_ = game.away?.scoreReg ?? game.away?.score;
-        if (hs == null || as_ == null) continue;
-        const isFinal = game.status === 'STATUS_FINAL';
-        let status = null;
-        if (a.type === 'football_btts') {
-          if (hs > 0 && as_ > 0) status = 'won';
-          else if (isFinal) status = 'lost';
-        } else if (a.type === 'football_result') {
-          if (isFinal) {
-            if (a.direction === 'home') status = hs > as_ ? 'won' : 'lost';
-            else if (a.direction === 'away') status = as_ > hs ? 'won' : 'lost';
-            else status = hs === as_ ? 'won' : 'lost';
-          }
-        } else if (a.type === 'football_dc_btts') {
-          if (isFinal) {
-            const bttsOk = hs > 0 && as_ > 0;
-            const dcOk = a.direction === '1x' ? hs >= as_ : a.direction === 'x2' ? as_ >= hs : hs !== as_;
-            status = bttsOk && dcOk ? 'won' : 'lost';
-          }
-        } else if (a.type === 'football_dc_ou') {
-          if (isFinal) {
-            const ouOk = hs + as_ > (a.line ?? 1.5);
-            const dcOk = a.direction === '1x' ? hs >= as_ : a.direction === 'x2' ? as_ >= hs : hs !== as_;
-            status = ouOk && dcOk ? 'won' : 'lost';
-          }
-        } else { // football_total
-          const total = hs + as_;
-          if (a.direction === 'over') { if (total > a.line) status = 'won'; else if (isFinal) status = 'lost'; }
-          else { if (total > a.line) status = 'lost'; else if (isFinal) status = 'won'; }
-        }
-        if (!status) continue;
-        const settledAt5 = Date.now();
-        _settlements.push({ id: a.id, status, line: a.line, edge: a.edge, league: a.league, probability: a.acceptedProbability ?? a.probability, settledAt: settledAt5 });
-        archiveBet(withStake(a), { status, actualHomeScore: hs, actualAwayScore: as_, settledAt: settledAt5 });
-        _acceptedAlerts = _acceptedAlerts.filter(x => x.id !== a.id);
-        _saveAccepted(); _saveSettlements();
+        settleFootballAlert(a, game.home?.scoreReg ?? game.home?.score, game.away?.scoreReg ?? game.away?.score, game.status === 'STATUS_FINAL');
+      }
+    } catch {}
+  }
+
+  // Brasileirão — source de score : _getBresilMatches() (déjà utilisée pour l'affichage des
+  // fixtures, réutilisée ici telle quelle). 21 juillet 2026 : avant ce fix, ce marché n'avait
+  // AUCUNE source de règlement, un pari foot brésilien restait "accepté" indéfiniment.
+  const footballBresil = footballToCheck.filter(a => (a.fixtureId || a.eventId || '').startsWith('fdbr_'));
+  if (footballBresil.length) {
+    try {
+      const br = await _getBresilMatches().catch(() => ({ matches: [] }));
+      const games = br?.matches || [];
+      for (const a of footballBresil) {
+        const gid = (a.fixtureId || a.eventId).replace('fdbr_', '');
+        const game = games.find(g => String(g.id) === gid && ['STATUS_IN_PROGRESS', 'STATUS_FINAL'].includes(g.status));
+        if (!game) continue;
+        settleFootballAlert(a, game.home?.score, game.away?.score, game.status === 'STATUS_FINAL');
+      }
+    } catch {}
+  }
+
+  // Ligue 1 / PL / La Liga / Bundesliga / Serie A — source de score : _getFdLeaguesResults()
+  // (21 juillet 2026, même gap que le Brésil ci-dessus — /api/fd/matches ne renvoie jamais de
+  // match terminé). Ces 5 ligues sont en pause estivale au moment où ce fix est écrit (reprise
+  // ~août 2026) donc rien à régler pour l'instant — prêt pour la reprise, zéro impact sur
+  // l'affichage existant des 5 championnats (fixtures/classement inchangés).
+  const footballBigFive = footballToCheck.filter(a => (a.fixtureId || a.eventId || '').startsWith('fd_'));
+  if (footballBigFive.length) {
+    try {
+      const fl = await _getFdLeaguesResults().catch(() => ({ matches: [] }));
+      const games = fl?.matches || [];
+      for (const a of footballBigFive) {
+        const gid = (a.fixtureId || a.eventId).replace('fd_', '');
+        const game = games.find(g => String(g.id) === gid && ['STATUS_IN_PROGRESS', 'STATUS_FINAL'].includes(g.status));
+        if (!game) continue;
+        settleFootballAlert(a, game.home?.score, game.away?.score, game.status === 'STATUS_FINAL');
       }
     } catch {}
   }

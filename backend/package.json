@@ -4,6 +4,7 @@
   "type": "module",
   "scripts": {
     "start": "UV_THREADPOOL_SIZE=16 node server.js",
+    "predev": "lsof -ti:3001 | xargs kill -9 2>/dev/null || true",
     "dev": "UV_THREADPOOL_SIZE=16 node --watch server.js"
   },
   "dependencies": {

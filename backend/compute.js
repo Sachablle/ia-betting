@@ -541,7 +541,9 @@ function computeEstimate(player, isHome, oppGames, myGames, gamelogs, oppAbbr, g
     // vraiment. Plafond jamais resserré jusqu'ici contrairement à reb — aligné sur le même resserrement.
     adjMult    = Math.min(1.18, Math.max(0.74, rawMult));
     adjMultReb = Math.min(1.18, Math.max(0.74, rawMultReb * (1 + (orebF.val - 1) * 0.6)));
-    adjMultAst = Math.min(1.30, Math.max(0.74, rawMultAst * toaF.val));
+    // Cap resserré 21 juillet 2026 — même cause que pts/reb (rawMultAst partage sharedMult, donc les
+    // mêmes facteurs fenêtre récente), jamais aligné jusqu'ici. Voir commentaire détaillé branche RS ci-dessous.
+    adjMultAst = Math.min(1.18, Math.max(0.74, rawMultAst * toaF.val));
     adjMultTpm = Math.min(1.30, Math.max(0.74, rawMultTpm));
   } else {
     h2hCapped    = Math.min(1.08, Math.max(0.92, h2hPts.val));
@@ -572,7 +574,13 @@ function computeEstimate(player, isHome, oppGames, myGames, gamelogs, oppAbbr, g
     // Constaté sur 13 paris reb réglés (historique réel) : 11/13 surestimés, +3,6 rebonds de moyenne
     // d'écart vs réel — le plafond 1.24 était trop large pour ce stat en particulier.
     adjMultReb = Math.min(1.12, Math.max(0.78, rawMultReb * orebF.val));
-    adjMultAst = Math.min(1.24, Math.max(0.78, rawMultAst * toaF.val));
+    // Cap resserré 21 juillet 2026 — tracking near-miss (n=31, passait de 13 à 31 en une nuit) a
+    // révélé le même problème que pts avant son fix du 20 juillet : proba affichée moyenne 59,2%
+    // pour un taux de réussite réel de seulement 41,9% (+17,3pp d'écart), invisible avec le petit
+    // échantillon précédent (n=13, -0,7pp, semblait presque parfait). Cause identique à pts : rawMultAst
+    // partage sharedMult (streak/tsF/shotVol/ftRate, tous sur la même fenêtre récente) et n'avait
+    // jamais reçu le même resserrement que pts/reb — plafond jamais aligné jusqu'ici.
+    adjMultAst = Math.min(1.12, Math.max(0.78, rawMultAst * toaF.val));
     adjMultTpm = Math.min(1.24, Math.max(0.78, rawMultTpm));
   }
 

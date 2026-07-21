@@ -535,8 +535,14 @@ function BankrollTracker() {
   const engagedToday = getEngagedToday();
   const remaining = Math.max(0, stake - engagedToday.total);
 
+  // Confirmation ajoutée le 21 juillet 2026 — ces boutons appliquent immédiatement un vrai
+  // gain/perte au bankroll réel à chaque clic (pas juste une prévisualisation). Cas réel : clics
+  // accidentels en essayant simplement de consulter l'historique juste à côté, bankroll faussé de
+  // plusieurs centaines d'euros en quelques secondes sans aucun garde-fou.
   const applyBet = won => {
     const odds = Math.max(1.01, +oddsInput || 1.70);
+    const s = getRecommendedStake(state.current);
+    if (!window.confirm(`Ajouter un ${won ? 'gain' : 'perte'} manuel de ${s}€ (cote ${odds}) au bankroll réel ?`)) return;
     setState(recordBet(state, { won, odds }));
   };
   const doReset = () => {
