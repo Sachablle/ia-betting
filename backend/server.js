@@ -6516,6 +6516,11 @@ const PMU_OUTRIGHT_TARGETS = [
   { key: 'pl',     label: 'Premier League', sport: 'football',   slug: '/sport/football/angleterre/premier-league', titlePattern: 'text=/Vainqueur/i' },
   { key: 'laliga', label: 'La Liga',        sport: 'football',   slug: '/sport/football/espagne/laliga',           titlePattern: 'text=/Vainqueur/i' },
   { key: 'seriea', label: 'Serie A',        sport: 'football',   slug: '/sport/football/italie/serie-a',           titlePattern: 'text=/Vainqueur/i' },
+  // Ligue 1 / Bundesliga ajoutées le 21 juillet 2026 (signalées disponibles chez PMU par l'utilisateur,
+  // absentes jusqu'ici — cf. doc). Slugs confirmés par l'utilisateur directement sur pmu.fr — Ligue 1
+  // au nom du sponsor (comme Betclic "ligue-1-uber-eats-c4"), Bundesliga identique à la 1ère supposition.
+  { key: 'ligue1',     label: 'Ligue 1',    sport: 'football',   slug: '/sport/football/france/ligue-1-mcdonalds', titlePattern: 'text=/Vainqueur/i' },
+  { key: 'bundesliga', label: 'Bundesliga', sport: 'football',   slug: '/sport/football/allemagne/bundesliga',     titlePattern: 'text=/Vainqueur/i' },
   { key: 'nba',    label: 'NBA',            sport: 'basketball', slug: '/sport/basketball/nba',                     titlePattern: 'text=/Champion NBA/i' },
   { key: 'wnba',   label: 'WNBA',           sport: 'basketball', slug: '/sport/basketball/wnba',                    titlePattern: 'text=/WNBA Champion/i' },
 ];
