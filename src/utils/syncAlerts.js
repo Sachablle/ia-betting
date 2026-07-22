@@ -506,7 +506,7 @@ export async function syncGameTotalAlerts() {
           estimated: a.estimated, line: a.line, edge: a.edge,
           direction: a.direction, prob: a.prob,
           unibetOdds: a.unibetOdds ?? null, betclicOdds: a.betclicOdds ?? null, winamaxOdds: a.winamaxOdds ?? null,
-          savedAt: Date.now(), status: 'pending',
+          savedAt: Date.now(), status: a.status || 'pending',
         });
         changed = true;
         return;
@@ -595,7 +595,7 @@ export async function syncBballPinnacleAlerts() {
           line: a.line, edge: a.edge, direction: a.direction, prob: a.prob,
           pinnacleOdds: a.pinnacleOdds, bookmaker: a.bookmaker,
           unibetOdds: a.unibetOdds ?? null, betclicOdds: a.betclicOdds ?? null,
-          savedAt: Date.now(), status: 'pending',
+          savedAt: Date.now(), status: a.status || 'pending',
         });
         changed = true;
         return;
@@ -653,7 +653,7 @@ export async function syncBballPinnaclePropsAlerts() {
     pinProps.forEach(a => {
       const idx = result.findIndex(p => p.id === a.id);
       if (idx === -1) {
-        result.push({ ...a, status: 'pending', savedAt: Date.now() });
+        result.push({ ...a, status: a.status || 'pending', savedAt: Date.now() });
         changed = true;
         return;
       }
@@ -719,7 +719,7 @@ export async function syncBasketballResultAlerts() {
     resultAlerts.forEach(a => {
       const idx = result.findIndex(p => p.id === a.id || sameBet(p, a));
       if (idx === -1) {
-        result.push({ ...a, status: 'pending' });
+        result.push({ ...a, status: a.status || 'pending' });
         changed = true;
         return;
       }
@@ -791,7 +791,7 @@ export async function syncBasketballSpreadAlerts() {
     spreadAlerts.forEach(a => {
       const idx = result.findIndex(p => p.id === a.id || sameBet(p, a));
       if (idx === -1) {
-        result.push({ ...a, status: 'pending' });
+        result.push({ ...a, status: a.status || 'pending' });
         changed = true;
         return;
       }
@@ -863,7 +863,7 @@ export async function syncFootballAlerts() {
       bttsAlerts.forEach(a => {
         const idx = result.findIndex(p => p.id === a.id);
         if (idx === -1) {
-          result.push({ ...a, status: 'pending' });
+          result.push({ ...a, status: a.status || 'pending' });
           changed = true;
           return;
         }
@@ -911,7 +911,7 @@ export async function syncFootballAlerts() {
       totalAlerts.forEach(a => {
         const idx = result.findIndex(p => p.id === a.id);
         if (idx === -1) {
-          result.push({ ...a, status: 'pending' });
+          result.push({ ...a, status: a.status || 'pending' });
           changed = true;
           return;
         }
@@ -954,7 +954,7 @@ export async function syncFootballAlerts() {
       resultAlerts.forEach(a => {
         const idx = result.findIndex(p => p.id === a.id);
         if (idx === -1) {
-          result.push({ ...a, status: 'pending' });
+          result.push({ ...a, status: a.status || 'pending' });
           changed = true;
           return;
         }
@@ -1000,7 +1000,7 @@ export async function syncFootballAlerts() {
       pinnacleAlerts.forEach(a => {
         const idx = result.findIndex(p => p.id === a.id);
         if (idx === -1) {
-          result.push({ ...a, status: 'pending' });
+          result.push({ ...a, status: a.status || 'pending' });
           changed = true;
           return;
         }
@@ -1052,7 +1052,7 @@ export async function syncFootballAlerts() {
       const liveIds = new Set(dcBttsAlerts.map(a => a.id));
       dcBttsAlerts.forEach(a => {
         const idx = result.findIndex(p => p.id === a.id || dcLogicalKey(p) === dcLogicalKey(a));
-        if (idx === -1) { result.push({ ...a, status: 'pending' }); changed = true; return; }
+        if (idx === -1) { result.push({ ...a, status: a.status || 'pending' }); changed = true; return; }
         const prev = result[idx];
         if ((prev.status || 'pending') !== 'pending') return;
         if (prev.probability !== a.probability || prev.unibetOdds !== a.unibetOdds || prev.betclicOdds !== a.betclicOdds) {
@@ -1084,7 +1084,7 @@ export async function syncFootballAlerts() {
       const liveIds = new Set(dcOuAlerts.map(a => a.id));
       dcOuAlerts.forEach(a => {
         const idx = result.findIndex(p => p.id === a.id || dcLogicalKey(p) === dcLogicalKey(a));
-        if (idx === -1) { result.push({ ...a, status: 'pending' }); changed = true; return; }
+        if (idx === -1) { result.push({ ...a, status: a.status || 'pending' }); changed = true; return; }
         const prev = result[idx];
         if ((prev.status || 'pending') !== 'pending') return;
         if (prev.probability !== a.probability || prev.unibetOdds !== a.unibetOdds || prev.betclicOdds !== a.betclicOdds) {

@@ -5348,14 +5348,27 @@ async function fetchBetclicMatchDetails(home, away, league = 'nba') {
         if (!sel.name || !sel.odds) continue;
         const winM  = sel.name.match(/^(.+?)\s+gagne de\s+(\d+)\s+ou\s*\+$/i);
         const loseM = sel.name.match(/^(.+?)\s+ne perd pas ou perd de\s+(\d+)\s+ou\s*-$/i);
-        let team, line;
-        if (winM)       { team = winM[1];  line = -(parseInt(winM[2], 10) - 0.5); }
-        else if (loseM) { team = loseM[1]; line = +(parseInt(loseM[2], 10) - 0.5); }
+        let team, magnitude, teamIsFavorite;
+        // "Équipe gagne de N ou +" ⇔ cette équipe est favorite à -(N-0.5) : gagner de N pile suffit
+        // à couvrir. "Équipe ne perd pas ou perd de N ou -" ⇔ cette équipe est outsider à +(N+0.5),
+        // PAS +(N-0.5) (bug trouvé le 22 juillet 2026) : perdre de N pile doit encore couvrir un
+        // +(N+0.5), alors que perdre de N+1 ne doit plus couvrir.
+        if (winM)       { team = winM[1];  magnitude = parseInt(winM[2], 10) - 0.5; teamIsFavorite = true; }
+        else if (loseM) { team = loseM[1]; magnitude = parseInt(loseM[2], 10) + 0.5; teamIsFavorite = false; }
         else continue;
         const isHomeSel = normStrSpread(team).includes(spreadHomeKey);
         const isAwaySel = normStrSpread(team).includes(spreadAwayKey);
         if (!isHomeSel && !isAwaySel) continue;
-        const key = Math.abs(line);
+        // Betclic liste EN PARALLÈLE deux familles de lignes alternatives à la même magnitude —
+        // domicile favori (ex: LA -3.5 / PHX +3.5) ET extérieur favori (LA +3.5 / PHX -3.5), comme
+        // deux lignes distinctes d'une échelle, pas une contradiction. Clé par magnitude ET par
+        // "qui est favori" (pas juste Math.abs(line)) — sinon les deux familles s'écrasaient l'une
+        // l'autre dans lineMap (une seule survivait par magnitude, au hasard de l'ordre du JSON),
+        // ce qui laissait la ladder Betclic trouée (cas réel : alerte Écart WNBA Sparks/Mercury
+        // +3.5 sans cote Betclic alors que le marché existe bien chez eux, aux deux familles).
+        const homeIsFavorite = isHomeSel ? teamIsFavorite : !teamIsFavorite;
+        const key = `${homeIsFavorite ? 'H' : 'A'}_${magnitude}`;
+        const line = teamIsFavorite ? -magnitude : +magnitude;
         if (!lineMap[key]) lineMap[key] = {};
         if (isHomeSel) lineMap[key].home = { line, odds: sel.odds };
         else           lineMap[key].away = { line, odds: sel.odds };
@@ -5833,9 +5846,16 @@ const BETCLIC_LEAGUES = [
   'espagne-laliga-c7',
   'italie-serie-a-c6',
   'ned-eredivisie-c11',
-  'top-football-europeen-p0',
   'coupe-du-monde-2026-c1',
   'bresil-serie-a-c187', // Brasileirão (17 juillet 2026) — vérifié manuellement, page accessible et parsable
+  // 'top-football-europeen-p0' en dernier (22 juillet 2026) : page vitrine cross-ligues qui liste
+  // aussi certains matchs déjà couverts par leur propre page de ligue ci-dessus (ex: Brasileirão).
+  // Le dédup par home|away dans fetchBetclicOdds() garde la PREMIÈRE occurrence rencontrée — si
+  // cette page vitrine passe en premier, elle "gagne" le match mais avec le slug générique
+  // 'top-football-europeen-p0' au lieu du vrai slug de ligue, ce qui cassait la reconstruction de
+  // href (BTTS/Totaux/DC) quand le lien n'était pas trouvé dans le HTML brut. En la mettant en
+  // dernier, la page de ligue spécifique (bon slug) gagne toujours le dédup en premier.
+  'top-football-europeen-p0',
 ];
 
 // ── Outrights (paris longterme vainqueur de compétition) — Betclic uniquement ──
@@ -6918,10 +6938,22 @@ async function fetchBetclicOdds() {
     )
   );
 
+  // Betclic n'inclut le <a href> vers la page match dans le HTML brut que pour les matchs visibles
+  // "au-dessus du pli" — les suivants dans la liste (généralement journée+1) ont leurs cotes 1X2
+  // dans le JSON embarqué (donc h2h toujours bon) mais pas de lien cliquable, donc btts/totals/dc
+  // (qui viennent d'un fetch par-match individuel via ce lien) restaient vides pour ~la moitié des
+  // matchs. Trouvé le 22 juillet 2026 sur Brasileirão (9/15 matchs sans href) mais touche toutes
+  // les BETCLIC_LEAGUES. Fix : reconstruire l'URL à partir du matchId + slug équipe (même format
+  // que les hrefs trouvés, vérifié manuellement en direct) quand le href n'a pas été trouvé.
+  const slugifyBetclic = s => (s || '').toLowerCase()
+    .normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+
   const seen = new Set();
   const results = [];
-  for (const html of pageHtmls) {
-    if (!html) continue;
+  BETCLIC_LEAGUES.forEach((slug, li) => {
+    const html = pageHtmls[li];
+    if (!html) return;
     const hrefMap = extractHrefs(html);
     for (const m of parsePage(html)) {
       if (!m.contestants || m.contestants.length < 2) continue;
@@ -6936,16 +6968,19 @@ async function fetchBetclicOdds() {
       const drawSel = sels.find(s => drawNames.includes(s.name?.toLowerCase()));
       const awaySel = sels.find(s => s.name === awayTeam);
       if (!homeSel || !drawSel || !awaySel) continue;
+      const guessedHref = m.matchId
+        ? `/football-sfootball/${slug}/${slugifyBetclic(homeTeam)}-${slugifyBetclic(awayTeam)}-m${m.matchId}`
+        : null;
       const entry = {
         homeTeam,
         awayTeam,
         commenceTime: m.matchDateUtc,
         h2h: { home: homeSel.odds, draw: drawSel.odds, away: awaySel.odds },
-        _href: hrefMap[m.matchId] ?? null,
+        _href: hrefMap[m.matchId] ?? guessedHref,
       };
       results.push(entry);
     }
-  }
+  });
 
   // Diagnostic temporaire (24/06) — repère les matchs pour lesquels aucun lien individuel
   // n'a été trouvé sur la page de liste (cause possible de BTTS/Buts manquants malgré un 1X2 bon).
@@ -7055,12 +7090,27 @@ async function fetchUnibetFootballOdds() {
   };
   const price = s => parseFloat((s || '0').replace(',', '.'));
 
-  // 1. Scrape la page principale foot pour avoir tous les matchs disponibles
-  const mainHtml = await fetchBk('unibet', 'https://www.unibet.fr/paris-football', { headers: H, signal: AbortSignal.timeout(10000) })
-    .then(r => r.ok ? r.text() : '').catch(() => '');
+  // 1. Scrape la page principale foot pour avoir tous les matchs disponibles. La page d'accueil
+  // /paris-football ne liste que les matchs proches (24-48h) toutes ligues confondues — un
+  // championnat moins suivi en France comme le Brasileirão n'y a que 3-4 matchs (les plus proches),
+  // le reste de la journée en cours étant invisible sans passer par la page de compétition dédiée.
+  // Trouvé le 22 juillet 2026 : Cruzeiro-Botafogo (journée 20, 4 jours plus tard) totalement absent
+  // du scraping Unibet alors qu'il existe bien sur leur site (/paris-football/bresil/d1-bresil).
+  // Même classe de bug que le fix Betclic du même jour (page de liste tronquée) — fix symétrique :
+  // ajoute la page de compétition Brasileirão en plus de la page d'accueil, fusionne les deux.
+  const UNIBET_EXTRA_LEAGUE_PAGES = ['https://www.unibet.fr/paris-football/bresil/d1-bresil'];
+  const [mainHtml, ...extraHtmls] = await Promise.all([
+    fetchBk('unibet', 'https://www.unibet.fr/paris-football', { headers: H, signal: AbortSignal.timeout(10000) })
+      .then(r => r.ok ? r.text() : '').catch(() => ''),
+    ...UNIBET_EXTRA_LEAGUE_PAGES.map(url =>
+      fetchBk('unibet', url, { headers: H, signal: AbortSignal.timeout(10000) })
+        .then(r => r.ok ? r.text() : '').catch(() => '')
+    ),
+  ]);
   const matchPaths = [...new Set(
-    [...mainHtml.matchAll(/href="(\/paris-football\/[^"]*\/\d+\/[^"#]+)"/g)].map(m => m[1])
-      .filter(p => !p.includes('cotes-boostees'))
+    [mainHtml, ...extraHtmls].flatMap(html =>
+      [...html.matchAll(/href="(\/paris-football\/[^"]*\/\d+\/[^"#]+)"/g)].map(m => m[1])
+    ).filter(p => !p.includes('cotes-boostees'))
   )];
 
   if (!matchPaths.length) return [];
@@ -12375,6 +12425,17 @@ async function generateBackgroundAlerts() {
     const byId = {};
     // Purge alerts for games no longer scheduled (completed/cancelled)
     backgroundAlerts.filter(a => upcomingIds.has(a.eventId)).forEach(a => { byId[a.id] = a; });
+    // Fix 22 juillet 2026 — alerte acceptée qui "revenait" pending après un redémarrage backend
+    // (cas réel : Écart WNBA Sparks/Mercury, acceptée via Telegram, réapparue ~3s après en pending).
+    // `backgroundAlerts` (ci-dessus) et `_actionLog`/`_tokenMap` Telegram sont en mémoire pure — un
+    // restart (ex: `node --watch` sur une sauvegarde de ce fichier) les vide, alors que
+    // `_acceptedAlerts` est persisté sur disque (`_saveAccepted()`). Sans ce fix, le cycle suivant ne
+    // trouve plus aucun `prev` pour cet id → le retombe sur la branche "pending" par défaut et
+    // recrée un doublon pending pour un pari déjà accepté. `_acceptedAlerts` fait foi en dernier
+    // recours pour tout id absent de `backgroundAlerts` après un restart.
+    for (const a of _acceptedAlerts) {
+      if (!byId[a.id] && upcomingIds.has(a.eventId)) byId[a.id] = a;
+    }
     // Notifications Telegram (16 juillet 2026) — une entrée id absente de byId AVANT le merge de ce
     // cycle est une alerte jamais vue (pas juste "re-régénérée identique"), peu importe le type —
     // collectée ici puis notifiée une seule fois après la boucle, tous types confondus.

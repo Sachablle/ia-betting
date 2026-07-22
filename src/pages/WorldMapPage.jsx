@@ -193,6 +193,9 @@ function Panel({ country, onClose, statsLeague, setStatsLeague, onOpenBasketStat
   const [matches, setMatches] = useState({});
   const [loading, setLoading] = useState(true);
   const [view, setView] = useState({}); // { [league]: 'upcoming' | 'done' } — bouton À venir / Terminés par championnat
+  // NBA repliée par défaut tant qu'on est en présaison (aucune cote/alerte dessus, cf. mémoire
+  // project_nba_regular_season) — à retirer une fois la saison régulière lancée (~mi-octobre 2026).
+  const [collapsedLeagues, setCollapsedLeagues] = useState({ nba: true });
   const _hasFootball = country.leagues.some(l => FOOTBALL_LEAGUES.has(l));
   const _hasBasket   = country.leagues.some(l => !FOOTBALL_LEAGUES.has(l));
   // Par défaut : sport de la première ligue du pays (acb avant laliga → basket ; cdm avant euroleague → football)
@@ -343,6 +346,7 @@ function Panel({ country, onClose, statsLeague, setStatsLeague, onOpenBasketStat
           // un onglet "soon" vide.
           const mode = view[league] || (soon.length === 0 && upcoming.length > 0 ? 'upcoming' : 'soon');
           const games = mode === 'upcoming' ? [...soon, ...upcoming] : soon;
+          const collapsed = !!collapsedLeagues[league];
           return (
             <div key={league} style={{marginBottom:'1.5rem'}}>
               <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:10,position:'sticky',top:0,zIndex:1,background:'linear-gradient(180deg,rgba(0,8,25,0.99) 85%,transparent)',paddingTop:4,paddingBottom:4,marginTop:-4}}>
@@ -351,8 +355,12 @@ function Panel({ country, onClose, statsLeague, setStatsLeague, onOpenBasketStat
                   const col = isFoot ? '#2d8a2d' : '#fb923c';
                   const colFade = isFoot ? 'rgba(45,138,45,0.7)' : 'rgba(251,146,60,0.7)';
                   return <>
-                    <div style={{width:5,height:5,borderRadius:'50%',background:col,boxShadow:`0 0 8px ${col}`}}/>
-                    <span style={{fontSize:10,fontWeight:700,color:col,fontFamily:'monospace',textTransform:'uppercase',letterSpacing:'0.1em',whiteSpace:'nowrap'}}>{LEAGUE_META[league]}</span>
+                    <div onClick={()=>setCollapsedLeagues(s=>({...s,[league]:!s[league]}))}
+                      style={{display:'flex',alignItems:'center',gap:8,cursor:'pointer'}}>
+                      <span style={{fontSize:8,color:col,transform:collapsed?'rotate(-90deg)':'none',transition:'transform .15s',display:'inline-block',width:8}}>▾</span>
+                      <div style={{width:5,height:5,borderRadius:'50%',background:col,boxShadow:`0 0 8px ${col}`}}/>
+                      <span style={{fontSize:10,fontWeight:700,color:col,fontFamily:'monospace',textTransform:'uppercase',letterSpacing:'0.1em',whiteSpace:'nowrap'}}>{LEAGUE_META[league]}</span>
+                    </div>
                     {!FOOTBALL_LEAGUES.has(league) && <button onClick={()=>setStatsLeague(sl=>sl===league?null:league)}
                       title="Stats du championnat"
                       style={{flexShrink:0,width:11,height:11,borderRadius:2,
@@ -366,7 +374,7 @@ function Panel({ country, onClose, statsLeague, setStatsLeague, onOpenBasketStat
                       </svg>
                     </button>}
                     <div style={{flex:1,height:1,background:`${col}18`}}/>
-                    <div style={{ flexShrink:0, display:'flex', alignItems:'center', border:'1px solid rgba(255,255,255,0.25)', borderRadius:4, overflow:'hidden', visibility: (soon.length > 0 || upcoming.length > 0 || done.length > 0) ? 'visible' : 'hidden' }}>
+                    {!collapsed && <div style={{ flexShrink:0, display:'flex', alignItems:'center', border:'1px solid rgba(255,255,255,0.25)', borderRadius:4, overflow:'hidden', visibility: (soon.length > 0 || upcoming.length > 0 || done.length > 0) ? 'visible' : 'hidden' }}>
                       <span onClick={() => setView(s => ({...s, [league]: 'upcoming'}))}
                         style={{ fontSize:8, fontWeight:700, fontFamily:'monospace', textTransform:'uppercase', letterSpacing:'0.06em', padding:'3px 7px', cursor:'pointer', color:'#60a5fa', background: mode==='upcoming' ? 'rgba(96,165,250,0.12)' : 'transparent', transition:'background .15s' }}>
                         À venir
@@ -376,11 +384,11 @@ function Panel({ country, onClose, statsLeague, setStatsLeague, onOpenBasketStat
                         style={{ fontSize:8, fontWeight:700, fontFamily:'monospace', textTransform:'uppercase', letterSpacing:'0.06em', padding:'3px 7px', cursor:'pointer', color:'#4ade80', background: mode==='done' ? 'rgba(74,222,128,0.12)' : 'transparent', transition:'background .15s' }}>
                         Terminés
                       </span>
-                    </div>
+                    </div>}
                   </>;
                 })()}
               </div>
-              {mode !== 'done' ? (
+              {collapsed ? null : mode !== 'done' ? (
                 games.length===0 ? (
                   <p style={{fontSize:11,color:'rgba(251,146,60,0.18)',fontFamily:'monospace',margin:0,paddingLeft:13}}>{mode === 'upcoming' ? 'Aucun match à venir' : 'Aucun match dans les prochaines 30h'}</p>
                 ) : (() => {

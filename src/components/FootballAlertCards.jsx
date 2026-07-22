@@ -147,12 +147,12 @@ export function FootballTotalCard({ alert, onAccept, onReject, onDismiss }) {
       </div>
 
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem', marginTop: '0.35rem', minWidth: 0 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', minWidth: 0, overflow: 'hidden' }}>
-          <span className="bc-team bc-team-home" style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{alert.homeShort || alert.home}</span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', flexShrink: 0 }}>
+          <span className="bc-team bc-team-home" style={{ whiteSpace: 'nowrap' }}>{alert.homeShort || alert.home}</span>
           <span className="bc-vs">vs</span>
-          <span className="bc-team bc-team-away" style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{alert.awayShort || alert.away}</span>
+          <span className="bc-team bc-team-away" style={{ whiteSpace: 'nowrap' }}>{alert.awayShort || alert.away}</span>
         </div>
-        <span style={{ fontSize: 10, color: 'var(--text-dim)', flexShrink: 0, whiteSpace: 'nowrap' }}>
+        <span style={{ fontSize: 10, color: 'var(--text-dim)', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {new Date(alert.fixtureDate).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}{alert.round ? ` · ${alert.round}` : ''}
         </span>
       </div>
@@ -244,12 +244,12 @@ export function FootballResultCard({ alert, onAccept, onReject, onDismiss }) {
       </div>
 
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem', marginTop: '0.35rem', minWidth: 0 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', minWidth: 0, overflow: 'hidden' }}>
-          <span className="bc-team bc-team-home" style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{alert.homeShort || alert.home}</span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', flexShrink: 0 }}>
+          <span className="bc-team bc-team-home" style={{ whiteSpace: 'nowrap' }}>{alert.homeShort || alert.home}</span>
           <span className="bc-vs">vs</span>
-          <span className="bc-team bc-team-away" style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{alert.awayShort || alert.away}</span>
+          <span className="bc-team bc-team-away" style={{ whiteSpace: 'nowrap' }}>{alert.awayShort || alert.away}</span>
         </div>
-        <span style={{ fontSize: 10, color: 'var(--text-dim)', flexShrink: 0, whiteSpace: 'nowrap' }}>
+        <span style={{ fontSize: 10, color: 'var(--text-dim)', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {new Date(alert.fixtureDate).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}{alert.round ? ` · ${alert.round}` : ''}
         </span>
       </div>
@@ -350,12 +350,12 @@ export function PinnacleEdgeCard({ alert, onAccept, onReject, onDismiss }) {
       </div>
 
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem', marginTop: '0.35rem', minWidth: 0 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', minWidth: 0, overflow: 'hidden' }}>
-          <span className="bc-team bc-team-home" style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{alert.homeShort || alert.home}</span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', flexShrink: 0 }}>
+          <span className="bc-team bc-team-home" style={{ whiteSpace: 'nowrap' }}>{alert.homeShort || alert.home}</span>
           <span className="bc-vs">vs</span>
-          <span className="bc-team bc-team-away" style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{alert.awayShort || alert.away}</span>
+          <span className="bc-team bc-team-away" style={{ whiteSpace: 'nowrap' }}>{alert.awayShort || alert.away}</span>
         </div>
-        <span style={{ fontSize: 10, color: 'var(--text-dim)', flexShrink: 0, whiteSpace: 'nowrap' }}>
+        <span style={{ fontSize: 10, color: 'var(--text-dim)', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {new Date(alert.fixtureDate).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}{alert.round ? ` · ${alert.round}` : ''}
         </span>
       </div>

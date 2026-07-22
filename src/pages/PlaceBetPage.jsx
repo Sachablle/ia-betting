@@ -955,10 +955,18 @@ function BasketballSpreadCard({ alert, onAccept, onReject, onDismiss }) {
         {/* 19 juillet 2026 — certains bookmakers (Betclic constaté) proposent ce marché en seuil
             entier inclusif ("gagne de X ou +") plutôt qu'en handicap .5 classique, plus facile à
             couvrir (X pile suffit, pas besoin de X+1). Pure mention informative, pas de cote réelle
-            suivie pour ce marché — cas réel : ligne -8.5 perdue, "gagne de 8 ou +" gagnée chez Betclic. */}
+            suivie pour ce marché — cas réel : ligne -8.5 perdue, "gagne de 8 ou +" gagnée chez Betclic.
+            Étendu le 22 juillet 2026 au côté outsider (line > 0) : "ne perd pas ou perd de X ou -",
+            équivalent exact d'un +X.5 (fiable côté scraping depuis le fix collision de lignes du
+            même jour, cf. memory project_betclic_spread_family_collision_juillet22). */}
         {line < 0 && (
           <div style={{ fontSize: 10, fontWeight: 700, color: '#4ade80', marginTop: 4 }}>
             ⚠️ Prioriser le {Math.floor(Math.abs(line))} ou +
+          </div>
+        )}
+        {line > 0 && (
+          <div style={{ fontSize: 10, fontWeight: 700, color: '#4ade80', marginTop: 4 }}>
+            ⚠️ Existe aussi : "ne perd pas ou perd de {Math.floor(line)} ou -"
           </div>
         )}
       </div>
