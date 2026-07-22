@@ -12021,12 +12021,21 @@ async function generateBackgroundAlerts() {
     // étiquette arbitraire de la source de données (le terrain est neutre) — appliquer homeAdv=1.10
     // comme pour un championnat domestique fausse λ_home sans raison (25 juin 2026).
     const CDM_HOST_NATIONS = new Set(['United States', 'Canada', 'Mexico']);
+    // Fenêtre d'alerte 48h — 5 grands championnats + Brasileirão (22 juillet 2026). Avant ce fix,
+    // ces championnats n'avaient AUCUNE fenêtre temporelle (contrairement à la CDM, 24h, et au
+    // basket NBA/WNBA, gardé jusqu'à la publication des compos RotoWire) : une alerte pouvait
+    // partir plusieurs jours avant le match, sur des cotes pas encore stabilisées — cas réel
+    // Cruzeiro-Botafogo (Brasileirão), alerte Total générée à J-4. Déferré explicitement par
+    // l'utilisateur le 16 juillet (voir memory project_rotowire_lineup_gate_juillet16), revisité et
+    // corrigé le 22 juillet sur sa demande. La CDM garde sa propre fenêtre 24h existante (inchangée).
+    const FOOTBALL_ALERT_WINDOW_MS = 48 * 3600_000;
     const footballUpcomingIds = new Set();
     try {
       const fbFixtures = [];
       for (const m of (_fdCache?.matches || [])) {
         const leagueAvg = FB_LEAGUE_AVG_GOALS[m.league];
         if (!leagueAvg || !m.home || !m.away) continue;
+        if (new Date(m.date).getTime() - Date.now() > FOOTBALL_ALERT_WINDOW_MS) continue;
         fbFixtures.push({
           fixtureId: `fd_${m.id}`, league: m.league, date: m.date, round: m.round,
           home: m.home, away: m.away,
@@ -12046,6 +12055,7 @@ async function generateBackgroundAlerts() {
           // joués pour le calcul d'alertes, comme _fdCache (5 ligues) qui ne contient que du SCHEDULED.
           if (m.status && m.status !== 'STATUS_SCHEDULED') continue;
           if (!m.home || !m.away) continue;
+          if (new Date(m.date).getTime() - Date.now() > FOOTBALL_ALERT_WINDOW_MS) continue;
           fbFixtures.push({
             fixtureId: `fdbr_${m.id}`, league: m.league, date: m.date, round: m.round,
             home: m.home, away: m.away,
