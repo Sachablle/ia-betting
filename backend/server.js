@@ -12830,7 +12830,17 @@ app.post('/api/accepted-alerts', (req, res) => {
   const TERMINAL_STATUSES = new Set(['won', 'lost', 'void']);
   const existingTerminal = _acceptedAlerts.find(a => a.id === alert.id && TERMINAL_STATUSES.has(a.status));
   if (existingTerminal) { res.json({ ok: true }); return; }
-  if (!isFingerprintDup && !_acceptedAlerts.find(a => a.id === alert.id)) {
+  // Fix 22 juillet 2026 — un id déjà présent (non terminal) était silencieusement ignoré, jamais mis
+  // à jour : toute modification faite APRÈS l'acceptation initiale (ex: mise engagée éditée depuis
+  // RunningPage, `updateStake()` → `postAcceptedAlertReliably()`) n'était donc jamais persistée ici,
+  // alors que d'autres pages (Backtesting, Suivi Bankroll) lisent ce registre côté backend — la mise
+  // affichée y restait figée sur sa valeur d'origine indéfiniment. Upsert : merge sur l'id existant
+  // au lieu de no-op, `push` réservé aux vraies nouvelles acceptations.
+  const existingIdx = _acceptedAlerts.findIndex(a => a.id === alert.id);
+  if (existingIdx !== -1) {
+    _acceptedAlerts[existingIdx] = { ..._acceptedAlerts[existingIdx], ...alert };
+    _saveAccepted();
+  } else if (!isFingerprintDup) {
     _acceptedAlerts.push(alert);
     _saveAccepted();
   }
