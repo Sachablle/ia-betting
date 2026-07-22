@@ -585,10 +585,15 @@ function QuotasWidget() {
   const fdLim    = q?.footballData?.limit ?? 10;
   const bballRem = q?.basketballApi?.remaining;
   const bballLim = q?.basketballApi?.limit ?? 7500;
+  const footRem  = q?.footballApi?.remaining;
+  const footLim  = q?.footballApi?.limit ?? 7500;
 
   const cards = [
     { label: 'football-data.org', rem: fdRem,    lim: fdLim,    period: 'requêtes /min'  },
     { label: 'API-Basketball',    rem: bballRem, lim: bballLim, period: 'requêtes /jour' },
+    // api-football (22 juillet 2026, plan Pro) — 3e carte, réduit d'autant l'espace dispo pour
+    // UpcomingMatchesWidget juste à côté (grid `auto 1fr`, effet automatique voulu).
+    { label: 'API-Football',      rem: footRem,  lim: footLim,  period: 'requêtes /jour' },
   ];
 
   return (

@@ -305,6 +305,7 @@ async function _footballApiFetchRaw(url) {
   try {
     const r = await fetch(url, { headers: { 'x-apisports-key': process.env.FOOTBALL_API_KEY }, signal: AbortSignal.timeout(10000) });
     if (!r.ok) throw new Error(`football-api ${r.status} ${url}`);
+    _captureFootballApiQuota(r);
     const j = await r.json();
     const errCount = Array.isArray(j.errors) ? j.errors.length : Object.keys(j.errors || {}).length;
     if (errCount > 0) throw new Error(`football-api errors ${JSON.stringify(j.errors)} — ${url}`);
@@ -2817,10 +2818,14 @@ const _wnbaLineupInjuries = {};
 const ROTO_WNBA_ABBR = { LVA: 'LV', GSV: 'GS', WAS: 'WSH', NYL: 'NY', PHO: 'PHX', LAS: 'LA' };
 const normWnbaAbbr = a => ROTO_WNBA_ABBR[a?.toUpperCase()] || a?.toUpperCase() || '';
 
+// Cache 5min (était 15min avant le 23 juillet 2026) — une annonce de dernière minute (ex: Marine
+// Johannes passée OUT juste avant Liberty-Sky) pouvait rester invisible jusqu'à 15-20min, parfois
+// au-delà du coup d'envoi. RotoWire ne montre aucun signe de rate-limit à cette fréquence (contrairement
+// à Betclic/PMU), le coût est négligeable comparé au risque de rater une annonce tardive.
 async function fetchRotoWireWNBALineups() {
   const ck = 'roto_wnba_html_all';
   const hit = _espnCache[ck];
-  if (hit && Date.now() - hit.ts < 15 * 60 * 1000) return hit.data;
+  if (hit && Date.now() - hit.ts < 5 * 60 * 1000) return hit.data;
 
   const resp = await fetch(ROTO_WNBA_LINEUPS_URL, { headers: ROTO_HEADERS });
   if (!resp.ok) throw new Error(`RotoWire WNBA lineups ${resp.status}`);
@@ -2880,10 +2885,11 @@ async function fetchRotoWireWNBALineups() {
   return result;
 }
 
+// Cache 5min (était 15min avant le 23 juillet 2026, même raison que fetchRotoWireWNBALineups ci-dessus)
 async function fetchRotoWireWNBAInjuries() {
   const ck = 'roto_wnba_injuries';
   const hit = _espnCache[ck];
-  if (hit && Date.now() - hit.ts < 15 * 60 * 1000) return hit.data;
+  if (hit && Date.now() - hit.ts < 5 * 60 * 1000) return hit.data;
   const resp = await fetch('https://www.rotowire.com/wnba/tables/injury-report.php?team=ALL&pos=ALL', {
     headers: { ...ROTO_HEADERS, 'Referer': 'https://www.rotowire.com/wnba/injury-report.php', 'X-Requested-With': 'XMLHttpRequest' },
   });
@@ -4815,10 +4821,11 @@ const toStd = a => ESPN_TO_STD[a?.toUpperCase()] || a?.toUpperCase() || '';
 const _lineupInjuries = {};
 
 // Scrape la page RotoWire et retourne { [teamAbbr]: { starters, status } } pour tous les matchs du jour
+// Cache 5min (était 15min avant le 23 juillet 2026, même fix que côté WNBA — fetchRotoWireWNBALineups)
 async function fetchRotoWireAllLineups() {
   const ck = 'roto_html_all';
   const hit = _espnCache[ck];
-  if (hit && Date.now() - hit.ts < 15 * 60 * 1000) return hit.data;
+  if (hit && Date.now() - hit.ts < 5 * 60 * 1000) return hit.data;
 
   const resp = await fetch(ROTO_PAGE_URL, { headers: ROTO_HEADERS });
   if (!resp.ok) throw new Error(`RotoWire HTML ${resp.status}`);
@@ -4894,10 +4901,11 @@ async function fetchRotoWireAllLineups() {
 }
 
 // ── RotoWire NBA Injuries page ────────────────────────────────────────────────
+// Cache 5min (était 15min avant le 23 juillet 2026, même fix que côté WNBA — fetchRotoWireWNBAInjuries)
 async function fetchRotoWireInjuries() {
   const ck = 'roto_nba_injuries';
   const hit = _espnCache[ck];
-  if (hit && Date.now() - hit.ts < 15 * 60 * 1000) return hit.data;
+  if (hit && Date.now() - hit.ts < 5 * 60 * 1000) return hit.data;
 
   const resp = await fetch('https://www.rotowire.com/basketball/tables/injury-report.php?team=ALL&pos=ALL', {
     headers: { ...ROTO_HEADERS, 'Referer': 'https://www.rotowire.com/basketball/nba-injuries.php', 'X-Requested-With': 'XMLHttpRequest' },
@@ -8451,12 +8459,19 @@ async function _checkTelegramHealth() {
 
 // Quotas API — mis à jour à chaque appel réel (pas depuis le cache)
 let _basketballApiQuota = { remaining: null, limit: null, ts: null }; // API-Basketball (7500/jour)
+let _footballApiQuota = { remaining: null, limit: null, ts: null }; // api-football (22 juillet 2026, 7500/jour plan Pro)
 let _fdQuota = { remaining: null, limit: 10, ts: null }; // football-data.org (10/min)
 
 function _captureBasketballApiQuota(resp) {
   const remaining = parseInt(resp.headers.get('x-ratelimit-requests-remaining'), 10);
   const limit     = parseInt(resp.headers.get('x-ratelimit-requests-limit'), 10);
   if (!isNaN(remaining)) _basketballApiQuota = { remaining, limit: isNaN(limit) ? null : limit, ts: Date.now() };
+}
+// Mêmes en-têtes que l'API-Basketball (même famille api-sports.io) — vérifié en direct le 22 juillet.
+function _captureFootballApiQuota(resp) {
+  const remaining = parseInt(resp.headers.get('x-ratelimit-requests-remaining'), 10);
+  const limit     = parseInt(resp.headers.get('x-ratelimit-requests-limit'), 10);
+  if (!isNaN(remaining)) _footballApiQuota = { remaining, limit: isNaN(limit) ? null : limit, ts: Date.now() };
 }
 function _captureFdQuota(resp) {
   const remaining = parseInt(resp.headers.get('x-requests-available-minute'), 10);
@@ -9258,14 +9273,25 @@ function computeGameTotalFull({ homeGames, awayGames, avgPtsAllowed, ouBaseline,
   // le modèle n'avait aucun signal spécifique à cette confrontation. N'agit qu'à partir de 2
   // confrontations connues (sinon pas de tendance calculable), et la tendance observée n'est
   // appliquée qu'à moitié (amorti) pour ne pas extrapoler à l'excès sur un échantillon de 2-3 matchs.
+  // Garde-fou "vraie série" (22 juillet 2026) : n'extrapole que si les 2 confrontations sont
+  // rapprochées dans le temps (série/back-to-back, comme le cas ACB source de ce facteur) — sinon
+  // reste neutre. Cas réel : Seattle-Minnesota, seules 2 confrontations de la saison espacées de
+  // 6 semaines (6 juin 156 pts → 21 juillet 207 pts), extrapolées à tort en +15% sur le match du
+  // 22 juillet qui s'est effondré à ~160 pts. Deux matchs espacés de plusieurs semaines ne forment
+  // pas une tendance, juste du bruit sur un échantillon de 2.
+  const H2H_SEQUENCE_MAX_DAYS = 14;
   const h2hSorted = (h2hGames || [])
     .filter(g => g && (g.ptsScored || g.ptsAllowed))
     .map(g => ({ date: g.date, total: (g.ptsScored ?? 0) + (g.ptsAllowed ?? 0) }))
     .sort((a, b) => new Date(b.date) - new Date(a.date));
   let h2hFactor = 1.0;
   if (h2hSorted.length >= 2 && h2hSorted[1].total > 0) {
-    const trendRatio = h2hSorted[0].total / h2hSorted[1].total;
-    h2hFactor = Math.min(1.15, Math.max(0.85, 1 + (trendRatio - 1) * 0.5));
+    const daysSinceLastH2h = Math.abs(new Date(gameDate) - new Date(h2hSorted[0].date)) / 86400000;
+    const daysBetweenH2h   = Math.abs(new Date(h2hSorted[0].date) - new Date(h2hSorted[1].date)) / 86400000;
+    if (daysSinceLastH2h <= H2H_SEQUENCE_MAX_DAYS && daysBetweenH2h <= H2H_SEQUENCE_MAX_DAYS) {
+      const trendRatio = h2hSorted[0].total / h2hSorted[1].total;
+      h2hFactor = Math.min(1.15, Math.max(0.85, 1 + (trendRatio - 1) * 0.5));
+    }
   }
 
   const rawEstimated = (homeExpected * homeLocFactor + awayExpected * awayLocFactor)
@@ -12875,6 +12901,7 @@ app.get('/api/system/health', async (req, res) => {
     quotas: {
       footballData:  _fdQuota,
       basketballApi: _basketballApiQuota,
+      footballApi:   _footballApiQuota,
     },
   });
 });
@@ -13761,6 +13788,7 @@ app.listen(PORT, () => {
 
     // /status ne consomme pas le quota journalier — sert juste à initialiser le compteur affiché
     if (BBALL_KEY) bballFetch('/status').catch(() => {});
+    if (process.env.FOOTBALL_API_KEY) footballApiFetch(`${FOOTBALL_API_BASE}/status`).catch(() => {});
 
     // Pre-warm standings + leaders (WorldMap) — évite le CHARGEMENT au 1er clic
     for (const path of ['/api/nba/standings','/api/nba/leaders','/api/wnba/standings','/api/wnba/leaders','/api/acb/standings','/api/acb/leaders']) {

@@ -632,6 +632,29 @@ export default function UtilisationPage() {
         </div>
 
         <div className="util-subsection">
+          <h3 className="util-subsection-title">Blessures, xG et calcul officiel (22 juillet 2026)</h3>
+          <p className="util-intro">
+            Passage à l'abonnement Pro de l'API football — jusque-là l'accès gratuit bloquait toute donnée de la saison en cours. Trois apports :
+          </p>
+          <p className="util-intro" style={{ marginTop: '0.5rem' }}>
+            <strong>Blessures</strong> : un attaquant clé absent (8+ buts/passes cette saison) réduit l'attaque de l'équipe concernée, un gardien titulaire absent (10+ apparitions) fragilise sa défense — pénalités appliquées directement dans le calcul des buts attendus, en plus des mêmes suspensions repérées côté rouge.
+          </p>
+          <p className="util-intro" style={{ marginTop: '0.5rem' }}>
+            <strong>xG (buts attendus)</strong> : quand disponible sur les 8 derniers matchs d'une équipe, remplace les buts réellement marqués/encaissés comme base du modèle — un indicateur plus stable, moins sensible à un score chanceux ou malchanceux ponctuel. Alimente aussi le panneau "Statistiques saison" (xG, xGA, tirs, possession) sur la page de chaque match.
+          </p>
+          <p className="util-intro" style={{ marginTop: '0.5rem' }}>
+            <strong>Calcul officiel affiché sur la page match</strong> : les probabilités BTTS/Over-Under/1X2 montrées sur la page d'un match (Ligue 1, Premier League, La Liga, Bundesliga, Serie A, Brasileirão) sont désormais exactement celles calculées par le serveur pour générer les alertes — avant ce fix, la page recalculait sa propre version simplifiée côté navigateur, qui pouvait légèrement diverger. Plus de badge "estimation site" sur ces championnats (la Coupe du Monde avait déjà son propre calcul dédié, inchangé).
+          </p>
+        </div>
+
+        <div className="util-subsection">
+          <h3 className="util-subsection-title">Fenêtre d'alerte 48h (22 juillet 2026)</h3>
+          <p className="util-intro">
+            Les 5 grands championnats et le Brasileirão ne génèrent désormais d'alerte que pour un match à moins de 48h — avant ce fix, aucune limite n'existait, un match programmé dans 2 semaines pouvait déclencher une alerte sur des compositions ou une forme qui allaient forcément évoluer d'ici le coup d'envoi. La Coupe du Monde garde sa propre fenêtre de 24h, déjà en place.
+          </p>
+        </div>
+
+        <div className="util-subsection">
           <h3 className="util-subsection-title">Cotes chargées automatiquement (22 juin 2026)</h3>
           <p className="util-intro">
             Le serveur rafraîchit lui-même les cotes foot si le cache est froid ou absent, au lieu de dépendre d'une visite d'une page foot — avant ce fix, le cache de cotes n'avait <strong>aucun</strong> rafraîchissement automatique (pire que le basket, qui avait au moins un job séparé toutes les 10 min).
@@ -1024,6 +1047,13 @@ export default function UtilisationPage() {
           <h3 className="util-subsection-title">Ancrage saison — Résultat équipe (9 juillet 2026)</h3>
           <p className="util-intro">
             La force nette de chaque équipe n'était calculée que sur les 8 derniers matchs (forme récente, EWA). Une série de matchs serrés récents pouvait presque égaliser deux équipes très différentes sur la saison entière — cas réel : Connecticut Sun (5-17, net saison −6) donné favori à 75% contre Minnesota Lynx (16-6, net saison +10.7) à cause d'une forme récente sur 8 matchs presque égale. Le modèle mélange désormais 40% forme récente / 60% moyenne nette de la saison entière (si ≥5 matchs disponibles) — même principe que l'ancrage historique déjà utilisé pour le Total O/U.
+          </p>
+        </div>
+
+        <div className="util-subsection">
+          <h3 className="util-subsection-title">Tendance H2H resserrée aux vraies séries — Total O/U (22 juillet 2026)</h3>
+          <p className="util-intro">
+            Le Total O/U ajuste sa projection selon la tendance des dernières confrontations directes entre les deux équipes (ex. une série de playoffs où le total baisse match après match, les défenses s'ajustant l'une à l'autre). Ce facteur s'appliquait jusqu'ici dès que 2 confrontations existaient dans la saison, même espacées de plusieurs semaines — cas réel : Seattle-Minnesota (WNBA), seules 2 confrontations à 6 semaines d'écart (156 puis 207 points), lues comme une tendance à la hausse et poussant l'estimation du match suivant de +15% à tort, qui s'est ensuite effondré à ~160 points (alerte perdue). Le facteur ne s'applique désormais que si les 2 confrontations sont réellement rapprochées dans le temps (14 jours maximum) — sinon il reste neutre, comme c'était déjà le cas avec moins de 2 confrontations.
           </p>
         </div>
 
