@@ -544,7 +544,10 @@ function FootballOddsBox({ markets, bttsResult, home, away, frozen, onRefresh, r
     return { over: (1/p.over)/s, under: (1/p.under)/s };
   })() : null;
 
-  const cdmRho = bttsResult?.isCdm ? DIXON_COLES_RHO : 0;
+  // ρ Dixon-Coles appliqué aussi côté snapshot (22 juillet 2026) — mêmes λ ET même ρ que le
+  // backend = O/U (n'importe quelle ligne)/1X2/DC&BTTS/DC&Over recalculés ici tombent exactement
+  // sur les mêmes probabilités que le modèle réel, sans avoir à stocker chaque marché séparément.
+  const cdmRho = (bttsResult?.isCdm || bttsResult?.isSnapshot) ? DIXON_COLES_RHO : 0;
   const ouResult = bttsResult ? computeOU(bttsResult.lambda_home, bttsResult.lambda_away, parseFloat(totalsLine), cdmRho) : null;
   const result1X2 = bttsResult ? compute1X2(bttsResult.lambda_home, bttsResult.lambda_away, 10, cdmRho) : null;
   const dcBttsResult = bttsResult ? computeDCBTTS(bttsResult.lambda_home, bttsResult.lambda_away, cdmRho) : null;
@@ -659,7 +662,7 @@ function FootballOddsBox({ markets, bttsResult, home, away, frozen, onRefresh, r
               <br /><br />
               Dans le widget <b>Modèle 1X2</b>, le <span style={{ color: '#4ade80', fontWeight: 700 }}>+Xpt</span>/<span style={{ color: '#f87171', fontWeight: 700 }}>−Xpt</span> indique l'écart entre la probabilité du modèle et celle du marché (cotes bookmaker, marge retirée) pour cette issue — rien à voir avec les flèches ▲▼ de tendance de cote vues ailleurs sur cette page.
               <br /><br />
-              La mention <span style={{ color: '#fb923c', fontWeight: 700 }}>· estimation site</span> (BTTS/O-U/1X2, hors CDM) signale que ce % vient d'un modèle plus riche que celui des alertes — il ajoute le taux BTTS récent à domicile/extérieur et l'historique face-à-face, en plus du modèle Poisson. Il peut donc légèrement différer du % affiché sur une alerte pour le même match, qui utilise un modèle Poisson plus simple. Pour les matchs CDM, les deux modèles sont identiques — pas de mention.
+              La mention <span style={{ color: '#fb923c', fontWeight: 700 }}>· estimation site</span> (BTTS/O-U/1X2) signale que ce % vient d'un modèle recalculé côté navigateur, plus simple que celui des alertes — peut légèrement différer du % qui aurait généré une alerte sur ce match. N'apparaît que si le backend n'a pas encore de projection fraîche pour ce match précis (fixture trop récente/loin dans le temps) ; sinon (CDM, ou 5 grands championnats + Brésil dès que le backend a tourné dessus) la page lit directement le vrai résultat du modèle, sans mention.
             </div>
           </div>,
           document.body
@@ -797,7 +800,7 @@ function FootballOddsBox({ markets, bttsResult, home, away, frozen, onRefresh, r
           <div style={{ borderTop: '1px solid var(--border)', marginTop: '0.5rem', paddingTop: '0.5rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem', flexWrap: 'nowrap' }}>
             <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-dim)', flexShrink: 0 }}>
               Modèle O/U {totalsLine}<span style={{ fontSize: 9, color: 'var(--text-dim)', marginLeft: 4, fontWeight: 400 }}>λ={lambda_total}</span>
-              {!bttsResult?.isCdm && <span style={{ fontSize: 8, color: '#fb923c', marginLeft: 5, fontWeight: 400 }} title="Estimation du site (forme récente + face-à-face) — peut différer du % utilisé pour générer une alerte, qui utilise un modèle plus simple.">· estimation site</span>}
+              {!bttsResult?.isCdm && !bttsResult?.isSnapshot && <span style={{ fontSize: 8, color: '#fb923c', marginLeft: 5, fontWeight: 400 }} title="Estimation du site (forme récente + face-à-face) — peut différer du % utilisé pour générer une alerte, qui utilise un modèle plus simple.">· estimation site</span>}
             </span>
             <div style={{ display: 'flex', alignItems: 'center', gap: '1.1rem', flexWrap: 'nowrap', flexShrink: 0 }}>
               <span style={{ display: 'flex', alignItems: 'center', gap: 5, position: 'relative' }}>
@@ -836,7 +839,7 @@ function FootballOddsBox({ markets, bttsResult, home, away, frozen, onRefresh, r
           <div style={{ borderTop: '1px solid var(--border)', marginTop: '0.9rem', paddingTop: '0.85rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem', flexWrap: 'nowrap' }}>
             <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-dim)', flexShrink: 0 }}>
               Modèle 1X2
-              {!bttsResult?.isCdm && <span style={{ fontSize: 8, color: '#fb923c', marginLeft: 5, fontWeight: 400 }} title="Estimation du site (forme récente + face-à-face) — peut différer du % utilisé pour générer une alerte, qui utilise un modèle plus simple.">· estimation site</span>}
+              {!bttsResult?.isCdm && !bttsResult?.isSnapshot && <span style={{ fontSize: 8, color: '#fb923c', marginLeft: 5, fontWeight: 400 }} title="Estimation du site (forme récente + face-à-face) — peut différer du % utilisé pour générer une alerte, qui utilise un modèle plus simple.">· estimation site</span>}
             </span>
             <div style={{ display: 'flex', alignItems: 'center', gap: '1.1rem', flexWrap: 'nowrap', flexShrink: 0 }}>
               {items.map(it => {
@@ -899,7 +902,7 @@ function FootballOddsBox({ markets, bttsResult, home, away, frozen, onRefresh, r
           <div style={{ borderTop: '1px solid var(--border)', marginTop: '0.5rem', paddingTop: '0.5rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem', flexWrap: 'nowrap' }}>
             <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-dim)', flexShrink: 0 }}>
               Modèle BTTS{isStatic && !bttsResult?.isCdm ? <span style={{ fontSize: 9, color: 'var(--text-dim)', marginLeft: 4, fontWeight: 400 }}>stats saison</span> : ''}
-              {!bttsResult?.isCdm && <span style={{ fontSize: 8, color: '#fb923c', marginLeft: 5, fontWeight: 400 }} title="Estimation du site (forme récente + face-à-face) — peut différer du % utilisé pour générer une alerte, qui utilise un modèle plus simple.">· estimation site</span>}
+              {!bttsResult?.isCdm && !bttsResult?.isSnapshot && <span style={{ fontSize: 8, color: '#fb923c', marginLeft: 5, fontWeight: 400 }} title="Estimation du site (forme récente + face-à-face) — peut différer du % utilisé pour générer une alerte, qui utilise un modèle plus simple.">· estimation site</span>}
             </span>
             <div style={{ display: 'flex', alignItems: 'center', gap: '1.1rem', flexWrap: 'nowrap', flexShrink: 0 }}>
               <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
@@ -1300,6 +1303,7 @@ export default function MatchDetailPage() {
   const [cdmPoolAvg,   setCdmPoolAvg]    = useState(null);
   const [homeMatches, setHomeMatches] = useState([]);
   const [awayMatches, setAwayMatches] = useState([]);
+  const [footballSnapshot, setFootballSnapshot] = useState(null);
 
   // Extrait en fonction réutilisable pour le bouton refresh manuel (FootballOddsBox) — appelle
   // /api/odds SANS ?refresh=1 : on relit juste le cache déjà alimenté par le cycle automatique
@@ -1340,6 +1344,18 @@ export default function MatchDetailPage() {
     });
   };
 
+  // Snapshot foot (22 juillet 2026) — 5 grands championnats + Brasileirão (pas CDM, qui a déjà sa
+  // propre parité via computeCdmBTTS). Effet séparé/indépendant du reste : le badge "estimation
+  // site" doit disparaître dès que le snapshot arrive, même si les autres fetches (standings, xG)
+  // sont encore en cours ou échouent.
+  useEffect(() => {
+    setFootballSnapshot(null);
+    if (!fixture || fixture.league === 'cdm') return;
+    cachedFetch(`/api/football/projections-snapshot/${fixture.id}`, 5 * 60_000)
+      .then(d => { if (d.found) setFootballSnapshot(d); })
+      .catch(() => {});
+  }, [fixture?.id]);
+
   useEffect(() => {
     if (!fixture) return;
     if (fixture.league === 'cdm') {
@@ -1363,10 +1379,24 @@ export default function MatchDetailPage() {
         if (!Array.isArray(table) || !table.length) return;
         const h = findInTable(table, fixture.home.name);
         const a = findInTable(table, fixture.away.name);
-        if (h) { setLiveHomeStats(h); cachedFetch(`/api/football/teammatches/${h.id}`, 30 * 60_000).then(d => setHomeMatches(d.matches || [])).catch(() => {}); }
-        if (a) { setLiveAwayStats(a); cachedFetch(`/api/football/teammatches/${a.id}`, 30 * 60_000).then(d => setAwayMatches(d.matches || [])).catch(() => {}); }
+        // setLiveHomeStats/setLiveAwayStats en forme fonctionnelle (merge sur prev) — sinon ce fetch
+        // et le fetch xG ci-dessous (indépendant, peut résoudre avant ou après) s'écrasent l'un
+        // l'autre selon l'ordre d'arrivée au lieu de fusionner (bug trouvé le 22 juillet 2026, xG
+        // toujours à 0 malgré une route qui répondait correctement en direct).
+        if (h) { setLiveHomeStats(prev => ({ ...prev, ...h })); cachedFetch(`/api/football/teammatches/${h.id}`, 30 * 60_000).then(d => setHomeMatches(d.matches || [])).catch(() => {}); }
+        if (a) { setLiveAwayStats(prev => ({ ...prev, ...a })); cachedFetch(`/api/football/teammatches/${a.id}`, 30 * 60_000).then(d => setAwayMatches(d.matches || [])).catch(() => {}); }
       })
       .catch(() => {});
+    // xG/tirs/possession (22 juillet 2026, api-football) — panneau "Statistiques saison", séparé
+    // du fetch standings ci-dessus (source différente) ; merge par-dessus liveHomeStats/liveAwayStats
+    // une fois arrivé, sans attendre/bloquer l'affichage des stats standings déjà là.
+    const fetchXGStats = (teamName, setter) => {
+      cachedFetch(`/api/football/teamxgstats?league=${fixture.league}&team=${encodeURIComponent(teamName)}&date=${encodeURIComponent(fixture.date)}`, 6 * 3600_000)
+        .then(d => { if (d.found) setter(prev => ({ ...prev, xG: d.xG, xGA: d.xGA, shotsPerGame: d.shotsPerGame, shotsOnTarget: d.shotsOnTarget, possession: d.possession })); })
+        .catch(() => {});
+    };
+    fetchXGStats(fixture.home.name, setLiveHomeStats);
+    fetchXGStats(fixture.away.name, setLiveAwayStats);
   }, [fixture?.id]);
 
   useEffect(() => {
@@ -1408,11 +1438,23 @@ export default function MatchDetailPage() {
     ? { ...away, ...liveAwayStats, form: liveAwayStats.form?.length ? liveAwayStats.form : away?.form }
     : away;
 
+  // Snapshot (22 juillet 2026) prioritaire sur les 5 grands championnats + Brasileirão — c'est la
+  // vraie estimation backend (Poisson+Dixon-Coles+shrinkage+blessures+xG), celle qui décide des
+  // alertes, au lieu de la recalculer côté client avec une formule plus simple (badge "estimation
+  // site" jusqu'ici toujours affiché pour ces 6 championnats). Fallback sur l'ancien calcul client
+  // tant que le snapshot n'est pas encore arrivé (fetch async) ou si le backend n'a pas encore
+  // généré de projection pour ce match (fixture trop loin dans le temps, cf. fenêtre 48h).
   const bttsResult = fixture?.league === 'cdm'
     ? computeCdmBTTS(liveHomeStats, liveAwayStats, cdmPoolAvg, fixture.home?.name)
-    : (homeMatches.length && awayMatches.length && liveHomeStats?.id && liveAwayStats?.id)
-      ? computeBTTS(homeMatches, awayMatches, liveHomeStats.id, liveAwayStats.id)
-      : computeStaticBTTS(fixture);
+    : footballSnapshot
+      ? {
+          prob: Math.round(footballSnapshot.bttsProb * 100),
+          lambda_home: footballSnapshot.lambdaHome, lambda_away: footballSnapshot.lambdaAway,
+          isSnapshot: true,
+        }
+      : (homeMatches.length && awayMatches.length && liveHomeStats?.id && liveAwayStats?.id)
+        ? computeBTTS(homeMatches, awayMatches, liveHomeStats.id, liveAwayStats.id)
+        : computeStaticBTTS(fixture);
 
   // Sauvegarde alerte BTTS si confiance ≥ 70% — nécessite au moins une cote Unibet/Betclic
   // exploitable (sinon l'alerte n'est pas actionnable : pas de bouton pour l'accepter, et elle

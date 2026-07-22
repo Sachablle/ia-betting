@@ -26,17 +26,23 @@ function shrinkFactor(rawFactor, games, k = SHRINK_K) {
   return 1 + (rawFactor - 1) * confidence;
 }
 
-function computeLambdas({ homeGF, homeGA, homePlayed, awayGF, awayGA, awayPlayed, leagueAvgGoals, avgGF, avgGA, homeAdv = 1.10 }) {
+// Pénalités blessures/absences clé (22 juillet 2026, api-football) — multiplicatives, neutres par
+// défaut (1) donc aucun changement de comportement pour un appelant qui ne les passe pas encore
+// (CDM notamment, pas encore branché). `*AttackPenalty` < 1 réduit le facteur attaque d'une équipe
+// privée de son buteur clé ; `*DefensePenalty` > 1 aggrave son facteur défense (gardien/défenseur
+// clé absent → l'adversaire marque statistiquement plus contre cette défense affaiblie).
+function computeLambdas({ homeGF, homeGA, homePlayed, awayGF, awayGA, awayPlayed, leagueAvgGoals, avgGF, avgGA, homeAdv = 1.10,
+  homeAttackPenalty = 1, homeDefensePenalty = 1, awayAttackPenalty = 1, awayDefensePenalty = 1 }) {
   if (!homePlayed || !awayPlayed || !leagueAvgGoals) return null;
   if (homeGF == null || homeGA == null || awayGF == null || awayGA == null) return null;
 
   const attackBase  = avgGF || leagueAvgGoals;
   const defenseBase = avgGA || leagueAvgGoals;
 
-  const homeAttack  = shrinkFactor((homeGF / homePlayed) / attackBase,  homePlayed);
-  const homeDefense = shrinkFactor((homeGA / homePlayed) / defenseBase, homePlayed);
-  const awayAttack  = shrinkFactor((awayGF / awayPlayed) / attackBase,  awayPlayed);
-  const awayDefense = shrinkFactor((awayGA / awayPlayed) / defenseBase, awayPlayed);
+  const homeAttack  = shrinkFactor((homeGF / homePlayed) / attackBase,  homePlayed) * homeAttackPenalty;
+  const homeDefense = shrinkFactor((homeGA / homePlayed) / defenseBase, homePlayed) * homeDefensePenalty;
+  const awayAttack  = shrinkFactor((awayGF / awayPlayed) / attackBase,  awayPlayed) * awayAttackPenalty;
+  const awayDefense = shrinkFactor((awayGA / awayPlayed) / defenseBase, awayPlayed) * awayDefensePenalty;
 
   const lambdaHome = homeAttack * awayDefense * leagueAvgGoals * homeAdv;
   const lambdaAway = awayAttack * homeDefense * leagueAvgGoals / homeAdv;

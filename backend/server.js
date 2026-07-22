@@ -15,6 +15,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const CACHE_DIR   = join(__dirname, 'cache');
 const ODDS_CACHE_FILE = join(CACHE_DIR, 'odds.json');
 const SNAPSHOT_FILE   = join(CACHE_DIR, 'projections-snapshot.json');
+const FB_SNAPSHOT_FILE = join(CACHE_DIR, 'football-projections-snapshot.json');
 const PROJECTION_ACCURACY_FILE = join(CACHE_DIR, 'projection_accuracy.json');
 const NEAR_MISS_FILE = join(CACHE_DIR, 'near_miss_candidates.json');
 const LINES_FILE      = join(CACHE_DIR, 'player-lines-snapshot.json');
@@ -279,6 +280,227 @@ const fuzzy = (a, b) => {
 // Buts/équipe/match attendus — référence pour les facteurs attaque/défense
 // bresil : calculé le 17 juillet 2026 sur le classement BSA en cours (475 buts / 358 matchs joués = 1.327)
 const FB_LEAGUE_AVG_GOALS = { ligue1: 1.35, pl: 1.45, laliga: 1.35, bundes: 1.55, seriea: 1.35, bresil: 1.33 };
+
+// ── Blessures foot via api-football (22 juillet 2026, plan Pro souscrit) ──────────────────────
+// Pénalise le modèle Poisson quand un attaquant ou un gardien/défenseur clé est annoncé absent —
+// jusqu'ici (`computeLambdas`) le modèle ne voyait QUE les stats but/équipe, aveugle à toute
+// absence individuelle, contrairement au basket (RotoWire + calcKeyPlayerOutPenalty). Couvre les
+// 5 grands championnats + Brasileirão (CDM non concernée, pas d'id api-football mappé ici).
+const FOOTBALL_API_BASE = 'https://v3.football.api-sports.io';
+const FOOTBALL_API_LEAGUE_IDS = { ligue1: 61, pl: 39, laliga: 140, bundes: 78, seriea: 135, bresil: 71 };
+// Semaphore + retry sur rateLimit (22 juillet 2026) — même pattern que bballFetch (api-sports.io
+// basketball, ~ligne 3852) : le xG (jusqu'à ~17 appels/match : liste des derniers matchs + stats
+// par match, x2 équipes) déclenchait le rate limit 300 req/min du plan Pro dès 2-3 matchs traités
+// à la suite sans throttle. Trouvé en isolant le bug dans un script à part (repro_xg.js, jamais
+// commité) plutôt qu'en multipliant les redémarrages du serveur en direct.
+let _footballApiActive = 0;
+const _footballApiQueue = [];
+function footballApiRelease() {
+  _footballApiActive--;
+  if (_footballApiQueue.length > 0) _footballApiQueue.shift()();
+}
+async function _footballApiFetchRaw(url) {
+  if (_footballApiActive >= 5) await new Promise(res => _footballApiQueue.push(res));
+  _footballApiActive++;
+  try {
+    const r = await fetch(url, { headers: { 'x-apisports-key': process.env.FOOTBALL_API_KEY }, signal: AbortSignal.timeout(10000) });
+    if (!r.ok) throw new Error(`football-api ${r.status} ${url}`);
+    const j = await r.json();
+    const errCount = Array.isArray(j.errors) ? j.errors.length : Object.keys(j.errors || {}).length;
+    if (errCount > 0) throw new Error(`football-api errors ${JSON.stringify(j.errors)} — ${url}`);
+    return j;
+  } finally { footballApiRelease(); }
+}
+async function footballApiFetch(url, attempt = 0) {
+  try {
+    return await _footballApiFetchRaw(url);
+  } catch (e) {
+    if (/rateLimit/i.test(e.message) && attempt < 3) {
+      await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
+      return footballApiFetch(url, attempt + 1);
+    }
+    throw e;
+  }
+}
+// Saison api-football pour une date donnée : ligues européennes = année de début (août-mai,
+// ex. mai 2024 → saison "2023"), Brasileirão = année civile du match (calendrier janvier-décembre).
+// Vérifié en direct le 22 juillet 2026 sur les 6 championnats avant d'écrire cette règle.
+function footballApiSeasonForDate(leagueKey, dateStr) {
+  const d = new Date(dateStr);
+  if (leagueKey === 'bresil') return d.getUTCFullYear();
+  return d.getUTCMonth() + 1 >= 7 ? d.getUTCFullYear() : d.getUTCFullYear() - 1;
+}
+const _footballInjuriesCache = {}; // `${leagueKey}_${YYYY-MM-DD}` → { data, ts }
+async function fetchFootballInjuriesForDate(leagueKey, dateOnly) {
+  const cacheKey = `${leagueKey}_${dateOnly}`;
+  const cached = _footballInjuriesCache[cacheKey];
+  if (cached && Date.now() - cached.ts < CACHE_6H) return cached.data;
+  const leagueId = FOOTBALL_API_LEAGUE_IDS[leagueKey];
+  if (!leagueId || !process.env.FOOTBALL_API_KEY) return [];
+  try {
+    const season = footballApiSeasonForDate(leagueKey, dateOnly);
+    const j = await footballApiFetch(`${FOOTBALL_API_BASE}/injuries?league=${leagueId}&season=${season}&date=${dateOnly}`);
+    // Dédup par joueur+fixture — l'API renvoie parfois la même entrée en double (observé le 22
+    // juillet 2026 sur Brasileirão, jamais expliqué côté doc, juste vérifié et neutralisé ici).
+    const seen = new Set();
+    const list = (j.response || []).filter(x => {
+      const k = `${x.player?.id}_${x.fixture?.id}`;
+      if (seen.has(k) || !x.player?.id) return false;
+      seen.add(k);
+      return true;
+    }).map(x => ({ playerId: x.player.id, playerName: x.player.name, teamName: x.team?.name }));
+    _footballInjuriesCache[cacheKey] = { data: list, ts: Date.now() };
+    return list;
+  } catch { return []; }
+}
+const _footballPlayerStatsCache = {}; // `${playerId}_${leagueId}_${season}` → { data, ts }
+async function fetchFootballPlayerSeasonStats(playerId, leagueId, season) {
+  const cacheKey = `${playerId}_${leagueId}_${season}`;
+  const cached = _footballPlayerStatsCache[cacheKey];
+  if (cached && Date.now() - cached.ts < CACHE_6H) return cached.data;
+  if (!process.env.FOOTBALL_API_KEY) return null;
+  try {
+    const j = await footballApiFetch(`${FOOTBALL_API_BASE}/players?id=${playerId}&season=${season}&league=${leagueId}`);
+    const stat = j.response?.[0]?.statistics?.[0];
+    if (!stat) return null;
+    const data = {
+      position: stat.games?.position ?? null,
+      goalsAssists: (stat.goals?.total ?? 0) + (stat.goals?.assists ?? 0),
+      appearances: stat.games?.appearences ?? 0,
+    };
+    _footballPlayerStatsCache[cacheKey] = { data, ts: Date.now() };
+    return data;
+  } catch { return null; }
+}
+// Seuils "joueur clé" — valeurs de départ non calibrées sur nos propres données (même statut que
+// DIXON_COLES_RHO/SHRINK_K, computeFootball.js) : un attaquant/passeur avec ≥8 buts+passes cette
+// saison, ou un gardien/défenseur avec ≥10 titularisations, compte comme clé. À affiner à l'usage.
+const FB_KEY_ATTACKER_GOALS_ASSISTS = 8;
+const FB_KEY_DEFENDER_APPEARANCES   = 10;
+const FB_ATTACK_OUT_PENALTY  = 0.90; // -10% sur le facteur attaque si l'attaquant/passeur clé est absent
+const FB_DEFENSE_OUT_PENALTY = 1.12; // +12% sur le facteur défense si le gardien/défenseur clé est absent
+async function computeFootballInjuryPenalties(leagueKey, dateStr, homeTeamName, awayTeamName) {
+  const neutral = { homeAttackPenalty: 1, homeDefensePenalty: 1, awayAttackPenalty: 1, awayDefensePenalty: 1 };
+  const leagueId = FOOTBALL_API_LEAGUE_IDS[leagueKey];
+  if (!leagueId) return neutral;
+  const dateOnly = new Date(dateStr).toISOString().slice(0, 10);
+  const injuries = await fetchFootballInjuriesForDate(leagueKey, dateOnly);
+  if (!injuries.length) return neutral;
+
+  const side = injuries.some(x => fuzzy(x.teamName, homeTeamName)) || injuries.some(x => fuzzy(x.teamName, awayTeamName))
+    ? { home: injuries.filter(x => fuzzy(x.teamName, homeTeamName)), away: injuries.filter(x => fuzzy(x.teamName, awayTeamName)) }
+    : null;
+  if (!side || (!side.home.length && !side.away.length)) return neutral;
+
+  const season = footballApiSeasonForDate(leagueKey, dateStr);
+  const penalty = { ...neutral };
+  for (const [team, players] of [['home', side.home], ['away', side.away]]) {
+    for (const p of players) {
+      const stats = await fetchFootballPlayerSeasonStats(p.playerId, leagueId, season);
+      if (!stats) continue;
+      if (stats.goalsAssists >= FB_KEY_ATTACKER_GOALS_ASSISTS) {
+        penalty[`${team}AttackPenalty`] = Math.min(penalty[`${team}AttackPenalty`], FB_ATTACK_OUT_PENALTY);
+        _bgLog.push(`football injury: ${p.playerName} (${team}, ${p.teamName}) attaquant clé absent — ${stats.goalsAssists} B+PD cette saison`);
+      }
+      if (stats.position === 'Goalkeeper' && stats.appearances >= FB_KEY_DEFENDER_APPEARANCES) {
+        penalty[`${team}DefensePenalty`] = Math.max(penalty[`${team}DefensePenalty`], FB_DEFENSE_OUT_PENALTY);
+        _bgLog.push(`football injury: ${p.playerName} (${team}, ${p.teamName}) gardien titulaire absent — ${stats.appearances} matchs cette saison`);
+      }
+    }
+  }
+  return penalty;
+}
+
+// ── xG foot via api-football (22 juillet 2026) — remplace les buts bruts par du xG (expected
+// goals) sur les entrées de computeLambdas quand c'est possible : le xG lisse la variance d'un
+// match à l'autre (un 3-0 chanceux à 0.9 xG ne gonfle pas artificiellement l'attaque), donc un λ
+// plus stable. Dégrade proprement sur les buts bruts déjà en place (f.homeGF/etc.) si l'équipe
+// n'est pas trouvée côté api-football ou si l'échantillon xG est trop court — jamais bloquant.
+const FB_XG_RECENT_GAMES = 8; // nb de matchs récents moyennés — pas calibré, même statut que SHRINK_K
+const FB_XG_MIN_GAMES    = 3; // sous ce seuil, échantillon jugé trop court, fallback buts bruts
+const _footballTeamIdCache = {}; // `${leagueKey}_${season}` → { data: {apiTeamName: id}, ts }
+async function fetchFootballTeamIds(leagueKey, season) {
+  const cacheKey = `${leagueKey}_${season}`;
+  const cached = _footballTeamIdCache[cacheKey];
+  if (cached && Date.now() - cached.ts < 24 * CACHE_6H) return cached.data;
+  const leagueId = FOOTBALL_API_LEAGUE_IDS[leagueKey];
+  if (!leagueId || !process.env.FOOTBALL_API_KEY) return {};
+  try {
+    const j = await footballApiFetch(`${FOOTBALL_API_BASE}/teams?league=${leagueId}&season=${season}`);
+    const map = {};
+    for (const t of (j.response || [])) if (t.team?.name && t.team?.id) map[t.team.name] = t.team.id;
+    _footballTeamIdCache[cacheKey] = { data: map, ts: Date.now() };
+    return map;
+  } catch { return {}; }
+}
+const resolveFootballApiTeamId = (teamMap, ourTeamName) => {
+  for (const [apiName, id] of Object.entries(teamMap)) if (fuzzy(apiName, ourTeamName)) return id;
+  return null;
+};
+const _footballTeamXGCache = {}; // `${teamApiId}_${leagueId}_${season}` → { data, ts }
+async function fetchTeamRecentXG(teamApiId, leagueId, season) {
+  const cacheKey = `${teamApiId}_${leagueId}_${season}`;
+  const cached = _footballTeamXGCache[cacheKey];
+  if (cached && Date.now() - cached.ts < CACHE_6H) return cached.data;
+  if (!process.env.FOOTBALL_API_KEY) return null;
+  try {
+    const fj = await footballApiFetch(`${FOOTBALL_API_BASE}/fixtures?team=${teamApiId}&league=${leagueId}&season=${season}&last=${FB_XG_RECENT_GAMES}&status=FT`);
+    const fixtures = fj.response || [];
+    if (fixtures.length < FB_XG_MIN_GAMES) return null;
+    // Tirs/possession (22 juillet 2026) — capturés au passage sur la MÊME réponse déjà tirée pour
+    // le xG (aucun appel supplémentaire), pour alimenter le panneau "Statistiques saison" côté
+    // MatchDetailPage (Tirs/match, Tirs cadrés/match, Possession), jusque-là toujours à 0 faute de
+    // source (voir GET /api/football/teamxgstats plus bas).
+    let xgFor = 0, xgAgainst = 0, shots = 0, shotsOnTarget = 0, possession = 0, counted = 0;
+    for (const fx of fixtures) {
+      const sj = await footballApiFetch(`${FOOTBALL_API_BASE}/fixtures/statistics?fixture=${fx.fixture.id}`).catch(() => null);
+      if (!sj) continue;
+      const teams = sj.response || [];
+      const us   = teams.find(t => t.team?.id === teamApiId);
+      const them = teams.find(t => t.team?.id !== teamApiId);
+      const usXG   = us?.statistics?.find(s => s.type === 'expected_goals')?.value;
+      const themXG = them?.statistics?.find(s => s.type === 'expected_goals')?.value;
+      if (usXG == null || themXG == null) continue;
+      xgFor += parseFloat(usXG); xgAgainst += parseFloat(themXG); counted++;
+      const usTotalShots = us?.statistics?.find(s => s.type === 'Total Shots')?.value;
+      const usShotsOnGoal = us?.statistics?.find(s => s.type === 'Shots on Goal')?.value;
+      const usPossession = us?.statistics?.find(s => s.type === 'Ball Possession')?.value;
+      if (usTotalShots != null) shots += parseFloat(usTotalShots);
+      if (usShotsOnGoal != null) shotsOnTarget += parseFloat(usShotsOnGoal);
+      if (usPossession != null) possession += parseFloat(String(usPossession).replace('%', ''));
+    }
+    if (counted < FB_XG_MIN_GAMES) return null;
+    const data = {
+      xgFor: xgFor / counted, xgAgainst: xgAgainst / counted, games: counted,
+      shotsPerGame: shots / counted, shotsOnTarget: shotsOnTarget / counted, possession: possession / counted,
+    };
+    _footballTeamXGCache[cacheKey] = { data, ts: Date.now() };
+    return data;
+  } catch { return null; }
+}
+// Reconstitue homeGF/homeGA/homePlayed (etc.) attendus par computeLambdas à partir des moyennes
+// xG — même conversion moyenne×matchs déjà utilisée pour la CDM (teamstats renvoie des moyennes,
+// computeLambdas attend des totaux qu'il redivise lui-même par `played`).
+async function tryGetFootballXGInputs(leagueKey, dateStr, homeTeamName, awayTeamName) {
+  const leagueId = FOOTBALL_API_LEAGUE_IDS[leagueKey];
+  if (!leagueId) return null;
+  const season = footballApiSeasonForDate(leagueKey, dateStr);
+  const teamMap = await fetchFootballTeamIds(leagueKey, season);
+  const homeId = resolveFootballApiTeamId(teamMap, homeTeamName);
+  const awayId = resolveFootballApiTeamId(teamMap, awayTeamName);
+  if (!homeId || !awayId) return null;
+  const [homeXG, awayXG] = await Promise.all([
+    fetchTeamRecentXG(homeId, leagueId, season),
+    fetchTeamRecentXG(awayId, leagueId, season),
+  ]);
+  if (!homeXG || !awayXG) return null;
+  return {
+    homeGF: homeXG.xgFor * homeXG.games, homeGA: homeXG.xgAgainst * homeXG.games, homePlayed: homeXG.games,
+    awayGF: awayXG.xgFor * awayXG.games, awayGA: awayXG.xgAgainst * awayXG.games, awayPlayed: awayXG.games,
+    homeAvgXG: homeXG.xgFor, awayAvgXG: awayXG.xgFor,
+  };
+}
+
 // Interrupteur Brasileirão (17 juillet 2026, activé le 19 juillet 2026 après revue utilisateur).
 // Le fetch fixtures/cotes tourne déjà (isolé, zéro impact sur les 5 grands championnats).
 const BRESIL_ALERTS_ENABLED = true;
@@ -8256,6 +8478,27 @@ function _saveSnapshot() {
   }, 2000);
 }
 
+// Snapshot projections foot (22 juillet 2026) — même principe que _projectionsSnapshot (basket) :
+// MatchDetailPage.jsx recalculait sa propre estimation BTTS/O-U/1X2 côté navigateur pour les 5
+// grands championnats + Brasileirão (badge "estimation site"), avec une formule plus simple que
+// le vrai modèle backend (Poisson+Dixon-Coles+shrinkage+blessures+xG) qui décide des alertes — les
+// deux pouvaient afficher des probabilités différentes sur le même match. La CDM avait déjà réglé
+// ça en dupliquant la formule côté client (computeCdmBTTS) ; ici on fait la vraie solution identifiée
+// à l'époque (voir memory project_football_model_deferred_juillet17) : le backend sauvegarde son
+// résultat exact à chaque cycle, la page le lit au lieu de le recalculer.
+const _footballProjectionsSnapshot = (() => {
+  try { if (existsSync(FB_SNAPSHOT_FILE)) return JSON.parse(readFileSync(FB_SNAPSHOT_FILE, 'utf8')); } catch {}
+  return {};
+})();
+let _fbSnapshotSaveTimer = null;
+function _saveFootballSnapshot() {
+  if (_fbSnapshotSaveTimer) clearTimeout(_fbSnapshotSaveTimer);
+  _fbSnapshotSaveTimer = setTimeout(() => {
+    _fbSnapshotSaveTimer = null;
+    writeFile(FB_SNAPSHOT_FILE, JSON.stringify(_footballProjectionsSnapshot), 'utf8', () => {});
+  }, 2000);
+}
+
 // ── Suivi projeté vs réalisé (18 juillet 2026) ────────────────────────────────
 // Compare, pour chaque match terminé, la projection figée (_projectionsSnapshot) au vrai résultat
 // (box score) — indépendamment des alertes/paris (couvre TOUTES les joueuses avec projection, pas
@@ -12118,11 +12361,20 @@ async function generateBackgroundAlerts() {
 
       for (const f of fbFixtures) {
         try {
+          // Blessures (22 juillet 2026) — neutre (aucun impact) pour les ligues sans mapping
+          // api-football (CDM) ou si l'appel échoue ; ne bloque jamais la génération de l'alerte.
+          const injuryPenalties = await computeFootballInjuryPenalties(f.league, f.date, f.home.name, f.away.name).catch(() => ({}));
+          // xG (22 juillet 2026) — remplace homeGF/homeGA/homePlayed (etc.) par leur équivalent xG
+          // quand dispo pour les deux équipes ; sinon fallback silencieux sur les buts bruts déjà
+          // en place (f.homeGF/etc., source football-data.org, inchangés).
+          const xgInputs = await tryGetFootballXGInputs(f.league, f.date, f.home.name, f.away.name).catch(() => null);
+          if (xgInputs) _bgLog.push(`football xG: ${f.home.name} v ${f.away.name} [${f.league}] home ${xgInputs.homeAvgXG.toFixed(2)}/match away ${xgInputs.awayAvgXG.toFixed(2)}/match`);
           const lambdas = computeLambdas({
-            homeGF: f.homeGF, homeGA: f.homeGA, homePlayed: f.homePlayed,
-            awayGF: f.awayGF, awayGA: f.awayGA, awayPlayed: f.awayPlayed,
+            homeGF: xgInputs?.homeGF ?? f.homeGF, homeGA: xgInputs?.homeGA ?? f.homeGA, homePlayed: xgInputs?.homePlayed ?? f.homePlayed,
+            awayGF: xgInputs?.awayGF ?? f.awayGF, awayGA: xgInputs?.awayGA ?? f.awayGA, awayPlayed: xgInputs?.awayPlayed ?? f.awayPlayed,
             leagueAvgGoals: f.leagueAvgGoals, avgGF: f.avgGF, avgGA: f.avgGA,
             ...(f.homeAdv != null ? { homeAdv: f.homeAdv } : {}),
+            ...injuryPenalties,
           });
           if (!lambdas) continue;
           const { lambdaHome, lambdaAway } = lambdas;
@@ -12137,6 +12389,21 @@ async function generateBackgroundAlerts() {
 
           // BTTS — id identique à celui généré côté client (MatchDetailPage) → dédup au sync
           const bttsProb = computeBTTSProb(lambdaHome, lambdaAway);
+          // Snapshot (22 juillet 2026) — ligne 2.5 fixe pour l'affichage (référence standard foot,
+          // indépendante du fallback 1.5 utilisé par la logique d'alerte plus bas). Écrit à chaque
+          // cycle, donc toujours la dernière estimation réelle du modèle pour ce match.
+          const snapOU = computeOUProb(lambdaHome, lambdaAway, 2.5);
+          _footballProjectionsSnapshot[f.fixtureId] = {
+            bttsProb: +bttsProb.toFixed(3), pOver25: +snapOU.pOver.toFixed(3), pUnder25: +snapOU.pUnder.toFixed(3),
+            pHome: +pHome.toFixed(3), pDraw: +pDraw.toFixed(3), pAway: +pAway.toFixed(3),
+            // lambdaHome/lambdaAway exposés séparément (pas juste `estimated` = leur somme) pour que
+            // MatchDetailPage.jsx puisse recalculer O/U sur une autre ligne, 1X2, DC&BTTS, DC&Over
+            // avec exactement les mêmes λ que le backend (même Dixon-Coles rho appliqué côté client
+            // quand la source est ce snapshot) — plus besoin de stocker chaque marché séparément.
+            lambdaHome: +lambdaHome.toFixed(3), lambdaAway: +lambdaAway.toFixed(3),
+            estimated: +(lambdaHome + lambdaAway).toFixed(2), savedAt: Date.now(),
+          };
+          _saveFootballSnapshot();
           _logFootballNearMiss({ fixtureId: f.fixtureId, league: f.league, market: 'btts', direction: 'yes', line: null, probability: bttsProb, floor: FB_BTTS_ALERT_PROB });
           if (bttsProb >= FB_BTTS_ALERT_PROB) {
             const bestBk = FB_BOOKS.find(bk => (bttsBk[bk]?.yes ?? 0) >= FB_BTTS_OU_MIN_ODDS);
@@ -12622,6 +12889,14 @@ app.get('/api/nba/projections-snapshot/:gameId', (req, res) => {
   res.json({ found: true, players: snap });
 });
 
+// Snapshot foot (22 juillet 2026) — 5 grands championnats + Brasileirão. fixtureId au format
+// fd_xxx / fdbr_xxx, identique à celui utilisé partout ailleurs (alertes, useFootballFixtures).
+app.get('/api/football/projections-snapshot/:fixtureId', (req, res) => {
+  const snap = _footballProjectionsSnapshot[req.params.fixtureId];
+  if (!snap) return res.json({ found: false });
+  res.json({ found: true, ...snap });
+});
+
 app.post('/api/nba/trigger-alerts', async (req, res) => {
   generateBackgroundAlerts().catch(e => console.error('[bg-alerts] trigger error:', e.message));
   res.json({ ok: true });
@@ -12781,6 +13056,31 @@ app.get('/api/football/standings/:league', async (req, res) => {
     console.error('FD standings error:', err.message);
     res.status(500).json({ error: err.message });
   }
+});
+
+// xG/tirs/possession saison via api-football (22 juillet 2026) — pour le panneau "Statistiques
+// saison" de MatchDetailPage.jsx (xG/xGA/Tirs/Tirs cadrés/Possession), à 0 depuis la création de
+// ces lignes faute de source. Réutilise le même pipeline que l'alerte foot (fetchFootballTeamIds +
+// fetchTeamRecentXG, mêmes caches) — aucun appel supplémentaire dédié à l'affichage seul.
+app.get('/api/football/teamxgstats', async (req, res) => {
+  const { league, team, date } = req.query;
+  if (!league || !team) return res.json({ found: false });
+  const leagueId = FOOTBALL_API_LEAGUE_IDS[league];
+  if (!leagueId || !process.env.FOOTBALL_API_KEY) return res.json({ found: false });
+  try {
+    const season = footballApiSeasonForDate(league, date || new Date().toISOString());
+    const teamMap = await fetchFootballTeamIds(league, season);
+    const teamId = resolveFootballApiTeamId(teamMap, team);
+    if (!teamId) return res.json({ found: false });
+    const stats = await fetchTeamRecentXG(teamId, leagueId, season);
+    if (!stats) return res.json({ found: false });
+    res.json({
+      found: true,
+      xG: +stats.xgFor.toFixed(2), xGA: +stats.xgAgainst.toFixed(2),
+      shotsPerGame: +stats.shotsPerGame.toFixed(1), shotsOnTarget: +stats.shotsOnTarget.toFixed(1),
+      possession: Math.round(stats.possession), games: stats.games,
+    });
+  } catch { res.json({ found: false }); }
 });
 
 // ── Football-data.org Team Matches ────────────────────────────────────────────
