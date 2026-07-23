@@ -7756,16 +7756,26 @@ function _pbFields(buf) {
 // Generic: returns [{name, sels:[{name,odds}]}] for any category — used for probing football DC
 async function _betclicGrpcMarketNames(matchIdStr, categoryId) {
   const proto = Buffer.concat([_pbV64(1, BigInt(matchIdStr)), _pbLen(2,'fr'), _pbLen(3, categoryId)]);
+  // Fix 23 juillet 2026 — `resp.body` (fetch natif) est un ReadableStream Web Streams, PAS un
+  // stream Node.js : `.destroy()` n'existe pas dessus (silencieusement avalé par le try/catch qui
+  // l'entourait), donc l'ancien "timeout de lecture" de 8s ne coupait jamais rien en pratique. La
+  // requête + lecture de flux continuaient à tourner en arrière-plan indéfiniment si Betclic ne
+  // fermait jamais la connexion, bien après que le timeout dur de 15s de fetchBetclicFootballExtras
+  // ait abandonné et rendu la main à l'appelant — connexions fantômes qui s'accumulent cycle après
+  // cycle (probable cause du "Web Service exceeded its memory limit" sur Render). Un seul
+  // AbortController couvrant requête ET lecture du flux (`ctrl.abort()` coupe vraiment la connexion
+  // sous-jacente, contrairement à `.destroy()` qui ne faisait rien) remplace les deux anciens timeouts.
+  const ctrl = new AbortController();
+  const tAbort = setTimeout(() => ctrl.abort(), 8000);
   let resp;
   try {
     resp = await fetch(
       'https://offering.begmedia.com/web/offering.access.api/offering.access.api.MatchService/GetMatchWithNotification',
-      { method:'POST', headers:{ 'Content-Type':'application/grpc-web+proto', 'Accept':'application/grpc-web+proto', 'x-grpc-web':'1', 'X-BG-REGULATION':'FR', 'X-BG-Ref-Brand':'BETCLIC', 'X-BG-Ref-Regulator-Zone':'FR', 'X-BG-Ref-Platform':'DESKTOP', 'ngsw-bypass':'1', 'Origin':'https://www.betclic.fr', 'Referer':'https://www.betclic.fr/' }, body: _grpcFrame(proto), signal: AbortSignal.timeout(8000) }
+      { method:'POST', headers:{ 'Content-Type':'application/grpc-web+proto', 'Accept':'application/grpc-web+proto', 'x-grpc-web':'1', 'X-BG-REGULATION':'FR', 'X-BG-Ref-Brand':'BETCLIC', 'X-BG-Ref-Regulator-Zone':'FR', 'X-BG-Ref-Platform':'DESKTOP', 'ngsw-bypass':'1', 'Origin':'https://www.betclic.fr', 'Referer':'https://www.betclic.fr/' }, body: _grpcFrame(proto), signal: ctrl.signal }
     );
-  } catch { return []; }
-  if (!resp.ok) return [];
+  } catch { clearTimeout(tAbort); return []; }
+  if (!resp.ok) { clearTimeout(tAbort); return []; }
   const chunks = []; let totalLen = 0, frameLen = -1;
-  const tRead = setTimeout(() => { try { resp.body.destroy(); } catch {} }, 8000);
   try {
     for await (const value of resp.body) {
       const buf = Buffer.isBuffer(value) ? value : Buffer.from(value);
@@ -7774,7 +7784,7 @@ async function _betclicGrpcMarketNames(matchIdStr, categoryId) {
       if (frameLen > 0 && totalLen >= frameLen) break;
     }
   } catch {}
-  clearTimeout(tRead);
+  clearTimeout(tAbort);
   if (!chunks.length) return [];
   const raw = Buffer.concat(chunks);
   if (raw.length < 5) return [];
@@ -7807,19 +7817,25 @@ async function _betclicGrpcMarketNames(matchIdStr, categoryId) {
 
 async function _betclicGrpcCategory(matchIdStr, categoryId) {
   const proto = Buffer.concat([_pbV64(1, BigInt(matchIdStr)), _pbLen(2,'fr'), _pbLen(3, categoryId)]);
+  // Fix 23 juillet 2026 — même bug que _betclicGrpcMarketNames ci-dessus : `ctrl` existait déjà mais
+  // n'était jamais abort()-é, et le timeout de lecture appelait `.destroy()` (méthode Node.js Readable
+  // inexistante sur le ReadableStream Web Streams renvoyé par fetch natif, donc no-op silencieux) —
+  // la requête restait ouverte indéfiniment en arrière-plan si Betclic ne fermait pas la connexion.
   const ctrl = new AbortController();
-  const resp = await fetch(
-    'https://offering.begmedia.com/web/offering.access.api/offering.access.api.MatchService/GetMatchWithNotification',
-    { method:'POST', headers:{ 'Content-Type':'application/grpc-web+proto', 'Accept':'application/grpc-web+proto', 'x-grpc-web':'1', 'X-BG-REGULATION':'FR', 'X-BG-Ref-Brand':'BETCLIC', 'X-BG-Ref-Regulator-Zone':'FR', 'X-BG-Ref-Platform':'DESKTOP', 'ngsw-bypass':'1', 'Origin':'https://www.betclic.fr', 'Referer':'https://www.betclic.fr/' }, body: _grpcFrame(proto), signal: ctrl.signal }
-  );
-  if (!resp.ok) return {};
+  const tAbort = setTimeout(() => ctrl.abort(), 8000);
+  let resp;
+  try {
+    resp = await fetch(
+      'https://offering.begmedia.com/web/offering.access.api/offering.access.api.MatchService/GetMatchWithNotification',
+      { method:'POST', headers:{ 'Content-Type':'application/grpc-web+proto', 'Accept':'application/grpc-web+proto', 'x-grpc-web':'1', 'X-BG-REGULATION':'FR', 'X-BG-Ref-Brand':'BETCLIC', 'X-BG-Ref-Regulator-Zone':'FR', 'X-BG-Ref-Platform':'DESKTOP', 'ngsw-bypass':'1', 'Origin':'https://www.betclic.fr', 'Referer':'https://www.betclic.fr/' }, body: _grpcFrame(proto), signal: ctrl.signal }
+    );
+  } catch { clearTimeout(tAbort); return {}; }
+  if (!resp.ok) { clearTimeout(tAbort); return {}; }
 
   // Server-streaming: read chunks until first complete message frame, then stop
-  // node-fetch v3 returns a Node.js Readable — use for-await, not getReader()
   const chunks = [];
   let totalLen = 0;
   let frameLen = -1;
-  const tRead = setTimeout(() => { try { resp.body.destroy(); } catch {} }, 8000);
   try {
     for await (const value of resp.body) {
       const buf = Buffer.isBuffer(value) ? value : Buffer.from(value);
@@ -7831,7 +7847,7 @@ async function _betclicGrpcCategory(matchIdStr, categoryId) {
       if (frameLen > 0 && totalLen >= frameLen) { break; }
     }
   } catch {}
-  clearTimeout(tRead);
+  clearTimeout(tAbort);
 
   if (!chunks.length) return {};
   const raw = Buffer.concat(chunks);
@@ -8890,14 +8906,20 @@ function _logFootballNearMiss({ fixtureId, league, market, direction, line, prob
 // règlement des alertes football corrigé plus tôt aujourd'hui) : 48 candidats sur 50 restaient
 // bloqués "pending" indéfiniment. _getFdLeaguesResults() (déjà construite pour ce fix-là) a bien
 // les scores finaux, appelée directement ici plutôt que via un aller-retour HTTP interne.
-const FOOT_MATCH_ENDPOINT = { fdcdm: '/api/fd/worldcup', fdbr: '/api/fd/bresil' };
+// afel/afcl/afch (23 juillet 2026) — coupes d'Europe, ajoutés pour régler les candidats near-miss
+// désormais loggés aussi en tour de qualification (cf. isQualifRound) ; même liste de préfixes que
+// FOOTBALL_SETTLEMENT_SOURCES côté frontend (syncAlerts.js) pour le vrai règlement des alertes.
+const FOOT_MATCH_ENDPOINT = {
+  fdcdm: '/api/fd/worldcup', fdbr: '/api/fd/bresil',
+  afel: '/api/football/eucup/europa/matches', afcl: '/api/football/eucup/conference/matches', afch: '/api/football/eucup/champions/matches',
+};
 async function _resolveFootballNearMiss() {
   const base = `http://localhost:${process.env.PORT || 3001}`;
   const pending = _nearMissFootball.filter(c => c.status === 'pending');
   if (!pending.length) return;
   const cache = {};
   for (const c of pending) {
-    const prefix = c.fixtureId.startsWith('fdcdm_') ? 'fdcdm' : c.fixtureId.startsWith('fdbr_') ? 'fdbr' : 'fd';
+    const prefix = ['fdcdm', 'fdbr', 'afel', 'afcl', 'afch'].find(p => c.fixtureId.startsWith(`${p}_`)) || 'fd';
     const rawId = c.fixtureId.replace(`${prefix}_`, '');
     try {
       if (!cache[prefix]) {
@@ -12614,16 +12636,18 @@ async function generateBackgroundAlerts() {
           try {
             const leagueId = EU_CLUB_COMP_IDS[compKey];
             const season = footballApiSeasonForDate('ligue1', new Date().toISOString()); // même règle août-juillet que les ligues européennes
-            const allUpcoming = await fetchApiFootballUpcomingFixtures(leagueId, season, FOOTBALL_ALERT_WINDOW_MS);
-            // Tours de qualification exclus des alertes/modèle (23 juillet 2026, demande explicite) —
-            // clubs trop hétérogènes, échantillon de forme trop faible, enjeu jugé secondaire par
-            // l'utilisateur tant que la phase finale (League/Group Stage,élim directe) n'est pas
-            // atteinte. Le match reste visible dans la liste de la Carte du Monde (route séparée,
-            // /api/football/eucup/*/matches, non filtrée) — seuls le modèle/snapshot et les alertes
-            // sont coupés ici. Se réactive tout seul dès que l'intitulé du tour change (aucun
-            // interrupteur à repenser à remettre en phase finale).
-            const upcoming = allUpcoming.filter(fx => !/qualif|preliminary|play-?offs?/i.test(fx.league?.round || ''));
-            _bgLog.push(`${compKey}: ${allUpcoming.length} fixtures api-football trouvées, ${upcoming.length} hors qualifs (league=${leagueId}, season=${season})`);
+            const upcoming = await fetchApiFootballUpcomingFixtures(leagueId, season, FOOTBALL_ALERT_WINDOW_MS);
+            // Tours de qualification exclus des ALERTES seulement (pas du modèle) — 23 juillet 2026,
+            // demande explicite : clubs trop hétérogènes, échantillon de forme trop faible, enjeu jugé
+            // secondaire tant que la phase finale (League/Group Stage, élim directe) n'est pas atteinte.
+            // Affiné le même jour : le match tourne quand même dans le modèle (λ, near-miss tracking)
+            // pour garder une trace de "à combien on est passé" même en qualif — seule l'émission de
+            // l'alerte elle-même est coupée plus bas (`f.isQualifRound`). Les cotes Betclic/Unibet
+            // détaillées étaient de toute façon déjà scrapées pour ces matchs (affichage sur la page
+            // match), rien à changer côté scraping. Se réactive tout seul dès que l'intitulé du tour
+            // change (aucun interrupteur à repenser à remettre en phase finale).
+            const qualifCount = upcoming.filter(fx => /qualif|preliminary|play-?offs?/i.test(fx.league?.round || '')).length;
+            _bgLog.push(`${compKey}: ${upcoming.length} fixtures api-football trouvées, ${qualifCount} en qualifs (alertes coupées, modèle actif) (league=${leagueId}, season=${season})`);
             if (!upcoming.length) continue;
             const formArr = await Promise.all(upcoming.map(async fx => {
               const [hf, af] = await Promise.all([
@@ -12648,6 +12672,7 @@ async function generateBackgroundAlerts() {
                 // Pas de homeAdv ici (contrairement à la CDM) — contrairement à un tournoi à terrain
                 // neutre, ce sont de vrais matchs domicile/extérieur au stade du club "home" → même
                 // avantage terrain par défaut (1.10) que les 5 grands championnats/Brasileirão.
+                isQualifRound: /qualif|preliminary|play-?offs?/i.test(fx.league.round || ''),
               });
             }
             _bgLog.push(`${compKey}: ${formArr.filter(x => x.hf && x.af).length}/${upcoming.length} fixtures avec forme récente valide`);
@@ -12710,7 +12735,7 @@ async function generateBackgroundAlerts() {
           };
           _saveFootballSnapshot();
           _logFootballNearMiss({ fixtureId: f.fixtureId, league: f.league, market: 'btts', direction: 'yes', line: null, probability: bttsProb, floor: FB_BTTS_ALERT_PROB });
-          if (bttsProb >= FB_BTTS_ALERT_PROB) {
+          if (bttsProb >= FB_BTTS_ALERT_PROB && !f.isQualifRound) {
             const bestBk = FB_BOOKS.find(bk => (bttsBk[bk]?.yes ?? 0) >= FB_BTTS_OU_MIN_ODDS);
             if (bestBk) {
               const pair = bttsBk[bestBk];
@@ -12757,7 +12782,7 @@ async function generateBackgroundAlerts() {
           for (const { key, prob } of RESULT_OUTCOMES) {
             if (isCdmJ3) continue; // J3 CDM bloqué — enjeux tactiques imprévisibles
             _logFootballNearMiss({ fixtureId: f.fixtureId, league: f.league, market: 'result', direction: key, line: null, probability: prob, floor: FB_RESULT_ALERT_PROB });
-            if (prob < FB_RESULT_ALERT_PROB) continue;
+            if (prob < FB_RESULT_ALERT_PROB || f.isQualifRound) continue;
             const bestBk = FB_BOOKS.find(bk => (h2hBk[bk]?.[key] ?? 0) >= FB_RESULT_MIN_ODDS);
             if (!bestBk) continue;
             const pair = h2hBk[bestBk];
@@ -12799,7 +12824,7 @@ async function generateBackgroundAlerts() {
           // football_result pour ne jamais se confondre avec l'alerte basée sur notre modèle, même
           // quand les deux portent sur la même issue du même match.
           const pinnacleH2h = h2hBk.pinnacle;
-          if (pinnacleH2h?.home && pinnacleH2h?.draw && pinnacleH2h?.away) {
+          if (pinnacleH2h?.home && pinnacleH2h?.draw && pinnacleH2h?.away && !f.isQualifRound) {
             const fairPinnacle = removeVig(pinnacleH2h, 'h2h');
             for (const key of ['home', 'draw', 'away']) {
               const bestBk = FB_BOOKS.find(bk => (h2hBk[bk]?.[key] ?? 0) >= PINNACLE_MIN_ODDS);
@@ -12840,7 +12865,7 @@ async function generateBackgroundAlerts() {
           // aussi chez eux (pas de repli sur 2.5/1.5 — comparer des lignes différentes fausserait l'edge).
           const pinnacleLine = totalsBk.pinnacle ? Object.keys(totalsBk.pinnacle)[0] : null;
           const pinTotals = pinnacleLine ? totalsBk.pinnacle[pinnacleLine] : null;
-          if (pinTotals?.over && pinTotals?.under) {
+          if (pinTotals?.over && pinTotals?.under && !f.isQualifRound) {
             const vigP = 1 / pinTotals.over + 1 / pinTotals.under;
             const fairPinnacleOU = { over: (1 / pinTotals.over) / vigP, under: (1 / pinTotals.under) / vigP };
             for (const direction of ['over', 'under']) {
@@ -12884,7 +12909,7 @@ async function generateBackgroundAlerts() {
             const ou = computeOUProb(lambdaHome, lambdaAway, parseFloat(line));
             const bestP = Math.max(ou.pOver, ou.pUnder);
             _logFootballNearMiss({ fixtureId: f.fixtureId, league: f.league, market: 'total', direction: ou.pOver >= ou.pUnder ? 'over' : 'under', line: parseFloat(line), probability: bestP, floor: FB_OU_ALERT_PROB });
-            if (bestP < FB_OU_ALERT_PROB) continue;
+            if (bestP < FB_OU_ALERT_PROB || f.isQualifRound) continue;
             const direction = ou.pOver >= ou.pUnder ? 'over' : 'under';
             const bestBk = FB_BOOKS.find(bk => (totalsBk[bk]?.[line]?.[direction] ?? 0) >= FB_BTTS_OU_MIN_ODDS);
             if (!bestBk) continue;
@@ -12927,7 +12952,7 @@ async function generateBackgroundAlerts() {
           const dcBttsProbs = computeDCBTTSProbs(lambdaHome, lambdaAway);
           for (const [key, prob] of Object.entries(dcBttsProbs)) {
             if (key === '12') continue;
-            if (prob < FB_DC_BTTS_ALERT_PROB) continue;
+            if (prob < FB_DC_BTTS_ALERT_PROB || f.isQualifRound) continue;
             const bestBk = FB_BOOKS.find(bk => (dcBttsBk[bk]?.[key] ?? 0) >= FB_DC_MIN_ODDS);
             if (!bestBk) continue;
             const odds = dcBttsBk[bestBk][key];
@@ -12957,7 +12982,7 @@ async function generateBackgroundAlerts() {
           const dcOuProbs = computeDCOverProbs(lambdaHome, lambdaAway, 1.5);
           for (const [key, prob] of Object.entries(dcOuProbs)) {
             if (key === '12') continue;
-            if (prob < FB_DC_OU_ALERT_PROB) continue;
+            if (prob < FB_DC_OU_ALERT_PROB || f.isQualifRound) continue;
             const bestBk = FB_BOOKS.find(bk => (dcOuBk[bk]?.[key] ?? 0) >= FB_DC_MIN_ODDS);
             if (!bestBk) continue;
             newAlerts.push({
