@@ -26,6 +26,14 @@ const COVERED = {
   '076': { name: 'Brésil',     flag: '🇧🇷' },
 };
 
+// Même ordre/mise en page que la légende de la Carte du Monde (Sports) : 2 lignes — États-Unis/Brésil,
+// puis les 5 pays européens. Pas d'entrée "Monde" ici (pas de hub global sur cette page). Les objets
+// pays sont réutilisés tels quels (pas de copie) pour que la comparaison `selected === c` reste valide.
+const LEGEND_ROWS = [
+  [['840', COVERED['840']], ['076', COVERED['076']]],
+  [['250', COVERED['250']], ['724', COVERED['724']], ['826', COVERED['826']], ['276', COVERED['276']], ['380', COVERED['380']]],
+];
+
 const ZOOM_ORIGIN = {
   '840': '18% 33%', '250': '50% 28%', '724': '47% 32%',
   '276': '52% 26%', '380': '53% 31%', '826': '48% 23%',
@@ -146,17 +154,21 @@ export default function DatabaseMapPage() {
         </div>
       )}
 
-      {/* Légende bas gauche */}
-      <div style={{ position: 'absolute', bottom: 24, left: 24, display: 'flex', alignItems: 'center', gap: 4, zIndex: 8, animation: 'dbMapReveal 0.8s ease-out 0.2s both' }}>
-        {Object.entries(COVERED).map(([geoId, c]) => (
-          <button key={geoId} onClick={() => pick(c, geoId)}
-            style={{ display: 'flex', alignItems: 'center', gap: 4, background: 'none', border: 'none', borderRadius: 6, padding: '2px 6px', cursor: 'pointer', transition: 'opacity .15s', opacity: selected === c ? 1 : 0.55 }}
-            onMouseEnter={e => e.currentTarget.style.opacity = '1'}
-            onMouseLeave={e => e.currentTarget.style.opacity = selected === c ? '1' : '0.55'}
-          >
-            <span style={{ fontSize: 13 }}>{c.flag}</span>
-            <span style={{ fontSize: 10, fontWeight: 600, color: '#fff', whiteSpace: 'nowrap' }}>{c.name}</span>
-          </button>
+      {/* Légende bas gauche — 2 lignes, même mise en page que la Carte du Monde (Sports). */}
+      <div style={{ position: 'absolute', bottom: 24, left: 24, display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 4, zIndex: 8, animation: 'dbMapReveal 0.8s ease-out 0.2s both' }}>
+        {LEGEND_ROWS.map((row, ri) => (
+          <div key={ri} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+            {row.map(([geoId, c]) => (
+              <button key={geoId} onClick={() => pick(c, geoId)}
+                style={{ display: 'flex', alignItems: 'center', gap: 4, background: 'none', border: 'none', borderRadius: 6, padding: '2px 6px', cursor: 'pointer', transition: 'opacity .15s', opacity: selected === c ? 1 : 0.55 }}
+                onMouseEnter={e => e.currentTarget.style.opacity = '1'}
+                onMouseLeave={e => e.currentTarget.style.opacity = selected === c ? '1' : '0.55'}
+              >
+                <span style={{ fontSize: 13 }}>{c.flag}</span>
+                <span style={{ fontSize: 10, fontWeight: 600, color: '#fff', whiteSpace: 'nowrap' }}>{c.name}</span>
+              </button>
+            ))}
+          </div>
         ))}
       </div>
 
