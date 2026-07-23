@@ -954,6 +954,7 @@ async function _getEuClubMatches(compKey) {
       home: { id: fx.teams.home.id, name: fx.teams.home.name, short: abbrev(fx.teams.home.name), logoId: fx.teams.home.logo, score: fx.goals?.home ?? null },
       away: { id: fx.teams.away.id, name: fx.teams.away.name, short: abbrev(fx.teams.away.name), logoId: fx.teams.away.logo, score: fx.goals?.away ?? null },
     }));
+    matches.sort((a, b) => new Date(a.date) - new Date(b.date));
     const result = { matches, count: matches.length };
     _euClubMatchesCache[compKey] = { data: result, ts: Date.now() };
     return result;

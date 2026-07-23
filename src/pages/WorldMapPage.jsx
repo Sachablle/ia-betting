@@ -88,9 +88,20 @@ const MONDE = { name: 'Monde', flag: '🌍', leagues: ['champions','europa','con
 // nature (liste non exhaustive), mais bien mieux qu'un tri purement chronologique pour mettre en
 // avant les affiches qui comptent parmi des tours de qualification à faible enjeu par ailleurs.
 const BIG_CLUB_PATTERN = /benfica|be[sş]ikta[sş]|anderlecht|paok|dynamo kyiv|dynamo kiev|ferencv|sporting|porto|ajax|feyenoord|celtic|rangers|galatasaray|fenerbahce|olympiacos|panathinaikos|shakhtar|red star|crvena zvezda|dinamo zagreb|slavia praha|sparta praha|salzburg|young boys|club brugge|club bruges|antwerp|besiktas|st\.?\s?gallen|midtjylland/i;
+function isLiveGame(g) {
+  return g.status === 'STATUS_IN_PROGRESS' || (g.home?.score > 0 && g.status !== 'STATUS_FINAL');
+}
+// Un match en cours remonte toujours en tête de liste, même hors panneau Monde (26 juillet 2026) —
+// tri stable, ne touche pas l'ordre chronologique du reste.
+function sortLiveFirst(games) {
+  return [...games].sort((a, b) => (isLiveGame(b) ? 1 : 0) - (isLiveGame(a) ? 1 : 0));
+}
 function pickHighlightMatches(games, n) {
-  const withAppeal = games.map(g => ({ g, appeal: BIG_CLUB_PATTERN.test(`${g.home?.name || ''} ${g.away?.name || ''}`) ? 1 : 0 }));
-  withAppeal.sort((a, b) => b.appeal - a.appeal || new Date(a.g.date) - new Date(b.g.date));
+  // Un match en cours passe toujours devant, même sans club connu (26 juillet 2026) — avant ce fix,
+  // le tri par notoriété de club pouvait laisser un match live derrière une affiche connue pas encore
+  // jouée, alors qu'un match en direct est toujours le plus pertinent à montrer en premier.
+  const withAppeal = games.map(g => ({ g, live: isLiveGame(g) ? 1 : 0, appeal: BIG_CLUB_PATTERN.test(`${g.home?.name || ''} ${g.away?.name || ''}`) ? 1 : 0 }));
+  withAppeal.sort((a, b) => b.live - a.live || b.appeal - a.appeal || new Date(a.g.date) - new Date(b.g.date));
   return withAppeal.slice(0, n).map(x => x.g);
 }
 
@@ -390,8 +401,8 @@ function Panel({ country, onClose, statsLeague, setStatsLeague, onOpenBasketStat
           // (aucun match sous 30h) — sinon une compétition qui n'a encore aucun match imminent
           // (ex: LDC, 1er match le 28 juillet) affichait sa liste complète non filtrée par défaut.
           const games = mode === 'upcoming'
-            ? (country.isMonde && !isExplicitUpcoming ? pickHighlightMatches([...soon, ...upcoming], 3) : [...soon, ...upcoming])
-            : (country.isMonde ? pickHighlightMatches(soon, 3) : soon);
+            ? (country.isMonde && !isExplicitUpcoming ? pickHighlightMatches([...soon, ...upcoming], 3) : sortLiveFirst([...soon, ...upcoming]))
+            : (country.isMonde ? pickHighlightMatches(soon, 3) : sortLiveFirst(soon));
           const collapsed = !!collapsedLeagues[league];
           return (
             <div key={league} style={{marginBottom: country.isMonde ? '0.6rem' : '1.5rem'}}>
@@ -454,7 +465,7 @@ function Panel({ country, onClose, statsLeague, setStatsLeague, onOpenBasketStat
                         <div style={{flex:1,height:'1px',background:'rgba(255,255,255,0.08)'}}/>
                       </div>
                       {dayGames.map((g,i) => {
-                        const live = g.status==='STATUS_IN_PROGRESS' || (g.home?.score > 0 && g.status!=='STATUS_FINAL');
+                        const live = isLiveGame(g);
                         const logoSize = country.isMonde ? 14 : 20;
                         return (
                           <button key={i} onClick={()=>{
