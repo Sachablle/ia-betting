@@ -595,7 +595,7 @@ export default function UtilisationPage() {
 
       {isFoot && <Accordion title="Alertes — BTTS / Over-Under / Résultat / DC combinés (background, toutes les 20 min)">
         <p className="util-intro">
-          Générées automatiquement par le serveur, aucune action nécessaire. Couverture : <strong>Ligue 1, Premier League, La Liga, Bundesliga, Serie A</strong>, <strong>Coupe du Monde</strong> et <strong>Brasileirão</strong> (17 juillet 2026). Modèle de Poisson sur les buts attendus (<code>computeLambdas</code>) — attaque/défense de chaque équipe normalisées, λ rescalé par la moyenne de buts de la ligue et l'avantage du terrain.
+          Générées automatiquement par le serveur, aucune action nécessaire. Couverture : <strong>Ligue 1, Premier League, La Liga, Bundesliga, Serie A</strong>, <strong>Coupe du Monde</strong>, <strong>Brasileirão</strong> (17 juillet 2026) et <strong>Ligue des Champions, Europa League, Conference League</strong> (23 juillet 2026, phase de groupes/finale seulement — voir plus bas). Modèle de Poisson sur les buts attendus (<code>computeLambdas</code>) — attaque/défense de chaque équipe normalisées, λ rescalé par la moyenne de buts de la ligue et l'avantage du terrain.
         </p>
 
         <div className="util-subsection">
@@ -655,6 +655,19 @@ export default function UtilisationPage() {
         </div>
 
         <div className="util-subsection">
+          <h3 className="util-subsection-title">Ligue des Champions, Europa League, Conference League (23 juillet 2026)</h3>
+          <p className="util-intro">
+            Mêmes calculs que les 5 championnats (Poisson + Dixon-Coles), avec les données blessures/xG de l'API football réutilisées telles quelles pour ces 3 compétitions. Deux différences :
+          </p>
+          <p className="util-intro" style={{ marginTop: '0.5rem' }}>
+            <strong>Pas d'alerte en tours de qualification</strong> — le modèle et les alertes ne s'activent qu'à partir de la phase de groupes/finale. Les tours préliminaires opposent des niveaux très disparates avec très peu de matchs de référence par équipe, jugé trop peu fiable pour générer une alerte. Le match reste visible dans la liste, seule l'alerte est coupée — elle s'active d'elle-même dès que la compétition atteint la phase de groupes.
+          </p>
+          <p className="util-intro" style={{ marginTop: '0.5rem' }}>
+            <strong>xG pas encore disponible</strong> à ce stade de la saison pour ces 3 compétitions (vérifié en direct sur plusieurs clubs) — le modèle utilise les buts réellement marqués/encaissés en attendant, comme pour les autres championnats avant l'ajout du xG.
+          </p>
+        </div>
+
+        <div className="util-subsection">
           <h3 className="util-subsection-title">Cotes chargées automatiquement (22 juin 2026)</h3>
           <p className="util-intro">
             Le serveur rafraîchit lui-même les cotes foot si le cache est froid ou absent, au lieu de dépendre d'une visite d'une page foot — avant ce fix, le cache de cotes n'avait <strong>aucun</strong> rafraîchissement automatique (pire que le basket, qui avait au moins un job séparé toutes les 10 min).
@@ -664,7 +677,7 @@ export default function UtilisationPage() {
         <div className="util-subsection">
           <h3 className="util-subsection-title">Règlement</h3>
           <p className="util-intro">
-            Seules les fixtures Coupe du Monde peuvent être réglées automatiquement aujourd'hui (score final via football-data.org). Les 5 championnats européens n'ont pas encore de source de scores finaux — à combler à la reprise des championnats (~août 2026). Le Résultat 1X2 ne peut se régler qu'au coup de sifflet final (le score peut encore s'inverser), contrairement à BTTS/Over-Under qui peuvent être "déjà gagnés" en live.
+            La Coupe du Monde, le Brasileirão et désormais les 3 compétitions européennes (Ligue des Champions/Europa/Conference) peuvent être réglés automatiquement (score final via football-data.org / api-football). Les 5 championnats européens classiques n'ont pas encore de source de scores finaux — à combler à la reprise des championnats (~août 2026). Le Résultat 1X2 ne peut se régler qu'au coup de sifflet final (le score peut encore s'inverser), contrairement à BTTS/Over-Under qui peuvent être "déjà gagnés" en live.
           </p>
         </div>
 

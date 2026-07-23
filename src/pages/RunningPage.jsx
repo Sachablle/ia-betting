@@ -18,8 +18,9 @@ const FB_PINNACLE_KEY = 'fb_pinnacle_alerts';
 const STAT_LABEL     = { pts: 'Pts', reb: 'Reb', ast: 'Ast', total: 'Total', btts: 'BTTS', result: 'Résultat', pinnacle_edge: 'Pinnacle', dc_btts: 'DC+BTTS', dc_ou: 'DC+1.5' };
 
 // Ligues football — affichées dans les mêmes "MatchGroup" compacts que le basket
-const FB_LEAGUES = new Set(['cdm', 'ligue1', 'pl', 'laliga', 'bundes', 'seriea', 'bresil']);
-const FB_LEAGUE_LABEL = { cdm: 'CDM', ligue1: 'L1', pl: 'PL', laliga: 'Liga', bundes: 'BL', seriea: 'SA', bresil: 'BRA' };
+const EU_CUP_LEAGUES = ['europa', 'conference', 'champions'];
+const FB_LEAGUES = new Set(['cdm', 'ligue1', 'pl', 'laliga', 'bundes', 'seriea', 'bresil', ...EU_CUP_LEAGUES]);
+const FB_LEAGUE_LABEL = { cdm: 'CDM', ligue1: 'L1', pl: 'PL', laliga: 'Liga', bundes: 'BL', seriea: 'SA', bresil: 'BRA', europa: 'UEL', conference: 'UECL', champions: 'LDC' };
 
 const IN_GAME = s => s === 'STATUS_IN_PROGRESS' || s === 'STATUS_END_PERIOD' || s === 'STATUS_HALFTIME' || s === 'STATUS_END_OF_PERIOD';
 
@@ -51,6 +52,7 @@ function _prefetchMatchData(league, homeTeam, awayTeam) {
     import('./MatchDetailPage').catch(() => {});
     cachedFetch('/api/odds', 30_000).catch(() => {});
     if (league === 'cdm') cachedFetch('/api/fd/worldcup', 30_000).catch(() => {});
+    else if (EU_CUP_LEAGUES.includes(league)) cachedFetch(`/api/football/eucup/${league}/matches`, 30_000).catch(() => {});
     else cachedFetch(`/api/football/standings/${league}`, 30 * 60_000).catch(() => {});
   } else {
     import('./BasketballDetailPage').catch(() => {});
@@ -339,6 +341,26 @@ function useLiveScores(matchGroups) {
                 awayScore: g.away?.score ?? null,
                 homeLogo: g.home?.logo || null,
                 awayLogo: g.away?.logo || null,
+                status: g.status,
+                statusDetail: g.round || '',
+              };
+            }
+            continue;
+          }
+          // Coupes européennes de clubs : live scores via /api/football/eucup/<comp>/matches,
+          // matché par id (préfixe afel_/afcl_/afch_ selon la compétition)
+          if (EU_CUP_LEAGUES.includes(league)) {
+            const prefix = { europa: 'afel_', conference: 'afcl_', champions: 'afch_' }[league];
+            const d = await fetch(`/api/football/eucup/${league}/matches`).then(r => r.ok ? r.json() : null).catch(() => null);
+            const games = d?.matches || [];
+            for (const m of matches) {
+              const gid = String(m.eventId || '').replace(prefix, '');
+              const g = games.find(g => String(g.id) === gid);
+              if (g) result[m.matchKey] = {
+                homeScore: g.home?.score ?? null,
+                awayScore: g.away?.score ?? null,
+                homeLogo: g.home?.logoId || null,
+                awayLogo: g.away?.logoId || null,
                 status: g.status,
                 statusDetail: g.round || '',
               };

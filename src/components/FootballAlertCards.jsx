@@ -8,7 +8,9 @@ function _prefetchFbMatch(alert) {
   _prefetchedFb.add(key);
   import('../pages/MatchDetailPage').catch(() => {});
   cachedFetch('/api/odds', 30_000).catch(() => {});
+  const euCupLeagues = ['europa', 'conference', 'champions'];
   if (alert.league === 'cdm') cachedFetch('/api/fd/worldcup', 30_000).catch(() => {});
+  else if (euCupLeagues.includes(alert.league)) cachedFetch(`/api/football/eucup/${alert.league}/matches`, 30_000).catch(() => {});
   else if (alert.league) cachedFetch(`/api/football/standings/${alert.league}`, 30 * 60_000).catch(() => {});
 }
 
@@ -20,6 +22,9 @@ export const FB_LEAGUE_META = {
   seriea:     { name: 'Serie A',        flag: '🇮🇹' },
   cdm:        { name: 'Coupe du Monde', flag: '🌍' },
   bresil:     { name: 'Brasileirão',    flag: '🇧🇷' },
+  europa:     { name: 'Europa League',  flag: '🏆' },
+  conference: { name: 'Conference League', flag: '🥉' },
+  champions:  { name: 'Ligue des Champions', flag: '⭐' },
 };
 
 export function BTTSAlertCard({ alert, onAccept, onReject, onDismiss }) {

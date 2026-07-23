@@ -599,7 +599,7 @@ function QuotasWidget() {
   return (
     <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 16, display: 'flex', flexDirection: 'column' }}>
       <div style={{ padding: '0.3rem 0.75rem 0' }}>
-        <div style={{ fontSize: 8, fontWeight: 700, color: 'var(--text-sub)', textTransform: 'uppercase', letterSpacing: '0.1em', borderBottom: '1px solid var(--border)', paddingBottom: '0.3rem' }}>Requêtes restantes</div>
+        <div style={{ fontSize: 8, fontWeight: 700, color: 'var(--text-sub)', textTransform: 'uppercase', letterSpacing: '0.1em', borderBottom: '1px solid var(--border)', paddingBottom: '0.3rem' }}>Requêtes utilisées</div>
       </div>
       <div style={{ display: 'flex', alignItems: 'stretch', marginTop: 'auto', marginBottom: '0.6rem' }}>
         {cards.map((c, i) => (

@@ -186,14 +186,73 @@ function useBresilFixtures() {
   return fixtures;
 }
 
+// ── Coupes européennes de clubs (live, api-football) — 23 juillet 2026 ────────
+// Même schéma que Brasileirão ci-dessus : source séparée /api/football/eucup/<comp>/matches,
+// même préfixe que generateBackgroundAlerts (server.js) et WorldMapPage. Factory réutilisée pour
+// Europa League, Conference League et Ligue des Champions (3 instances indépendantes, même code).
+const EU_CUP_PREFIX = { europa: 'afel', conference: 'afcl', champions: 'afch' };
+
+function makeEuCupFixturesHook(compKey) {
+  const prefix = EU_CUP_PREFIX[compKey];
+  const mapMatch = m => ({
+    id: `${prefix}_${m.id}`,
+    league: compKey,
+    round: m.round || '',
+    date: m.date,
+    status: m.status || 'STATUS_SCHEDULED',
+    venue: { name: 'À définir', city: '', capacity: 0 },
+    weather: { icon: '⚽', temp: 0, condition: '—', wind: 0, humidity: 0 },
+    home: mapFdTeam(m.home),
+    away: mapFdTeam(m.away),
+    h2h: m.h2h || [],
+  });
+
+  let fixtures = null;
+  let fetching = false;
+  const listeners = new Set();
+  const notify = () => listeners.forEach(fn => fn(fixtures));
+
+  async function fetchAndApply() {
+    if (fetching) return;
+    fetching = true;
+    try {
+      const d = await fetch(`/api/football/eucup/${compKey}/matches`).then(r => r.json());
+      fixtures = (d.matches || []).map(mapMatch);
+    } catch {
+      fixtures = fixtures || [];
+    }
+    fetching = false;
+    notify();
+  }
+
+  return function useEuCupFixtures() {
+    const [state, setState] = useState(fixtures || []);
+    useEffect(() => {
+      listeners.add(setState);
+      if (fixtures) setState(fixtures);
+      else if (!fetching) fetchAndApply();
+      return () => listeners.delete(setState);
+    }, []);
+    return state;
+  };
+}
+
+const useEuropaFixtures    = makeEuCupFixturesHook('europa');
+const useConferenceFixtures = makeEuCupFixturesHook('conference');
+const useChampionsFixtures  = makeEuCupFixturesHook('champions');
+
 // FIXTURES (statiques) + 5 championnats (live, football-data.org) + CDM (live) + Brasileirão (live)
+// + coupes européennes de clubs (live, api-football)
 // Pour une ligue donnée, les fixtures live remplacent les statiques dès qu'elles
 // sont disponibles (sinon fallback statique, ex: hors-saison).
 export function useFootballFixtures() {
   const { fixtures: cdm, loaded: cdmLoaded } = useCdmFixtures();
   const fd = useFdFixtures();
   const br = useBresilFixtures();
-  const liveLeagues = new Set([...fd.map(f => f.league), ...br.map(f => f.league)]);
+  const europa = useEuropaFixtures();
+  const conference = useConferenceFixtures();
+  const champions = useChampionsFixtures();
+  const liveLeagues = new Set([...fd.map(f => f.league), ...br.map(f => f.league), ...europa.map(f => f.league), ...conference.map(f => f.league), ...champions.map(f => f.league)]);
   const staticFixtures = FIXTURES.filter(f => !liveLeagues.has(f.league));
-  return { fixtures: [...staticFixtures, ...fd, ...br, ...cdm], loading: !cdmLoaded };
+  return { fixtures: [...staticFixtures, ...fd, ...br, ...europa, ...conference, ...champions, ...cdm], loading: !cdmLoaded };
 }

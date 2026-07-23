@@ -23,9 +23,12 @@ const LEAGUE_META = {
   acb: 'ACB', bbl:  'BBL',  legaa: 'Lega A',
   ligue1: 'Ligue 1', laliga: 'La Liga', bundes: 'Bundesliga', seriea: 'Serie A', pl: 'Premier League',
   euroleague: 'EuroLeague', cdm: 'Coupe du Monde', bresil: 'Brasileirão',
+  europa: 'Europa League', conference: 'Conference League', champions: 'Ligue des Champions',
 };
 
-const FOOTBALL_LEAGUES = new Set(['ligue1','laliga','bundes','seriea','pl','cdm','bresil']);
+// Coupes européennes de clubs (23 juillet 2026) — source api-football, /api/football/eucup/:comp/matches
+const EU_CUP_LEAGUES = ['europa', 'conference', 'champions'];
+const FOOTBALL_LEAGUES = new Set(['ligue1','laliga','bundes','seriea','pl','cdm','bresil', ...EU_CUP_LEAGUES]);
 
 const _ESPN_WNBA = { 'Atlanta Dream':20,'Chicago Sky':19,'Connecticut Sun':18,'Dallas Wings':3,'Golden State Valkyries':129689,'Indiana Fever':5,'Las Vegas Aces':17,'Los Angeles Sparks':6,'Minnesota Lynx':8,'New York Liberty':9,'Phoenix Mercury':11,'Portland Fire':132052,'Seattle Storm':14,'Toronto Tempo':131935,'Washington Mystics':16 };
 const _ESPN_NBA  = { 'Atlanta Hawks':1,'Boston Celtics':2,'New Orleans Pelicans':3,'Chicago Bulls':4,'Cleveland Cavaliers':5,'Dallas Mavericks':6,'Denver Nuggets':7,'Detroit Pistons':8,'Golden State Warriors':9,'Houston Rockets':10,'Indiana Pacers':11,'LA Clippers':12,'Los Angeles Lakers':13,'Miami Heat':14,'Milwaukee Bucks':15,'Minnesota Timberwolves':16,'Brooklyn Nets':17,'New York Knicks':18,'Orlando Magic':19,'Philadelphia 76ers':20,'Phoenix Suns':21,'Portland Trail Blazers':22,'Sacramento Kings':23,'San Antonio Spurs':24,'Oklahoma City Thunder':25,'Utah Jazz':26,'Washington Wizards':27,'Toronto Raptors':28,'Memphis Grizzlies':29,'Charlotte Hornets':30 };
@@ -56,6 +59,8 @@ function _prefetchCountry(country) {
       cachedFetch('/api/acb/leaders',   6*3_600_000).catch(()=>{});
     } else if (l === 'cdm') {
       cachedFetch('/api/fd/worldcup', 30_000).catch(()=>{});
+    } else if (EU_CUP_LEAGUES.includes(l)) {
+      cachedFetch(`/api/football/eucup/${l}/matches`, 30_000).catch(()=>{});
     } else if (l === 'bresil') {
       cachedFetch('/api/fd/bresil', 30_000).catch(()=>{});
     } else if (l === 'euroleague') {
@@ -69,7 +74,31 @@ function _prefetchCountry(country) {
 }
 
 
-const MONDE = { name: 'Monde', flag: '🌍', leagues: ['cdm','euroleague'], isMonde: true };
+// Ordre demandé le 23 juillet 2026 : LDC, Europa, Conference, EuroLeague.
+// 'cdm' retirée de l'affichage le 23 juillet 2026 — Coupe du Monde 2026 terminée, prochaine édition
+// en 2030. Le code CDM (backend + settlement + useFootballFixtures) reste intact, juste masquée ici
+// (pas dans MONDE.leagues) — au cas où une vieille alerte CDM ait encore besoin d'être réglée, et
+// pour ne pas devoir tout reconstruire si la catégorie doit revenir un jour.
+const MONDE = { name: 'Monde', flag: '🌍', leagues: ['champions','europa','conference','euroleague'], isMonde: true };
+
+// "Plus belles affiches" (23 juillet 2026, panneau Monde uniquement) — pas de classement/popularité
+// disponible côté données, donc heuristique best-effort : repère un club connu par son nom dans une
+// liste courte de clubs européens à forte notoriété/historique continental. Un match avec au moins
+// un de ces clubs remonte en premier ; le reste suit par ordre chronologique. Approximatif par
+// nature (liste non exhaustive), mais bien mieux qu'un tri purement chronologique pour mettre en
+// avant les affiches qui comptent parmi des tours de qualification à faible enjeu par ailleurs.
+const BIG_CLUB_PATTERN = /benfica|be[sş]ikta[sş]|anderlecht|paok|dynamo kyiv|dynamo kiev|ferencv|sporting|porto|ajax|feyenoord|celtic|rangers|galatasaray|fenerbahce|olympiacos|panathinaikos|shakhtar|red star|crvena zvezda|dinamo zagreb|slavia praha|sparta praha|salzburg|young boys|club brugge|club bruges|antwerp|besiktas|st\.?\s?gallen|midtjylland/i;
+function pickHighlightMatches(games, n) {
+  const withAppeal = games.map(g => ({ g, appeal: BIG_CLUB_PATTERN.test(`${g.home?.name || ''} ${g.away?.name || ''}`) ? 1 : 0 }));
+  withAppeal.sort((a, b) => b.appeal - a.appeal || new Date(a.g.date) - new Date(b.g.date));
+  return withAppeal.slice(0, n).map(x => x.g);
+}
+
+// Légende bas-gauche (23 juillet 2026) — 2 lignes : Monde/USA/Brésil, puis les 5 pays européens.
+const LEGEND_ROWS = [
+  [MONDE, COVERED['840'], COVERED['076']],
+  [COVERED['250'], COVERED['724'], COVERED['826'], COVERED['276'], COVERED['380']],
+];
 
 const STAT_CATS = [
   { key: 'pts', label: 'PTS', sub: 'Points / match',    color: '#60a5fa' },
@@ -222,7 +251,7 @@ function Panel({ country, onClose, statsLeague, setStatsLeague, onOpenBasketStat
       // via useFootballFixtures, cf. src/utils/useFootballFixtures.js). Seuls les matchs SCHEDULED
       // sont renvoyés par /api/fd/matches (pas encore de source de score final pour ces 5 ligues,
       // contrairement à la CDM) — l'onglet "Terminés" restera vide pour elles, comme documenté.
-      if (FOOTBALL_LEAGUES.has(l) && l !== 'cdm' && l !== 'bresil') return cachedFetch('/api/fd/matches', 30_000).then(d=>{
+      if (FOOTBALL_LEAGUES.has(l) && l !== 'cdm' && l !== 'bresil' && !EU_CUP_LEAGUES.includes(l)) return cachedFetch('/api/fd/matches', 30_000).then(d=>{
         const all=(d.matches||[]).filter(f=>f.league===l).map(f=>({
           id:`fd_${f.id}`,date:f.date,status:'STATUS_SCHEDULED',round:f.round,
           home:{name:f.home?.name,short:f.home?.short,logo:f.home?.logoId,score:null},
@@ -232,6 +261,17 @@ function Panel({ country, onClose, statsLeague, setStatsLeague, onOpenBasketStat
       });
       if (l === 'cdm') return cachedFetch('/api/fd/worldcup', 30_000).then(d => {
         const games = (d.games || []).map(g => ({ ...g, id: `fdcdm_${g.id}` }));
+        return {l, ...splitGames(games)};
+      });
+      // Coupes européennes de clubs (23 juillet 2026) — source api-football, mêmes préfixes que
+      // generateBackgroundAlerts (server.js) pour que fixtureId corresponde partout (snapshot inclus).
+      if (EU_CUP_LEAGUES.includes(l)) return cachedFetch(`/api/football/eucup/${l}/matches`, 30_000).then(d => {
+        const prefix = { europa: 'afel', conference: 'afcl', champions: 'afch' }[l];
+        const games = (d.matches || []).map(m => ({
+          id: `${prefix}_${m.id}`, date: m.date, status: m.status, round: m.round,
+          home: { name: m.home?.name, short: m.home?.short, logo: m.home?.logoId, score: m.home?.score ?? null },
+          away: { name: m.away?.name, short: m.away?.short, logo: m.away?.logoId, score: m.away?.score ?? null },
+        }));
         return {l, ...splitGames(games)};
       });
       // Brasileirão (17 juillet 2026) — source isolée /api/fd/bresil, même prefixe fdbr_ que
@@ -289,9 +329,6 @@ function Panel({ country, onClose, statsLeague, setStatsLeague, onOpenBasketStat
             <span style={{fontSize:32}}>{country.flag}</span>
             <div>
               <div style={{fontSize:20,fontWeight:800,color:'#fff',letterSpacing:'-0.02em'}}>{country.name}</div>
-              <div style={{fontSize:9,color:'rgba(251,146,60,0.5)',fontFamily:'monospace',textTransform:'uppercase',letterSpacing:'0.12em',marginTop:4}}>
-                {country.leagues.map(l=>LEAGUE_META[l]).join(' · ')}
-              </div>
             </div>
           </div>
           <button onClick={onClose} style={{background:'none',border:'1px solid rgba(251,146,60,0.15)',borderRadius:6,color:'rgba(251,146,60,0.5)',cursor:'pointer',width:32,height:32,fontSize:16,display:'flex',alignItems:'center',justifyContent:'center',transition:'all .15s'}}
@@ -334,7 +371,7 @@ function Panel({ country, onClose, statsLeague, setStatsLeague, onOpenBasketStat
       </div>
 
       {/* Matchs */}
-      <div style={{flex:1,overflowY:'auto',padding:'1.25rem 1.75rem'}}>
+      <div style={{flex:1,overflowY:'auto',padding: country.isMonde ? '0.6rem 1.75rem' : '1.25rem 1.75rem'}}>
         {loading ? (
           <div style={{display:'flex',alignItems:'center',justifyContent:'center',height:'100%',color:'rgba(251,146,60,0.25)',fontFamily:'monospace',fontSize:11,letterSpacing:'0.1em'}}>CHARGEMENT...</div>
         ) : visibleLeagues.map(league => {
@@ -344,11 +381,20 @@ function Panel({ country, onClose, statsLeague, setStatsLeague, onOpenBasketStat
           // Si rien dans les 30h mais des matchs plus loin (ex: reprise de saison à plusieurs
           // semaines), les montrer directement plutôt que forcer un clic sur "À venir" pour voir
           // un onglet "soon" vide.
+          const isExplicitUpcoming = view[league] === 'upcoming';
           const mode = view[league] || (soon.length === 0 && upcoming.length > 0 ? 'upcoming' : 'soon');
-          const games = mode === 'upcoming' ? [...soon, ...upcoming] : soon;
+          // Panneau Monde (23 juillet 2026) : seulement 5 affiches par compétition par défaut,
+          // triées pour mettre en avant les clubs connus (cf. pickHighlightMatches) — la liste
+          // complète reste disponible en cliquant explicitement "À venir" (inchangé pour les autres
+          // pays). Le cap s'applique aussi quand le mode "upcoming" est choisi automatiquement
+          // (aucun match sous 30h) — sinon une compétition qui n'a encore aucun match imminent
+          // (ex: LDC, 1er match le 28 juillet) affichait sa liste complète non filtrée par défaut.
+          const games = mode === 'upcoming'
+            ? (country.isMonde && !isExplicitUpcoming ? pickHighlightMatches([...soon, ...upcoming], 3) : [...soon, ...upcoming])
+            : (country.isMonde ? pickHighlightMatches(soon, 3) : soon);
           const collapsed = !!collapsedLeagues[league];
           return (
-            <div key={league} style={{marginBottom:'1.5rem'}}>
+            <div key={league} style={{marginBottom: country.isMonde ? '0.6rem' : '1.5rem'}}>
               <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:10,position:'sticky',top:0,zIndex:1,background:'linear-gradient(180deg,rgba(0,8,25,0.99) 85%,transparent)',paddingTop:4,paddingBottom:4,marginTop:-4}}>
                 {(() => {
                   const isFoot = FOOTBALL_LEAGUES.has(league);
@@ -401,27 +447,28 @@ function Panel({ country, onClose, statsLeague, setStatsLeague, onOpenBasketStat
                   });
                   return Object.entries(byDate).map(([dateLabel, dayGames]) => (
                     <div key={dateLabel}>
-                      {/* Séparateur date */}
-                      <div style={{display:'flex',alignItems:'center',gap:8,padding:'6px 4px',margin:'4px 0'}}>
+                      {/* Séparateur date — plus compact dans le panneau Monde (23 juillet 2026) */}
+                      <div style={{display:'flex',alignItems:'center',gap:8,padding: country.isMonde ? '2px 4px' : '6px 4px',margin: country.isMonde ? '1px 0' : '4px 0'}}>
                         <div style={{flex:1,height:'1px',background:'rgba(255,255,255,0.08)'}}/>
-                        <span style={{fontSize:9,fontWeight:700,color:'rgba(255,255,255,0.35)',textTransform:'capitalize',letterSpacing:'0.06em',whiteSpace:'nowrap'}}>{dateLabel}</span>
+                        <span style={{fontSize: country.isMonde ? 8 : 9,fontWeight:700,color:'rgba(255,255,255,0.35)',textTransform:'capitalize',letterSpacing:'0.06em',whiteSpace:'nowrap'}}>{dateLabel}</span>
                         <div style={{flex:1,height:'1px',background:'rgba(255,255,255,0.08)'}}/>
                       </div>
                       {dayGames.map((g,i) => {
                         const live = g.status==='STATUS_IN_PROGRESS' || (g.home?.score > 0 && g.status!=='STATUS_FINAL');
+                        const logoSize = country.isMonde ? 14 : 20;
                         return (
                           <button key={i} onClick={()=>{
                             // Met à jour le state de /carte AVANT de naviguer → navigate(-1) restaurera returnCountry
                             navigate(location.pathname+location.search, { replace:true, state:{ returnCountry: country } });
                             setTimeout(()=>navigate(isFootball?`/football/${g.id}`:`/basketball/${g.id}${lp}`), 0);
                           }}
-                            style={{width:'100%',background:'none',border:'none',borderTop:i>0?'1px solid rgba(255,255,255,0.04)':'none',padding:'0.65rem 0.5rem',cursor:'pointer',textAlign:'center',transition:'background .15s'}}
+                            style={{width:'100%',background:'none',border:'none',borderTop:i>0?'1px solid rgba(255,255,255,0.04)':'none',padding: country.isMonde ? '0.3rem 0.5rem' : '0.65rem 0.5rem',cursor:'pointer',textAlign:'center',transition:'background .15s'}}
                             onMouseEnter={e=>{e.currentTarget.style.background='rgba(255,255,255,0.04)';_prefetchMatch(g,league);}}
                             onMouseLeave={e=>e.currentTarget.style.background='none'}>
-                            <div style={{display:'grid',gridTemplateColumns:'1fr auto 1fr',alignItems:'center',gap:8,marginBottom:3}}>
+                            <div style={{display:'grid',gridTemplateColumns:'1fr auto 1fr',alignItems:'center',gap:8,marginBottom: country.isMonde ? 1 : 3}}>
                               <div style={{display:'flex',alignItems:'center',justifyContent:'flex-end',gap:6,minWidth:0}}>
-                                <span style={{fontSize:12,fontWeight:700,color:'#fff',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{g.home?.name||g.home?.short}</span>
-                                {g.home?.logo&&<img src={g.home.logo} alt="" width={20} height={20} style={{objectFit:'contain',borderRadius:'50%',flexShrink:0}} onError={e=>e.target.style.display='none'}/>}
+                                <span style={{fontSize: country.isMonde ? 11 : 12,fontWeight:700,color:'#fff',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{g.home?.name||g.home?.short}</span>
+                                {g.home?.logo&&<img src={g.home.logo} alt="" width={logoSize} height={logoSize} style={{objectFit:'contain',borderRadius:'50%',flexShrink:0}} onError={e=>e.target.style.display='none'}/>}
                               </div>
                               <div style={{flexShrink:0}}>
                                 {live&&g.home?.score!=null
@@ -430,16 +477,16 @@ function Panel({ country, onClose, statsLeague, setStatsLeague, onOpenBasketStat
                                 }
                               </div>
                               <div style={{display:'flex',alignItems:'center',justifyContent:'flex-start',gap:6,minWidth:0}}>
-                                {g.away?.logo&&<img src={g.away.logo} alt="" width={20} height={20} style={{objectFit:'contain',borderRadius:'50%',flexShrink:0}} onError={e=>e.target.style.display='none'}/>}
-                                <span style={{fontSize:12,fontWeight:700,color:'#fff',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{g.away?.name||g.away?.short}</span>
+                                {g.away?.logo&&<img src={g.away.logo} alt="" width={logoSize} height={logoSize} style={{objectFit:'contain',borderRadius:'50%',flexShrink:0}} onError={e=>e.target.style.display='none'}/>}
+                                <span style={{fontSize: country.isMonde ? 11 : 12,fontWeight:700,color:'#fff',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{g.away?.name||g.away?.short}</span>
                               </div>
                             </div>
                             <div style={{display:'flex',alignItems:'center',justifyContent:'center',gap:6}}>
                               {live
                                 ? <span style={{fontSize:8,color:'#60a5fa',fontFamily:'monospace',fontWeight:800}}>● EN COURS</span>
                                 : <>
-                                    {g.round&&<span style={{fontSize:9,color:'rgba(255,255,255,0.3)',fontStyle:'italic'}}>{g.round}</span>}
-                                    <span style={{fontSize:9,color:'rgba(255,255,255,0.4)'}}>{new Date(g.date).toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'})}</span>
+                                    {g.round&&!country.isMonde&&<span style={{fontSize:9,color:'rgba(255,255,255,0.3)',fontStyle:'italic'}}>{g.round}</span>}
+                                    <span style={{fontSize: country.isMonde ? 8 : 9,color:'rgba(255,255,255,0.4)'}}>{new Date(g.date).toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'})}</span>
                                   </>
                               }
                             </div>
@@ -759,20 +806,23 @@ export default function WorldMapPage() {
         </div>
       )}
 
-      {/* Légende bas gauche */}
-      <div style={{ position:'absolute', bottom:24, left:24, display:'flex', alignItems:'center', gap:8, zIndex:8, pointerEvents:'none', animation:'mapReveal 0.8s ease-out 0.2s both' }}>
-        <div style={{ display:'flex', alignItems:'center', gap:4, pointerEvents:'auto' }}>
-          {[...Object.values(COVERED), MONDE].map((c, i) => (
-            <button key={i} onClick={() => { const desel=c===selected; setSelected(desel?null:c); if(desel) setStatsLeague(null); }} title={c.leagues.map(l => LEAGUE_META[l]).join(' · ')}
-              style={{ display:'flex', alignItems:'center', gap:4, background:'none', border:'none', borderRadius:6, padding:'2px 6px', cursor:'pointer', transition:'opacity .15s', opacity: selected===c ? 1 : 0.55 }}
-              onMouseEnter={e => { e.currentTarget.style.opacity='1'; _prefetchCountry(c); }}
-              onMouseLeave={e => e.currentTarget.style.opacity = selected===c ? '1' : '0.55'}
-            >
-              <span style={{ fontSize:13 }}>{c.flag}</span>
-              <span style={{ fontSize:10, fontWeight:600, color:'#fff', whiteSpace:'nowrap' }}>{c.name}</span>
-            </button>
-          ))}
-        </div>
+      {/* Légende bas gauche — 2 lignes (23 juillet 2026, ordre demandé) : Monde/USA/Brésil, puis
+          France/Espagne/Angleterre/Allemagne/Italie. */}
+      <div style={{ position:'absolute', bottom:24, left:24, display:'flex', flexDirection:'column', alignItems:'flex-start', gap:4, zIndex:8, pointerEvents:'none', animation:'mapReveal 0.8s ease-out 0.2s both' }}>
+        {LEGEND_ROWS.map((row, ri) => (
+          <div key={ri} style={{ display:'flex', alignItems:'center', gap:4, pointerEvents:'auto' }}>
+            {row.map(c => (
+              <button key={c.name} onClick={() => { const desel=c===selected; setSelected(desel?null:c); if(desel) setStatsLeague(null); }} title={c.leagues.map(l => LEAGUE_META[l]).join(' · ')}
+                style={{ display:'flex', alignItems:'center', gap:4, background:'none', border:'none', borderRadius:6, padding:'2px 6px', cursor:'pointer', transition:'opacity .15s', opacity: selected===c ? 1 : 0.55 }}
+                onMouseEnter={e => { e.currentTarget.style.opacity='1'; _prefetchCountry(c); }}
+                onMouseLeave={e => e.currentTarget.style.opacity = selected===c ? '1' : '0.55'}
+              >
+                <span style={{ fontSize:13 }}>{c.flag}</span>
+                <span style={{ fontSize:10, fontWeight:600, color:'#fff', whiteSpace:'nowrap' }}>{c.name}</span>
+              </button>
+            ))}
+          </div>
+        ))}
       </div>
 
 

@@ -1154,41 +1154,58 @@ export function resolveFootballAlertResult(a, game) {
   return isFinal ? 'won' : null;
 }
 
+// Sources de règlement foot — une entrée par préfixe fixtureId, chacune avec sa propre source de
+// scores. Généralisé le 23 juillet 2026 (Europa League) : jusque-là seule la CDM était réglée ;
+// au passage, corrige aussi le Brasileirão (fdbr_) qui avait pourtant déjà un score exploitable via
+// /api/fd/bresil (STATUS_FINAL + home.score/away.score) mais jamais consommé pour le règlement.
+const FOOTBALL_SETTLEMENT_SOURCES = [
+  { prefix: 'fdcdm_', endpoint: '/api/fd/worldcup', gamesKey: 'games' },
+  { prefix: 'fdbr_',  endpoint: '/api/fd/bresil', gamesKey: 'matches' },
+  { prefix: 'afel_',  endpoint: '/api/football/eucup/europa/matches', gamesKey: 'matches' },
+  { prefix: 'afcl_',  endpoint: '/api/football/eucup/conference/matches', gamesKey: 'matches' },
+  { prefix: 'afch_',  endpoint: '/api/football/eucup/champions/matches', gamesKey: 'matches' },
+];
+
 export async function resolveCompletedFootballAlerts(alerts, save) {
   const toResolve = alerts.filter(a =>
-    a.status === 'accepted' && (a.fixtureId || '').startsWith('fdcdm_') &&
+    a.status === 'accepted' &&
+    FOOTBALL_SETTLEMENT_SOURCES.some(s => (a.fixtureId || '').startsWith(s.prefix)) &&
     new Date(a.fixtureDate).getTime() < Date.now()
   );
   if (!toResolve.length) return;
-  try {
-    const wc = await fetch('/api/fd/worldcup').then(r => r.json());
-    const games = wc.games || [];
-    let changed = false;
-    for (const a of toResolve) {
-      const gid = a.fixtureId.replace('fdcdm_', '');
-      let game = games.find(g => String(g.id) === gid && ['STATUS_IN_PROGRESS', 'STATUS_FINAL'].includes(g.status));
-      // Le match est sorti de la fenêtre glissante de /api/fd/worldcup (48h) — filet de rattrapage
-      // pour ne pas laisser un pari accepted bloqué indéfiniment (cf. server.js /api/fd/match/:id,
-      // bug du 7 juillet 2026 : alerte DC Suisse-Algérie du 3 juillet jamais réglée).
-      if (!game) {
-        const single = await fetch(`/api/fd/match/${gid}`).then(r => r.ok ? r.json() : null).catch(() => null);
-        if (single && ['STATUS_IN_PROGRESS', 'STATUS_FINAL'].includes(single.status)) game = single;
+  let changed = false;
+  for (const source of FOOTBALL_SETTLEMENT_SOURCES) {
+    const items = toResolve.filter(a => (a.fixtureId || '').startsWith(source.prefix));
+    if (!items.length) continue;
+    try {
+      const d = await fetch(source.endpoint).then(r => r.json());
+      const games = d[source.gamesKey] || [];
+      for (const a of items) {
+        const gid = a.fixtureId.replace(source.prefix, '');
+        let game = games.find(g => String(g.id) === gid && ['STATUS_IN_PROGRESS', 'STATUS_FINAL'].includes(g.status));
+        // Le match est sorti de la fenêtre glissante de la source (48h) — filet de rattrapage CDM
+        // pour ne pas laisser un pari accepted bloqué indéfiniment (cf. server.js /api/fd/match/:id,
+        // bug du 7 juillet 2026 : alerte DC Suisse-Algérie du 3 juillet jamais réglée).
+        if (!game && source.prefix === 'fdcdm_') {
+          const single = await fetch(`/api/fd/match/${gid}`).then(r => r.ok ? r.json() : null).catch(() => null);
+          if (single && ['STATUS_IN_PROGRESS', 'STATUS_FINAL'].includes(single.status)) game = single;
+        }
+        if (!game) continue;
+        const result = resolveFootballAlertResult(a, game);
+        if (!result) continue;
+        a.actualHomeScore = game.home.score;
+        a.actualAwayScore = game.away.score;
+        a.status = result;
+        a.settledAt = Date.now();
+        changed = true;
+        // Trace serveur du résultat — sans ça aucun bilan foot n'est possible côté backend
+        // (contrairement aux props basket, réglées automatiquement par runAutoSettle()). Envoi fiable
+        // avec retry + file d'attente (postSettlementReliably) depuis le 25 juin 2026.
+        postSettlementReliably({ id: a.id, status: result, probability: a.acceptedProbability ?? a.probability, line: a.line, edge: a.edge, settledAt: a.settledAt });
       }
-      if (!game) continue;
-      const result = resolveFootballAlertResult(a, game);
-      if (!result) continue;
-      a.actualHomeScore = game.home.score;
-      a.actualAwayScore = game.away.score;
-      a.status = result;
-      a.settledAt = Date.now();
-      changed = true;
-      // Trace serveur du résultat — sans ça aucun bilan foot n'est possible côté backend
-      // (contrairement aux props basket, réglées automatiquement par runAutoSettle()). Envoi fiable
-      // avec retry + file d'attente (postSettlementReliably) depuis le 25 juin 2026.
-      postSettlementReliably({ id: a.id, status: result, probability: a.acceptedProbability ?? a.probability, line: a.line, edge: a.edge, settledAt: a.settledAt });
-    }
-    if (changed) save([...alerts]);
-  } catch {}
+    } catch {}
+  }
+  if (changed) save([...alerts]);
 }
 
 // Suit le marché pour les alertes player_prop ACCEPTÉES, même quand le modèle ne génère plus

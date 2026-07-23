@@ -285,9 +285,12 @@ const FB_LEAGUE_AVG_GOALS = { ligue1: 1.35, pl: 1.45, laliga: 1.35, bundes: 1.55
 // Pénalise le modèle Poisson quand un attaquant ou un gardien/défenseur clé est annoncé absent —
 // jusqu'ici (`computeLambdas`) le modèle ne voyait QUE les stats but/équipe, aveugle à toute
 // absence individuelle, contrairement au basket (RotoWire + calcKeyPlayerOutPenalty). Couvre les
-// 5 grands championnats + Brasileirão (CDM non concernée, pas d'id api-football mappé ici).
+// 5 grands championnats + Brasileirão + LDC/Europa/Conference (23 juillet 2026 — vérifié en direct
+// que /teams et /injuries acceptent ces 3 competitionId exactement comme un championnat domestique,
+// aucun code séparé nécessaire). CDM non concernée (pas d'id api-football mappé, seule compétition
+// sans club — la logique attaquant/gardien clé ne s'y applique pas de la même façon).
 const FOOTBALL_API_BASE = 'https://v3.football.api-sports.io';
-const FOOTBALL_API_LEAGUE_IDS = { ligue1: 61, pl: 39, laliga: 140, bundes: 78, seriea: 135, bresil: 71 };
+const FOOTBALL_API_LEAGUE_IDS = { ligue1: 61, pl: 39, laliga: 140, bundes: 78, seriea: 135, bresil: 71, europa: 3, conference: 848, champions: 2 };
 // Semaphore + retry sur rateLimit (22 juillet 2026) — même pattern que bballFetch (api-sports.io
 // basketball, ~ligne 3852) : le xG (jusqu'à ~17 appels/match : liste des derniers matchs + stats
 // par match, x2 équipes) déclenchait le rate limit 300 req/min du plan Pro dès 2-3 matchs traités
@@ -316,8 +319,13 @@ async function footballApiFetch(url, attempt = 0) {
   try {
     return await _footballApiFetchRaw(url);
   } catch (e) {
-    if (/rateLimit/i.test(e.message) && attempt < 3) {
-      await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
+    // Fix 23 juillet 2026 : ce retry ne reconnaissait que le rate-limit "doux" (réponse 200 avec
+    // un champ errors.rateLimit dans le JSON) — jamais le vrai statut HTTP 429, que l'API renvoie
+    // aussi (confirmé en direct : tous les appels Europa League échouaient silencieusement avec
+    // "football-api 429 ...", jamais retentés, faute de correspondre à /rateLimit/i). Les deux
+    // formes déclenchent maintenant le même retry avec backoff.
+    if ((/rateLimit/i.test(e.message) || /football-api 429\b/.test(e.message)) && attempt < 3) {
+      await new Promise(r => setTimeout(r, 2000 * (attempt + 1)));
       return footballApiFetch(url, attempt + 1);
     }
     throw e;
@@ -500,6 +508,122 @@ async function tryGetFootballXGInputs(leagueKey, dateStr, homeTeamName, awayTeam
     awayGF: awayXG.xgFor * awayXG.games, awayGA: awayXG.xgAgainst * awayXG.games, awayPlayed: awayXG.games,
     homeAvgXG: homeXG.xgFor, awayAvgXG: awayXG.xgFor,
   };
+}
+
+// ── Europa League / Conference League via api-football (23 juillet 2026) ─────────────────────
+// Contrairement aux 5 grands championnats/Brasileirão (une seule ligue, historique propre), les
+// clubs de ces 2 compétitions viennent de dizaines de championnats différents (Qarabağ, Tromsø,
+// Hammarby...) — aucune notion de "classement/stats de LA compétition" exploitable en tours de
+// qualification (chaque club n'y a joué que 0-1 match cette saison). Même défi que la CDM (équipes
+// hétérogènes, peu de données propres à la compétition) → même solution : forme récente réelle de
+// chaque club, tous matchs confondus (amicaux + qualifs + championnat domestique), via l'endpoint
+// api-football `/fixtures?team=X` (pas de filtre `league=`, contrairement à fetchTeamRecentXG plus
+// haut qui est volontairement scopé à UNE ligue pour les 5 grands championnats).
+// Réactivation progressive (23 juillet 2026, après fix BETCLIC_EXTRAS_WINDOW_MS) — Europa League
+// seule d'abord (`EU_CLUB_COMP_ENABLED`), un cycle contrôlé à la fois. Conference League (43 matchs)
+// rejoint la liste une fois Europa confirmée propre.
+const EU_CLUB_ALERTS_ENABLED = true;
+const EU_CLUB_COMP_ENABLED = { europa: true, conference: true, champions: true };
+const EU_CLUB_COMP_IDS = { europa: 3, conference: 848, champions: 2 };
+const EU_CLUB_AVG_GOALS = 1.30; // buts/équipe/match attendus, valeur de départ non calibrée (même statut que CDM_AVG_GOALS)
+// Fallback si le pool d'équipes programmées n'a pas assez de stats valides (mécanisme identique à CDM_AVG_GF/GA)
+const EU_CLUB_AVG_GF = 1.45;
+const EU_CLUB_AVG_GA = 1.15;
+const _euClubFormCache = {}; // `${teamApiId}_${season}` → { data: {gf, ga, games}, ts }
+async function fetchClubRecentForm(teamApiId, season) {
+  const cacheKey = `${teamApiId}_${season}`;
+  const cached = _euClubFormCache[cacheKey];
+  if (cached && Date.now() - cached.ts < CACHE_6H) return cached.data;
+  if (!process.env.FOOTBALL_API_KEY) return null;
+  try {
+    const j = await footballApiFetch(`${FOOTBALL_API_BASE}/fixtures?team=${teamApiId}&season=${season}&last=8&status=FT`);
+    const fixtures = j.response || [];
+    if (fixtures.length < 3) return null; // échantillon jugé trop court (même seuil que FB_XG_MIN_GAMES)
+    let gf = 0, ga = 0, counted = 0;
+    for (const fx of fixtures) {
+      const isHome = fx.teams?.home?.id === teamApiId;
+      const gFor = isHome ? fx.goals?.home : fx.goals?.away;
+      const gAgainst = isHome ? fx.goals?.away : fx.goals?.home;
+      if (gFor == null || gAgainst == null) continue;
+      gf += gFor; ga += gAgainst; counted++;
+    }
+    if (counted < 3) return null;
+    const data = { gf, ga, games: counted };
+    _euClubFormCache[cacheKey] = { data, ts: Date.now() };
+    return data;
+  } catch { return null; }
+}
+
+// xG toutes compétitions confondues (23 juillet 2026) — même principe que fetchTeamRecentXG (5
+// grands championnats) mais sans filtre `league=`, pour la même raison que fetchClubRecentForm
+// ci-dessus (les clubs Europa/Conference n'ont pas assez de matchs DANS cette compétition cette
+// saison pour un calcul fiable). Alimente le panneau "Statistiques saison" de MatchDetailPage.jsx.
+const _euClubXGCache = {}; // `${teamApiId}_${season}` → { data, ts }
+async function fetchClubRecentXG(teamApiId, season) {
+  const cacheKey = `${teamApiId}_${season}`;
+  const cached = _euClubXGCache[cacheKey];
+  if (cached && Date.now() - cached.ts < CACHE_6H) return cached.data;
+  if (!process.env.FOOTBALL_API_KEY) return null;
+  try {
+    const fj = await footballApiFetch(`${FOOTBALL_API_BASE}/fixtures?team=${teamApiId}&season=${season}&last=${FB_XG_RECENT_GAMES}&status=FT`);
+    const fixtures = fj.response || [];
+    if (fixtures.length < FB_XG_MIN_GAMES) return null;
+    let xgFor = 0, xgAgainst = 0, shots = 0, shotsOnTarget = 0, possession = 0, counted = 0;
+    for (const fx of fixtures) {
+      const sj = await footballApiFetch(`${FOOTBALL_API_BASE}/fixtures/statistics?fixture=${fx.fixture.id}`).catch(() => null);
+      if (!sj) continue;
+      const teams = sj.response || [];
+      const us   = teams.find(t => t.team?.id === teamApiId);
+      const them = teams.find(t => t.team?.id !== teamApiId);
+      const usXG   = us?.statistics?.find(s => s.type === 'expected_goals')?.value;
+      const themXG = them?.statistics?.find(s => s.type === 'expected_goals')?.value;
+      if (usXG == null || themXG == null) continue;
+      xgFor += parseFloat(usXG); xgAgainst += parseFloat(themXG); counted++;
+      const usTotalShots  = us?.statistics?.find(s => s.type === 'Total Shots')?.value;
+      const usShotsOnGoal = us?.statistics?.find(s => s.type === 'Shots on Goal')?.value;
+      const usPossession  = us?.statistics?.find(s => s.type === 'Ball Possession')?.value;
+      if (usTotalShots != null) shots += parseFloat(usTotalShots);
+      if (usShotsOnGoal != null) shotsOnTarget += parseFloat(usShotsOnGoal);
+      if (usPossession != null) possession += parseFloat(String(usPossession).replace('%', ''));
+    }
+    if (counted < FB_XG_MIN_GAMES) return null;
+    const data = {
+      xgFor: xgFor / counted, xgAgainst: xgAgainst / counted, games: counted,
+      shotsPerGame: shots / counted, shotsOnTarget: shotsOnTarget / counted, possession: possession / counted,
+    };
+    _euClubXGCache[cacheKey] = { data, ts: Date.now() };
+    return data;
+  } catch { return null; }
+}
+// Résout l'id api-football d'un club depuis le cache de matchs Europa/Conference déjà chargé
+// (pas de "liste des équipes de la compétition" exploitable comme pour les 5 championnats, cf.
+// fetchFootballTeamIds — on réutilise simplement ce qu'on a déjà côté fixtures).
+function resolveEuClubTeamId(compKey, teamName) {
+  const matches = _euClubMatchesCache[compKey]?.data?.matches || [];
+  for (const m of matches) {
+    if (fuzzy(m.home?.name, teamName)) return m.home.id;
+    if (fuzzy(m.away?.name, teamName)) return m.away.id;
+  }
+  return null;
+}
+
+const _euClubFixturesCache = {}; // `${leagueId}` → { data, ts }
+async function fetchApiFootballUpcomingFixtures(leagueId, season, windowMs) {
+  const cacheKey = `${leagueId}_${season}`;
+  const cached = _euClubFixturesCache[cacheKey];
+  if (cached && Date.now() - cached.ts < 15 * 60_000) return cached.data;
+  if (!process.env.FOOTBALL_API_KEY) return [];
+  try {
+    const j = await footballApiFetch(`${FOOTBALL_API_BASE}/fixtures?league=${leagueId}&season=${season}&status=NS`);
+    const now = Date.now();
+    const data = (j.response || []).filter(fx => {
+      const t = new Date(fx.fixture.date).getTime();
+      return t > now && (t - now) <= windowMs;
+    });
+    _bgLog.push(`fetchApiFootballUpcomingFixtures(${leagueId},${season}): ${j.response?.length ?? 'null'} bruts, ${data.length} dans la fenêtre`);
+    _euClubFixturesCache[cacheKey] = { data, ts: Date.now() };
+    return data;
+  } catch (e) { _bgLog.push(`fetchApiFootballUpcomingFixtures(${leagueId},${season}) error: ${e.message}`); return []; }
 }
 
 // Interrupteur Brasileirão (17 juillet 2026, activé le 19 juillet 2026 après revue utilisateur).
@@ -795,6 +919,53 @@ async function _getBresilMatches() {
 app.get('/api/fd/bresil', async (req, res) => {
   if (!FD_KEY) return res.status(503).json({ error: 'FD_API_KEY not configured' });
   res.json(await _getBresilMatches());
+});
+
+// ── Europa League / Conference League — liste des matchs pour la Carte du Monde (23 juillet 2026)
+// Même format que _getBresilMatches ci-dessus (id/date/status/round/home/away), source api-football
+// au lieu de football-data.org — team logos fournis directement par l'API (fx.teams.home.logo).
+// fixtureId préfixé `afel_`/`afcl_` côté frontend, même convention que generateBackgroundAlerts().
+const EU_CLUB_STATUS_MAP = {
+  NS: 'STATUS_SCHEDULED', TBD: 'STATUS_SCHEDULED', PST: null, CANC: null, ABD: null, SUSP: null, WO: null,
+  '1H': 'STATUS_IN_PROGRESS', '2H': 'STATUS_IN_PROGRESS', HT: 'STATUS_IN_PROGRESS', ET: 'STATUS_IN_PROGRESS', P: 'STATUS_IN_PROGRESS', BT: 'STATUS_IN_PROGRESS',
+  FT: 'STATUS_FINAL', AET: 'STATUS_FINAL', PEN: 'STATUS_FINAL',
+};
+let _euClubMatchesCache = {}; // compKey → { data, ts }
+async function _getEuClubMatches(compKey) {
+  const cached = _euClubMatchesCache[compKey];
+  if (cached && Date.now() - cached.ts < 30 * 60_000) return cached.data;
+  if (!process.env.FOOTBALL_API_KEY || !EU_CLUB_COMP_IDS[compKey]) return { matches: [], count: 0 };
+  try {
+    const leagueId = EU_CLUB_COMP_IDS[compKey];
+    const season = footballApiSeasonForDate('ligue1', new Date().toISOString());
+    const j = await footballApiFetch(`${FOOTBALL_API_BASE}/fixtures?league=${leagueId}&season=${season}`);
+    const now = Date.now();
+    const KEEP_MS = 48 * 3600_000, WINDOW_MS = 14 * 86400_000;
+    const relevant = (j.response || []).filter(fx => {
+      const t = new Date(fx.fixture.date).getTime();
+      const mapped = EU_CLUB_STATUS_MAP[fx.fixture.status?.short];
+      if (!mapped) return false;
+      if (mapped === 'STATUS_FINAL') return (now - t) < KEEP_MS;
+      return (t - now) < WINDOW_MS;
+    });
+    const matches = relevant.map(fx => ({
+      id: String(fx.fixture.id), league: compKey, round: fx.league.round || '',
+      date: fx.fixture.date, status: EU_CLUB_STATUS_MAP[fx.fixture.status?.short] || 'STATUS_SCHEDULED',
+      home: { id: fx.teams.home.id, name: fx.teams.home.name, short: abbrev(fx.teams.home.name), logoId: fx.teams.home.logo, score: fx.goals?.home ?? null },
+      away: { id: fx.teams.away.id, name: fx.teams.away.name, short: abbrev(fx.teams.away.name), logoId: fx.teams.away.logo, score: fx.goals?.away ?? null },
+    }));
+    const result = { matches, count: matches.length };
+    _euClubMatchesCache[compKey] = { data: result, ts: Date.now() };
+    return result;
+  } catch (err) {
+    console.error(`api-football ${compKey} matches error:`, err.message);
+    return _euClubMatchesCache[compKey]?.data || { matches: [], count: 0 };
+  }
+}
+app.get('/api/football/eucup/:comp/matches', async (req, res) => {
+  const comp = req.params.comp;
+  if (!EU_CLUB_COMP_IDS[comp]) return res.status(404).json({ error: 'unknown competition' });
+  res.json(await _getEuClubMatches(comp));
 });
 
 // ── Résultats des 5 grands championnats — pour le règlement automatique uniquement (21 juillet
@@ -6078,6 +6249,14 @@ const BETCLIC_LEAGUES = [
   'ned-eredivisie-c11',
   'coupe-du-monde-2026-c1',
   'bresil-serie-a-c187', // Brasileirão (17 juillet 2026) — vérifié manuellement, page accessible et parsable
+  // Europa League réactivée le 23 juillet 2026 (9 matchs), après fix du filtre 72h sur les extras
+  // (cf. BETCLIC_EXTRAS_WINDOW_MS) qui avait causé un blocage complet du cycle bg-alerts. Conference
+  // League rejoint la liste le même jour, protégée par le même filtre 72h + le timeout dur 15s
+  // (fetchBetclicFootballExtras) — plus de risque de blocage même avec ses ~40-90 matchs de qualif.
+  // Ligue des Champions pas encore ajoutée : aucune page Betclic ouverte pour l'instant (matchs à
+  // partir du 28 juillet, page pas encore postée par Betclic) — à ajouter dès qu'elle apparaît.
+  'ligue-europa-c3453',
+  'ligue-conference-c28946',
   // 'top-football-europeen-p0' en dernier (22 juillet 2026) : page vitrine cross-ligues qui liste
   // aussi certains matchs déjà couverts par leur propre page de ligue ci-dessus (ex: Brasileirão).
   // Le dédup par home|away dans fetchBetclicOdds() garde la PREMIÈRE occurrence rencontrée — si
@@ -6316,6 +6495,10 @@ const PINNACLE_FOOT_LEAGUE_IDS = [
   1842,  // Germany Bundesliga
   2436,  // Italy Serie A
   1834,  // Brazil Serie A (Brasileirão) — 17 juillet 2026, vérifié manuellement (17 matchups, 594 marchés)
+  2632,  // UEFA Europa League Qualifiers — 23 juillet 2026, vérifié manuellement (18 matchups)
+  271382, // UEFA Conference League Qualifiers — 23 juillet 2026, vérifié manuellement (40 matchups)
+  2627,  // UEFA Champions League — 23 juillet 2026, seulement 1 matchup pour l'instant (saison pas
+         // encore démarrée côté LDC, matchs à partir du 28 juillet) — grossira de lui-même
 ];
 
 const PINNACLE_BASKET_LEAGUE_IDS = [
@@ -6945,9 +7128,26 @@ function betclicExtrasRelease() {
   if (_betclicExtrasQueue.length > 0) _betclicExtrasQueue.shift()();
 }
 
+// Filet de sécurité dur (23 juillet 2026) — un cycle bg-alerts entier s'est retrouvé bloqué (CPU
+// ~0%, plus aucune progression) sur un match précis dont la page a fait planter la lecture du flux
+// gRPC (_betclicGrpcMarketNames) malgré ses propres AbortSignal/setTimeout internes. Plutôt que de
+// chercher lequel des ~50 matchs testés était en cause (retesterait Betclic en boucle, risque de
+// ban), on encadre l'appel entier d'un timeout dur au niveau de l'appelant : passé 15s, on abandonne
+// et on rend `null` pour CE match, sans jamais bloquer les autres ni le reste du cycle — peu importe
+// la cause interne exacte du blocage. `finally` (libération du sémaphore) s'exécute toujours dans
+// ce cas car c'est la fonction EXTERNE qui se termine, pas celle bloquée en interne (abandonnée).
 async function fetchBetclicFootballExtras(href, homeTeam = '') {
   if (_betclicExtrasActive >= 4) await new Promise(res => _betclicExtrasQueue.push(res));
   _betclicExtrasActive++;
+  try {
+    return await Promise.race([
+      _fetchBetclicFootballExtrasInner(href, homeTeam),
+      new Promise(resolve => setTimeout(() => { _bgLog.push(`betclic extras timeout dur (15s) — ${href}`); resolve(null); }, 15000)),
+    ]);
+  } catch (e) { _bgLog.push(`betclic extras error — ${href} : ${e.message}`); return null; }
+  finally { betclicExtrasRelease(); }
+}
+async function _fetchBetclicFootballExtrasInner(href, homeTeam = '') {
   try {
     const H = {
       'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -7126,8 +7326,7 @@ async function fetchBetclicFootballExtras(href, homeTeam = '') {
     }
 
     return { btts, totals, dcbtts, dcou };
-  } catch (e) { _bgLog.push(`betclic extras error — ${href} : ${e.message}`); return null; }
-  finally { betclicExtrasRelease(); }
+  } catch (e) { _bgLog.push(`betclic extras inner error — ${href} : ${e.message}`); return null; }
 }
 
 async function fetchBetclicOdds() {
@@ -7219,10 +7418,22 @@ async function fetchBetclicOdds() {
     _bgLog.push(`betclic: ${missingHref.length}/${results.length} matchs sans href — ${missingHref.map(r => `${r.homeTeam}-${r.awayTeam}`).join(', ')}`);
   }
 
-  // Batch-fetch BTTS + Over/Under depuis les pages match individuelles
-  const extrasArr = await Promise.all(results.map(r =>
-    r._href ? fetchBetclicFootballExtras(r._href, r.homeTeam).catch(() => null) : Promise.resolve(null)
-  ));
+  // Batch-fetch BTTS + Over/Under depuis les pages match individuelles — uniquement pour les matchs
+  // à moins de 72h (23 juillet 2026). Avant ce fix, TOUS les matchs listés sur la page (parfois
+  // plusieurs semaines de calendrier pour une compétition à élimination directe) déclenchaient une
+  // requête détail individuelle, même si generateBackgroundAlerts() n'utilise de toute façon que les
+  // matchs à moins de 48h (FOOTBALL_ALERT_WINDOW_MS) — pur gaspillage jamais exploité pour les matchs
+  // lointains. Passé inaperçu avec ~30-40 matchs au total (5 championnats + CDM + Brasileirão), mais
+  // l'ajout de Conference League (43 matchs de qualif, souvent loin dans le calendrier) a fait
+  // exploser le volume d'un coup et bloqué un cycle entier (cf. tentative Europa/Conference du jour).
+  const BETCLIC_EXTRAS_WINDOW_MS = 72 * 3600_000;
+  const _now = Date.now();
+  const extrasArr = await Promise.all(results.map(r => {
+    if (!r._href) return Promise.resolve(null);
+    const kickoff = new Date(r.commenceTime).getTime();
+    if (!isNaN(kickoff) && kickoff - _now > BETCLIC_EXTRAS_WINDOW_MS) return Promise.resolve(null);
+    return fetchBetclicFootballExtras(r._href, r.homeTeam).catch(() => null);
+  }));
   extrasArr.forEach((extras, i) => {
     if (extras?.btts)   results[i].btts   = extras.btts;
     if (extras?.totals) results[i].totals = extras.totals;
@@ -7337,11 +7548,22 @@ async function fetchUnibetFootballOdds() {
         .then(r => r.ok ? r.text() : '').catch(() => '')
     ),
   ]);
-  const matchPaths = [...new Set(
+  // Plafond défensif (23 juillet 2026) — contrairement à Betclic, la date de coup d'envoi n'est
+  // connue qu'APRÈS avoir chargé la page du match (pas de filtre par date possible en amont ici).
+  // La page d'accueil Unibet est déjà naturellement bornée aux matchs proches (24-48h, cf. commentaire
+  // ci-dessus), donc ce plafond ne devrait jamais s'activer en usage normal — filet de sécurité si
+  // une page de compétition dédiée (comme celle du Brasileirão) listait un jour un calendrier complet
+  // inhabituellement long, pour ne jamais reproduire le blocage rencontré côté Betclic le même jour.
+  const UNIBET_MAX_MATCH_PAGES = 80;
+  const matchPathsRaw = [...new Set(
     [mainHtml, ...extraHtmls].flatMap(html =>
       [...html.matchAll(/href="(\/paris-football\/[^"]*\/\d+\/[^"#]+)"/g)].map(m => m[1])
     ).filter(p => !p.includes('cotes-boostees'))
   )];
+  if (matchPathsRaw.length > UNIBET_MAX_MATCH_PAGES) {
+    _bgLog.push(`unibet: ${matchPathsRaw.length} matchs découverts, plafonné à ${UNIBET_MAX_MATCH_PAGES}`);
+  }
+  const matchPaths = matchPathsRaw.slice(0, UNIBET_MAX_MATCH_PAGES);
 
   if (!matchPaths.length) return [];
 
@@ -12376,6 +12598,58 @@ async function generateBackgroundAlerts() {
         }
       }
 
+      // Europa League / Conference League (23 juillet 2026) — même principe que le bloc CDM
+      // ci-dessus (pool hétérogène, avgGF/avgGA calculés dynamiquement puis figés par match via
+      // freezeCdmPoolAvg, réutilisée telle quelle — générique, pas spécifique à la CDM malgré son
+      // nom). fixtureId préfixés `afel_`/`afcl_` (api-football), namespace distinct de fd_/fdcdm_/
+      // fdbr_ — aucun risque de collision avec les fixtures existantes.
+      if (EU_CLUB_ALERTS_ENABLED && process.env.FOOTBALL_API_KEY) {
+        for (const [compKey, prefix] of [['europa', 'afel'], ['conference', 'afcl'], ['champions', 'afch']]) {
+          if (!EU_CLUB_COMP_ENABLED[compKey]) continue;
+          try {
+            const leagueId = EU_CLUB_COMP_IDS[compKey];
+            const season = footballApiSeasonForDate('ligue1', new Date().toISOString()); // même règle août-juillet que les ligues européennes
+            const allUpcoming = await fetchApiFootballUpcomingFixtures(leagueId, season, FOOTBALL_ALERT_WINDOW_MS);
+            // Tours de qualification exclus des alertes/modèle (23 juillet 2026, demande explicite) —
+            // clubs trop hétérogènes, échantillon de forme trop faible, enjeu jugé secondaire par
+            // l'utilisateur tant que la phase finale (League/Group Stage,élim directe) n'est pas
+            // atteinte. Le match reste visible dans la liste de la Carte du Monde (route séparée,
+            // /api/football/eucup/*/matches, non filtrée) — seuls le modèle/snapshot et les alertes
+            // sont coupés ici. Se réactive tout seul dès que l'intitulé du tour change (aucun
+            // interrupteur à repenser à remettre en phase finale).
+            const upcoming = allUpcoming.filter(fx => !/qualif|preliminary|play-?offs?/i.test(fx.league?.round || ''));
+            _bgLog.push(`${compKey}: ${allUpcoming.length} fixtures api-football trouvées, ${upcoming.length} hors qualifs (league=${leagueId}, season=${season})`);
+            if (!upcoming.length) continue;
+            const formArr = await Promise.all(upcoming.map(async fx => {
+              const [hf, af] = await Promise.all([
+                fetchClubRecentForm(fx.teams.home.id, season),
+                fetchClubRecentForm(fx.teams.away.id, season),
+              ]);
+              return { fx, hf, af };
+            }));
+            const validForms = formArr.flatMap(({ hf, af }) => [hf, af]).filter(Boolean);
+            const poolAvgGF = validForms.length ? validForms.reduce((s, x) => s + x.gf / x.games, 0) / validForms.length : EU_CLUB_AVG_GF;
+            const poolAvgGA = validForms.length ? validForms.reduce((s, x) => s + x.ga / x.games, 0) / validForms.length : EU_CLUB_AVG_GA;
+            for (const { fx, hf, af } of formArr) {
+              if (!hf || !af) continue;
+              const fixtureId = `${prefix}_${fx.fixture.id}`;
+              const frozenAvg = freezeCdmPoolAvg(fixtureId, poolAvgGF, poolAvgGA);
+              fbFixtures.push({
+                fixtureId, league: compKey, date: fx.fixture.date, round: fx.league.round || '',
+                home: { name: fx.teams.home.name }, away: { name: fx.teams.away.name },
+                homeGF: hf.gf, homeGA: hf.ga, homePlayed: hf.games,
+                awayGF: af.gf, awayGA: af.ga, awayPlayed: af.games,
+                leagueAvgGoals: EU_CLUB_AVG_GOALS, avgGF: frozenAvg.avgGF, avgGA: frozenAvg.avgGA,
+                // Pas de homeAdv ici (contrairement à la CDM) — contrairement à un tournoi à terrain
+                // neutre, ce sont de vrais matchs domicile/extérieur au stade du club "home" → même
+                // avantage terrain par défaut (1.10) que les 5 grands championnats/Brasileirão.
+              });
+            }
+            _bgLog.push(`${compKey}: ${formArr.filter(x => x.hf && x.af).length}/${upcoming.length} fixtures avec forme récente valide`);
+          } catch (e) { _bgLog.push(`${compKey} skip cycle: ${e.message}`); }
+        }
+      }
+
       fbFixtures.forEach(f => footballUpcomingIds.add(f.fixtureId));
       // Rafraîchit activement les cotes foot si le cache est froid/absent — ne plus dépendre
       // d'une visite navigateur sur /api/odds pour que BTTS/O-U/Résultat se déclenchent (22 juin 2026)
@@ -13092,6 +13366,26 @@ app.get('/api/football/standings/:league', async (req, res) => {
 app.get('/api/football/teamxgstats', async (req, res) => {
   const { league, team, date } = req.query;
   if (!league || !team) return res.json({ found: false });
+  // Europa/Conference League (23 juillet 2026) — équipe résolue depuis le cache de matchs déjà
+  // chargé (pas de "liste d'équipes de la compétition" comme pour les 5 championnats), xG calculé
+  // toutes compétitions confondues (fetchClubRecentXG, cf. commentaire sur fetchClubRecentForm).
+  if (EU_CLUB_COMP_IDS[league]) {
+    if (!process.env.FOOTBALL_API_KEY) return res.json({ found: false });
+    try {
+      await _getEuClubMatches(league);
+      const teamId = resolveEuClubTeamId(league, team);
+      if (!teamId) return res.json({ found: false });
+      const season = footballApiSeasonForDate('ligue1', date || new Date().toISOString());
+      const stats = await fetchClubRecentXG(teamId, season);
+      if (!stats) return res.json({ found: false });
+      return res.json({
+        found: true,
+        xG: +stats.xgFor.toFixed(2), xGA: +stats.xgAgainst.toFixed(2),
+        shotsPerGame: +stats.shotsPerGame.toFixed(1), shotsOnTarget: +stats.shotsOnTarget.toFixed(1),
+        possession: Math.round(stats.possession), games: stats.games,
+      });
+    } catch { return res.json({ found: false }); }
+  }
   const leagueId = FOOTBALL_API_LEAGUE_IDS[league];
   if (!leagueId || !process.env.FOOTBALL_API_KEY) return res.json({ found: false });
   try {
