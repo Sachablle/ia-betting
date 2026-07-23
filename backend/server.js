@@ -258,6 +258,10 @@ const BRESIL_TEAM_ALIASES = {
   ecvitoria: 'vitoria', vitoriaba: 'vitoria',
   gremiofbpa: 'gremio', gremiors: 'gremio',
   crvascodagama: 'vasco', vascodagama: 'vasco', vascodegama: 'vasco', // "de Gama" = coquille bookmaker déjà vue
+  // Ajout 23 juillet 2026 — "Clube do Remo" (FD) vs "Remo PA" (bookmakers) : aucun des deux n'est
+  // une sous-chaîne de l'autre (préfixe "Clube do" d'un côté, suffixe état "PA" de l'autre), cas
+  // signalé par l'utilisateur (cote N/D sur Corinthians-Remo) malgré des cotes bien scrapées.
+  clubederemo: 'remo', remopa: 'remo',
 };
 
 // Normalisation/fuzzy-matching de noms d'équipes — utilisé pour fusionner les cotes

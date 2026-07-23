@@ -1001,6 +1001,8 @@ const BRESIL_TEAM_ALIASES = {
   ecvitoria: 'vitoria', vitoriaba: 'vitoria',
   gremiofbpa: 'gremio', gremiors: 'gremio',
   crvascodagama: 'vasco', vascodagama: 'vasco', vascodegama: 'vasco',
+  // Ajout 23 juillet 2026 — "Clube do Remo" (FD) vs "Remo PA" (bookmakers), même cas que server.js.
+  clubederemo: 'remo', remopa: 'remo',
 };
 
 function findInTable(table, name) {
