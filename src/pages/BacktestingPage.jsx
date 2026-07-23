@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import { syncSettlements, resolveCompletedFootballAlerts } from '../utils/syncAlerts';
 import { BANKROLL_BRACKETS, BANKROLL_TARGET, getRecommendedStake, getEngagedToday, getEngagedPending, getBracketLabel, loadBankrollState, saveBankrollState, recordBet, resetBankroll, syncBankrollFromHistory, seedBaselineIfNeeded } from '../utils/bankroll';
+import { waitForInitialCloudSync } from '../utils/cloudStorage';
 
 const ROLLING_N = 20;
 const DEFAULT_ODDS = 1.9;
@@ -136,6 +137,7 @@ function mapLedgerEntry(a) {
     bookmaker: a.acceptedBookmaker ?? a.bookmaker,
     acceptedAt: a.acceptedAt ?? null,
     stakeAmount: a.stakeAmount ?? null,
+    manual: a.source === 'manual',
     _sourceKey: 'bet_ledger', _alertId: a.id,
   };
   switch (a.type) {
@@ -145,13 +147,13 @@ function mapLedgerEntry(a) {
         actual: a.actualStat, stat: a.stat, direction: a.direction, line: a.line, league: a.league || 'nba' };
     case 'game_total':
       return { ...base, type: 'total', sport: a.league || 'nba',
-        label: `${a.homeShort || a.home} vs ${a.awayShort || a.away}`,
+        label: `${shortTeamName(a.home) || a.homeShort} vs ${shortTeamName(a.away) || a.awayShort}`,
         sub: `${a.direction === 'over' ? '▲ Over' : '▼ Under'} ${a.line}`,
         actual: a.actualStat ?? a.actualTotal, line: a.line, direction: a.direction, league: a.league || 'nba' };
     case 'basketball_result':
       return { ...base, type: 'result', sport: a.league || 'nba',
-        label: `${a.homeShort || a.home} vs ${a.awayShort || a.away}`,
-        sub: `🏆 Victoire ${a.direction === 'home' ? (a.homeShort || a.home) : (a.awayShort || a.away)}`,
+        label: `${shortTeamName(a.home) || a.homeShort} vs ${shortTeamName(a.away) || a.awayShort}`,
+        sub: `🏆 Victoire ${a.direction === 'home' ? (shortTeamName(a.home) || a.homeShort) : (shortTeamName(a.away) || a.awayShort)}`,
         direction: a.direction, league: a.league || 'nba' };
     case 'basketball_spread':
       return { ...base, type: 'spread', sport: a.league || 'nba',
@@ -165,31 +167,31 @@ function mapLedgerEntry(a) {
         direction: a.direction, line: a.line, league: a.league || 'nba' };
     case 'football_btts':
       return { ...base, type: 'btts', sport: 'football',
-        label: a.fixture || `${a.homeShort || a.home} vs ${a.awayShort || a.away}`,
+        label: a.fixture || `${shortTeamName(a.home) || a.homeShort} vs ${shortTeamName(a.away) || a.awayShort}`,
         sub: '✓ Les deux équipes marquent',
         actual: (a.actualHomeScore != null && a.actualAwayScore != null) ? `${a.actualHomeScore}-${a.actualAwayScore}` : null,
         league: a.league || 'football' };
     case 'football_total':
       return { ...base, type: 'total', sport: 'football',
-        label: `${a.homeShort || a.home} vs ${a.awayShort || a.away}`,
+        label: `${shortTeamName(a.home) || a.homeShort} vs ${shortTeamName(a.away) || a.awayShort}`,
         sub: `${a.direction === 'over' ? '▲ Plus' : '▼ Moins'} de ${a.line} buts`,
         actual: (a.actualHomeScore != null && a.actualAwayScore != null) ? a.actualHomeScore + a.actualAwayScore : null,
         line: a.line, direction: a.direction, league: a.league || 'football' };
     case 'football_result':
       return { ...base, type: 'result', sport: 'football',
-        label: `${a.homeShort || a.home} vs ${a.awayShort || a.away}`,
-        sub: a.direction === 'draw' ? '🏆 Match nul' : `🏆 Victoire ${a.direction === 'home' ? (a.homeShort || a.home) : (a.awayShort || a.away)}`,
+        label: `${shortTeamName(a.home) || a.homeShort} vs ${shortTeamName(a.away) || a.awayShort}`,
+        sub: a.direction === 'draw' ? '🏆 Match nul' : `🏆 Victoire ${a.direction === 'home' ? (shortTeamName(a.home) || a.homeShort) : (shortTeamName(a.away) || a.awayShort)}`,
         actual: (a.actualHomeScore != null && a.actualAwayScore != null) ? `${a.actualHomeScore}-${a.actualAwayScore}` : null,
         direction: a.direction, league: a.league || 'football' };
     case 'football_dc_btts':
       return { ...base, type: 'btts', sport: 'football',
-        label: `${a.homeShort || a.home} vs ${a.awayShort || a.away}`,
+        label: `${shortTeamName(a.home) || a.homeShort} vs ${shortTeamName(a.away) || a.awayShort}`,
         sub: `DC ${DC_DIR[a.direction] ?? a.direction} & BTTS`,
         actual: (a.actualHomeScore != null && a.actualAwayScore != null) ? `${a.actualHomeScore}-${a.actualAwayScore}` : null,
         league: a.league || 'cdm' };
     case 'football_dc_ou':
       return { ...base, type: 'total', sport: 'football',
-        label: `${a.homeShort || a.home} vs ${a.awayShort || a.away}`,
+        label: `${shortTeamName(a.home) || a.homeShort} vs ${shortTeamName(a.away) || a.awayShort}`,
         sub: `DC ${DC_DIR[a.direction] ?? a.direction} & +${a.line ?? 1.5} buts`,
         actual: (a.actualHomeScore != null && a.actualAwayScore != null) ? a.actualHomeScore + a.actualAwayScore : null,
         line: a.line ?? 1.5, direction: 'over', league: a.league || 'cdm' };
@@ -508,8 +510,14 @@ function BankrollTracker() {
   // appliqué automatiquement, plus besoin de cliquer Gagné/Perdu à la main (16 juillet 2026).
   useEffect(() => {
     let cancelled = false;
-    const run = () => {
+    const run = async () => {
       setSyncing(true);
+      // Attend le 1er rapatriement cloud (App.jsx) avant de lire/écrire l'état local — sinon un
+      // navigateur/onglet neuf (localStorage vide) peut écraser le vrai bankroll_tracker partagé
+      // avec un état par défaut avant même d'avoir eu la chance de le charger (23 juillet 2026,
+      // cf. commentaire dans cloudStorage.js). No-op si déjà résolu (appels suivants du tick 2min).
+      await waitForInitialCloudSync();
+      if (cancelled) return;
       seedBaselineIfNeeded(loadBankrollState())
         .then(syncBankrollFromHistory)
         .then(next => {
@@ -1017,8 +1025,9 @@ function BetRow({ bet, rank, stake = 10, compact = false, editableStake = false,
           <span style={{ fontSize: 11, fontWeight: 800, color: plColor, flexShrink: 0, fontVariantNumeric: 'tabular-nums' }}>{plStr}</span>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', paddingLeft: 14 }}>
-          <span style={{ fontSize: 10, color: 'var(--text-dim)', flex: 1 }}>{bet.sub}</span>
-          <span style={{ fontSize: 9, color: 'var(--text-dim)', flexShrink: 0 }}>{dateStr}</span>
+          <span style={{ fontSize: 10, color: 'var(--text-dim)' }}>{bet.sub}</span>
+          {bet.manual && <span style={{ fontSize: 7, fontWeight: 700, color: '#a78bfa', background: 'rgba(167,139,250,0.15)', borderRadius: 3, padding: '0px 3px', flexShrink: 0, whiteSpace: 'nowrap', lineHeight: '1.4' }}>PERSO</span>}
+          <span style={{ fontSize: 9, color: 'var(--text-dim)', flexShrink: 0, marginLeft: 'auto' }}>{dateStr}</span>
           <span style={{ fontSize: 10, fontWeight: 700, color: '#60a5fa', flexShrink: 0, fontVariantNumeric: 'tabular-nums' }}>
             {bet.probability != null ? `${bet.probability.toFixed(0)}%` : '—'}
           </span>
@@ -1036,7 +1045,10 @@ function BetRow({ bet, rank, stake = 10, compact = false, editableStake = false,
       <span style={{ fontSize: 10, color: 'var(--text-dim)', textAlign: 'center' }}>#{rank}</span>
       <div style={{ minWidth: 0 }}>
         <div style={{ fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{bet.label}</div>
-        <div style={{ fontSize: 10, color: 'var(--text-dim)' }}>{bet.sub}</div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+          <span style={{ fontSize: 10, color: 'var(--text-dim)' }}>{bet.sub}</span>
+          {bet.manual && <span style={{ fontSize: 7, fontWeight: 700, color: '#a78bfa', background: 'rgba(167,139,250,0.15)', borderRadius: 3, padding: '0px 3px', flexShrink: 0, whiteSpace: 'nowrap', lineHeight: '1.4' }}>PERSO</span>}
+        </div>
       </div>
       <span style={{ fontSize: 10, color: 'var(--text-dim)', whiteSpace: 'nowrap' }}>{dateStr}</span>
       <span style={{ fontSize: 11, fontWeight: 700, color: '#60a5fa', minWidth: 32, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>

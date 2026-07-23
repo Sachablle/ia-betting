@@ -80,27 +80,44 @@ export async function flushPendingUserData() {
   }
 }
 
+// Résolu une seule fois, dès que le tout premier loadFromCloud() de la session se termine (succès
+// ou échec) — permet à un code qui lirait/réécrirait une clé SYNC_KEYS dès le montage (ex: le Suivi
+// Bankroll qui "seed" sa baseline) d'attendre que le vrai état Mongo soit rapatrié avant d'agir.
+// Fix 23 juillet 2026 : sans ça, un navigateur/onglet neuf (localStorage vide) déclenchait
+// seedBaselineIfNeeded() → saveBankrollState() → cloudSet AVANT que ce loadFromCloud() ait eu le
+// temps de répondre, écrasant le vrai bankroll_tracker partagé avec un état par défaut tout neuf
+// (cas réel : solde/historique réels remplacés par un état vierge après un test Playwright sur une
+// session vierge).
+let _resolveInitialSync;
+const _initialSyncPromise = new Promise(resolve => { _resolveInitialSync = resolve; });
+let _initialSyncSettled = false;
+export function waitForInitialCloudSync() { return _initialSyncPromise; }
+
 // Charge toutes les données depuis MongoDB dans localStorage au démarrage.
 export async function loadFromCloud() {
-  await flushPendingUserData();
   try {
-    const res = await fetch('/api/userdata');
-    if (!res.ok) return;
-    const data = await res.json();
-    const now = Date.now();
-    const pendingKeys = new Set(
-      readPendingUserData().filter(p => now - (p.queuedAt ?? 0) < PENDING_BLOCK_MS).map(p => p.key)
-    );
-    for (const [key, value] of Object.entries(data)) {
-      // Ne pas écraser une clé modifiée localement dans les 90 dernières secondes,
-      // ni une clé dont l'envoi vers Mongo est encore en attente (POST précédent en échec).
-      if ((_writeProtected.get(key) ?? 0) > now) continue;
-      if (pendingKeys.has(key)) continue;
-      try {
-        localStorage.setItem(key, typeof value === 'string' ? value : JSON.stringify(value));
-      } catch {}
-    }
-  } catch {}
+    await flushPendingUserData();
+    try {
+      const res = await fetch('/api/userdata');
+      if (!res.ok) return;
+      const data = await res.json();
+      const now = Date.now();
+      const pendingKeys = new Set(
+        readPendingUserData().filter(p => now - (p.queuedAt ?? 0) < PENDING_BLOCK_MS).map(p => p.key)
+      );
+      for (const [key, value] of Object.entries(data)) {
+        // Ne pas écraser une clé modifiée localement dans les 90 dernières secondes,
+        // ni une clé dont l'envoi vers Mongo est encore en attente (POST précédent en échec).
+        if ((_writeProtected.get(key) ?? 0) > now) continue;
+        if (pendingKeys.has(key)) continue;
+        try {
+          localStorage.setItem(key, typeof value === 'string' ? value : JSON.stringify(value));
+        } catch {}
+      }
+    } catch {}
+  } finally {
+    if (!_initialSyncSettled) { _initialSyncSettled = true; _resolveInitialSync(); }
+  }
 }
 
 // Remplace localStorage.setItem pour les clés importantes.
