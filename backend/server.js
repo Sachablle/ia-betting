@@ -9,6 +9,7 @@ import { MongoClient } from 'mongodb';
 import { promises as dnsPromises } from 'dns';
 import { computeEstimate, calcStd, isConsistentStat, blendedSeasonAvg, winsorizeRecent, getShotVolumeAnchor, probAtLeast, tCDF4, getRestFactor, getScheduleDensityFactor, isPlayoffRound, toDefCat, getDefByPosFactor } from './compute.js';
 import { computeLambdas, computeBTTSProb, computeOUProb, compute1X2Probs, computeDCBTTSProbs, computeDCOverProbs } from './computeFootball.js';
+import { computeMlbLambdas, computeMlbTotalProb } from './computeMlb.js';
 import { telegramConfigured, answerCallbackQuery, editTelegramMessage, getAlertTypeMeta, notifyNewAlert, resolveCallbackToken, recordAction, getActionsSince, _debugTokensForId, checkTelegramWebhookHealth } from './telegram.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -1246,6 +1247,76 @@ async function fetchMlbOdds() {
 
 app.get('/api/mlb/odds', async (req, res) => {
   res.json(await fetchMlbOdds());
+});
+
+// ── MLB — étape 3 : modèle Poisson (24 juillet 2026) ──────────────────────────────────────────
+// Route de prévisualisation qui assemble étapes 1+2+3 pour inspection manuelle (proba modèle vs
+// cotes réelles sur chaque ligne) — toujours rien connecté à generateBackgroundAlerts() ni au
+// near-miss tracking, ça viendra à l'étape 4 (mode fantôme).
+app.get('/api/mlb/preview', async (req, res) => {
+  try {
+    const [games, odds] = await Promise.all([fetchMlbUpcomingGames(), fetchMlbOdds()]);
+    const teamIds = new Map();
+    for (const g of games.games) {
+      teamIds.set(g.home.name, g.home.id);
+      teamIds.set(g.away.name, g.away.id);
+    }
+    const forms = new Map();
+    await Promise.all([...teamIds.entries()].map(async ([name, id]) => {
+      forms.set(name, await fetchMlbTeamRecentForm(id, 30));
+    }));
+    const avg = form => {
+      const n = form?.games?.length || 0;
+      if (!n) return null;
+      return {
+        games: n,
+        runsFor: form.games.reduce((s, g) => s + g.runsFor, 0) / n,
+        runsAgainst: form.games.reduce((s, g) => s + g.runsAgainst, 0) / n,
+      };
+    };
+    // Moyenne de runs de la ligue calculée dynamiquement sur le pool d'équipes qui jouent
+    // aujourd'hui (même principe que la CDM dans computeFootball.js) — pas une constante figée.
+    const allAvgs = [...teamIds.keys()].map(name => avg(forms.get(name))).filter(Boolean);
+    const leagueAvgRuns = allAvgs.length ? allAvgs.reduce((s, a) => s + a.runsFor, 0) / allAvgs.length : null;
+
+    const preview = games.games.map(g => {
+      const homeAvg = avg(forms.get(g.home.name));
+      const awayAvg = avg(forms.get(g.away.name));
+      let model = null;
+      if (homeAvg && awayAvg && leagueAvgRuns) {
+        const lambdas = computeMlbLambdas({
+          homeRunsFor: homeAvg.runsFor * homeAvg.games, homeRunsAgainst: homeAvg.runsAgainst * homeAvg.games, homeGames: homeAvg.games,
+          awayRunsFor: awayAvg.runsFor * awayAvg.games, awayRunsAgainst: awayAvg.runsAgainst * awayAvg.games, awayGames: awayAvg.games,
+          leagueAvgRuns,
+        });
+        if (lambdas) {
+          const oddsMatch = odds.find(o => o.homeTeam === g.home.name && o.awayTeam === g.away.name);
+          const lines = new Set([
+            ...Object.keys(oddsMatch?.betclic?.totals || {}),
+            ...Object.keys(oddsMatch?.unibet?.totals || {}),
+          ]);
+          model = {
+            lambdaHome: +lambdas.lambdaHome.toFixed(2), lambdaAway: +lambdas.lambdaAway.toFixed(2),
+            lines: [...lines].map(Number).sort((a, b) => a - b).map(line => {
+              const p = computeMlbTotalProb(lambdas.lambdaHome, lambdas.lambdaAway, line);
+              return {
+                line, pOver: +p.pOver.toFixed(3), pUnder: +p.pUnder.toFixed(3),
+                betclic: oddsMatch?.betclic?.totals?.[line] || null,
+                unibet: oddsMatch?.unibet?.totals?.[line] || null,
+              };
+            }),
+          };
+        }
+      }
+      return {
+        home: g.home.name, away: g.away.name, date: g.date,
+        homeForm: homeAvg, awayForm: awayAvg, model,
+      };
+    });
+    res.json({ leagueAvgRuns: leagueAvgRuns ? +leagueAvgRuns.toFixed(2) : null, games: preview });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // ── Europa League / Conference League — liste des matchs pour la Carte du Monde (23 juillet 2026)
