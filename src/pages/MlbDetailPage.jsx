@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { cachedFetch } from '../utils/fetchCache';
 import { formatFullDate, formatMatchTime } from '../utils/formatters';
@@ -125,10 +125,21 @@ export default function MlbDetailPage() {
   const [showOdds, setShowOdds] = useState(false);
   const [showLineups, setShowLineups] = useState(true);
   const [fieldTeam, setFieldTeam] = useState('home');
+  const [selectedLine, setSelectedLine] = useState(null);
+  const [linePopupOpen, setLinePopupOpen] = useState(false);
+  const linePopupRef = useRef(null);
+
+  useEffect(() => {
+    if (!linePopupOpen) return;
+    const onDocClick = e => { if (!linePopupRef.current?.contains(e.target)) setLinePopupOpen(false); };
+    document.addEventListener('click', onDocClick);
+    return () => document.removeEventListener('click', onDocClick);
+  }, [linePopupOpen]);
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
+    setSelectedLine(null);
     // Une seule route pour cotes + modèle (/api/mlb/preview inclut désormais les deux) — évite de
     // déclencher deux scrapings Betclic/Unibet en parallèle pour la même page.
     Promise.all([
@@ -276,40 +287,90 @@ export default function MlbDetailPage() {
             </>
           )}
 
-          {/* Total runs — bookmakers en lignes (à gauche), lignes de paris en colonnes (en haut) */}
+          {/* Total runs — une seule ligne affichée à la fois ("Ligne ⇄"), clic ouvre un popup
+              listant toutes les lignes dispo avec leurs cotes pour changer de ligne affichée. */}
           {tab === 'total' && hasTotals && (() => {
-            const gridCols = `80px repeat(${lines.length * 2}, 1fr)`;
+            const line = lines.includes(String(selectedLine)) ? String(selectedLine) : lines[Math.floor((lines.length - 1) / 2)];
+            const m = modelByLine.get(String(line));
             return (
-              <div style={{ overflowX: 'auto' }}>
-                <div style={{ display: 'grid', gridTemplateColumns: gridCols, gap: '0 0.2rem', minWidth: lines.length * 100 + 80 }}>
-                  <div />
-                  {lines.map(line => (
-                    <div key={line} style={{ gridColumn: 'span 2', textAlign: 'center', paddingBottom: '0.2rem' }}>
-                      <span style={{ ...ch, fontVariantNumeric: 'tabular-nums' }}>{line}</span>
+              <div>
+                <div style={{ display: 'flex', justifyContent: 'center', position: 'relative', marginBottom: '0.6rem' }}>
+                  <span
+                    onClick={e => { e.stopPropagation(); setLinePopupOpen(v => !v); }}
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer',
+                      fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-dim)',
+                    }}
+                  >
+                    Ligne
+                    <span style={{
+                      fontSize: 14, fontWeight: 800, color: '#fff',
+                      textDecoration: 'underline dotted', textDecorationColor: 'rgba(255,255,255,0.35)',
+                    }}>{line}</span>
+                    <svg width="11" height="11" viewBox="0 0 12 12" fill="none" style={{ opacity: 0.6 }}>
+                      <path d="M2 4.5l4 4 4-4" stroke="currentColor" strokeWidth="1.4" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
+                  </span>
+
+                  {linePopupOpen && (
+                    <div
+                      ref={linePopupRef}
+                      onClick={e => e.stopPropagation()}
+                      style={{
+                        position: 'absolute', top: '100%', left: '50%', transform: 'translateX(-50%)', marginTop: 8,
+                        background: 'var(--bg-card, #11141c)', border: '1px solid var(--border)', borderRadius: 8,
+                        padding: '0.5rem', boxShadow: '0 8px 20px rgba(0,0,0,0.45)', zIndex: 50, minWidth: 320,
+                      }}
+                    >
+                      <div style={{ display: 'grid', gridTemplateColumns: '46px 1fr 1fr 1fr', gap: '0.15rem 0.4rem', paddingBottom: '0.3rem', borderBottom: '1px solid var(--border)', marginBottom: '0.2rem' }}>
+                        <span style={ch}>Ligne</span>
+                        <span style={ch}>Modèle</span>
+                        <span style={ch}>Betclic</span>
+                        <span style={ch}>Unibet</span>
+                      </div>
+                      {lines.map(l => {
+                        const lm = modelByLine.get(String(l));
+                        return (
+                          <div
+                            key={l}
+                            onClick={() => { setSelectedLine(l); setLinePopupOpen(false); }}
+                            style={{
+                              display: 'grid', gridTemplateColumns: '46px 1fr 1fr 1fr', gap: '0.15rem 0.4rem', alignItems: 'center',
+                              padding: '0.3rem 0.2rem', borderRadius: 5, cursor: 'pointer',
+                              background: l === line ? 'rgba(251,146,60,0.15)' : 'transparent',
+                            }}
+                          >
+                            <span style={{ fontSize: 12, fontWeight: 700, color: '#fff' }}>{l}</span>
+                            <span style={{ fontSize: 8, textAlign: 'center', color: 'var(--text-dim)' }}>
+                              {lm ? `${Math.round(lm.pOver * 100)}% / ${Math.round(lm.pUnder * 100)}%` : '—'}
+                            </span>
+                            <span style={{ display: 'flex', justifyContent: 'center', gap: 4 }}>
+                              <OddsCell value={odds.betclic?.totals?.[l]?.over} color={BK_COLORS.betclic} />
+                              <OddsCell value={odds.betclic?.totals?.[l]?.under} color={BK_COLORS.betclic} />
+                            </span>
+                            <span style={{ display: 'flex', justifyContent: 'center', gap: 4 }}>
+                              <OddsCell value={odds.unibet?.totals?.[l]?.over} color={BK_COLORS.unibet} />
+                              <OddsCell value={odds.unibet?.totals?.[l]?.under} color={BK_COLORS.unibet} />
+                            </span>
+                          </div>
+                        );
+                      })}
                     </div>
-                  ))}
-                  <div />
-                  {lines.map(line => {
-                    const m = modelByLine.get(String(line));
-                    return (
-                      <div key={line} style={{ gridColumn: 'span 2', display: 'grid', gridTemplateColumns: '1fr 1fr', paddingBottom: '0.35rem', borderBottom: '1px solid var(--border)', marginBottom: '0.2rem' }}>
-                        <div style={{ ...ch, fontSize: 8 }}>Over{m && <><br />{Math.round(m.pOver * 100)}%</>}</div>
-                        <div style={{ ...ch, fontSize: 8 }}>Under{m && <><br />{Math.round(m.pUnder * 100)}%</>}</div>
-                      </div>
-                    );
-                  })}
-                  {BOOKS.flatMap(bk => [
-                    <div key={`${bk}-label`} style={{ display: 'flex', alignItems: 'center', fontSize: 11, color: 'var(--text)', padding: '0.3rem 0', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
-                      {BK_LABELS[bk]}
-                    </div>,
-                    ...lines.map(line => (
-                      <div key={`${bk}-${line}`} style={{ gridColumn: 'span 2', display: 'grid', gridTemplateColumns: '1fr 1fr', alignItems: 'center', padding: '0.3rem 0', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
-                        <OddsCell value={odds[bk]?.totals?.[line]?.over} color={BK_COLORS[bk]} />
-                        <OddsCell value={odds[bk]?.totals?.[line]?.under} color={BK_COLORS[bk]} />
-                      </div>
-                    )),
-                  ])}
+                  )}
                 </div>
+
+                <div style={{ display: 'grid', gridTemplateColumns: COLS_H2H, gap: '0 0.25rem', paddingBottom: '0.35rem', borderBottom: '1px solid var(--border)', marginBottom: '0.2rem' }}>
+                  <div />
+                  <div style={ch}>Over{m && <><br />{Math.round(m.pOver * 100)}%</>}</div>
+                  <div style={ch}>Under{m && <><br />{Math.round(m.pUnder * 100)}%</>}</div>
+                </div>
+                {BOOKS.map(bk => (
+                  <div key={bk} style={{ display: 'grid', gridTemplateColumns: COLS_H2H, gap: '0 0.25rem', alignItems: 'center', padding: '0.3rem 0', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+                    <span style={{ fontSize: 11, color: 'var(--text)' }}>{BK_LABELS[bk]}</span>
+                    <OddsCell value={odds[bk]?.totals?.[line]?.over} color={BK_COLORS[bk]} />
+                    <OddsCell value={odds[bk]?.totals?.[line]?.under} color={BK_COLORS[bk]} />
+                  </div>
+                ))}
               </div>
             );
           })()}
