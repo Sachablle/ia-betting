@@ -1416,6 +1416,30 @@ app.get('/api/mlb/lineups', async (req, res) => {
   res.json(await fetchRotoWireMlbLineups());
 });
 
+// ── MLB — effectifs pour la page Base de données (24 juillet 2026) ───────────────────────────
+app.get('/api/mlb/teams', async (req, res) => {
+  res.json({ teams: await fetchMlbTeams() });
+});
+const _mlbRosterCache = new Map(); // teamId → { data, ts }
+app.get('/api/mlb/roster/:teamId', async (req, res) => {
+  const teamId = req.params.teamId;
+  const cached = _mlbRosterCache.get(teamId);
+  if (cached && Date.now() - cached.ts < 6 * 3600_000) return res.json(cached.data);
+  try {
+    const r = await fetch(`${MLB_API_BASE}/teams/${teamId}/roster?rosterType=active`, { signal: AbortSignal.timeout(10000) });
+    const j = await r.json();
+    const players = (j.roster || []).map(p => ({
+      id: p.person.id, name: p.person.fullName, jersey: p.jerseyNumber || '',
+      position: p.position?.abbreviation || '',
+    }));
+    const data = { players };
+    _mlbRosterCache.set(teamId, { data, ts: Date.now() });
+    res.json(data);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ── Europa League / Conference League — liste des matchs pour la Carte du Monde (23 juillet 2026)
 // Même format que _getBresilMatches ci-dessus (id/date/status/round/home/away), source api-football
 // au lieu de football-data.org — team logos fournis directement par l'API (fx.teams.home.logo).

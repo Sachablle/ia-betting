@@ -515,6 +515,103 @@ function EURosterPanel({ team, league, onClose }) {
   );
 }
 
+const mlbRosterCache = {};
+
+// Roster MLB (24 juillet 2026) — pas de stats PPG-style affichées contrairement à NBA/WNBA/EU
+// basket (baseball n'a pas d'équivalent unifié pts/reb/ast entre lanceurs et frappeurs, aurait
+// demandé un vrai split hitting/pitching pour rester honnête) : juste # / nom / position, cohérent
+// avec ce que montre déjà le panneau "Compos probables" de MlbDetailPage.jsx.
+function MLBRosterPanel({ team, onClose }) {
+  const [players, setPlayers] = useState(mlbRosterCache[team.id] ?? null);
+  const [loading, setLoading] = useState(!mlbRosterCache[team.id]);
+  const [error, setError]     = useState(null);
+  const [search, setSearch]   = useState('');
+
+  useEffect(() => {
+    if (mlbRosterCache[team.id]) { setPlayers(mlbRosterCache[team.id]); setLoading(false); return; }
+    setLoading(true); setPlayers(null); setError(null);
+    fetch(`/api/mlb/roster/${team.id}`)
+      .then(r => r.json())
+      .then(d => { mlbRosterCache[team.id] = d.players; setPlayers(d.players); setLoading(false); })
+      .catch(e => { setError(e.message); setLoading(false); });
+  }, [team.id]);
+
+  return (
+    <div className="ef-roster-panel">
+      <div className="ef-roster-header">
+        <span className="ef-roster-title">{team.name}</span>
+        <button className="ef-roster-close" onClick={onClose}>✕</button>
+      </div>
+      {players && <RosterSearchBar value={search} onChange={setSearch} />}
+      {loading && <div className="ef-roster-state">Chargement…</div>}
+      {error   && <div className="ef-roster-state ef-roster-error">Erreur : {error}</div>}
+      {players && (() => {
+        const searchNorm = normPlayerName(search.trim());
+        const filtered = searchNorm ? players.filter(p => normPlayerName(p.name).includes(searchNorm)) : players;
+        return (
+          <div className="ef-roster-table">
+            <div className="ef-roster-row ef-roster-head">
+              <span>#</span><span>Joueur</span><span>Pos</span>
+            </div>
+            {filtered.map(p => (
+              <div key={p.id} className="ef-roster-row">
+                <span className="ef-roster-jersey">{p.jersey}</span>
+                <span className="ef-roster-name-wrap"><span className="ef-roster-name">{p.name}</span></span>
+                <span className="ef-roster-pos">{p.position}</span>
+              </div>
+            ))}
+          </div>
+        );
+      })()}
+    </div>
+  );
+}
+
+function MLBLeagueItem({ league }) {
+  const [open, setOpen]             = useState(false);
+  const [selectedTeam, setSelected] = useState(null);
+
+  return (
+    <div className="ef-league-item">
+      <button className="ef-card-btn" onClick={() => { setOpen(o => !o); setSelected(null); }}>
+        <div className="ef-card">
+          <span className="ef-card-flag">{league.flag}</span>
+          <div className="ef-card-info">
+            <span className="ef-card-name">{league.name}</span>
+            <span className="ef-card-meta">{league.country} · {league.teams.length} clubs</span>
+          </div>
+          <svg className={`ef-card-chevron ${open ? 'open' : ''}`} width="16" height="16" viewBox="0 0 16 16" fill="none">
+            <path d="M4 6l4 4 4-4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+          </svg>
+        </div>
+      </button>
+      <div className={`ef-teams-wrap ${open ? 'open' : ''}`}>
+        <div className="ef-teams-grid">
+          {league.teams.map(team => (
+            <button
+              key={team.id}
+              className={`ef-team-chip ef-team-chip--clickable ${selectedTeam?.id === team.id ? 'active' : ''}`}
+              onClick={() => setSelected(s => s?.id === team.id ? null : team)}
+            >
+              {team.name}
+              {team.abbreviation && (
+                <img
+                  src={`https://a.espncdn.com/i/teamlogos/mlb/500/${team.abbreviation.toLowerCase() === 'az' ? 'ari' : team.abbreviation.toLowerCase()}.png`}
+                  alt=""
+                  className="ef-chip-logo"
+                />
+              )}
+            </button>
+          ))}
+        </div>
+        {selectedTeam && (
+          <MLBRosterPanel key={selectedTeam.id} team={selectedTeam} onClose={() => setSelected(null)} />
+        )}
+      </div>
+    </div>
+  );
+}
+
 function EULeagueItem({ league }) {
   const [open, setOpen]             = useState(false);
   const [selectedTeam, setSelected] = useState(null);
@@ -715,6 +812,7 @@ const EU_BASKET_LEAGUE_IDS = new Set(['acb', 'lnb', 'bbl', 'legaa']);
 export function renderLeagueItem(l) {
   return l.id === 'nba'  ? <NBALeagueItem  key={l.id} league={l} /> :
          l.id === 'wnba' ? <WNBALeagueItem key={l.id} league={l} /> :
+         l.id === 'mlb'  ? <MLBLeagueItem  key={l.id} league={l} /> :
          EU_BASKET_LEAGUE_IDS.has(l.id) ? <EULeagueItem key={l.id} league={l} /> :
                            <LeagueItem     key={l.id} league={l} />;
 }

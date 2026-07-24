@@ -66,10 +66,22 @@ export default function DatabaseMapPage() {
     });
   }, []);
 
+  // MLB (24 juillet 2026) — même principe que LNB/BBL/Lega A ci-dessus : liste des 30 franchises
+  // chargée une fois (route dédiée /api/mlb/teams, pas de standings agrégées comme pour l'EU
+  // basket), passée à MLBLeagueItem (roster générique par id d'équipe, cf. EffectifPage.jsx).
+  const [mlb, setMlb] = useState(null);
+  useEffect(() => {
+    fetch('/api/mlb/teams')
+      .then(r => r.json())
+      .then(d => setMlb({ id: 'mlb', flag: '🇺🇸', name: 'MLB', country: 'États-Unis', teams: d.teams || [] }))
+      .catch(() => {});
+  }, []);
+
   const countryLeagues = selected
     ? [
         ...LEAGUES.filter(l => l.country === selected.name),
         ...Object.values(euBasket).filter(l => l.country === selected.name),
+        ...(mlb && mlb.country === selected.name ? [mlb] : []),
       ]
     : [];
   const hasFootball = countryLeagues.some(l => FOOTBALL_IDS.has(l.id));
