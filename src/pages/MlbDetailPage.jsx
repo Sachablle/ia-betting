@@ -19,7 +19,6 @@ const BK_LABELS = { betclic: 'Betclic', unibet: 'Unibet' };
 const BK_COLORS = { unibet: '#1db954', betclic: '#e0292e' };
 const BOOKS = ['betclic', 'unibet'];
 const COLS_H2H = '80px 1fr 1fr';
-const COLS_TOT = '80px 44px 1fr 1fr';
 const ch = { fontSize: 9, fontWeight: 700, textTransform: 'uppercase', color: 'var(--text-dim)', textAlign: 'center', letterSpacing: '0.05em' };
 
 const tabStyle = active => ({
@@ -164,27 +163,45 @@ export default function MlbDetailPage() {
             </>
           )}
 
-          {tab === 'total' && hasTotals && lines.map(line => {
-            const m = modelByLine.get(String(line));
+          {/* Total runs — bookmakers en lignes (à gauche), lignes de paris en colonnes (en haut) :
+              demande explicite de l'utilisateur le 24 juillet 2026 après le premier jet (un bloc par
+              ligne, bookmakers empilés dedans) jugé moins lisible pour comparer d'un coup d'œil. */}
+          {tab === 'total' && hasTotals && (() => {
+            const gridCols = `80px repeat(${lines.length * 2}, 1fr)`;
             return (
-              <div key={line} style={{ marginBottom: '1rem' }}>
-                <div style={{ display: 'grid', gridTemplateColumns: COLS_TOT, gap: '0 0.25rem', paddingBottom: '0.35rem', borderBottom: '1px solid var(--border)', marginBottom: '0.2rem' }}>
+              <div style={{ overflowX: 'auto' }}>
+                <div style={{ display: 'grid', gridTemplateColumns: gridCols, gap: '0 0.2rem', minWidth: lines.length * 100 + 80 }}>
                   <div />
-                  <div style={{ ...ch, fontVariantNumeric: 'tabular-nums' }}>{line}</div>
-                  <div style={ch}>Over{m && ` (${Math.round(m.pOver * 100)}%)`}</div>
-                  <div style={ch}>Under{m && ` (${Math.round(m.pUnder * 100)}%)`}</div>
+                  {lines.map(line => (
+                    <div key={line} style={{ gridColumn: 'span 2', textAlign: 'center', paddingBottom: '0.2rem' }}>
+                      <span style={{ ...ch, fontVariantNumeric: 'tabular-nums' }}>{line}</span>
+                    </div>
+                  ))}
+                  <div />
+                  {lines.map(line => {
+                    const m = modelByLine.get(String(line));
+                    return (
+                      <div key={line} style={{ gridColumn: 'span 2', display: 'grid', gridTemplateColumns: '1fr 1fr', paddingBottom: '0.35rem', borderBottom: '1px solid var(--border)', marginBottom: '0.2rem' }}>
+                        <div style={{ ...ch, fontSize: 8 }}>Over{m && <><br />{Math.round(m.pOver * 100)}%</>}</div>
+                        <div style={{ ...ch, fontSize: 8 }}>Under{m && <><br />{Math.round(m.pUnder * 100)}%</>}</div>
+                      </div>
+                    );
+                  })}
+                  {BOOKS.flatMap(bk => [
+                    <div key={`${bk}-label`} style={{ display: 'flex', alignItems: 'center', fontSize: 11, color: 'var(--text)', padding: '0.3rem 0', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+                      {BK_LABELS[bk]}
+                    </div>,
+                    ...lines.map(line => (
+                      <div key={`${bk}-${line}`} style={{ gridColumn: 'span 2', display: 'grid', gridTemplateColumns: '1fr 1fr', alignItems: 'center', padding: '0.3rem 0', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+                        <OddsCell value={odds[bk]?.totals?.[line]?.over} color={BK_COLORS[bk]} />
+                        <OddsCell value={odds[bk]?.totals?.[line]?.under} color={BK_COLORS[bk]} />
+                      </div>
+                    )),
+                  ])}
                 </div>
-                {BOOKS.map(bk => (
-                  <div key={bk} style={{ display: 'grid', gridTemplateColumns: COLS_TOT, gap: '0 0.25rem', alignItems: 'center', padding: '0.3rem 0', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
-                    <span style={{ fontSize: 11, color: 'var(--text)' }}>{BK_LABELS[bk]}</span>
-                    <div />
-                    <OddsCell value={odds[bk]?.totals?.[line]?.over} color={BK_COLORS[bk]} />
-                    <OddsCell value={odds[bk]?.totals?.[line]?.under} color={BK_COLORS[bk]} />
-                  </div>
-                ))}
               </div>
             );
-          })}
+          })()}
 
           {model && (
             <p style={{ fontSize: 10, color: 'var(--text-dim)', marginTop: '0.5rem' }}>
