@@ -73,7 +73,7 @@ function LineupColumn({ team, lineup }) {
   );
   return (
     <div>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
         <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--text)' }}>{team}</span>
         <span style={{
           fontSize: 8, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em',
@@ -83,12 +83,12 @@ function LineupColumn({ team, lineup }) {
         }}>{lineup.status}</span>
       </div>
       {lineup.pitcher && (
-        <div style={{ fontSize: 10, color: 'var(--text-dim)', marginBottom: 4 }}>
+        <div style={{ fontSize: 10, color: 'var(--text-dim)', marginBottom: 10 }}>
           Lanceur : <span style={{ color: 'var(--text)' }}>{lineup.pitcher.name}</span> ({lineup.pitcher.throws})
         </div>
       )}
       {lineup.batting.map(b => (
-        <div key={b.order} style={{ display: 'grid', gridTemplateColumns: '16px 28px 1fr 16px', gap: 4, padding: '2px 0', fontSize: 11 }}>
+        <div key={b.order} style={{ display: 'grid', gridTemplateColumns: '16px 28px 1fr 16px', gap: 4, padding: '4px 0', fontSize: 11 }}>
           <span style={{ color: 'var(--text-dim)' }}>{b.order}</span>
           <span style={{ color: '#fb923c', fontWeight: 700, fontSize: 9 }}>{b.pos}</span>
           <span style={{ color: '#fff', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{b.name}</span>
@@ -319,14 +319,14 @@ export default function MlbDetailPage() {
             <LineupColumn team={away.short || away.name} lineup={lineups.away} />
           </div>
           <div className="detail-card lineup-card">
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, marginBottom: '0.5rem' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, marginBottom: '1.25rem' }}>
               <span style={{
                 fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.07em',
                 padding: '2px 8px', borderRadius: 4,
                 background: 'rgba(251,191,36,0.12)', color: '#fbbf24', border: '1px solid rgba(251,191,36,0.3)',
               }}>Compos probables</span>
             </div>
-            <div style={{ display: 'flex', justifyContent: 'center', gap: 6, marginBottom: '0.5rem' }}>
+            <div style={{ display: 'flex', justifyContent: 'center', gap: 6, marginBottom: '1rem' }}>
               {[{ key: 'home', label: home.short || home.name }, { key: 'away', label: away.short || away.name }].map(({ key, label }) => (
                 <button key={key} onClick={() => setFieldTeam(key)} style={{
                   padding: '0.18rem 0.55rem', borderRadius: 5, border: '1px solid',
