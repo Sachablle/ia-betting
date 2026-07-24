@@ -29,6 +29,10 @@ const LEAGUE_META = {
 // Coupes européennes de clubs (23 juillet 2026) — source api-football, /api/football/eucup/:comp/matches
 const EU_CUP_LEAGUES = ['europa', 'conference', 'champions'];
 const FOOTBALL_LEAGUES = new Set(['ligue1','laliga','bundes','seriea','pl','cdm','bresil', ...EU_CUP_LEAGUES]);
+// MLB (24 juillet 2026) — 3e catégorie de sport dans le panneau États-Unis, à part du basket
+// (NBA/WNBA) : masquée par défaut, visible uniquement quand l'icône ⚾ est cliquée explicitement.
+const MLB_LEAGUES = new Set(['mlb']);
+const sportOf = l => FOOTBALL_LEAGUES.has(l) ? 'football' : MLB_LEAGUES.has(l) ? 'baseball' : 'basket';
 
 const _ESPN_WNBA = { 'Atlanta Dream':20,'Chicago Sky':19,'Connecticut Sun':18,'Dallas Wings':3,'Golden State Valkyries':129689,'Indiana Fever':5,'Las Vegas Aces':17,'Los Angeles Sparks':6,'Minnesota Lynx':8,'New York Liberty':9,'Phoenix Mercury':11,'Portland Fire':132052,'Seattle Storm':14,'Toronto Tempo':131935,'Washington Mystics':16 };
 const _ESPN_NBA  = { 'Atlanta Hawks':1,'Boston Celtics':2,'New Orleans Pelicans':3,'Chicago Bulls':4,'Cleveland Cavaliers':5,'Dallas Mavericks':6,'Denver Nuggets':7,'Detroit Pistons':8,'Golden State Warriors':9,'Houston Rockets':10,'Indiana Pacers':11,'LA Clippers':12,'Los Angeles Lakers':13,'Miami Heat':14,'Milwaukee Bucks':15,'Minnesota Timberwolves':16,'Brooklyn Nets':17,'New York Knicks':18,'Orlando Magic':19,'Philadelphia 76ers':20,'Phoenix Suns':21,'Portland Trail Blazers':22,'Sacramento Kings':23,'San Antonio Spurs':24,'Oklahoma City Thunder':25,'Utah Jazz':26,'Washington Wizards':27,'Toronto Raptors':28,'Memphis Grizzlies':29,'Charlotte Hornets':30 };
@@ -239,11 +243,14 @@ function Panel({ country, onClose, statsLeague, setStatsLeague, onOpenBasketStat
   // NBA repliée par défaut tant qu'on est en présaison (aucune cote/alerte dessus, cf. mémoire
   // project_nba_regular_season) — à retirer une fois la saison régulière lancée (~mi-octobre 2026).
   const [collapsedLeagues, setCollapsedLeagues] = useState({ nba: true });
-  const _hasFootball = country.leagues.some(l => FOOTBALL_LEAGUES.has(l));
-  const _hasBasket   = country.leagues.some(l => !FOOTBALL_LEAGUES.has(l));
-  // Par défaut : sport de la première ligue du pays (acb avant laliga → basket ; cdm avant euroleague → football)
-  const _firstSport = FOOTBALL_LEAGUES.has(country.leagues[0]) ? 'football' : 'basket';
-  const [sportFilter, setSportFilter] = useState(_hasBasket && _hasFootball ? _firstSport : _hasBasket ? 'basket' : _hasFootball ? 'football' : null);
+  const _hasFootball = country.leagues.some(l => sportOf(l) === 'football');
+  const _hasBasket   = country.leagues.some(l => sportOf(l) === 'basket');
+  const _hasBaseball = country.leagues.some(l => sportOf(l) === 'baseball');
+  // Par défaut : sport de la première ligue du pays (acb avant laliga → basket ; cdm avant euroleague
+  // → football ; nba avant mlb → basket, le MLB reste masqué tant qu'on ne clique pas l'icône ⚾).
+  const _firstSport = sportOf(country.leagues[0]);
+  const _sportsPresent = [_hasFootball && 'football', _hasBasket && 'basket', _hasBaseball && 'baseball'].filter(Boolean);
+  const [sportFilter, setSportFilter] = useState(_sportsPresent.length > 1 ? _firstSport : _sportsPresent[0] || null);
 
   useEffect(() => {
     if (!country) return;
@@ -267,8 +274,10 @@ function Panel({ country, onClose, statsLeague, setStatsLeague, onOpenBasketStat
       if (l === 'mlb') return cachedFetch('/api/mlb/matches', 5*60_000).then(d => {
         const all=(d.matches||[]).map(m=>({
           id:`mlb_${m.id}`,date:m.date,status:m.status,round:m.venue||'',
-          home:{name:m.home?.name,short:m.home?.short,logo:null,score:m.home?.score ?? null},
-          away:{name:m.away?.name,short:m.away?.short,logo:null,score:m.away?.score ?? null},
+          // Logos MLB (24 juillet 2026) — CDN RotoWire, abréviation identique à MLB Stats API
+          // (vérifié en direct sur les 30 franchises), pas besoin de table d'alias.
+          home:{name:m.home?.name,short:m.home?.short,logo:m.home?.short?`https://assets.rotowire.com/images/teamlogo/baseball/100${m.home.short}.png`:null,score:m.home?.score ?? null},
+          away:{name:m.away?.name,short:m.away?.short,logo:m.away?.short?`https://assets.rotowire.com/images/teamlogo/baseball/100${m.away.short}.png`:null,score:m.away?.score ?? null},
         }));
         return{l,...splitGames(all)};
       });
@@ -331,10 +340,8 @@ function Panel({ country, onClose, statsLeague, setStatsLeague, onOpenBasketStat
     return () => { cancelled = true; clearTimeout(loadTimer); clearInterval(t); };
   }, [country?.name]);
 
-  const hasFootball   = country.leagues.some(l => FOOTBALL_LEAGUES.has(l));
-  const hasBasket     = country.leagues.some(l => !FOOTBALL_LEAGUES.has(l));
   const visibleLeagues = sportFilter
-    ? country.leagues.filter(l => sportFilter === 'football' ? FOOTBALL_LEAGUES.has(l) : !FOOTBALL_LEAGUES.has(l))
+    ? country.leagues.filter(l => sportOf(l) === sportFilter)
     : country.leagues;
 
   return (
@@ -362,10 +369,16 @@ function Panel({ country, onClose, statsLeague, setStatsLeague, onOpenBasketStat
         </div>
         <div style={{display:'flex',alignItems:'center',gap:6,marginTop:'1rem'}}>
           <div style={{flex:1,height:1,background:'linear-gradient(90deg,rgba(251,146,60,0.4),transparent)'}}/>
-          {(_hasFootball
-            ? [['football','⚽','#2d8a2d','rgba(45,138,45,',_hasFootball],['basket','🏀','#fb923c','rgba(251,146,60,',_hasBasket]]
-            : [['basket','🏀','#fb923c','rgba(251,146,60,',_hasBasket],['football','⚽','#2d8a2d','rgba(45,138,45,',_hasFootball]]
-          ).map(([sport, icon, col, rgba, has]) => {
+          {[
+            ...(_hasFootball
+              ? [['football','⚽','#2d8a2d','rgba(45,138,45,',_hasFootball],['basket','🏀','#fb923c','rgba(251,146,60,',_hasBasket]]
+              : [['basket','🏀','#fb923c','rgba(251,146,60,',_hasBasket],['football','⚽','#2d8a2d','rgba(45,138,45,',_hasFootball]]),
+            // ⚾ MLB (24 juillet 2026) — n'apparaît que pour les pays qui ont effectivement une ligue
+            // baseball (États-Unis aujourd'hui), contrairement à foot/basket toujours affichés en
+            // duo (même sans ligue) : pas d'intérêt à montrer une icône désactivée sur les 6 autres
+            // pays qui n'auront jamais de MLB.
+            ...(_hasBaseball ? [['baseball','⚾','#60a5fa','rgba(96,165,250,',_hasBaseball]] : []),
+          ].map(([sport, icon, col, rgba, has]) => {
             const active = sportFilter === sport;
             return (
               <button key={sport} onClick={() => {
@@ -376,7 +389,7 @@ function Panel({ country, onClose, statsLeague, setStatsLeague, onOpenBasketStat
                   // sélectionné — sinon il restait visible même sur l'onglet Football (Espagne, etc.)
                   if (next === 'basket') onOpenBasketStats(country); else setStatsLeague(null);
                 }}
-                title={sport === 'football' ? 'Football uniquement' : 'Basket uniquement'}
+                title={sport === 'football' ? 'Football uniquement' : sport === 'baseball' ? 'Baseball uniquement' : 'Basket uniquement'}
                 style={{
                   background: active ? `${rgba}0.15)` : 'none',
                   border: `1px solid ${active ? col : has ? `${rgba}0.2)` : 'rgba(255,255,255,0.06)'}`,

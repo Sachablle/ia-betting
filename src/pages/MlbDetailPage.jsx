@@ -18,6 +18,9 @@ const BK_COLORS = { unibet: '#1db954', betclic: '#e0292e' };
 const BOOKS = ['betclic', 'unibet'];
 const COLS_H2H = '80px 1fr 1fr';
 const ch = { fontSize: 9, fontWeight: 700, textTransform: 'uppercase', color: 'var(--text-dim)', textAlign: 'center', letterSpacing: '0.05em' };
+// Logos MLB — CDN RotoWire, abréviation identique à MLB Stats API (vérifié en direct sur les 30
+// franchises), pas besoin de table d'alias.
+const mlbLogo = short => short ? `https://assets.rotowire.com/images/teamlogo/baseball/100${short}.png` : null;
 
 const tabStyle = active => ({
   padding: '0.25rem 0.75rem', borderRadius: 5, border: '1px solid', cursor: 'pointer',
@@ -174,7 +177,7 @@ export default function MlbDetailPage() {
       {/* ── Hero ── */}
       <div className="detail-hero">
         <div className="detail-team home-team">
-          <TeamLogo name={home.name} logoId={null} size={52} />
+          <TeamLogo name={home.name} logoId={mlbLogo(home.short)} size={52} />
           {home.record && <div className="dt-position">{home.record}</div>}
           <div className="dt-name">{home.name}</div>
           {homeForm?.last5 && <FormStrip form={homeForm.last5} size="lg" />}
@@ -201,7 +204,7 @@ export default function MlbDetailPage() {
         </div>
 
         <div className="detail-team away-team">
-          <TeamLogo name={away.name} logoId={null} size={52} />
+          <TeamLogo name={away.name} logoId={mlbLogo(away.short)} size={52} />
           {away.record && <div className="dt-position">{away.record}</div>}
           <div className="dt-name">{away.name}</div>
           {awayForm?.last5 && <FormStrip form={awayForm.last5} size="lg" />}
