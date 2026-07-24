@@ -1158,12 +1158,15 @@ export function resolveFootballAlertResult(a, game) {
 // scores. Généralisé le 23 juillet 2026 (Europa League) : jusque-là seule la CDM était réglée ;
 // au passage, corrige aussi le Brasileirão (fdbr_) qui avait pourtant déjà un score exploitable via
 // /api/fd/bresil (STATUS_FINAL + home.score/away.score) mais jamais consommé pour le règlement.
+// Ligue 1/PL/Liga/Bundesliga/Serie A (fd_) ajoutées le 24 juillet 2026 — /api/fd/results existait
+// déjà côté backend (runAutoSettle()) mais n'était jamais exposée en HTTP pour ce règlement-ci.
 const FOOTBALL_SETTLEMENT_SOURCES = [
   { prefix: 'fdcdm_', endpoint: '/api/fd/worldcup', gamesKey: 'games' },
   { prefix: 'fdbr_',  endpoint: '/api/fd/bresil', gamesKey: 'matches' },
   { prefix: 'afel_',  endpoint: '/api/football/eucup/europa/matches', gamesKey: 'matches' },
   { prefix: 'afcl_',  endpoint: '/api/football/eucup/conference/matches', gamesKey: 'matches' },
   { prefix: 'afch_',  endpoint: '/api/football/eucup/champions/matches', gamesKey: 'matches' },
+  { prefix: 'fd_',    endpoint: '/api/fd/results', gamesKey: 'matches' },
 ];
 
 export async function resolveCompletedFootballAlerts(alerts, save) {

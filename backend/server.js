@@ -925,6 +925,17 @@ app.get('/api/fd/bresil', async (req, res) => {
   res.json(await _getBresilMatches());
 });
 
+// Ligue 1 / PL / La Liga / Bundesliga / Serie A — scores finaux pour le règlement frontend
+// (24 juillet 2026). _getFdLeaguesResults() existait déjà côté backend (utilisée par runAutoSettle()
+// et _resolveFootballNearMiss() depuis le 21 juillet) mais n'était jamais exposée en HTTP — le
+// règlement de resolveCompletedFootballAlerts() (syncAlerts.js, ce qui détermine gagné/perdu affiché
+// à l'utilisateur) restait donc bloqué sur ces 5 championnats faute de source. Même forme que
+// /api/fd/bresil ci-dessus ({matches:[{id,league,status,home:{score},away:{score}}]}).
+app.get('/api/fd/results', async (req, res) => {
+  if (!FD_KEY) return res.status(503).json({ error: 'FD_API_KEY not configured' });
+  res.json(await _getFdLeaguesResults());
+});
+
 // ── Europa League / Conference League — liste des matchs pour la Carte du Monde (23 juillet 2026)
 // Même format que _getBresilMatches ci-dessus (id/date/status/round/home/away), source api-football
 // au lieu de football-data.org — team logos fournis directement par l'API (fx.teams.home.logo).
