@@ -294,73 +294,67 @@ export default function MlbDetailPage() {
             const m = modelByLine.get(String(line));
             return (
               <div>
-                <div style={{ display: 'flex', justifyContent: 'center', position: 'relative', marginBottom: '0.6rem' }}>
-                  <span
-                    onClick={e => { e.stopPropagation(); setLinePopupOpen(v => !v); }}
-                    style={{
-                      display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer',
-                      fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-dim)',
-                    }}
-                  >
-                    Ligne
-                    <span style={{
-                      fontSize: 14, fontWeight: 800, color: '#fff',
-                      textDecoration: 'underline dotted', textDecorationColor: 'rgba(255,255,255,0.35)',
-                    }}>{line}</span>
-                    <svg width="11" height="11" viewBox="0 0 12 12" fill="none" style={{ opacity: 0.6 }}>
-                      <path d="M2 4.5l4 4 4-4" stroke="currentColor" strokeWidth="1.4" fill="none" strokeLinecap="round" strokeLinejoin="round" />
-                    </svg>
-                  </span>
-
-                  {linePopupOpen && (
-                    <div
-                      ref={linePopupRef}
-                      onClick={e => e.stopPropagation()}
-                      style={{
-                        position: 'absolute', top: '100%', left: '50%', transform: 'translateX(-50%)', marginTop: 8,
-                        background: 'var(--bg-card, #11141c)', border: '1px solid var(--border)', borderRadius: 8,
-                        padding: '0.5rem', boxShadow: '0 8px 20px rgba(0,0,0,0.45)', zIndex: 50, minWidth: 320,
-                      }}
-                    >
-                      <div style={{ display: 'grid', gridTemplateColumns: '46px 1fr 1fr 1fr', gap: '0.15rem 0.4rem', paddingBottom: '0.3rem', borderBottom: '1px solid var(--border)', marginBottom: '0.2rem' }}>
-                        <span style={ch}>Ligne</span>
-                        <span style={ch}>Modèle</span>
-                        <span style={ch}>Betclic</span>
-                        <span style={ch}>Unibet</span>
-                      </div>
-                      {lines.map(l => {
-                        const lm = modelByLine.get(String(l));
-                        return (
-                          <div
-                            key={l}
-                            onClick={() => { setSelectedLine(l); setLinePopupOpen(false); }}
-                            style={{
-                              display: 'grid', gridTemplateColumns: '46px 1fr 1fr 1fr', gap: '0.15rem 0.4rem', alignItems: 'center',
-                              padding: '0.3rem 0.2rem', borderRadius: 5, cursor: 'pointer',
-                              background: l === line ? 'rgba(251,146,60,0.15)' : 'transparent',
-                            }}
-                          >
-                            <span style={{ fontSize: 12, fontWeight: 700, color: '#fff' }}>{l}</span>
-                            <span style={{ fontSize: 8, textAlign: 'center', color: 'var(--text-dim)' }}>
-                              {lm ? `${Math.round(lm.pOver * 100)}% / ${Math.round(lm.pUnder * 100)}%` : '—'}
-                            </span>
-                            <span style={{ display: 'flex', justifyContent: 'center', gap: 4 }}>
-                              <OddsCell value={odds.betclic?.totals?.[l]?.over} color={BK_COLORS.betclic} />
-                              <OddsCell value={odds.betclic?.totals?.[l]?.under} color={BK_COLORS.betclic} />
-                            </span>
-                            <span style={{ display: 'flex', justifyContent: 'center', gap: 4 }}>
-                              <OddsCell value={odds.unibet?.totals?.[l]?.over} color={BK_COLORS.unibet} />
-                              <OddsCell value={odds.unibet?.totals?.[l]?.under} color={BK_COLORS.unibet} />
-                            </span>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-
                 <div style={{ display: 'grid', gridTemplateColumns: COLS_H2H, gap: '0 0.25rem', paddingBottom: '0.35rem', borderBottom: '1px solid var(--border)', marginBottom: '0.2rem' }}>
-                  <div />
+                  <div style={{ position: 'relative' }}>
+                    <span
+                      onClick={e => { e.stopPropagation(); setLinePopupOpen(v => !v); }}
+                      style={{ display: 'flex', alignItems: 'center', gap: 4, cursor: 'pointer' }}
+                    >
+                      <span style={{
+                        fontSize: 13, fontWeight: 800, color: '#fff',
+                        textDecoration: 'underline dotted', textDecorationColor: 'rgba(255,255,255,0.35)',
+                      }}>{line}</span>
+                      <svg width="10" height="10" viewBox="0 0 12 12" fill="none" style={{ opacity: 0.6, flexShrink: 0 }}>
+                        <path d="M2 4.5l4 4 4-4" stroke="currentColor" strokeWidth="1.4" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+                      </svg>
+                    </span>
+
+                    {linePopupOpen && (
+                      <div
+                        ref={linePopupRef}
+                        onClick={e => e.stopPropagation()}
+                        style={{
+                          position: 'absolute', top: '100%', left: 0, marginTop: 8,
+                          background: 'var(--bg-card, #11141c)', border: '1px solid var(--border)', borderRadius: 8,
+                          padding: '0.5rem', boxShadow: '0 8px 20px rgba(0,0,0,0.45)', zIndex: 50, minWidth: 320,
+                        }}
+                      >
+                        <div style={{ display: 'grid', gridTemplateColumns: '46px 1fr 1fr 1fr', gap: '0.15rem 0.4rem', paddingBottom: '0.3rem', borderBottom: '1px solid var(--border)', marginBottom: '0.2rem' }}>
+                          <span style={ch}>Ligne</span>
+                          <span style={ch}>Modèle</span>
+                          <span style={ch}>Betclic</span>
+                          <span style={ch}>Unibet</span>
+                        </div>
+                        {lines.map(l => {
+                          const lm = modelByLine.get(String(l));
+                          return (
+                            <div
+                              key={l}
+                              onClick={() => { setSelectedLine(l); setLinePopupOpen(false); }}
+                              style={{
+                                display: 'grid', gridTemplateColumns: '46px 1fr 1fr 1fr', gap: '0.15rem 0.4rem', alignItems: 'center',
+                                padding: '0.3rem 0.2rem', borderRadius: 5, cursor: 'pointer',
+                                background: l === line ? 'rgba(251,146,60,0.15)' : 'transparent',
+                              }}
+                            >
+                              <span style={{ fontSize: 12, fontWeight: 700, color: '#fff' }}>{l}</span>
+                              <span style={{ fontSize: 8, textAlign: 'center', color: 'var(--text-dim)' }}>
+                                {lm ? `${Math.round(lm.pOver * 100)}% / ${Math.round(lm.pUnder * 100)}%` : '—'}
+                              </span>
+                              <span style={{ display: 'flex', justifyContent: 'center', gap: 4 }}>
+                                <OddsCell value={odds.betclic?.totals?.[l]?.over} color={BK_COLORS.betclic} />
+                                <OddsCell value={odds.betclic?.totals?.[l]?.under} color={BK_COLORS.betclic} />
+                              </span>
+                              <span style={{ display: 'flex', justifyContent: 'center', gap: 4 }}>
+                                <OddsCell value={odds.unibet?.totals?.[l]?.over} color={BK_COLORS.unibet} />
+                                <OddsCell value={odds.unibet?.totals?.[l]?.under} color={BK_COLORS.unibet} />
+                              </span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
                   <div style={ch}>Over<br />{line}</div>
                   <div style={ch}>Under<br />{line}</div>
                 </div>
