@@ -39,7 +39,7 @@ const NBA_TEAMS = [
 
 const LEAGUES = [
   {
-    id: 'ligue1', flag: '🇫🇷', name: 'Ligue 1', country: 'France', espnLeague: 'fra.1',
+    id: 'ligue1', flag: '🇫🇷', logo: 'https://media.api-sports.io/football/leagues/61.png', name: 'Ligue 1', country: 'France', espnLeague: 'fra.1',
     teams: [
       { name: 'Paris Saint-Germain', espnId: 160  },
       { name: 'RC Lens',             espnId: 175  },
@@ -62,7 +62,7 @@ const LEAGUES = [
     ],
   },
   {
-    id: 'pl', flag: '🏴󠁧󠁢󠁥󠁮󠁧󠁿', name: 'Premier League', country: 'Angleterre', espnLeague: 'eng.1',
+    id: 'pl', flag: '🏴󠁧󠁢󠁥󠁮󠁧󠁿', logo: 'https://media.api-sports.io/football/leagues/39.png', name: 'Premier League', country: 'Angleterre', espnLeague: 'eng.1',
     teams: [
       { name: 'Arsenal',           espnId: 359  },
       { name: 'Manchester City',   espnId: 382  },
@@ -87,7 +87,7 @@ const LEAGUES = [
     ],
   },
   {
-    id: 'laliga', flag: '🇪🇸', name: 'La Liga', country: 'Espagne', espnLeague: 'esp.1',
+    id: 'laliga', flag: '🇪🇸', logo: 'https://media.api-sports.io/football/leagues/140.png', name: 'La Liga', country: 'Espagne', espnLeague: 'esp.1',
     teams: [
       { name: 'FC Barcelona',       espnId: 83   },
       { name: 'Real Madrid',        espnId: 86   },
@@ -112,7 +112,7 @@ const LEAGUES = [
     ],
   },
   {
-    id: 'bundes', flag: '🇩🇪', name: 'Bundesliga', country: 'Allemagne', espnLeague: 'ger.1',
+    id: 'bundes', flag: '🇩🇪', logo: 'https://media.api-sports.io/football/leagues/78.png', name: 'Bundesliga', country: 'Allemagne', espnLeague: 'ger.1',
     teams: [
       { name: 'FC Bayern München',        espnId: 132   },
       { name: 'Borussia Dortmund',        espnId: 124   },
@@ -135,7 +135,7 @@ const LEAGUES = [
     ],
   },
   {
-    id: 'seriea', flag: '🇮🇹', name: 'Serie A', country: 'Italie', espnLeague: 'ita.1',
+    id: 'seriea', flag: '🇮🇹', logo: 'https://media.api-sports.io/football/leagues/135.png', name: 'Serie A', country: 'Italie', espnLeague: 'ita.1',
     teams: [
       { name: 'Inter Milan',   espnId: 110  },
       { name: 'SSC Napoli',    espnId: 114  },
@@ -160,7 +160,7 @@ const LEAGUES = [
     ],
   },
   {
-    id: 'bresil', flag: '🇧🇷', name: 'Brasileirão', country: 'Brésil', espnLeague: 'bra.1',
+    id: 'bresil', flag: '🇧🇷', logo: 'https://media.api-sports.io/football/leagues/71.png', name: 'Brasileirão', country: 'Brésil', espnLeague: 'bra.1',
     teams: [
       { name: 'Athletico-PR',        espnId: 3458 },
       { name: 'Atlético-MG',         espnId: 7632 },
@@ -185,11 +185,11 @@ const LEAGUES = [
     ],
   },
   {
-    id: 'nba', flag: '🇺🇸', name: 'NBA', country: 'États-Unis',
+    id: 'nba', flag: '🇺🇸', logo: 'https://a.espncdn.com/i/teamlogos/leagues/500/nba.png', name: 'NBA', country: 'États-Unis',
     teams: NBA_TEAMS,
   },
   {
-    id: 'wnba', flag: '🇺🇸', name: 'WNBA', country: 'États-Unis',
+    id: 'wnba', flag: '🇺🇸', logo: 'https://a.espncdn.com/i/teamlogos/leagues/500/wnba.png', name: 'WNBA', country: 'États-Unis',
     teams: [
       { name: 'Atlanta Dream',          wnbaId: 20,     abbr: 'atl'  },
       { name: 'Chicago Sky',            wnbaId: 19,     abbr: 'chi'  },
@@ -209,7 +209,7 @@ const LEAGUES = [
     ],
   },
   {
-    id: 'acb', flag: '🇪🇸', name: 'ACB', country: 'Espagne',
+    id: 'acb', flag: '🇪🇸', logo: 'https://media.api-sports.io/basketball/leagues/117.png', name: 'ACB', country: 'Espagne',
     teams: [
       { name: 'Barcelona' },
       { name: 'Basket Zaragoza' },
@@ -231,7 +231,7 @@ const LEAGUES = [
     ],
   },
   {
-    id: 'euroleague', flag: '🇪🇺', name: 'EuroLeague', country: 'Europe',
+    id: 'euroleague', flag: '🇪🇺', logo: 'https://media.api-sports.io/basketball/leagues/120.png', name: 'EuroLeague', country: 'Europe',
     teams: [
       'Real Madrid', 'FC Barcelona', 'Fenerbahçe', 'Panathinaikos',
       'Olympiacos', 'Maccabi Tel Aviv', 'Baskonia', 'Bayern München',
@@ -324,7 +324,9 @@ function NBALeagueItem({ league }) {
     <div className="ef-league-item">
       <button className="ef-card-btn" onClick={() => { setOpen(o => !o); setSelected(null); }}>
         <div className="ef-card">
-          <span className="ef-card-flag">{league.flag}</span>
+          {league.logo
+            ? <img className="ef-card-logo" src={league.logo} alt="" onError={e => { e.currentTarget.style.display = 'none'; }} />
+            : <span className="ef-card-flag">{league.flag}</span>}
           <div className="ef-card-info">
             <span className="ef-card-name">{league.name}</span>
             <span className="ef-card-meta">{league.country} · {league.teams.length} clubs</span>
@@ -424,7 +426,9 @@ function WNBALeagueItem({ league }) {
     <div className="ef-league-item">
       <button className="ef-card-btn" onClick={() => { setOpen(o => !o); setSelected(null); }}>
         <div className="ef-card">
-          <span className="ef-card-flag">{league.flag}</span>
+          {league.logo
+            ? <img className="ef-card-logo" src={league.logo} alt="" onError={e => { e.currentTarget.style.display = 'none'; }} />
+            : <span className="ef-card-flag">{league.flag}</span>}
           <div className="ef-card-info">
             <span className="ef-card-name">{league.name}</span>
             <span className="ef-card-meta">{league.country} · {league.teams.length} clubs</span>
@@ -575,7 +579,9 @@ function MLBLeagueItem({ league }) {
     <div className="ef-league-item">
       <button className="ef-card-btn" onClick={() => { setOpen(o => !o); setSelected(null); }}>
         <div className="ef-card">
-          <span className="ef-card-flag">{league.flag}</span>
+          {league.logo
+            ? <img className="ef-card-logo" src={league.logo} alt="" onError={e => { e.currentTarget.style.display = 'none'; }} />
+            : <span className="ef-card-flag">{league.flag}</span>}
           <div className="ef-card-info">
             <span className="ef-card-name">{league.name}</span>
             <span className="ef-card-meta">{league.country} · {league.teams.length} clubs</span>
@@ -620,7 +626,9 @@ function EULeagueItem({ league }) {
     <div className="ef-league-item">
       <button className="ef-card-btn" onClick={() => { setOpen(o => !o); setSelected(null); }}>
         <div className="ef-card">
-          <span className="ef-card-flag">{league.flag}</span>
+          {league.logo
+            ? <img className="ef-card-logo" src={league.logo} alt="" onError={e => { e.currentTarget.style.display = 'none'; }} />
+            : <span className="ef-card-flag">{league.flag}</span>}
           <div className="ef-card-info">
             <span className="ef-card-name">{league.name}</span>
             <span className="ef-card-meta">{league.country} · {league.teams.length} clubs</span>
@@ -761,7 +769,9 @@ function LeagueItem({ league }) {
     <div className="ef-league-item">
       <button className="ef-card-btn" onClick={() => { setOpen(o => !o); setSelected(null); }}>
         <div className="ef-card">
-          <span className="ef-card-flag">{league.flag}</span>
+          {league.logo
+            ? <img className="ef-card-logo" src={league.logo} alt="" onError={e => { e.currentTarget.style.display = 'none'; }} />
+            : <span className="ef-card-flag">{league.flag}</span>}
           <div className="ef-card-info">
             <span className="ef-card-name">{league.name}</span>
             <span className="ef-card-meta">{league.country} · {teams.length} clubs</span>

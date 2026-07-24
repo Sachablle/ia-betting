@@ -417,6 +417,7 @@ body {
 }
 
 .ef-card-flag { font-size: 1.4rem; flex-shrink: 0; }
+.ef-card-logo { width: 24px; height: 24px; object-fit: contain; flex-shrink: 0; }
 
 .ef-card-info {
   display: flex;

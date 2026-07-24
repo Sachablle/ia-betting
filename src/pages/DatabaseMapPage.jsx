@@ -10,9 +10,9 @@ const FOOTBALL_IDS = new Set(['ligue1', 'pl', 'laliga', 'bundes', 'seriea', 'bre
 // on la récupère dynamiquement via /api/euro/:league/standings (même source que les alertes props
 // EU), et on la fait passer par EULeagueItem comme l'ACB (roster générique par nom d'équipe).
 const EU_BASKET_META = {
-  lnb:   { flag: '🇫🇷', name: 'Betclic Élite', country: 'France' },
-  bbl:   { flag: '🇩🇪', name: 'BBL',           country: 'Allemagne' },
-  legaa: { flag: '🇮🇹', name: 'Lega A',        country: 'Italie' },
+  lnb:   { flag: '🇫🇷', logo: 'https://media.api-sports.io/basketball/leagues/2.png',  name: 'Betclic Élite', country: 'France' },
+  bbl:   { flag: '🇩🇪', logo: 'https://media.api-sports.io/basketball/leagues/40.png', name: 'BBL',           country: 'Allemagne' },
+  legaa: { flag: '🇮🇹', logo: 'https://media.api-sports.io/basketball/leagues/52.png', name: 'Lega A',        country: 'Italie' },
 };
 
 // Mêmes pays que la Carte du Monde (Sports).
@@ -73,7 +73,7 @@ export default function DatabaseMapPage() {
   useEffect(() => {
     fetch('/api/mlb/teams')
       .then(r => r.json())
-      .then(d => setMlb({ id: 'mlb', flag: '🇺🇸', name: 'MLB', country: 'États-Unis', teams: d.teams || [] }))
+      .then(d => setMlb({ id: 'mlb', flag: '🇺🇸', logo: 'https://a.espncdn.com/i/teamlogos/leagues/500/mlb.png', name: 'MLB', country: 'États-Unis', teams: d.teams || [] }))
       .catch(() => {});
   }, []);
 
