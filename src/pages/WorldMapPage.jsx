@@ -245,14 +245,17 @@ function StatsOverlay({ league, onClose, standData, cats }) {
   );
 }
 
-function Panel({ country, onClose, statsLeague, setStatsLeague, onOpenBasketStats }) {
+function Panel({ country, onClose, statsLeague, setStatsLeague }) {
   const navigate = useNavigate();
   const [matches, setMatches] = useState({});
   const [loading, setLoading] = useState(true);
   const [view, setView] = useState({}); // { [league]: 'upcoming' | 'done' } — bouton À venir / Terminés par championnat
-  // NBA repliée par défaut tant qu'on est en présaison (aucune cote/alerte dessus, cf. mémoire
-  // project_nba_regular_season) — à retirer une fois la saison régulière lancée (~mi-octobre 2026).
-  const [collapsedLeagues, setCollapsedLeagues] = useState({ nba: true });
+  // Tous les championnats repliés par défaut à l'ouverture d'un pays (demande explicite, 24 juillet
+  // 2026) — il faut déplier un championnat pour voir ses matchs, et pour le basket ce dépliage
+  // déclenche aussi l'affichage des widgets Classement/leaders (cf. plus bas) au lieu de l'ancien
+  // auto-open au clic sur le pays. Absorbe au passage le cas NBA hors-saison (mémoire
+  // project_nba_regular_season) puisque tout part fermé désormais.
+  const [openLeagues, setOpenLeagues] = useState({});
   const _hasFootball = country.leagues.some(l => sportOf(l) === 'football');
   const _hasBasket   = country.leagues.some(l => sportOf(l) === 'basket');
   const _hasBaseball = country.leagues.some(l => sportOf(l) === 'baseball');
@@ -396,11 +399,10 @@ function Panel({ country, onClose, statsLeague, setStatsLeague, onOpenBasketStat
             return (
               <button key={sport} onClick={() => {
                   if (!has) return;
-                  const next = sportFilter === sport ? null : sport;
-                  setSportFilter(next);
-                  // Le panneau classement/leaders ne s'affiche que quand le basket est explicitement
-                  // sélectionné — sinon il restait visible même sur l'onglet Football (Espagne, etc.)
-                  if (next === 'basket') onOpenBasketStats(country); else setStatsLeague(null);
+                  setSportFilter(sportFilter === sport ? null : sport);
+                  // Changer d'onglet sport referme les widgets stats — ils ne se rouvrent que sur
+                  // dépliage explicite d'un championnat (cf. openLeagues plus bas).
+                  setStatsLeague(null);
                 }}
                 title={sport === 'football' ? 'Football uniquement' : sport === 'baseball' ? 'Baseball uniquement' : 'Basket uniquement'}
                 style={{
@@ -443,7 +445,7 @@ function Panel({ country, onClose, statsLeague, setStatsLeague, onOpenBasketStat
           const games = mode === 'upcoming'
             ? (country.isMonde && !isExplicitUpcoming ? pickHighlightMatches([...soon, ...upcoming], 3) : sortLiveFirst([...soon, ...upcoming]))
             : (country.isMonde ? pickHighlightMatches(soon, 3) : sortLiveFirst(soon));
-          const collapsed = !!collapsedLeagues[league];
+          const collapsed = !openLeagues[league];
           return (
             <div key={league} style={{marginBottom: country.isMonde ? '0.6rem' : '1.5rem'}}>
               <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:10,position:'sticky',top:0,zIndex:1,background:'linear-gradient(180deg,rgba(0,8,25,0.99) 85%,transparent)',paddingTop:4,paddingBottom:4,marginTop:-4}}>
@@ -452,24 +454,19 @@ function Panel({ country, onClose, statsLeague, setStatsLeague, onOpenBasketStat
                   const col = isFoot ? '#2d8a2d' : '#fb923c';
                   const colFade = isFoot ? 'rgba(45,138,45,0.7)' : 'rgba(251,146,60,0.7)';
                   return <>
-                    <div onClick={()=>setCollapsedLeagues(s=>({...s,[league]:!s[league]}))}
+                    <div onClick={()=>{
+                        const willOpen = !openLeagues[league];
+                        setOpenLeagues(s=>({...s,[league]:willOpen}));
+                        // Widgets Classement/leaders alignés sur le dépliage — se montrent quand le
+                        // championnat basket s'ouvre, se cachent quand il se referme (demande
+                        // explicite du 24 juillet 2026, remplace l'ancien bouton stats séparé).
+                        if (!isFoot) setStatsLeague(willOpen ? league : (statsLeague===league ? null : statsLeague));
+                      }}
                       style={{display:'flex',alignItems:'center',gap:8,cursor:'pointer'}}>
                       <span style={{fontSize:8,color:col,transform:collapsed?'rotate(-90deg)':'none',transition:'transform .15s',display:'inline-block',width:8}}>▾</span>
                       <div style={{width:5,height:5,borderRadius:'50%',background:col,boxShadow:`0 0 8px ${col}`}}/>
                       <span style={{fontSize:10,fontWeight:700,color:col,fontFamily:'monospace',textTransform:'uppercase',letterSpacing:'0.1em',whiteSpace:'nowrap'}}>{LEAGUE_META[league]}</span>
                     </div>
-                    {!FOOTBALL_LEAGUES.has(league) && <button onClick={()=>setStatsLeague(sl=>sl===league?null:league)}
-                      title="Stats du championnat"
-                      style={{flexShrink:0,width:11,height:11,borderRadius:2,
-                        border:`1px solid ${statsLeague===league?'rgba(96,165,250,0.8)':'rgba(96,165,250,0.5)'}`,
-                        background: statsLeague===league?'rgba(96,165,250,0.15)':'transparent',
-                        display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer',padding:0,transition:'all .15s'}}>
-                      <svg width="7" height="6" viewBox="0 0 9 9" fill="none">
-                        <rect x="1" y="6" width="1.5" height="2.5" fill="#60a5fa"/>
-                        <rect x="3.75" y="3.5" width="1.5" height="5" fill="#4ade80"/>
-                        <rect x="6.5" y="1" width="1.5" height="7.5" fill="#60a5fa"/>
-                      </svg>
-                    </button>}
                     <div style={{flex:1,height:1,background:`${col}18`}}/>
                     {!collapsed && <div style={{ flexShrink:0, display:'flex', alignItems:'center', border:'1px solid rgba(255,255,255,0.25)', borderRadius:4, overflow:'hidden', visibility: (soon.length > 0 || upcoming.length > 0 || done.length > 0) ? 'visible' : 'hidden' }}>
                       <span onClick={() => setView(s => ({...s, [league]: 'upcoming'}))}
@@ -632,7 +629,6 @@ export default function WorldMapPage() {
 
   const STATS_LEAGUES = new Set(['nba', 'wnba', 'acb']);
   const statsBase = l => l === 'nba' ? '/api/nba' : l === 'wnba' ? '/api/wnba' : '/api/acb';
-  const scoreboardUrl = l => l === 'wnba' ? '/api/wnba/scoreboard' : l === 'acb' ? '/api/euro/acb/scoreboard' : '/api/nba/scoreboard';
 
   // Pré-fetch standings + leaders dès qu'un pays avec basket est sélectionné
   useEffect(() => {
@@ -649,40 +645,14 @@ export default function WorldMapPage() {
     });
   }, [selected]);
 
-  // Le panneau classement/leaders ne s'ouvre plus automatiquement à l'ouverture d'un pays qui a
-  // aussi du football — il ne s'affiche que sur clic explicite de l'icône 🏀 (cf.
-  // openBestBasketLeague, appelée depuis Panel). Sans ça, les stats ACB apparaissaient même quand
-  // l'onglet Football était affiché en premier (France/Espagne/Allemagne/Italie, depuis le
-  // rebranchement football-data.org du 12 juillet). Mais pour un pays 100% basket (États-Unis),
-  // il n'y a aucune ambiguïté de sport à lever — s'ouvre directement, pas la peine de cliquer.
+  // Le panneau classement/leaders ne s'ouvre plus jamais automatiquement à l'ouverture d'un pays
+  // (demande explicite, 24 juillet 2026, y compris pour un pays 100% basket comme les États-Unis
+  // qui s'ouvrait directement auparavant) — il ne s'affiche que sur dépliage explicite d'un
+  // championnat basket dans le Panel (cf. openLeagues/setStatsLeague, Panel).
   useEffect(() => {
-    if (!selected) { setStatsLeague(null); setPrefetch({}); return; }
-    const hasFootball = selected.leagues.some(l => FOOTBALL_LEAGUES.has(l));
-    if (hasFootball) setStatsLeague(null);
-    else openBestBasketLeague(selected);
+    setStatsLeague(null);
+    if (!selected) setPrefetch({});
   }, [selected]);
-
-  // Ouvre la ligue basket la plus active du pays sélectionné — plusieurs ligues basket possibles
-  // seulement pour les États-Unis (NBA/WNBA), une seule pour les autres pays couverts.
-  const openBestBasketLeague = (country) => {
-    const leagues = country.leagues.filter(l => STATS_LEAGUES.has(l));
-    if (!leagues.length) { setStatsLeague(null); return; }
-    if (leagues.length === 1) { setStatsLeague(leagues[0]); return; }
-
-    const NOW = Date.now();
-    Promise.all(leagues.map(async l => {
-      try {
-        const d = await cachedFetch(scoreboardUrl(l), 30_000);
-        const hasActive = (d.games || []).some(g =>
-          g.status !== 'STATUS_FINAL' || NOW - new Date(g.date).getTime() < 48 * 3600_000
-        );
-        return { l, hasActive };
-      } catch { return { l, hasActive: false }; }
-    })).then(results => {
-      const active = results.find(r => r.hasActive);
-      setStatsLeague(active ? active.l : leagues[0]);
-    });
-  };
 
   // Position approximative de chaque pays sur la map (transform-origin pour le zoom)
   const ZOOM_ORIGIN = {
@@ -878,7 +848,7 @@ export default function WorldMapPage() {
 
 
       {/* Panel */}
-      {selected && <Panel country={selected} onClose={()=>{setSelected(null);setSelectedGeoId(null);setStatsLeague(null);}} statsLeague={statsLeague} setStatsLeague={setStatsLeague} onOpenBasketStats={openBestBasketLeague}/>}
+      {selected && <Panel country={selected} onClose={()=>{setSelected(null);setSelectedGeoId(null);setStatsLeague(null);}} statsLeague={statsLeague} setStatsLeague={setStatsLeague}/>}
 
       {/* StatsOverlay — rendu ici (hors Panel) pour que position:fixed soit relatif au viewport */}
       {statsLeague && <StatsOverlay league={statsLeague} onClose={() => setStatsLeague(null)} standData={prefetch[statsLeague]?.standData || null} cats={prefetch[statsLeague]?.cats || null} />}
