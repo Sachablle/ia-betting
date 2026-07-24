@@ -1268,10 +1268,13 @@ app.get('/api/mlb/preview', async (req, res) => {
     const avg = form => {
       const n = form?.games?.length || 0;
       if (!n) return null;
+      // form.games déjà en ordre chronologique croissant (cf. fetchMlbTeamRecentForm) — les 5
+      // dernières entrées sont donc les 5 matchs les plus récents, pour la FormStrip du hero.
       return {
         games: n,
         runsFor: form.games.reduce((s, g) => s + g.runsFor, 0) / n,
         runsAgainst: form.games.reduce((s, g) => s + g.runsAgainst, 0) / n,
+        last5: form.games.slice(-5).map(g => g.runsFor > g.runsAgainst ? 'W' : 'L'),
       };
     };
     // Moyenne de runs de la ligue calculée dynamiquement sur le pool d'équipes qui jouent
@@ -1344,10 +1347,11 @@ async function _getMlbMatches() {
     for (const d of j.dates || []) {
       for (const g of d.games || []) {
         const status = MLB_STATUS_MAP[g.status?.abstractGameState] || 'STATUS_SCHEDULED';
+        const homeR = g.teams.home.leagueRecord, awayR = g.teams.away.leagueRecord;
         matches.push({
           id: String(g.gamePk), date: g.gameDate, status, venue: g.venue?.name || null,
-          home: { name: g.teams.home.team.name, short: shortOf(g.teams.home.team.id), score: g.teams.home.score ?? null },
-          away: { name: g.teams.away.team.name, short: shortOf(g.teams.away.team.id), score: g.teams.away.score ?? null },
+          home: { name: g.teams.home.team.name, short: shortOf(g.teams.home.team.id), score: g.teams.home.score ?? null, record: homeR ? `${homeR.wins}-${homeR.losses}` : null },
+          away: { name: g.teams.away.team.name, short: shortOf(g.teams.away.team.id), score: g.teams.away.score ?? null, record: awayR ? `${awayR.wins}-${awayR.losses}` : null },
         });
       }
     }
@@ -1361,6 +1365,55 @@ async function _getMlbMatches() {
 }
 app.get('/api/mlb/matches', async (req, res) => {
   res.json(await _getMlbMatches());
+});
+
+// ── MLB — compositions RotoWire (24 juillet 2026) ─────────────────────────────────────────────
+// Même famille HTML "lineup__*" que fetchRotoWireAllLineups (basket, cf. ROTO_PAGE_URL plus haut),
+// mais structure différente pour le baseball : lineup__pos donne la position défensive (pas de
+// "G/F/C" comme au basket), l'ordre des <li class="lineup__player"> = ordre de batte (1 à 9),
+// lineup__player-highlight = le lanceur partant (nom + main + bilan), lineup__status = Confirmé/
+// Probable. Vérifié en direct : ordre de batte fiable, 9/9 joueurs par équipe sur un vrai match.
+const ROTO_MLB_URL = 'https://www.rotowire.com/baseball/daily-lineups.php';
+let _mlbLineupsCache = { data: null, ts: 0 };
+async function fetchRotoWireMlbLineups() {
+  if (_mlbLineupsCache.data && Date.now() - _mlbLineupsCache.ts < 5 * 60_000) return _mlbLineupsCache.data;
+  try {
+    const resp = await fetch(ROTO_MLB_URL, { headers: ROTO_HEADERS, signal: AbortSignal.timeout(10000) });
+    if (!resp.ok) throw new Error(`RotoWire MLB HTML ${resp.status}`);
+    const html = await resp.text();
+    const boxes = html.split(/(?=<div class="lineup__box")/).slice(1);
+    const result = {};
+    const parseTeamList = ulHtml => {
+      const statusRaw = ulHtml.match(/lineup__status is-(\w+)/)?.[1];
+      const status = statusRaw === 'confirmed' ? 'Confirmé' : statusRaw === 'expected' ? 'Probable' : null;
+      const pitcherM = ulHtml.match(/lineup__player-highlight-name">\s*<a[^>]*>([^<]+)<\/a>\s*<span class="lineup__throws">(\w)<\/span>/);
+      const pitcher = pitcherM ? { name: pitcherM[1].trim(), throws: pitcherM[2] } : null;
+      const batting = [];
+      for (const m of ulHtml.matchAll(/<li class="lineup__player">\s*<div class="lineup__pos">([^<]+)<\/div>\s*<a title="([^"]+)"[^>]*>[^<]*<\/a>\s*<span class="lineup__bats">(\w)<\/span>/g)) {
+        batting.push({ order: batting.length + 1, pos: m[1], name: m[2], bats: m[3] });
+      }
+      return batting.length ? { status, pitcher, batting } : null;
+    };
+    for (const box of boxes) {
+      const visitAbbr = box.match(/is-visit">[\s\S]*?lineup__abbr">(\w+)</)?.[1];
+      const homeAbbr = box.match(/is-home">[\s\S]*?lineup__abbr">(\w+)</)?.[1];
+      if (!visitAbbr || !homeAbbr) continue;
+      const visitUl = box.match(/<ul class="lineup__list is-visit">([\s\S]*?)<\/ul>/)?.[1] || '';
+      const homeUl = box.match(/<ul class="lineup__list is-home">([\s\S]*?)<\/ul>/)?.[1] || '';
+      const visitData = parseTeamList(visitUl);
+      const homeData = parseTeamList(homeUl);
+      if (visitData) result[visitAbbr] = { ...visitData, opponent: homeAbbr };
+      if (homeData) result[homeAbbr] = { ...homeData, opponent: visitAbbr };
+    }
+    _mlbLineupsCache = { data: result, ts: Date.now() };
+    return result;
+  } catch (err) {
+    console.error('RotoWire MLB lineups error:', err.message);
+    return _mlbLineupsCache.data || {};
+  }
+}
+app.get('/api/mlb/lineups', async (req, res) => {
+  res.json(await fetchRotoWireMlbLineups());
 });
 
 // ── Europa League / Conference League — liste des matchs pour la Carte du Monde (23 juillet 2026)
