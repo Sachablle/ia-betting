@@ -9467,6 +9467,75 @@ app.get('/api/analysis/near-miss-football', (req, res) => {
   res.json({ rows, count: rows.length });
 });
 
+// ── Basketball — Résultat/Total O/U/Écart H2H, near-miss (24 juillet 2026) ────────────────────
+// Étend le principe déjà utilisé en foot (BTTS/Total/Résultat, cf. _logFootballNearMiss) et en
+// props basket (_logNearMissCandidate) aux 3 marchés basket qui n'avaient encore AUCUN suivi de
+// calibration : Résultat équipe, Total O/U, Écart H2H (Handicap). NBA/WNBA/ACB/BBL/LegaA (EuroLeague
+// exclue — pas de modèle Résultat/Total/Écart pour elle, cf. section 4b du fichier). Même bande
+// [floor-20pts, floor) que le foot/props (NEAR_MISS_BAND) — ces marchés ont déjà un seuil réel en
+// production (75%/80%), la question posée est "ce seuil est-il le bon", pas "le modèle est-il
+// calibré du tout" (contrairement au MLB, sans aucune alerte réelle, qui log sans filtre de bande).
+const NEAR_MISS_BASKET_FILE = join(CACHE_DIR, 'near_miss_basket_markets.json');
+let _nearMissBasketMkt = [];
+try {
+  if (existsSync(NEAR_MISS_BASKET_FILE)) _nearMissBasketMkt = JSON.parse(readFileSync(NEAR_MISS_BASKET_FILE, 'utf8')).rows || [];
+} catch {}
+function _saveNearMissBasketMkt() {
+  try { writeFileSync(NEAR_MISS_BASKET_FILE, JSON.stringify({ rows: _nearMissBasketMkt }), 'utf8'); } catch {}
+}
+function _logBasketMarketNearMiss({ gameId, league, market, direction, line, probability, floor }) {
+  if (probability >= floor || probability < floor - NEAR_MISS_BAND) return;
+  const id = `${gameId}_${league}_${market}_${direction}_${line ?? 'x'}`;
+  if (_nearMissBasketMkt.some(c => c.id === id)) return;
+  _nearMissBasketMkt.push({
+    id, gameId, league, market, direction, line: line ?? null,
+    probability: +(probability * 100).toFixed(1), floor: +(floor * 100).toFixed(1),
+    status: 'pending', savedAt: Date.now(),
+  });
+}
+const BASKET_MKT_SCOREBOARD = {
+  nba: '/api/nba/scoreboard', wnba: '/api/wnba/scoreboard',
+  acb: '/api/euro/acb/scoreboard', bbl: '/api/euro/bbl/scoreboard', legaa: '/api/euro/legaa/scoreboard',
+};
+async function _resolveBasketMarketNearMiss() {
+  const base = `http://localhost:${process.env.PORT || 3001}`;
+  const pending = _nearMissBasketMkt.filter(c => c.status === 'pending');
+  if (!pending.length) return;
+  const cache = {};
+  for (const c of pending) {
+    try {
+      const path = BASKET_MKT_SCOREBOARD[c.league];
+      if (!path) continue;
+      if (!cache[c.league]) cache[c.league] = await fetch(`${base}${path}`).then(r => r.ok ? r.json() : null).catch(() => null);
+      const game = (cache[c.league]?.games || []).find(g => String(g.id) === String(c.gameId));
+      if (!game || game.status !== 'STATUS_FINAL') continue;
+      const hs = game.home?.score, as = game.away?.score;
+      if (hs == null || as == null) continue;
+      let cleared;
+      if (c.market === 'result') cleared = c.direction === 'home' ? hs > as : as > hs;
+      else if (c.market === 'total') cleared = c.direction === 'over' ? (hs + as) > c.line : (hs + as) < c.line;
+      else if (c.market === 'spread') {
+        // Convention identique à findSpreadLadderAlternative/computeSpreadCoverProb : `line` est la
+        // ligne handicap du côté `direction` (négative si favori) — le côté couvre si sa marge
+        // réelle + sa ligne dépasse 0 (ex: favori -8.5, gagne de 10 → 10-8.5=+1.5 > 0, couvert).
+        const teamScore = c.direction === 'home' ? hs : as;
+        const oppScore  = c.direction === 'home' ? as : hs;
+        cleared = (teamScore - oppScore) + c.line > 0;
+      }
+      c.status = cleared ? 'won' : 'lost';
+    } catch {}
+  }
+  const cutoff = Date.now() - 90 * 86400_000;
+  _nearMissBasketMkt = _nearMissBasketMkt.filter(c => c.savedAt > cutoff);
+  _saveNearMissBasketMkt();
+}
+app.get('/api/analysis/near-miss-basket-markets', (req, res) => {
+  const days = Math.min(parseInt(req.query.days) || 30, 90);
+  const cutoff = Date.now() - days * 86400_000;
+  const rows = _nearMissBasketMkt.filter(r => r.savedAt > cutoff);
+  res.json({ rows, count: rows.length });
+});
+
 // ── MLB — étape 4 : mode fantôme (24 juillet 2026) ────────────────────────────────────────────
 // Contrairement à _logFootballNearMiss ci-dessus (filtré à une bande proche du seuil d'alerte —
 // utile une fois qu'on a déjà des alertes réelles, pour repérer les cas limites), le MLB n'a encore
@@ -12316,6 +12385,7 @@ async function generateBackgroundAlerts() {
 
           const bestP = Math.max(full.pOver ?? 0, full.pUnder ?? 0);
           const direction = full.direction;
+          _logBasketMarketNearMiss({ gameId: game.id, league: leagueKey, market: 'total', direction, line, probability: bestP, floor: TOTAL_ALERT_PROB });
           const dirOdds = Math.max(bks.unibet?.[direction] ?? 0, bks.betclic?.[direction] ?? 0); // winamax exclu depuis le 22 juin (cf. props)
           const oddsStillOk = dirOdds >= 1.60;
           const alertId   = `${game.id}_${leagueKey}_total`;
@@ -12609,6 +12679,8 @@ async function generateBackgroundAlerts() {
           });
           if (!result) continue;
           _bgLog.push(`${euLeague} result dbg ${g.home.short}v${g.away.short}: pHome=${(result.pHome*100).toFixed(1)}% pAway=${(result.pAway*100).toFixed(1)}% margin=${result.marginExpected} outPen=${homeOutPenalty.toFixed(1)}/${awayOutPenalty.toFixed(1)}`);
+          _logBasketMarketNearMiss({ gameId: g.id, league: euLeague, market: 'result', direction: 'home', line: null, probability: result.pHome, floor: RESULT_ALERT_PROB });
+          _logBasketMarketNearMiss({ gameId: g.id, league: euLeague, market: 'result', direction: 'away', line: null, probability: result.pAway, floor: RESULT_ALERT_PROB });
 
           const resultCreatedSidesEU = new Set();
           for (const [bk, h] of Object.entries(h2hBks).filter(([bk]) => bk !== 'winamax')) { // winamax exclu depuis le 22 juin
@@ -12677,6 +12749,7 @@ async function generateBackgroundAlerts() {
               if (spreadCreatedSidesEU.has(side)) continue;
               const stillAlt = findSpreadLadderAlternative({ direction: side, spreadAllLinesBks: spreadAllLinesBksEU, marginExpected: result.marginExpected, std: result.std, probFloor: 0, lineScale: scaleF });
               const prob = stillAlt?.p ?? 0;
+              if (stillAlt) _logBasketMarketNearMiss({ gameId: g.id, league: euLeague, market: 'spread', direction: side, line: stillAlt.line, probability: prob, floor: SPREAD_ALERT_PROB });
               refreshOrDropPendingById(newAlerts, `${g.id}_eu_spread_${side}`, +(prob * 100).toFixed(1),
                 !!stillAlt && stillAlt.odds >= SPREAD_MIN_ODDS && prob >= SPREAD_ALERT_PROB,
                 { probability: +(prob * 100).toFixed(1), margin: result.marginExpected, line: stillAlt?.line, odds: stillAlt?.odds }, `${(prob*100).toFixed(1)}%`);
@@ -12778,6 +12851,8 @@ async function generateBackgroundAlerts() {
             });
             if (!result) continue;
             _bgLog.push(`${leagueKey} result dbg ${g.home.short}v${g.away.short}: pHome=${(result.pHome*100).toFixed(1)}% pAway=${(result.pAway*100).toFixed(1)}% margin=${result.marginExpected} outPen=${homeOutPenalty.toFixed(1)}/${awayOutPenalty.toFixed(1)}`);
+            _logBasketMarketNearMiss({ gameId: g.id, league: leagueKey, market: 'result', direction: 'home', line: null, probability: result.pHome, floor: RESULT_ALERT_PROB });
+            _logBasketMarketNearMiss({ gameId: g.id, league: leagueKey, market: 'result', direction: 'away', line: null, probability: result.pAway, floor: RESULT_ALERT_PROB });
 
             const resultCreatedSides = new Set();
             for (const [bk, h] of Object.entries(h2hBks).filter(([bk]) => bk !== 'winamax')) { // winamax exclu depuis le 22 juin
@@ -12848,6 +12923,7 @@ async function generateBackgroundAlerts() {
                 if (spreadCreatedSides.has(side)) continue;
                 const stillAlt = findSpreadLadderAlternative({ direction: side, spreadAllLinesBks, marginExpected: result.marginExpected, std: result.std, probFloor: 0 });
                 const prob = stillAlt?.p ?? 0;
+                if (stillAlt) _logBasketMarketNearMiss({ gameId: g.id, league: leagueKey, market: 'spread', direction: side, line: stillAlt.line, probability: prob, floor: SPREAD_ALERT_PROB });
                 refreshOrDropPendingById(newAlerts, `${g.id}_${leagueKey}_spread_${side}`, +(prob * 100).toFixed(1),
                   !!stillAlt && stillAlt.odds >= SPREAD_MIN_ODDS && prob >= SPREAD_ALERT_PROB,
                   { probability: +(prob * 100).toFixed(1), margin: result.marginExpected, line: stillAlt?.line, odds: stillAlt?.odds }, `${(prob*100).toFixed(1)}%`);
@@ -12987,6 +13063,7 @@ async function generateBackgroundAlerts() {
 
             const bestP = Math.max(full.pOver ?? 0, full.pUnder ?? 0);
             const direction = full.direction;
+            _logBasketMarketNearMiss({ gameId: g.id, league: euLeague, market: 'total', direction, line, probability: bestP, floor: TOTAL_ALERT_PROB });
             const dirOdds = Math.max(bks.unibet?.[direction] ?? 0, bks.betclic?.[direction] ?? 0); // winamax exclu depuis le 22 juin (cf. props)
             const oddsStillOk = dirOdds >= 1.60;
             const alertId = `${g.id}_${euLeague}_total`;
@@ -14765,6 +14842,10 @@ app.listen(PORT, () => {
   // MLB mode fantôme (24 juillet 2026) — même cadence
   setTimeout(() => _resolveMlbNearMiss().catch(() => {}), 22_000);
   setInterval(() => _resolveMlbNearMiss().catch(() => {}), 20 * 60 * 1000);
+
+  // Basketball Résultat/Total/Écart H2H — near-miss (24 juillet 2026), même cadence
+  setTimeout(() => _resolveBasketMarketNearMiss().catch(() => {}), 23_000);
+  setInterval(() => _resolveBasketMarketNearMiss().catch(() => {}), 20 * 60 * 1000);
 
   // Watchdog réseau — ping DNS léger toutes les 2 min (voir commentaire à la définition)
   setInterval(_networkWatchdog, 2 * 60 * 1000);
