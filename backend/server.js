@@ -1283,6 +1283,11 @@ app.get('/api/mlb/preview', async (req, res) => {
       const homeAvg = avg(forms.get(g.home.name));
       const awayAvg = avg(forms.get(g.away.name));
       let model = null;
+      // oddsMatch calculé une seule fois ici (h2h exposé même si le modèle échoue plus bas, par
+      // ex. échantillon insuffisant) — évite à MlbDetailPage.jsx de devoir appeler /api/mlb/odds en
+      // plus de cette route, qui déclenchait un second scraping Betclic+Unibet en parallèle du
+      // premier (trouvé en testant la page en direct : chargement anormalement long).
+      const oddsMatch = odds.find(o => o.homeTeam === g.home.name && o.awayTeam === g.away.name);
       if (homeAvg && awayAvg && leagueAvgRuns) {
         const lambdas = computeMlbLambdas({
           homeRunsFor: homeAvg.runsFor * homeAvg.games, homeRunsAgainst: homeAvg.runsAgainst * homeAvg.games, homeGames: homeAvg.games,
@@ -1290,7 +1295,6 @@ app.get('/api/mlb/preview', async (req, res) => {
           leagueAvgRuns,
         });
         if (lambdas) {
-          const oddsMatch = odds.find(o => o.homeTeam === g.home.name && o.awayTeam === g.away.name);
           const lines = new Set([
             ...Object.keys(oddsMatch?.betclic?.totals || {}),
             ...Object.keys(oddsMatch?.unibet?.totals || {}),
@@ -1311,12 +1315,52 @@ app.get('/api/mlb/preview', async (req, res) => {
       return {
         home: g.home.name, away: g.away.name, date: g.date,
         homeForm: homeAvg, awayForm: awayAvg, model,
+        odds: oddsMatch ? { betclic: oddsMatch.betclic, unibet: oddsMatch.unibet } : null,
       };
     });
     res.json({ leagueAvgRuns: leagueAvgRuns ? +leagueAvgRuns.toFixed(2) : null, games: preview });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+
+// ── MLB — frontend (24 juillet 2026) ──────────────────────────────────────────────────────────
+// Liste large pour la Carte du Monde (passé 3j + à venir 5j, contrairement à fetchMlbUpcomingGames
+// qui ne renvoie que les matchs SCHEDULED dans une fenêtre courte pour le modèle) — même principe
+// que _getEuClubMatches (23 juillet) : le bucketing soon/upcoming/done se fait côté client
+// (WorldMapPage.jsx), il faut juste lui fournir une fenêtre assez large des deux côtés.
+const MLB_STATUS_MAP = { Preview: 'STATUS_SCHEDULED', Live: 'STATUS_IN_PROGRESS', Final: 'STATUS_FINAL' };
+let _mlbMatchesCache = { data: null, ts: 0 };
+async function _getMlbMatches() {
+  if (_mlbMatchesCache.data && Date.now() - _mlbMatchesCache.ts < 5 * 60_000) return _mlbMatchesCache.data;
+  try {
+    const teams = await fetchMlbTeams();
+    const shortOf = id => teams.find(t => t.id === id)?.abbreviation || null;
+    const from = new Date(Date.now() - 3 * 86400_000).toISOString().slice(0, 10);
+    const to = new Date(Date.now() + 5 * 86400_000).toISOString().slice(0, 10);
+    const r = await fetch(`${MLB_API_BASE}/schedule?sportId=1&startDate=${from}&endDate=${to}`, { signal: AbortSignal.timeout(10000) });
+    const j = await r.json();
+    const matches = [];
+    for (const d of j.dates || []) {
+      for (const g of d.games || []) {
+        const status = MLB_STATUS_MAP[g.status?.abstractGameState] || 'STATUS_SCHEDULED';
+        matches.push({
+          id: String(g.gamePk), date: g.gameDate, status, venue: g.venue?.name || null,
+          home: { name: g.teams.home.team.name, short: shortOf(g.teams.home.team.id), score: g.teams.home.score ?? null },
+          away: { name: g.teams.away.team.name, short: shortOf(g.teams.away.team.id), score: g.teams.away.score ?? null },
+        });
+      }
+    }
+    const result = { matches, count: matches.length };
+    _mlbMatchesCache = { data: result, ts: Date.now() };
+    return result;
+  } catch (err) {
+    console.error('MLB matches fetch error:', err.message);
+    return _mlbMatchesCache.data || { matches: [], count: 0 };
+  }
+}
+app.get('/api/mlb/matches', async (req, res) => {
+  res.json(await _getMlbMatches());
 });
 
 // ── Europa League / Conference League — liste des matchs pour la Carte du Monde (23 juillet 2026)

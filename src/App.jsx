@@ -183,6 +183,7 @@ function useAlertCount() {
 
 const importMatchDetail     = () => import('./pages/MatchDetailPage');
 const importBasketballDetail = () => import('./pages/BasketballDetailPage');
+const importMlbDetail       = () => import('./pages/MlbDetailPage');
 const importPlaceBet        = () => import('./pages/PlaceBetPage');
 const importRunning         = () => import('./pages/RunningPage');
 const importBacktesting     = () => import('./pages/BacktestingPage');
@@ -193,6 +194,7 @@ const importOutrights       = () => import('./pages/OutrightsPage');
 
 const MatchDetailPage      = lazy(importMatchDetail);
 const BasketballDetailPage = lazy(importBasketballDetail);
+const MlbDetailPage        = lazy(importMlbDetail);
 const PlaceBetPage         = lazy(importPlaceBet);
 const RunningPage          = lazy(importRunning);
 const BacktestingPage      = lazy(importBacktesting);
@@ -357,6 +359,7 @@ export default function App() {
               <Route path="/dashboard" element={<DashboardPage />} />
               <Route path="/sports" element={<Navigate to="/carte" replace />} />
               <Route path="/football/:id" element={<MatchDetailPage />} />
+              <Route path="/mlb/:id" element={<MlbDetailPage />} />
               <Route path="/basketball/:id" element={<BasketballDetailRoute />} />
               <Route path="/basketball/:id/player/:playerName" element={<PlayerLinesRoute />} />
               <Route path="/placebet" element={<PlaceBetPage />} />

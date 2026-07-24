@@ -9,7 +9,7 @@ const GEO_URL = GEO_DATA;
 // Ordre du tableau `leagues` = ordre d'affichage/sport par défaut (cf. _firstSport plus bas) —
 // football en premier partout sauf États-Unis (pas de foot couvert là-bas, basket reste devant).
 const COVERED = {
-  '840': { name: 'États-Unis', flag: '🇺🇸', leagues: ['nba','wnba'] },
+  '840': { name: 'États-Unis', flag: '🇺🇸', leagues: ['nba','wnba','mlb'] },
   '250': { name: 'France',     flag: '🇫🇷', leagues: ['ligue1','lnb'] },
   '724': { name: 'Espagne',    flag: '🇪🇸', leagues: ['laliga','acb'] },
   '276': { name: 'Allemagne',  flag: '🇩🇪', leagues: ['bundes','bbl'] },
@@ -19,7 +19,7 @@ const COVERED = {
 };
 
 const LEAGUE_META = {
-  nba: 'NBA', wnba: 'WNBA', lnb: 'Betclic Élite',
+  nba: 'NBA', wnba: 'WNBA', mlb: 'MLB', lnb: 'Betclic Élite',
   acb: 'ACB', bbl:  'BBL',  legaa: 'Lega A',
   ligue1: 'Ligue 1', laliga: 'La Liga', bundes: 'Bundesliga', seriea: 'Serie A', pl: 'Premier League',
   euroleague: 'EuroLeague', cdm: 'Coupe du Monde', bresil: 'Brasileirão',
@@ -34,6 +34,7 @@ const _ESPN_WNBA = { 'Atlanta Dream':20,'Chicago Sky':19,'Connecticut Sun':18,'D
 const _ESPN_NBA  = { 'Atlanta Hawks':1,'Boston Celtics':2,'New Orleans Pelicans':3,'Chicago Bulls':4,'Cleveland Cavaliers':5,'Dallas Mavericks':6,'Denver Nuggets':7,'Detroit Pistons':8,'Golden State Warriors':9,'Houston Rockets':10,'Indiana Pacers':11,'LA Clippers':12,'Los Angeles Lakers':13,'Miami Heat':14,'Milwaukee Bucks':15,'Minnesota Timberwolves':16,'Brooklyn Nets':17,'New York Knicks':18,'Orlando Magic':19,'Philadelphia 76ers':20,'Phoenix Suns':21,'Portland Trail Blazers':22,'Sacramento Kings':23,'San Antonio Spurs':24,'Oklahoma City Thunder':25,'Utah Jazz':26,'Washington Wizards':27,'Toronto Raptors':28,'Memphis Grizzlies':29,'Charlotte Hornets':30 };
 function _prefetchMatch(g, league) {
   if (FOOTBALL_LEAGUES.has(league)) { import('./MatchDetailPage').catch(()=>{}); return; }
+  if (league === 'mlb') { import('./MlbDetailPage').catch(()=>{}); return; }
   import('./BasketballDetailPage').catch(()=>{});
   const map = league==='wnba' ? _ESPN_WNBA : _ESPN_NBA;
   const api = league==='wnba' ? 'wnba' : 'nba';
@@ -53,6 +54,8 @@ function _prefetchCountry(country) {
       cachedFetch(`${base}/scoreboard`, 20_000).catch(()=>{});
       cachedFetch(`${base}/standings`,  6*3_600_000).catch(()=>{});
       cachedFetch(`${base}/leaders`,    6*3_600_000).catch(()=>{});
+    } else if (l === 'mlb') {
+      cachedFetch('/api/mlb/matches', 5*60_000).catch(()=>{});
     } else if (l === 'acb') {
       cachedFetch('/api/euro/acb/scoreboard', 20_000).catch(()=>{});
       cachedFetch('/api/acb/standings', 6*3_600_000).catch(()=>{});
@@ -258,6 +261,17 @@ function Panel({ country, onClose, statsLeague, setStatsLeague, onOpenBasketStat
       if (l === 'nba')  return cachedFetch('/api/nba/scoreboard', 20_000).then(d=>{const s=splitGames(d.games||[]);return{l,...s};});
       if (l === 'wnba') return cachedFetch('/api/wnba/scoreboard', 20_000).then(d=>{const s=splitGames(d.games||[]);return{l,...s};});
       if (l === 'euroleague') return cachedFetch('/api/euroleague/scoreboard', 20_000).then(d=>{const s=splitGames(d.games||[]);return{l,...s};});
+      // MLB (24 juillet 2026) — mode fantôme : matchs affichés normalement, mais aucune alerte
+      // dessus (MLB_ALERTS_ENABLED=false côté backend) tant que la calibration near-miss n'est
+      // pas vérifiée. fixtureId préfixé mlb_, comme les autres namespaces de l'app.
+      if (l === 'mlb') return cachedFetch('/api/mlb/matches', 5*60_000).then(d => {
+        const all=(d.matches||[]).map(m=>({
+          id:`mlb_${m.id}`,date:m.date,status:m.status,round:m.venue||'',
+          home:{name:m.home?.name,short:m.home?.short,logo:null,score:m.home?.score ?? null},
+          away:{name:m.away?.name,short:m.away?.short,logo:null,score:m.away?.score ?? null},
+        }));
+        return{l,...splitGames(all)};
+      });
       // 5 grands championnats — football-data.org (même source/même id `fd_<id>` que MatchDetailPage
       // via useFootballFixtures, cf. src/utils/useFootballFixtures.js). Seuls les matchs SCHEDULED
       // sont renvoyés par /api/fd/matches (pas encore de source de score final pour ces 5 ligues,
@@ -471,7 +485,7 @@ function Panel({ country, onClose, statsLeague, setStatsLeague, onOpenBasketStat
                           <button key={i} onClick={()=>{
                             // Met à jour le state de /carte AVANT de naviguer → navigate(-1) restaurera returnCountry
                             navigate(location.pathname+location.search, { replace:true, state:{ returnCountry: country } });
-                            setTimeout(()=>navigate(isFootball?`/football/${g.id}`:`/basketball/${g.id}${lp}`), 0);
+                            setTimeout(()=>navigate(isFootball?`/football/${g.id}`:league==='mlb'?`/mlb/${g.id}`:`/basketball/${g.id}${lp}`), 0);
                           }}
                             style={{width:'100%',background:'none',border:'none',borderTop:i>0?'1px solid rgba(255,255,255,0.04)':'none',padding: country.isMonde ? '0.3rem 0.5rem' : '0.65rem 0.5rem',cursor:'pointer',textAlign:'center',transition:'background .15s'}}
                             onMouseEnter={e=>{e.currentTarget.style.background='rgba(255,255,255,0.04)';_prefetchMatch(g,league);}}
@@ -515,7 +529,7 @@ function Panel({ country, onClose, statsLeague, setStatsLeague, onOpenBasketStat
                   return(
                     <button key={i} onClick={()=>{
                       navigate(location.pathname+location.search, { replace:true, state:{ returnCountry: country } });
-                      setTimeout(()=>navigate(isFootball?`/football/${g.id}`:`/basketball/${g.id}${lp2}`), 0);
+                      setTimeout(()=>navigate(isFootball?`/football/${g.id}`:league==='mlb'?`/mlb/${g.id}`:`/basketball/${g.id}${lp2}`), 0);
                     }}
                       style={{width:'100%',background:'none',border:'none',borderTop:i>0?'1px solid rgba(255,255,255,0.04)':'none',padding:'0.55rem 0.5rem',cursor:'pointer',textAlign:'center',transition:'background .15s',opacity:0.6}}
                       onMouseEnter={e=>{e.currentTarget.style.background='rgba(255,255,255,0.04)';e.currentTarget.style.opacity='1';_prefetchMatch(g,league);}}
