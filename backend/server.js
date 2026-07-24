@@ -1069,6 +1069,185 @@ app.get('/api/mlb/teamstats', async (req, res) => {
   });
 });
 
+// ── MLB — étape 2 : cotes Over/Under runs Betclic + Unibet (24 juillet 2026) ─────────────────
+// Vérifié en direct (une seule page de chaque par bookmaker, pas de rafale) avant d'écrire ce code :
+// Betclic a une page dédiée MLB (`baseball-s20/major-league-c473`, competition.id=473 trouvé sur la
+// page générique `baseball-s20` qui mélange plusieurs championnats baseball) avec les 15 matchs du
+// jour d'un coup ; le marché "Total Runs" (lignes "+ de X,5"/"- de X,5") est directement dans le HTML
+// de la page match (bloc `"markets":[...]`), pas besoin du détour gRPC utilisé pour le foot. Unibet a
+// `paris-baseball/mlb` avec les mêmes 15 matchs, marché "Plus / Moins Points - Match" dans
+// `groupedMarkets` (mêmes noms de champs que le foot : `spread`, `outcomes[].price` en virgule).
+// Noms d'équipe : Betclic utilise déjà le nom complet ("Milwaukee Brewers", match direct avec MLB
+// Stats API) ; Unibet abrège la ville ("MIL Brewers") mais garde le surnom intact, y compris les
+// surnoms à 2 mots (White Sox, Red Sox, Blue Jays) — `mlbNicknameSuffix()` compare uniquement le
+// surnom (tout sauf le 1er mot) au lieu d'une table d'alias figée par équipe (30 entrées à la main,
+// évité).
+// Exception trouvée en vérifiant en direct sur les 15 matchs du jour (24 juillet 2026) : Unibet
+// abrège spécifiquement "White Sox" en "Wh.Sox" (largeur d'affichage ?), seul surnom qui casse
+// l'heuristique générique ci-dessous — pas la peine de deviner d'autres cas hypothétiques, à
+// compléter si un nouveau mismatch réel apparaît (même principe que BRESIL_TEAM_ALIASES).
+const MLB_UNIBET_NICKNAME_ALIASES = { 'wh.sox': 'white sox' };
+function mlbNicknameSuffix(name) {
+  const parts = (name || '').trim().split(/\s+/);
+  const suffix = parts.slice(1).join(' ').toLowerCase();
+  return MLB_UNIBET_NICKNAME_ALIASES[suffix] || suffix;
+}
+function mlbTeamMatches(fullName, otherName) {
+  if (!fullName || !otherName) return false;
+  if (fullName === otherName) return true;
+  const suffix = mlbNicknameSuffix(otherName);
+  return suffix.length > 2 && fullName.toLowerCase().endsWith(suffix);
+}
+
+let _mlbExtrasActive = 0;
+const _mlbExtrasQueue = [];
+function mlbExtrasRelease() {
+  _mlbExtrasActive--;
+  if (_mlbExtrasQueue.length > 0) _mlbExtrasQueue.shift()();
+}
+async function mlbExtrasThrottled(fn) {
+  if (_mlbExtrasActive >= 4) await new Promise(res => _mlbExtrasQueue.push(res));
+  _mlbExtrasActive++;
+  try { return await fn(); }
+  finally { mlbExtrasRelease(); }
+}
+
+const mlbSlugify = s => (s || '').toLowerCase()
+  .normalize('NFD').replace(/[̀-ͯ]/g, '')
+  .replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+
+async function fetchMlbBetclicOdds() {
+  const H = {
+    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Accept-Language': 'fr-FR,fr;q=0.9',
+  };
+  const parseBracket = (html, key) => {
+    const idx = html.indexOf(`"${key}":[`);
+    if (idx < 0) return null;
+    const pos = idx + `"${key}":`.length;
+    let depth = 0, end = pos;
+    for (let i = 0; i < 2_000_000; i++) {
+      const c = html[pos + i];
+      if (!c) break;
+      if (c === '[') depth++;
+      else if (c === ']') { depth--; if (depth === 0) { end = pos + i + 1; break; } }
+    }
+    try { return JSON.parse(html.slice(pos, end)); } catch { return null; }
+  };
+
+  const listHtml = await fetchBk('betclic', 'https://www.betclic.fr/baseball-s20/major-league-c473', { headers: H, signal: AbortSignal.timeout(10000) })
+    .then(r => r.ok ? r.text() : '').catch(() => '');
+  const matches = parseBracket(listHtml, 'matches') || [];
+  const mlbMatches = matches.filter(m => m.competition?.name === 'Major League' && m.contestants?.length >= 2);
+
+  const results = await Promise.all(mlbMatches.map(m => mlbExtrasThrottled(async () => {
+    const home = m.contestants[0].name, away = m.contestants[1].name;
+    const h2hSels = m.market?.mainSelections ?? [];
+    const homeOdds = h2hSels.find(s => s.name === home)?.odds ?? null;
+    const awayOdds = h2hSels.find(s => s.name === away)?.odds ?? null;
+    const href = `/baseball-s20/major-league-c473/${mlbSlugify(home)}-${mlbSlugify(away)}-m${m.matchId}`;
+    const totals = {};
+    try {
+      const matchHtml = await fetchBk('betclic', `https://www.betclic.fr${href}`, { headers: H, signal: AbortSignal.timeout(10000) })
+        .then(r => r.ok ? r.text() : '').catch(() => '');
+      const markets = parseBracket(matchHtml, 'markets') || [];
+      const totalMkt = markets.find(mk => mk.name === 'Total Runs');
+      for (const row of totalMkt?.selectionMatrix || []) {
+        for (const sel of row.selections || []) {
+          const s = sel.selectionOneof?.selection;
+          if (!s) continue;
+          const mo = s.name.match(/^([+-]) de (\d+),5$/);
+          if (!mo) continue;
+          const line = parseInt(mo[2], 10) + 0.5;
+          const side = mo[1] === '+' ? 'over' : 'under';
+          totals[line] ??= {};
+          totals[line][side] = s.odds;
+        }
+      }
+    } catch {}
+    return { homeTeam: home, awayTeam: away, commenceTime: m.matchDateUtc, h2h: { home: homeOdds, away: awayOdds }, totals };
+  })));
+  return results;
+}
+
+async function fetchMlbUnibetOdds() {
+  const H = {
+    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Accept-Language': 'fr-FR,fr;q=0.9',
+  };
+  const price = s => parseFloat((s || '0').replace(',', '.'));
+
+  const hubHtml = await fetchBk('unibet', 'https://www.unibet.fr/paris-baseball/mlb', { headers: H, signal: AbortSignal.timeout(10000) })
+    .then(r => r.ok ? r.text() : '').catch(() => '');
+  const matchPaths = [...new Set(
+    [...hubHtml.matchAll(/href="(\/paris-baseball\/mlb\/mlb\/\d+\/[a-z0-9-]+-vs-[a-z0-9-]+)"/g)].map(m => m[1])
+  )];
+
+  const parseGrouped = html => {
+    const idx = html.indexOf('"groupedMarkets":[');
+    if (idx < 0) return null;
+    const pos = idx + '"groupedMarkets":'.length;
+    let depth = 0, end = pos;
+    for (let i = 0; i < 3_000_000; i++) {
+      const c = html[pos + i];
+      if (!c) break;
+      if (c === '[') depth++;
+      else if (c === ']') { depth--; if (depth === 0) { end = pos + i + 1; break; } }
+    }
+    try { return JSON.parse(html.slice(pos, end)); } catch { return null; }
+  };
+
+  const results = await Promise.all(matchPaths.map(p => mlbExtrasThrottled(async () => {
+    try {
+      const html = await fetchBk('unibet', `https://www.unibet.fr${p}`, { headers: H, signal: AbortSignal.timeout(10000) })
+        .then(r => r.status !== 404 ? r.text() : '').catch(() => '');
+      if (!html) return null;
+      const groups = parseGrouped(html) || [];
+      const h2hGroup = groups.find(g => g.description === 'Face à Face - Match');
+      const h2hOutcomes = h2hGroup?.markets?.[0]?.outcomes || [];
+      const ldMatch = html.match(/"homeTeam":\{[^}]*"name":"([^"]+)"[^}]*\},"awayTeam":\{[^}]*"name":"([^"]+)"/);
+      if (!ldMatch) return null;
+      const [, home, away] = ldMatch;
+      const homeOdds = price(h2hOutcomes.find(o => o.description === home)?.price);
+      const awayOdds = price(h2hOutcomes.find(o => o.description === away)?.price);
+      const totalGroup = groups.find(g => g.description === 'Plus / Moins Points - Match');
+      const totals = {};
+      for (const mk of totalGroup?.markets || []) {
+        const line = mk.outcomes?.[0]?.spread;
+        if (line == null) continue;
+        const over = mk.outcomes.find(o => o.description?.startsWith('Plus'));
+        const under = mk.outcomes.find(o => o.description?.startsWith('Moins'));
+        totals[line] = { over: over ? price(over.price) : null, under: under ? price(under.price) : null };
+      }
+      return { homeTeam: home, awayTeam: away, h2h: { home: homeOdds || null, away: awayOdds || null }, totals };
+    } catch { return null; }
+  })));
+  return results.filter(Boolean);
+}
+
+// Fusionne les deux sources par équipe — Betclic donne déjà le nom complet (correspond tel quel aux
+// noms MLB Stats API de l'étape 1), Unibet abrégé résolu via mlbTeamMatches().
+async function fetchMlbOdds() {
+  const [bcOdds, ubOdds] = await Promise.all([
+    fetchMlbBetclicOdds().catch(() => []),
+    fetchMlbUnibetOdds().catch(() => []),
+  ]);
+  const byKey = new Map();
+  for (const m of bcOdds) {
+    byKey.set(`${m.homeTeam}|${m.awayTeam}`, { homeTeam: m.homeTeam, awayTeam: m.awayTeam, commenceTime: m.commenceTime, betclic: { h2h: m.h2h, totals: m.totals } });
+  }
+  for (const m of ubOdds) {
+    let entry = [...byKey.values()].find(e => mlbTeamMatches(e.homeTeam, m.homeTeam) && mlbTeamMatches(e.awayTeam, m.awayTeam));
+    if (!entry) { entry = { homeTeam: m.homeTeam, awayTeam: m.awayTeam, commenceTime: null }; byKey.set(`${m.homeTeam}|${m.awayTeam}`, entry); }
+    entry.unibet = { h2h: m.h2h, totals: m.totals };
+  }
+  return [...byKey.values()];
+}
+
+app.get('/api/mlb/odds', async (req, res) => {
+  res.json(await fetchMlbOdds());
+});
+
 // ── Europa League / Conference League — liste des matchs pour la Carte du Monde (23 juillet 2026)
 // Même format que _getBresilMatches ci-dessus (id/date/status/round/home/away), source api-football
 // au lieu de football-data.org — team logos fournis directement par l'API (fx.teams.home.logo).
