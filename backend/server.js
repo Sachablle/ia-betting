@@ -936,6 +936,139 @@ app.get('/api/fd/results', async (req, res) => {
   res.json(await _getFdLeaguesResults());
 });
 
+// ── MLB — étape 1 : données en lecture seule (24 juillet 2026) ───────────────────────────────
+// Chantier envisagé : marché Over/Under du nombre de runs, en mode fantôme d'abord (near-miss
+// tracking sans jamais générer d'alerte réelle, le temps de vérifier que le modèle est bien
+// calibré — décision explicite de l'utilisateur). Cette étape-ci ne fait QUE brancher les
+// fetchers de données ; rien n'est encore connecté à generateBackgroundAlerts() ou aux routes
+// existantes. Source : MLB Stats API (statsapi.mlb.com), gratuite et sans clé — API officielle
+// qui alimente MLB.com lui-même (cf. recherche comparative avec api-sports.io baseball [payant,
+// 100 req/jour en gratuit] et ESPN [pas de stat agrégée runs for/against toute faite]). ESPN
+// reste prévu en complément pour le score live (même rôle que pour NBA/WNBA), pas encore branché
+// à cette étape.
+const MLB_API_BASE = 'https://statsapi.mlb.com/api/v1';
+const MLB_CACHE_FILE = join(CACHE_DIR, 'mlb_teams.json');
+let _mlbTeamsCache = null, _mlbTeamsCacheTs = 0;
+try {
+  if (existsSync(MLB_CACHE_FILE)) {
+    const parsed = JSON.parse(readFileSync(MLB_CACHE_FILE, 'utf8'));
+    _mlbTeamsCache = parsed.teams; _mlbTeamsCacheTs = parsed.ts || 0;
+  }
+} catch {}
+// Liste des 30 franchises MLB — quasi statique (change au mieux une fois par décennie), cache
+// long (24h) largement suffisant contrairement aux données de forme/matchs ci-dessous.
+async function fetchMlbTeams() {
+  if (_mlbTeamsCache && Date.now() - _mlbTeamsCacheTs < 24 * 3600_000) return _mlbTeamsCache;
+  try {
+    const r = await fetch(`${MLB_API_BASE}/teams?sportId=1`, { signal: AbortSignal.timeout(10000) });
+    const j = await r.json();
+    const teams = (j.teams || []).map(t => ({ id: t.id, name: t.name, abbreviation: t.abbreviation }));
+    _mlbTeamsCache = teams; _mlbTeamsCacheTs = Date.now();
+    try { writeFileSync(MLB_CACHE_FILE, JSON.stringify({ teams, ts: _mlbTeamsCacheTs }), 'utf8'); } catch {}
+    return teams;
+  } catch (err) {
+    console.error('MLB teams fetch error:', err.message);
+    return _mlbTeamsCache || [];
+  }
+}
+async function resolveMlbTeamId(teamName) {
+  const teams = await fetchMlbTeams();
+  const t = teams.find(x => x.name === teamName) || teams.find(x => fuzzy(x.name, teamName));
+  return t?.id ?? null;
+}
+
+let _mlbUpcomingCache = { data: null, ts: 0 };
+const MLB_UPCOMING_TTL = 30 * 60_000;
+// Matchs à venir dans la fenêtre demandée — /schedule renvoie déjà équipes + stade + statut en un
+// seul appel (contrairement au foot où fixtures/résultats sont deux endpoints séparés côté FD).
+async function fetchMlbUpcomingGames(windowMs = 48 * 3600_000) {
+  if (_mlbUpcomingCache.data && Date.now() - _mlbUpcomingCache.ts < MLB_UPCOMING_TTL) return _mlbUpcomingCache.data;
+  try {
+    const from = new Date().toISOString().slice(0, 10);
+    const to = new Date(Date.now() + windowMs).toISOString().slice(0, 10);
+    const r = await fetch(`${MLB_API_BASE}/schedule?sportId=1&startDate=${from}&endDate=${to}`, { signal: AbortSignal.timeout(10000) });
+    const j = await r.json();
+    const now = Date.now();
+    const games = [];
+    for (const d of j.dates || []) {
+      for (const g of d.games || []) {
+        const t = new Date(g.gameDate).getTime();
+        if (g.status?.detailedState !== 'Scheduled' || t <= now || t - now > windowMs) continue;
+        games.push({
+          id: String(g.gamePk), date: g.gameDate, status: 'STATUS_SCHEDULED',
+          venue: g.venue?.name || null,
+          home: { id: g.teams.home.team.id, name: g.teams.home.team.name },
+          away: { id: g.teams.away.team.id, name: g.teams.away.team.name },
+        });
+      }
+    }
+    const result = { games, count: games.length };
+    _mlbUpcomingCache = { data: result, ts: Date.now() };
+    return result;
+  } catch (err) {
+    console.error('MLB schedule fetch error:', err.message);
+    return _mlbUpcomingCache.data || { games: [], count: 0 };
+  }
+}
+
+const _mlbFormCache = new Map(); // teamId → { data, ts }
+const MLB_FORM_TTL = 6 * 3600_000;
+// Forme récente d'une équipe (runs marqués/encaissés match par match, sur `lookbackDays`) —
+// reconstruite depuis /schedule plutôt que /teams/{id}/stats?stats=lastXGames : vérifié en direct
+// que ce dernier renvoie en fait la saison entière quel que soit `numGames`/`limit` passé (pas
+// documenté clairement, comportement non fiable). /schedule filtré par équipe + fenêtre de dates
+// donne directement le score de chaque match terminé (teams.home/away.score), même schéma que le
+// calcul de forme récente déjà utilisé ailleurs dans l'app (EWA sur game log) — pas de second appel
+// par match nécessaire, contrairement à un boxscore.
+async function fetchMlbTeamRecentForm(teamId, lookbackDays = 30) {
+  const cached = _mlbFormCache.get(teamId);
+  if (cached && Date.now() - cached.ts < MLB_FORM_TTL) return cached.data;
+  try {
+    const from = new Date(Date.now() - lookbackDays * 86400_000).toISOString().slice(0, 10);
+    const to = new Date().toISOString().slice(0, 10);
+    const r = await fetch(`${MLB_API_BASE}/schedule?sportId=1&teamId=${teamId}&startDate=${from}&endDate=${to}`, { signal: AbortSignal.timeout(10000) });
+    const j = await r.json();
+    const games = [];
+    for (const d of j.dates || []) {
+      for (const g of d.games || []) {
+        if (g.status?.detailedState !== 'Final') continue;
+        const isHome = g.teams.home.team.id === teamId;
+        const mine = isHome ? g.teams.home : g.teams.away;
+        const opp = isHome ? g.teams.away : g.teams.home;
+        if (mine.score == null || opp.score == null) continue;
+        games.push({ date: g.gameDate, runsFor: mine.score, runsAgainst: opp.score, isHome });
+      }
+    }
+    const data = { teamId, games };
+    _mlbFormCache.set(teamId, { data, ts: Date.now() });
+    return data;
+  } catch (err) {
+    console.error(`MLB team ${teamId} recent form error:`, err.message);
+    return cached?.data || { teamId, games: [] };
+  }
+}
+
+// Routes de test — étape 1 seulement, pas encore utilisées par l'app (à retirer ou requalifier une
+// fois les étapes suivantes branchées).
+app.get('/api/mlb/games', async (req, res) => {
+  res.json(await fetchMlbUpcomingGames());
+});
+app.get('/api/mlb/teamstats', async (req, res) => {
+  const team = req.query.team;
+  if (!team) return res.status(400).json({ error: 'team query param required' });
+  const teamId = await resolveMlbTeamId(team);
+  if (!teamId) return res.status(404).json({ error: 'team not found' });
+  const days = parseInt(req.query.days) || 30;
+  const form = await fetchMlbTeamRecentForm(teamId, days);
+  const n = form.games.length;
+  res.json({
+    teamId, team, games: n,
+    avgRunsFor: n ? +(form.games.reduce((s, g) => s + g.runsFor, 0) / n).toFixed(2) : null,
+    avgRunsAgainst: n ? +(form.games.reduce((s, g) => s + g.runsAgainst, 0) / n).toFixed(2) : null,
+    recent: form.games,
+  });
+});
+
 // ── Europa League / Conference League — liste des matchs pour la Carte du Monde (23 juillet 2026)
 // Même format que _getBresilMatches ci-dessus (id/date/status/round/home/away), source api-football
 // au lieu de football-data.org — team logos fournis directement par l'API (fx.teams.home.logo).
