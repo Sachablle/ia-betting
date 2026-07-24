@@ -9346,6 +9346,57 @@ app.get('/api/analysis/near-miss-football', (req, res) => {
   res.json({ rows, count: rows.length });
 });
 
+// ── MLB — étape 4 : mode fantôme (24 juillet 2026) ────────────────────────────────────────────
+// Contrairement à _logFootballNearMiss ci-dessus (filtré à une bande proche du seuil d'alerte —
+// utile une fois qu'on a déjà des alertes réelles, pour repérer les cas limites), le MLB n'a encore
+// AUCUNE alerte réelle : le but ici est de construire une vraie courbe de calibration (les candidats
+// à 60-70% gagnent-ils vraiment ~60-70% du temps ?) sur toute la plage de probabilité, donc on log
+// TOUT sans filtre de bande. MLB_ALERTS_ENABLED=false bloque toute alerte réelle tant que cette
+// calibration n'a pas été vérifiée — décision explicite de l'utilisateur (24 juillet 2026).
+const MLB_ALERTS_ENABLED = false;
+const NEAR_MISS_MLB_FILE = join(CACHE_DIR, 'near_miss_mlb.json');
+let _nearMissMlb = [];
+try {
+  if (existsSync(NEAR_MISS_MLB_FILE)) _nearMissMlb = JSON.parse(readFileSync(NEAR_MISS_MLB_FILE, 'utf8')).rows || [];
+} catch {}
+function _saveNearMissMlb() {
+  try { writeFileSync(NEAR_MISS_MLB_FILE, JSON.stringify({ rows: _nearMissMlb }), 'utf8'); } catch {}
+}
+function _logMlbCandidate({ gameId, home, away, date, line, direction, probability, lambdaTotal, betclicOdds, unibetOdds }) {
+  const id = `${gameId}_total_${direction}_${line}`;
+  if (_nearMissMlb.some(c => c.id === id)) return;
+  _nearMissMlb.push({
+    id, gameId, home, away, date, line, direction,
+    probability: +(probability * 100).toFixed(1), lambdaTotal: +lambdaTotal.toFixed(2),
+    betclicOdds: betclicOdds ?? null, unibetOdds: unibetOdds ?? null,
+    status: 'pending', savedAt: Date.now(),
+  });
+}
+async function _resolveMlbNearMiss() {
+  const pending = _nearMissMlb.filter(c => c.status === 'pending');
+  if (!pending.length) return;
+  for (const c of pending) {
+    try {
+      const r = await fetch(`${MLB_API_BASE}/schedule?sportId=1&gamePk=${c.gameId}`, { signal: AbortSignal.timeout(10000) });
+      const j = await r.json();
+      const g = j.dates?.[0]?.games?.[0];
+      if (!g || g.status?.detailedState !== 'Final') continue;
+      const total = (g.teams.home.score ?? 0) + (g.teams.away.score ?? 0);
+      c.actualTotal = total;
+      c.status = c.direction === 'over' ? (total > c.line ? 'won' : 'lost') : (total < c.line ? 'won' : 'lost');
+    } catch {}
+  }
+  const cutoff = Date.now() - 90 * 86400_000;
+  _nearMissMlb = _nearMissMlb.filter(c => c.savedAt > cutoff);
+  _saveNearMissMlb();
+}
+app.get('/api/analysis/near-miss-mlb', (req, res) => {
+  const days = Math.min(parseInt(req.query.days) || 30, 90);
+  const cutoff = Date.now() - days * 86400_000;
+  const rows = _nearMissMlb.filter(r => r.savedAt > cutoff);
+  res.json({ rows, count: rows.length });
+});
+
 // Lines snapshot — lignes bookmaker pré-match persistées sur disque
 const _linesSnapshot = (() => {
   try { if (existsSync(LINES_FILE)) return JSON.parse(readFileSync(LINES_FILE, 'utf8')); } catch {}
@@ -13404,6 +13455,58 @@ async function generateBackgroundAlerts() {
       }
     } catch (err) { _bgLog.push(`football error: ${err.message}`); }
 
+    // 4e. MLB — mode fantôme (24 juillet 2026). MLB_ALERTS_ENABLED=false : ce bloc calcule le
+    // modèle et log CHAQUE ligne de CHAQUE match dans le near-miss tracking (calibration), mais
+    // ne pousse jamais rien dans newAlerts — aucune alerte ne peut sortir de cette section tant
+    // que le flag n'est pas activé à la main après vérification de la calibration.
+    try {
+      const mlbGames = await fetchMlbUpcomingGames(48 * 3600_000);
+      if (mlbGames.games.length) {
+        const teamIds = new Map();
+        for (const g of mlbGames.games) { teamIds.set(g.home.name, g.home.id); teamIds.set(g.away.name, g.away.id); }
+        const forms = new Map();
+        await Promise.all([...teamIds.entries()].map(async ([name, id]) => forms.set(name, await fetchMlbTeamRecentForm(id, 30))));
+        const avgOf = form => {
+          const n = form?.games?.length || 0;
+          if (!n) return null;
+          return { games: n, runsFor: form.games.reduce((s, x) => s + x.runsFor, 0) / n, runsAgainst: form.games.reduce((s, x) => s + x.runsAgainst, 0) / n };
+        };
+        const allAvgs = [...teamIds.keys()].map(name => avgOf(forms.get(name))).filter(Boolean);
+        const leagueAvgRuns = allAvgs.length ? allAvgs.reduce((s, a) => s + a.runsFor, 0) / allAvgs.length : null;
+        const mlbOdds = leagueAvgRuns ? await fetchMlbOdds().catch(() => []) : [];
+        for (const g of mlbGames.games) {
+          try {
+            const homeAvg = avgOf(forms.get(g.home.name)), awayAvg = avgOf(forms.get(g.away.name));
+            if (!homeAvg || !awayAvg || !leagueAvgRuns) continue;
+            const lambdas = computeMlbLambdas({
+              homeRunsFor: homeAvg.runsFor * homeAvg.games, homeRunsAgainst: homeAvg.runsAgainst * homeAvg.games, homeGames: homeAvg.games,
+              awayRunsFor: awayAvg.runsFor * awayAvg.games, awayRunsAgainst: awayAvg.runsAgainst * awayAvg.games, awayGames: awayAvg.games,
+              leagueAvgRuns,
+            });
+            if (!lambdas) continue;
+            const oddsMatch = mlbOdds.find(o => o.homeTeam === g.home.name && o.awayTeam === g.away.name);
+            const lines = new Set([...Object.keys(oddsMatch?.betclic?.totals || {}), ...Object.keys(oddsMatch?.unibet?.totals || {})]);
+            for (const lineStr of lines) {
+              const line = parseFloat(lineStr);
+              const p = computeMlbTotalProb(lambdas.lambdaHome, lambdas.lambdaAway, line);
+              const direction = p.pOver >= p.pUnder ? 'over' : 'under';
+              const probability = direction === 'over' ? p.pOver : p.pUnder;
+              _logMlbCandidate({
+                gameId: g.id, home: g.home.name, away: g.away.name, date: g.date, line, direction, probability,
+                lambdaTotal: p.lambdaTotal,
+                betclicOdds: oddsMatch?.betclic?.totals?.[lineStr]?.[direction] ?? null,
+                unibetOdds: oddsMatch?.unibet?.totals?.[lineStr]?.[direction] ?? null,
+              });
+            }
+            // MLB_ALERTS_ENABLED reste false — aucun newAlerts.push ici tant que la calibration
+            // n'a pas été vérifiée sur un vrai échantillon de résultats.
+          } catch { /* skip game */ }
+        }
+        _bgLog.push(`mlb: ${mlbGames.games.length} matchs, leagueAvgRuns=${leagueAvgRuns?.toFixed(2)}, ${_nearMissMlb.length} candidats near-miss au total`);
+      }
+    } catch (err) { _bgLog.push(`mlb error: ${err.message}`); }
+    _saveNearMissMlb();
+
     // 5. Merge into backgroundAlerts (preserve accepted/rejected)
     const euUpcomingIds = new Set();
     for (const l of Object.keys(EU_ALERT_LEAGUES)) {
@@ -14537,6 +14640,10 @@ app.listen(PORT, () => {
   // Même suivi étendu au foot (19 juillet 2026)
   setTimeout(() => _resolveFootballNearMiss().catch(() => {}), 21_000);
   setInterval(() => _resolveFootballNearMiss().catch(() => {}), 20 * 60 * 1000);
+
+  // MLB mode fantôme (24 juillet 2026) — même cadence
+  setTimeout(() => _resolveMlbNearMiss().catch(() => {}), 22_000);
+  setInterval(() => _resolveMlbNearMiss().catch(() => {}), 20 * 60 * 1000);
 
   // Watchdog réseau — ping DNS léger toutes les 2 min (voir commentaire à la définition)
   setInterval(_networkWatchdog, 2 * 60 * 1000);
