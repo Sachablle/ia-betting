@@ -18,9 +18,17 @@ const BK_COLORS = { unibet: '#1db954', betclic: '#e0292e' };
 const BOOKS = ['betclic', 'unibet'];
 const COLS_H2H = '80px 1fr 1fr';
 const ch = { fontSize: 9, fontWeight: 700, textTransform: 'uppercase', color: 'var(--text-dim)', textAlign: 'center', letterSpacing: '0.05em' };
-// Logos MLB — CDN RotoWire, abréviation identique à MLB Stats API (vérifié en direct sur les 30
-// franchises), pas besoin de table d'alias.
-const mlbLogo = short => short ? `https://assets.rotowire.com/images/teamlogo/baseball/100${short}.png` : null;
+// Logos MLB — CDN RotoWire écarté (bloque les requêtes cross-origin par Referer, vérifié en
+// direct : 403 avec un Referer localhost, 200 sans Referer ou avec Referer rotowire.com — donc
+// jamais chargeable en <img> depuis notre propre site). CDN ESPN à la place, pas de restriction de
+// ce type (déjà utilisé ailleurs dans l'app pour NBA/WNBA/foot). Une seule exception trouvée sur
+// les 30 franchises : Arizona ("az" chez MLB Stats API, 404 côté ESPN qui attend "ari").
+const ESPN_MLB_ALIASES = { az: 'ari' };
+const mlbLogo = short => {
+  if (!short) return null;
+  const code = short.toLowerCase();
+  return `https://a.espncdn.com/i/teamlogos/mlb/500/${ESPN_MLB_ALIASES[code] || code}.png`;
+};
 
 const tabStyle = active => ({
   padding: '0.25rem 0.75rem', borderRadius: 5, border: '1px solid', cursor: 'pointer',

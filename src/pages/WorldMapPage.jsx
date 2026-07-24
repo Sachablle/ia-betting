@@ -33,6 +33,16 @@ const FOOTBALL_LEAGUES = new Set(['ligue1','laliga','bundes','seriea','pl','cdm'
 // (NBA/WNBA) : masquée par défaut, visible uniquement quand l'icône ⚾ est cliquée explicitement.
 const MLB_LEAGUES = new Set(['mlb']);
 const sportOf = l => FOOTBALL_LEAGUES.has(l) ? 'football' : MLB_LEAGUES.has(l) ? 'baseball' : 'basket';
+// CDN RotoWire écarté pour les logos MLB (bloque les requêtes cross-origin par Referer, vérifié en
+// direct : 403 avec un Referer localhost). CDN ESPN à la place (déjà utilisé ailleurs dans l'app),
+// aucune restriction de ce type. Seule exception sur les 30 franchises : Arizona ("az" chez MLB
+// Stats API, 404 côté ESPN qui attend "ari").
+const ESPN_MLB_ALIASES = { az: 'ari' };
+const mlbLogo = short => {
+  if (!short) return null;
+  const code = short.toLowerCase();
+  return `https://a.espncdn.com/i/teamlogos/mlb/500/${ESPN_MLB_ALIASES[code] || code}.png`;
+};
 
 const _ESPN_WNBA = { 'Atlanta Dream':20,'Chicago Sky':19,'Connecticut Sun':18,'Dallas Wings':3,'Golden State Valkyries':129689,'Indiana Fever':5,'Las Vegas Aces':17,'Los Angeles Sparks':6,'Minnesota Lynx':8,'New York Liberty':9,'Phoenix Mercury':11,'Portland Fire':132052,'Seattle Storm':14,'Toronto Tempo':131935,'Washington Mystics':16 };
 const _ESPN_NBA  = { 'Atlanta Hawks':1,'Boston Celtics':2,'New Orleans Pelicans':3,'Chicago Bulls':4,'Cleveland Cavaliers':5,'Dallas Mavericks':6,'Denver Nuggets':7,'Detroit Pistons':8,'Golden State Warriors':9,'Houston Rockets':10,'Indiana Pacers':11,'LA Clippers':12,'Los Angeles Lakers':13,'Miami Heat':14,'Milwaukee Bucks':15,'Minnesota Timberwolves':16,'Brooklyn Nets':17,'New York Knicks':18,'Orlando Magic':19,'Philadelphia 76ers':20,'Phoenix Suns':21,'Portland Trail Blazers':22,'Sacramento Kings':23,'San Antonio Spurs':24,'Oklahoma City Thunder':25,'Utah Jazz':26,'Washington Wizards':27,'Toronto Raptors':28,'Memphis Grizzlies':29,'Charlotte Hornets':30 };
@@ -274,10 +284,8 @@ function Panel({ country, onClose, statsLeague, setStatsLeague, onOpenBasketStat
       if (l === 'mlb') return cachedFetch('/api/mlb/matches', 5*60_000).then(d => {
         const all=(d.matches||[]).map(m=>({
           id:`mlb_${m.id}`,date:m.date,status:m.status,round:m.venue||'',
-          // Logos MLB (24 juillet 2026) — CDN RotoWire, abréviation identique à MLB Stats API
-          // (vérifié en direct sur les 30 franchises), pas besoin de table d'alias.
-          home:{name:m.home?.name,short:m.home?.short,logo:m.home?.short?`https://assets.rotowire.com/images/teamlogo/baseball/100${m.home.short}.png`:null,score:m.home?.score ?? null},
-          away:{name:m.away?.name,short:m.away?.short,logo:m.away?.short?`https://assets.rotowire.com/images/teamlogo/baseball/100${m.away.short}.png`:null,score:m.away?.score ?? null},
+          home:{name:m.home?.name,short:m.home?.short,logo:mlbLogo(m.home?.short),score:m.home?.score ?? null},
+          away:{name:m.away?.name,short:m.away?.short,logo:mlbLogo(m.away?.short),score:m.away?.score ?? null},
         }));
         return{l,...splitGames(all)};
       });
