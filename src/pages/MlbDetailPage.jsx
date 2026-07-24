@@ -5,14 +5,32 @@ import { formatFullDate, formatMatchTime } from '../utils/formatters';
 import TeamLogo from '../components/TeamLogo';
 import { OddsCell } from '../components/OddsCell';
 
-// Page match MLB (24 juillet 2026) — même arborescence que MatchDetailPage/BasketballDetailPage
-// (mêmes classes CSS .detail-hero/.detail-infobar/.info-chip, mêmes composants TeamLogo/OddsCell),
-// mais volontairement plus légère : un seul marché existe pour ce sport (Over/Under runs), pas de
-// composition d'équipe ni de props joueurs. Chantier en mode fantôme (voir bandeau "estimation
-// interne" plus bas) — MLB_ALERTS_ENABLED=false côté backend tant que la calibration near-miss
-// n'est pas vérifiée, donc aucune alerte ne peut apparaître sur cette page, juste des cotes et une
-// estimation affichées à titre indicatif.
-const LINES_ORDER = (a, b) => parseFloat(a) - parseFloat(b);
+// Page match MLB (24 juillet 2026) — même arborescence ET même bloc cotes que
+// MatchDetailPage/BasketballDetailPage : mêmes classes CSS (.detail-hero/.detail-infobar), mêmes
+// composants (TeamLogo/OddsCell), et le bloc cotes reprend explicitement le pattern du basket
+// (onglets, grille par bookmaker, BK_LABELS/BK_COLORS identiques) — demande explicite de
+// l'utilisateur le 24 juillet 2026 après un premier jet trop différent visuellement (tableau
+// générique .util-table au lieu du composant partagé). Différence assumée : MLB scrappe 5 lignes
+// Over/Under par match (contrairement au basket qui n'a qu'une ligne "Total" par bookmaker) — donc
+// l'onglet "Total runs" répète le bloc par ligne plutôt qu'une seule fois.
+// Chantier en mode fantôme (bandeau plus bas) — MLB_ALERTS_ENABLED=false côté backend tant que la
+// calibration near-miss n'est pas vérifiée, aucune alerte ne peut donc apparaître sur cette page.
+const BK_LABELS = { betclic: 'Betclic', unibet: 'Unibet' };
+const BK_COLORS = { unibet: '#1db954', betclic: '#e0292e' };
+const BOOKS = ['betclic', 'unibet'];
+const COLS_H2H = '80px 1fr 1fr';
+const COLS_TOT = '80px 44px 1fr 1fr';
+const ch = { fontSize: 9, fontWeight: 700, textTransform: 'uppercase', color: 'var(--text-dim)', textAlign: 'center', letterSpacing: '0.05em' };
+
+const tabStyle = active => ({
+  padding: '0.25rem 0.75rem', borderRadius: 5, border: '1px solid', cursor: 'pointer',
+  fontSize: 10, fontWeight: 700, letterSpacing: '0.05em', textTransform: 'uppercase',
+  background: active ? 'rgba(251,146,60,0.25)' : 'rgba(251,146,60,0.08)',
+  color: '#ffffff',
+  borderColor: active ? 'rgba(251,146,60,0.55)' : 'rgba(251,146,60,0.22)',
+  boxShadow: '0 0 0 1px rgba(255,255,255,0.22)',
+  transition: 'background 0.15s, border-color 0.15s',
+});
 
 export default function MlbDetailPage() {
   const { id } = useParams();
@@ -22,6 +40,7 @@ export default function MlbDetailPage() {
   const [odds, setOdds] = useState(null);
   const [model, setModel] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [tab, setTab] = useState('h2h');
 
   useEffect(() => {
     let cancelled = false;
@@ -62,8 +81,9 @@ export default function MlbDetailPage() {
   const lines = [...new Set([
     ...Object.keys(odds?.betclic?.totals || {}),
     ...Object.keys(odds?.unibet?.totals || {}),
-  ])].sort(LINES_ORDER);
+  ])].sort((a, b) => parseFloat(a) - parseFloat(b));
   const modelByLine = new Map((model?.lines || []).map(l => [String(l.line), l]));
+  const hasTotals = lines.length > 0;
 
   return (
     <div className="page detail-page">
@@ -119,65 +139,56 @@ export default function MlbDetailPage() {
         <p style={{ color: 'var(--text-dim)', fontSize: 12 }}>Cotes pas encore disponibles pour ce match.</p>
       )}
 
-      {/* ── Vainqueur (moneyline) ── */}
-      {odds && (odds.betclic?.h2h || odds.unibet?.h2h) && (
-        <div className="util-subsection" style={{ marginTop: '1rem' }}>
-          <h3 className="util-subsection-title">Vainqueur</h3>
-          <table className="util-table">
-            <thead><tr><th></th><th>Betclic</th><th>Unibet</th></tr></thead>
-            <tbody>
-              <tr>
-                <td>{home.name}</td>
-                <td><OddsCell value={odds.betclic?.h2h?.home} /></td>
-                <td><OddsCell value={odds.unibet?.h2h?.home} /></td>
-              </tr>
-              <tr>
-                <td>{away.name}</td>
-                <td><OddsCell value={odds.betclic?.h2h?.away} /></td>
-                <td><OddsCell value={odds.unibet?.h2h?.away} /></td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      )}
+      {odds && (
+        <div style={{ marginTop: '1rem' }}>
+          {/* Onglets — même style que BasketballDetailPage */}
+          <div style={{ display: 'flex', gap: '0.6rem', marginBottom: '0.75rem', alignItems: 'center' }}>
+            <button style={tabStyle(tab === 'h2h')} onClick={() => setTab('h2h')}>Vainqueur</button>
+            {hasTotals && <button style={tabStyle(tab === 'total')} onClick={() => setTab('total')}>Total runs</button>}
+          </div>
 
-      {/* ── Total runs (Over/Under) ── */}
-      {lines.length > 0 && (
-        <div className="util-subsection" style={{ marginTop: '1rem' }}>
-          <h3 className="util-subsection-title">Total runs</h3>
-          <table className="util-table">
-            <thead>
-              <tr>
-                <th>Ligne</th>
-                <th>Sens</th>
-                <th>Betclic</th>
-                <th>Unibet</th>
-                {model && <th title="Estimation interne, pas une alerte">Estimation</th>}
-              </tr>
-            </thead>
-            <tbody>
-              {lines.flatMap(line => {
-                const bc = odds.betclic?.totals?.[line], ub = odds.unibet?.totals?.[line];
-                const m = modelByLine.get(String(line));
-                return ['over', 'under'].map(dir => (
-                  <tr key={`${line}-${dir}`}>
-                    {dir === 'over' && <td rowSpan={2} style={{ fontVariantNumeric: 'tabular-nums' }}>{line}</td>}
-                    <td>{dir === 'over' ? '+ de' : '- de'}</td>
-                    <td><OddsCell value={bc?.[dir]} /></td>
-                    <td><OddsCell value={ub?.[dir]} /></td>
-                    {model && (
-                      <td style={{ textAlign: 'center', fontSize: 11, color: 'rgba(255,255,255,0.5)' }}>
-                        {m ? `${Math.round((dir === 'over' ? m.pOver : m.pUnder) * 100)}%` : '—'}
-                      </td>
-                    )}
-                  </tr>
-                ));
-              })}
-            </tbody>
-          </table>
+          {tab === 'h2h' && (
+            <>
+              <div style={{ display: 'grid', gridTemplateColumns: COLS_H2H, gap: '0 0.25rem', paddingBottom: '0.35rem', borderBottom: '1px solid var(--border)', marginBottom: '0.2rem' }}>
+                <div />
+                <div style={ch}>{home.short || home.name}</div>
+                <div style={ch}>{away.short || away.name}</div>
+              </div>
+              {BOOKS.map(bk => (
+                <div key={bk} style={{ display: 'grid', gridTemplateColumns: COLS_H2H, gap: '0 0.25rem', alignItems: 'center', padding: '0.3rem 0', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+                  <span style={{ fontSize: 11, color: 'var(--text)' }}>{BK_LABELS[bk]}</span>
+                  <OddsCell value={odds[bk]?.h2h?.home} color={BK_COLORS[bk]} />
+                  <OddsCell value={odds[bk]?.h2h?.away} color={BK_COLORS[bk]} />
+                </div>
+              ))}
+            </>
+          )}
+
+          {tab === 'total' && hasTotals && lines.map(line => {
+            const m = modelByLine.get(String(line));
+            return (
+              <div key={line} style={{ marginBottom: '1rem' }}>
+                <div style={{ display: 'grid', gridTemplateColumns: COLS_TOT, gap: '0 0.25rem', paddingBottom: '0.35rem', borderBottom: '1px solid var(--border)', marginBottom: '0.2rem' }}>
+                  <div />
+                  <div style={{ ...ch, fontVariantNumeric: 'tabular-nums' }}>{line}</div>
+                  <div style={ch}>Over{m && ` (${Math.round(m.pOver * 100)}%)`}</div>
+                  <div style={ch}>Under{m && ` (${Math.round(m.pUnder * 100)}%)`}</div>
+                </div>
+                {BOOKS.map(bk => (
+                  <div key={bk} style={{ display: 'grid', gridTemplateColumns: COLS_TOT, gap: '0 0.25rem', alignItems: 'center', padding: '0.3rem 0', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+                    <span style={{ fontSize: 11, color: 'var(--text)' }}>{BK_LABELS[bk]}</span>
+                    <div />
+                    <OddsCell value={odds[bk]?.totals?.[line]?.over} color={BK_COLORS[bk]} />
+                    <OddsCell value={odds[bk]?.totals?.[line]?.under} color={BK_COLORS[bk]} />
+                  </div>
+                ))}
+              </div>
+            );
+          })}
+
           {model && (
             <p style={{ fontSize: 10, color: 'var(--text-dim)', marginTop: '0.5rem' }}>
-              λ estimé : {home.name} {model.lambdaHome} · {away.name} {model.lambdaAway}
+              λ estimé (interne, pas une alerte) : {home.name} {model.lambdaHome} · {away.name} {model.lambdaAway}
             </p>
           )}
         </div>
