@@ -380,6 +380,11 @@ function Panel({ country, onClose, statsLeague, setStatsLeague, onOpenBasketStat
           {[
             ...(_hasFootball
               ? [['football','⚽','#2d8a2d','rgba(45,138,45,',_hasFootball],['basket','🏀','#fb923c','rgba(251,146,60,',_hasBasket]]
+              // Icône foot désactivée retirée pour les États-Unis spécifiquement (24 juillet 2026,
+              // demande explicite) — inutile d'encombrer avec un ⚽ qui ne sera jamais actif dès
+              // qu'un pays a du MLB. Comportement inchangé pour un éventuel futur pays basket-only
+              // sans MLB (dimmed ⚽ conservé dans ce cas, aucun aujourd'hui).
+              : _hasBaseball ? [['basket','🏀','#fb923c','rgba(251,146,60,',_hasBasket]]
               : [['basket','🏀','#fb923c','rgba(251,146,60,',_hasBasket],['football','⚽','#2d8a2d','rgba(45,138,45,',_hasFootball]]),
             // ⚾ MLB (24 juillet 2026) — n'apparaît que pour les pays qui ont effectivement une ligue
             // baseball (États-Unis aujourd'hui), contrairement à foot/basket toujours affichés en
