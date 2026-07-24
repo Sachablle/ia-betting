@@ -361,8 +361,8 @@ export default function MlbDetailPage() {
 
                 <div style={{ display: 'grid', gridTemplateColumns: COLS_H2H, gap: '0 0.25rem', paddingBottom: '0.35rem', borderBottom: '1px solid var(--border)', marginBottom: '0.2rem' }}>
                   <div />
-                  <div style={ch}>Over{m && <><br />{Math.round(m.pOver * 100)}%</>}</div>
-                  <div style={ch}>Under{m && <><br />{Math.round(m.pUnder * 100)}%</>}</div>
+                  <div style={ch}>Over<br />{line}</div>
+                  <div style={ch}>Under<br />{line}</div>
                 </div>
                 {BOOKS.map(bk => (
                   <div key={bk} style={{ display: 'grid', gridTemplateColumns: COLS_H2H, gap: '0 0.25rem', alignItems: 'center', padding: '0.3rem 0', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
@@ -371,6 +371,11 @@ export default function MlbDetailPage() {
                     <OddsCell value={odds[bk]?.totals?.[line]?.under} color={BK_COLORS[bk]} />
                   </div>
                 ))}
+                <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '0.5rem' }}>
+                  <span style={{ fontSize: 9, color: 'var(--text-dim)' }}>
+                    Modèle : Over {m ? Math.round(m.pOver * 100) : '—'}% · Under {m ? Math.round(m.pUnder * 100) : '—'}%
+                  </span>
+                </div>
               </div>
             );
           })()}
