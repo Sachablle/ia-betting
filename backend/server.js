@@ -1250,19 +1250,42 @@ async function fetchMlbOdds() {
 // à chaque clic sur un match MLB) ET generateBackgroundAlerts() (toutes les 20min) déclenchaient
 // chacun leur propre scraping complet, indépendamment l'un de l'autre — la page match MLB attendait
 // systématiquement un scrape live complet (trouvé en investiguant une lenteur réelle signalée le 25
-// juillet 2026). Premier appel (cache vide, ex. juste après un restart serveur) reste bloquant, mais
-// generateBackgroundAlerts() tourne 2s après le démarrage donc le cache est quasi toujours déjà chaud.
-let _mlbOddsCache = { data: null, ts: 0 };
+// juillet 2026). Persisté sur disque (même pattern que _oddsCache/ODDS_CACHE_FILE) — sans ça, chaque
+// restart serveur (fréquent en dev avec --watch, et à chaque déploiement Render) remettait le cache
+// mémoire à zéro et le prochain clic repayait le scrape complet, ce qui explique la lenteur perçue
+// comme "toujours là" malgré le cache en mémoire ajouté dans un 1er temps.
+const MLB_ODDS_CACHE_FILE = join(CACHE_DIR, 'mlb_odds.json');
+function _loadMlbOddsCacheFromDisk() {
+  try {
+    if (existsSync(MLB_ODDS_CACHE_FILE)) {
+      const parsed = JSON.parse(readFileSync(MLB_ODDS_CACHE_FILE, 'utf8'));
+      if (parsed?.ts && parsed?.data) return parsed;
+    }
+  } catch {}
+  return { data: null, ts: 0 };
+}
+function _saveMlbOddsCacheToDisk(data) {
+  try {
+    if (!existsSync(CACHE_DIR)) mkdirSync(CACHE_DIR, { recursive: true });
+    writeFileSync(MLB_ODDS_CACHE_FILE, JSON.stringify({ data, ts: Date.now() }), 'utf8');
+  } catch (e) { console.error('Failed to save MLB odds cache to disk:', e.message); }
+}
+let _mlbOddsCache = _loadMlbOddsCacheFromDisk();
 const MLB_ODDS_TTL = 5 * 60_000;
 async function getMlbOdds() {
   const fresh = _mlbOddsCache.data && Date.now() - _mlbOddsCache.ts < MLB_ODDS_TTL;
   if (fresh) return _mlbOddsCache.data;
   if (_mlbOddsCache.data) {
-    _refreshInBackground('mlb_odds', async () => { _mlbOddsCache = { data: await fetchMlbOdds(), ts: Date.now() }; });
+    _refreshInBackground('mlb_odds', async () => {
+      const data = await fetchMlbOdds();
+      _mlbOddsCache = { data, ts: Date.now() };
+      _saveMlbOddsCacheToDisk(data);
+    });
     return _mlbOddsCache.data;
   }
   const data = await fetchMlbOdds();
   _mlbOddsCache = { data, ts: Date.now() };
+  _saveMlbOddsCacheToDisk(data);
   return data;
 }
 
