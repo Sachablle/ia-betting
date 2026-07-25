@@ -1245,8 +1245,29 @@ async function fetchMlbOdds() {
   return [...byKey.values()];
 }
 
+// Cache stale-while-revalidate (même pattern que /api/basketball/odds) — fetchMlbOdds() scrape en
+// direct ~15 pages Betclic + ~15 pages Unibet à chaque appel. Sans ce cache, /api/mlb/preview (visité
+// à chaque clic sur un match MLB) ET generateBackgroundAlerts() (toutes les 20min) déclenchaient
+// chacun leur propre scraping complet, indépendamment l'un de l'autre — la page match MLB attendait
+// systématiquement un scrape live complet (trouvé en investiguant une lenteur réelle signalée le 25
+// juillet 2026). Premier appel (cache vide, ex. juste après un restart serveur) reste bloquant, mais
+// generateBackgroundAlerts() tourne 2s après le démarrage donc le cache est quasi toujours déjà chaud.
+let _mlbOddsCache = { data: null, ts: 0 };
+const MLB_ODDS_TTL = 5 * 60_000;
+async function getMlbOdds() {
+  const fresh = _mlbOddsCache.data && Date.now() - _mlbOddsCache.ts < MLB_ODDS_TTL;
+  if (fresh) return _mlbOddsCache.data;
+  if (_mlbOddsCache.data) {
+    _refreshInBackground('mlb_odds', async () => { _mlbOddsCache = { data: await fetchMlbOdds(), ts: Date.now() }; });
+    return _mlbOddsCache.data;
+  }
+  const data = await fetchMlbOdds();
+  _mlbOddsCache = { data, ts: Date.now() };
+  return data;
+}
+
 app.get('/api/mlb/odds', async (req, res) => {
-  res.json(await fetchMlbOdds());
+  res.json(await getMlbOdds());
 });
 
 // ── MLB — étape 3 : modèle Poisson (24 juillet 2026) ──────────────────────────────────────────
@@ -1255,7 +1276,7 @@ app.get('/api/mlb/odds', async (req, res) => {
 // near-miss tracking, ça viendra à l'étape 4 (mode fantôme).
 app.get('/api/mlb/preview', async (req, res) => {
   try {
-    const [games, odds] = await Promise.all([fetchMlbUpcomingGames(), fetchMlbOdds()]);
+    const [games, odds] = await Promise.all([fetchMlbUpcomingGames(), getMlbOdds()]);
     const teamIds = new Map();
     for (const g of games.games) {
       teamIds.set(g.home.name, g.home.id);
@@ -13671,7 +13692,7 @@ async function generateBackgroundAlerts() {
         };
         const allAvgs = [...teamIds.keys()].map(name => avgOf(forms.get(name))).filter(Boolean);
         const leagueAvgRuns = allAvgs.length ? allAvgs.reduce((s, a) => s + a.runsFor, 0) / allAvgs.length : null;
-        const mlbOdds = leagueAvgRuns ? await fetchMlbOdds().catch(() => []) : [];
+        const mlbOdds = leagueAvgRuns ? await getMlbOdds().catch(() => []) : [];
         for (const g of mlbGames.games) {
           try {
             const homeAvg = avgOf(forms.get(g.home.name)), awayAvg = avgOf(forms.get(g.away.name));
