@@ -1029,7 +1029,7 @@ function BetRow({ bet, rank, stake = 10, compact = false, editableStake = false,
           {bet.manual && <span style={{ fontSize: 7, fontWeight: 700, color: '#a78bfa', background: 'rgba(167,139,250,0.15)', borderRadius: 3, padding: '0px 3px', flexShrink: 0, whiteSpace: 'nowrap', lineHeight: '1.4' }}>PERSO</span>}
           <span style={{ fontSize: 9, color: 'var(--text-dim)', flexShrink: 0, marginLeft: 'auto' }}>{dateStr}</span>
           <span style={{ fontSize: 10, fontWeight: 700, color: '#60a5fa', flexShrink: 0, fontVariantNumeric: 'tabular-nums' }}>
-            {bet.probability != null ? `${bet.probability.toFixed(0)}%` : '—'}
+            {bet.manual ? '' : bet.probability != null ? `${bet.probability.toFixed(0)}%` : '—'}
           </span>
           <span style={{ fontSize: 10, fontWeight: 700, color: '#60a5fa', flexShrink: 0, fontVariantNumeric: 'tabular-nums' }}>
             {bet.odds != null ? bet.odds.toFixed(2) : '—'}
@@ -1052,7 +1052,7 @@ function BetRow({ bet, rank, stake = 10, compact = false, editableStake = false,
       </div>
       <span style={{ fontSize: 10, color: 'var(--text-dim)', whiteSpace: 'nowrap' }}>{dateStr}</span>
       <span style={{ fontSize: 11, fontWeight: 700, color: '#60a5fa', minWidth: 32, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
-        {bet.probability != null ? `${bet.probability.toFixed(0)}%` : '—'}
+        {bet.manual ? '' : bet.probability != null ? `${bet.probability.toFixed(0)}%` : '—'}
       </span>
       <span style={{ fontSize: 11, fontWeight: 700, color: '#60a5fa', minWidth: 28, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
         {bet.odds != null ? bet.odds.toFixed(2) : '—'}

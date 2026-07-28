@@ -1119,7 +1119,7 @@ function PropAlertCard({ group, onDismiss, onAccept, onReject }) {
         </span>
       </div>
 
-      {stats.map(({ stat, direction, line, estimate, unibetOdds, betclicOdds, winamaxOdds, oddsAlert, obsolete, teammateOverlap, deviation, deviationCap }) => {
+      {stats.map(({ stat, direction, line, estimate, unibetOdds, betclicOdds, winamaxOdds, oddsAlert, obsolete, teammateOverlap, oppQSamePosition, deviation, deviationCap }) => {
         const isO = direction === 'over';
         const clr = isO ? '#4ade80' : '#f87171';
         const bg  = isO ? 'rgba(74,222,128,0.06)' : 'rgba(248,113,113,0.06)';
@@ -1133,6 +1133,9 @@ function PropAlertCard({ group, onDismiss, onAccept, onReject }) {
               {isPending && obsolete && <span style={{ fontSize: 9, fontWeight: 800, padding: '2px 6px', borderRadius: 4, background: 'rgba(148,163,184,0.15)', color: '#94a3b8', border: '1px solid rgba(148,163,184,0.4)', flexShrink: 0 }}>OBSOLÈTE</span>}
               {isPending && teammateOverlap && (
                 <span title={`${teammateOverlap.player} déjà acceptée sur la même stat (${STAT_LABEL[stat] ?? stat}, ${teammateOverlap.direction === 'over' ? '▲' : '▼'} ${teammateOverlap.line}, ${teammateOverlap.probability}%) — ressource partagée, pas un edge indépendant`} style={{ fontSize: 9, fontWeight: 800, padding: '2px 6px', borderRadius: 4, background: 'rgba(251,191,36,0.15)', color: '#fbbf24', border: '1px solid rgba(251,191,36,0.5)', flexShrink: 0 }}>⚠ Corrélée — {teammateOverlap.player}</span>
+              )}
+              {isPending && oppQSamePosition && (
+                <span title="Une adversaire à un poste pertinent pour cette stat est incertaine (Q/GTD) — projection calculée sans boost tant que son statut n'est pas confirmé. Si elle est finalement absente, l'estimation est plutôt sous-évaluée ; si elle joue, elle reste valable." style={{ fontSize: 9, fontWeight: 800, padding: '2px 6px', borderRadius: 4, background: 'rgba(251,146,60,0.10)', color: '#fb923c', border: '1px dashed rgba(251,146,60,0.4)', flexShrink: 0 }}>⚠ Adversaire Q au même poste</span>
               )}
               {estimate != null && (
                 <span style={{ marginLeft: 'auto', fontSize: 10, color: 'var(--text-dim)', flexShrink: 0 }}>

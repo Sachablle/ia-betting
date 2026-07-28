@@ -18,6 +18,15 @@ function telegramConfigured() {
 // plutôt que de pinguer le tunnel en local : ça confirme que Telegram ARRIVE VRAIMENT à joindre le
 // webhook, pas juste que le process cloudflared tourne encore (le watchdog du tunnel a déjà eu le cas
 // d'un process vivant mais devenu injoignable côté edge, cf. telegram-tunnel-watchdog.sh).
+//
+// Fix 26 juillet 2026 — faux vert pendant une vraie panne de 3h : `last_error_date` n'est mis à jour
+// par Telegram QUE quand ils tentent réellement de livrer un update et échouent. Sans trafic entrant
+// (aucune alerte poussée, aucun clic Accepter/Rejeter) pendant la panne, Telegram ne retente jamais
+// rien → `recentError` reste faux indéfiniment même avec un tunnel mort depuis des heures, et l'icône
+// Dashboard passait au vert malgré une panne réelle en cours. Fix : vérification active en plus du
+// signal passif — un GET sur `/api/health` via l'URL publique elle-même (même principe que
+// telegram-tunnel-watchdog.sh, mais câblé ici pour alimenter l'icône au lieu d'un check séparé qui ne
+// remonte nulle part côté UI).
 async function checkTelegramWebhookHealth() {
   if (!telegramConfigured()) return { ok: false, reason: 'not_configured' };
   try {
@@ -28,7 +37,17 @@ async function checkTelegramWebhookHealth() {
     const hasUrl = !!info.url;
     const errorAgeMs = info.last_error_date ? Date.now() - info.last_error_date * 1000 : null;
     const recentError = errorAgeMs !== null && errorAgeMs < 6 * 60_000;
-    return { ok: hasUrl && !recentError, url: info.url || null, lastErrorMessage: info.last_error_message || null };
+
+    let reachable = false;
+    if (hasUrl) {
+      try {
+        const origin = new URL(info.url).origin;
+        const pingRes = await fetch(`${origin}/api/health`, { signal: AbortSignal.timeout(8000) });
+        reachable = pingRes.ok;
+      } catch { reachable = false; }
+    }
+
+    return { ok: hasUrl && !recentError && reachable, url: info.url || null, lastErrorMessage: info.last_error_message || null };
   } catch (e) {
     return { ok: false, reason: 'fetch_failed' };
   }
@@ -86,8 +105,13 @@ async function answerCallbackQuery(callbackQueryId, text = '') {
 // exactement la même forme qu'une acceptation faite depuis le site. Les lookups sont volontairement
 // défensifs (?? en cascade) — mieux vaut un champ manquant silencieux qu'un crash sur un type qui
 // aurait une variante de nommage non prévue ici.
-const LEAGUE_LABEL = { nba: 'NBA', wnba: 'WNBA', acb: 'ACB', lnb: 'LNB', bbl: 'BBL', legaa: 'Lega A', euroleague: 'EuroLeague', cdm: 'CDM', ligue1: 'Ligue 1', pl: 'Premier League', laliga: 'Liga', bundes: 'Bundesliga', seriea: 'Serie A' };
+const LEAGUE_LABEL = { nba: 'NBA', wnba: 'WNBA', acb: 'ACB', lnb: 'LNB', bbl: 'BBL', legaa: 'Lega A', euroleague: 'EuroLeague', cdm: 'CDM', ligue1: 'Ligue 1', pl: 'Premier League', laliga: 'Liga', bundes: 'Bundesliga', seriea: 'Serie A', bresil: 'Brasileirão', europa: 'Europa League', conference: 'Conference League', champions: 'Ligue des Champions' };
 const STAT_LABEL = { pts: 'Pts', reb: 'Reb', ast: 'Ast', tpm: '3pts' };
+// Même mapping que DC_DIR_LABEL/DC_DIR_DESC côté frontend (FootballAlertCards.jsx) — dupliqué exprès,
+// fichier volontairement indépendant de la logique alertes (cf. commentaire en tête de fichier).
+const DC_DIR_LABEL = { '1x': '1X', 'x2': 'X2', '12': '12' };
+const DC_DIR_DESC  = { '1x': 'Dom. ou Nul', 'x2': 'Nul ou Ext.', '12': 'Dom. ou Ext.' };
+const dcDirText = a => `${DC_DIR_LABEL[a.direction] ?? a.direction} (${DC_DIR_DESC[a.direction] ?? ''})`;
 const leagueLabel = a => LEAGUE_LABEL[a.league] || (a.league || '').toUpperCase();
 const teamName = (a, side) => side === 'home' ? (a.home || a.homeShort) : (a.away || a.awayShort);
 
@@ -117,7 +141,7 @@ function propsAccepted(a, bk, odds, prob) {
 const ALERT_TYPES = {
   player_prop: {
     dateField: 'fixtureDate',
-    label: a => `🏀 <b>${leagueLabel(a)} Props</b>\n${a.player} — ${a.direction === 'over' ? '▲ Over' : '▼ Under'} ${a.line} ${STAT_LABEL[a.stat] || (a.stat || '').toUpperCase()}\nProbabilité : <b>${a.probability}%</b>`,
+    label: a => `🏀 <b>${leagueLabel(a)} Props</b>\n${a.player} — ${a.direction === 'over' ? '▲ Over' : '▼ Under'} ${a.line} ${STAT_LABEL[a.stat] || (a.stat || '').toUpperCase()}\nProbabilité : <b>${a.probability}%</b>${a.oppQSamePosition ? '\n⚠ Adversaire Q au même poste — pas de boost tant que son statut n\'est pas confirmé' : ''}`,
     odds: propsOdds,
     buildAccepted: (a, bk, odds) => propsAccepted(a, bk, odds),
   },
@@ -174,13 +198,13 @@ const ALERT_TYPES = {
   },
   football_dc_btts: {
     dateField: 'fixtureDate',
-    label: a => `⚽ <b>${leagueLabel(a)} Double Chance + BTTS</b>\n${teamName(a, 'home')} vs ${teamName(a, 'away')}\nProbabilité : <b>${a.probability}%</b>`,
+    label: a => `⚽ <b>${leagueLabel(a)} Double Chance + BTTS</b>\n${teamName(a, 'home')} vs ${teamName(a, 'away')} — ${dcDirText(a)} & BTTS\nProbabilité : <b>${a.probability}%</b>`,
     odds: a => bestOdds([['unibet', a.unibetOdds], ['betclic', a.betclicOdds]]),
     buildAccepted: (a, bk, odds) => propsAccepted(a, bk, odds),
   },
   football_dc_ou: {
     dateField: 'fixtureDate',
-    label: a => `⚽ <b>${leagueLabel(a)} Double Chance + Total</b>\n${teamName(a, 'home')} vs ${teamName(a, 'away')} — +${a.line ?? 1.5} buts\nProbabilité : <b>${a.probability}%</b>`,
+    label: a => `⚽ <b>${leagueLabel(a)} Double Chance + Total</b>\n${teamName(a, 'home')} vs ${teamName(a, 'away')} — ${dcDirText(a)} & +${a.line ?? 1.5} buts\nProbabilité : <b>${a.probability}%</b>`,
     odds: a => bestOdds([['unibet', a.unibetOdds], ['betclic', a.betclicOdds]]),
     buildAccepted: (a, bk, odds) => propsAccepted(a, bk, odds),
   },
@@ -252,10 +276,12 @@ function _debugTokensForId(id) {
 // avec boutons Accepter/Rejeter. Ne fait rien si le type n'est pas dans le registre ou si Telegram
 // n'est pas configuré (clé absente en local dev sans .env rempli, ou sur Render où on ne veut pas
 // notifier — cf. TELEGRAM_BOT_TOKEN présent seulement en local pour l'instant).
+// Renvoie true si le message est réellement parti (utilisé par server.js pour ne marquer l'alerte
+// "notifiée" — et donc ne plus jamais la retenter — qu'en cas de succès réel, cf. fix 28 juillet 2026).
 async function notifyNewAlert(alert) {
-  if (!telegramConfigured()) return;
+  if (!telegramConfigured()) return false;
   const meta = getAlertTypeMeta(alert.type);
-  if (!meta) return;
+  if (!meta) return false;
   try {
     const text = meta.label(alert);
     const acceptToken = makeToken();
@@ -265,10 +291,12 @@ async function notifyNewAlert(alert) {
       { text: '❌ Rejeter', callback_data: `R:${rejectToken}` },
     ];
     const messageId = await sendTelegramMessage(text, buttons);
+    if (!messageId) return false;
     _tokenMap.set(acceptToken, { type: alert.type, id: alert.id, messageId });
     _tokenMap.set(rejectToken, { type: alert.type, id: alert.id, messageId });
     _saveTokenMap();
-  } catch (e) { console.error('notifyNewAlert error:', e.message); }
+    return true;
+  } catch (e) { console.error('notifyNewAlert error:', e.message); return false; }
 }
 
 // Résout un callback_data ("A:xxxxx" / "R:xxxxx") en { action, type, id, messageId }, ou null si le

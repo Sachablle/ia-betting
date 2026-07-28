@@ -265,6 +265,15 @@ function Panel({ country, onClose, statsLeague, setStatsLeague }) {
   const _sportsPresent = [_hasFootball && 'football', _hasBasket && 'basket', _hasBaseball && 'baseball'].filter(Boolean);
   const [sportFilter, setSportFilter] = useState(_sportsPresent.length > 1 ? _firstSport : _sportsPresent[0] || null);
 
+  // Le panneau n'est pas remonté quand on change de pays sans le fermer (pas de `key` côté parent) —
+  // sportFilter restait donc bloqué sur le sport du pays précédent (ex: basket vu sur États-Unis
+  // puis clic direct sur Espagne → ACB au lieu de La Liga). Réinitialise explicitement au sport par
+  // défaut du nouveau pays à chaque changement (26 juillet 2026).
+  useEffect(() => {
+    setSportFilter(_sportsPresent.length > 1 ? _firstSport : _sportsPresent[0] || null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [country?.name]);
+
   useEffect(() => {
     if (!country) return;
     // Ne montrer le spinner qu'après 120ms — évite le flash quand les données sont déjà en cache
@@ -382,7 +391,13 @@ function Panel({ country, onClose, statsLeague, setStatsLeague }) {
           <div style={{flex:1,height:1,background:'linear-gradient(90deg,rgba(251,146,60,0.4),transparent)'}}/>
           {[
             ...(_hasFootball
-              ? [['football','⚽','#2d8a2d','rgba(45,138,45,',_hasFootball],['basket','🏀','#fb923c','rgba(251,146,60,',_hasBasket]]
+              // Icône basket désactivée retirée pour le Brésil spécifiquement (26 juillet 2026,
+              // demande explicite) — pas de ligue basket couverte là-bas, contrairement aux 4 autres
+              // pays foot+basket (France/Espagne/Allemagne/Italie). L'Angleterre (foot seul aussi)
+              // garde son 🏀 grisé comme avant, non concernée par la demande.
+              ? (country.name === 'Brésil'
+                  ? [['football','⚽','#2d8a2d','rgba(45,138,45,',_hasFootball]]
+                  : [['football','⚽','#2d8a2d','rgba(45,138,45,',_hasFootball],['basket','🏀','#fb923c','rgba(251,146,60,',_hasBasket]])
               // Icône foot désactivée retirée pour les États-Unis spécifiquement (24 juillet 2026,
               // demande explicite) — inutile d'encombrer avec un ⚽ qui ne sera jamais actif dès
               // qu'un pays a du MLB. Comportement inchangé pour un éventuel futur pays basket-only

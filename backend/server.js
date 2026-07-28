@@ -9,7 +9,7 @@ import { MongoClient } from 'mongodb';
 import { promises as dnsPromises } from 'dns';
 import { computeEstimate, calcStd, isConsistentStat, blendedSeasonAvg, winsorizeRecent, getShotVolumeAnchor, probAtLeast, tCDF4, getRestFactor, getScheduleDensityFactor, isPlayoffRound, toDefCat, getDefByPosFactor } from './compute.js';
 import { computeLambdas, computeBTTSProb, computeOUProb, compute1X2Probs, computeDCBTTSProbs, computeDCOverProbs } from './computeFootball.js';
-import { computeMlbLambdas, computeMlbTotalProb } from './computeMlb.js';
+import { computeMlbLambdas, computeMlbTotalProb, computeMlbTotalProbNB } from './computeMlb.js';
 import { telegramConfigured, answerCallbackQuery, editTelegramMessage, getAlertTypeMeta, notifyNewAlert, resolveCallbackToken, recordAction, getActionsSince, _debugTokensForId, checkTelegramWebhookHealth } from './telegram.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -9397,12 +9397,18 @@ try {
 function _saveNearMiss() {
   try { writeFileSync(NEAR_MISS_FILE, JSON.stringify({ rows: _nearMissCandidates }), 'utf8'); } catch {}
 }
-const NEAR_MISS_BAND = 0.20; // ne garde que [floor-20pts, floor) — évite le bruit des cas trop loin
-function _logNearMissCandidate({ gameId, league, player, stat, direction, line, probability, floor }) {
-  if (probability >= floor || probability < floor - NEAR_MISS_BAND) return;
+// Filtre de bande [floor-20pts, floor) retiré le 28 juillet 2026 — demande explicite de l'utilisateur
+// (déjà formulée le 24 juillet : "des résultats solides sur tous les marchés d'ici un mois") de
+// logger sur toute la plage de probabilité, comme le fait déjà MLB, pour pouvoir déterminer le
+// seuil optimal par rentabilité (proba réelle × cote) plutôt que juste vérifier si le seuil actuel
+// est bien placé. `floor` reste stocké (utile pour savoir quel seuil était actif au moment du calcul).
+// Cote ajoutée le 28 juillet 2026 — sans elle on peut juger la calibration (le % annoncé est-il
+// juste) mais pas la rentabilité (% réel × cote). Les deux analyses seront à distinguer clairement
+// au bilan : "le % est-il bon" vs "est-ce rentable au % réel obtenu".
+function _logNearMissCandidate({ gameId, league, player, stat, direction, line, probability, floor, unibetOdds, betclicOdds }) {
   const id = `${gameId}_${player}_${stat}_${direction}_${line}`;
   if (_nearMissCandidates.some(c => c.id === id)) return; // déjà loggé ce cycle/les précédents
-  _nearMissCandidates.push({ id, gameId, league, player, stat, direction, line, probability: +(probability * 100).toFixed(1), floor: +(floor * 100).toFixed(1), status: 'pending', savedAt: Date.now() });
+  _nearMissCandidates.push({ id, gameId, league, player, stat, direction, line, probability: +(probability * 100).toFixed(1), floor: +(floor * 100).toFixed(1), unibetOdds: unibetOdds ?? null, betclicOdds: betclicOdds ?? null, status: 'pending', savedAt: Date.now() });
 }
 async function _resolveNearMissCandidates() {
   const base = `http://localhost:${process.env.PORT || 3001}`;
@@ -9454,11 +9460,11 @@ try {
 function _saveNearMissFootball() {
   try { writeFileSync(NEAR_MISS_FOOT_FILE, JSON.stringify({ rows: _nearMissFootball }), 'utf8'); } catch {}
 }
-function _logFootballNearMiss({ fixtureId, league, market, direction, line, probability, floor }) {
-  if (probability >= floor || probability < floor - NEAR_MISS_BAND) return;
+// Filtre de bande retiré le 28 juillet 2026 — voir commentaire détaillé sur _logNearMissCandidate.
+function _logFootballNearMiss({ fixtureId, league, market, direction, line, probability, floor, unibetOdds, betclicOdds }) {
   const id = `${fixtureId}_${market}_${direction}_${line ?? ''}`;
   if (_nearMissFootball.some(c => c.id === id)) return;
-  _nearMissFootball.push({ id, fixtureId, league, market, direction, line: line ?? null, probability: +(probability * 100).toFixed(1), floor: +(floor * 100).toFixed(1), status: 'pending', savedAt: Date.now() });
+  _nearMissFootball.push({ id, fixtureId, league, market, direction, line: line ?? null, probability: +(probability * 100).toFixed(1), floor: +(floor * 100).toFixed(1), unibetOdds: unibetOdds ?? null, betclicOdds: betclicOdds ?? null, status: 'pending', savedAt: Date.now() });
 }
 // 21 juillet 2026 — le 'fd' (5 grands championnats) pointait vers /api/fd/matches, qui interroge
 // FD avec ?status=SCHEDULED et ne renvoie donc JAMAIS de match terminé (même bug racine que le
@@ -9497,7 +9503,14 @@ async function _resolveFootballNearMiss() {
         const outcome = hs > as ? 'home' : hs < as ? 'away' : 'draw';
         cleared = outcome === c.direction;
       }
-      c.status = cleared ? 'won' : 'lost';
+      // Double Chance & BTTS / & Over 1.5 (28 juillet 2026) — la couverture DC (1X = dom. ou nul,
+      // X2 = nul ou ext.) doit être vraie EN PLUS de la condition BTTS/Over pour gagner.
+      else if (c.market === 'dc_btts' || c.market === 'dc_ou') {
+        const dcCleared = c.direction === '1x' ? hs >= as : c.direction === 'x2' ? hs <= as : false;
+        const otherCleared = c.market === 'dc_btts' ? (hs >= 1 && as >= 1) : (hs + as) > c.line;
+        cleared = dcCleared && otherCleared;
+      }
+      if (cleared != null) c.status = cleared ? 'won' : 'lost';
     } catch {}
   }
   const cutoff = Date.now() - 90 * 86400_000;
@@ -9515,10 +9528,10 @@ app.get('/api/analysis/near-miss-football', (req, res) => {
 // Étend le principe déjà utilisé en foot (BTTS/Total/Résultat, cf. _logFootballNearMiss) et en
 // props basket (_logNearMissCandidate) aux 3 marchés basket qui n'avaient encore AUCUN suivi de
 // calibration : Résultat équipe, Total O/U, Écart H2H (Handicap). NBA/WNBA/ACB/BBL/LegaA (EuroLeague
-// exclue — pas de modèle Résultat/Total/Écart pour elle, cf. section 4b du fichier). Même bande
-// [floor-20pts, floor) que le foot/props (NEAR_MISS_BAND) — ces marchés ont déjà un seuil réel en
-// production (75%/80%), la question posée est "ce seuil est-il le bon", pas "le modèle est-il
-// calibré du tout" (contrairement au MLB, sans aucune alerte réelle, qui log sans filtre de bande).
+// exclue — pas de modèle Résultat/Total/Écart pour elle, cf. section 4b du fichier). Filtre de bande
+// retiré le 28 juillet 2026 — voir commentaire détaillé sur _logNearMissCandidate. Log désormais
+// toute la plage, comme MLB, pour permettre une analyse de rentabilité (proba réelle × cote) par
+// tranche plutôt que juste "le seuil actuel est-il bon".
 const NEAR_MISS_BASKET_FILE = join(CACHE_DIR, 'near_miss_basket_markets.json');
 let _nearMissBasketMkt = [];
 try {
@@ -9527,13 +9540,13 @@ try {
 function _saveNearMissBasketMkt() {
   try { writeFileSync(NEAR_MISS_BASKET_FILE, JSON.stringify({ rows: _nearMissBasketMkt }), 'utf8'); } catch {}
 }
-function _logBasketMarketNearMiss({ gameId, league, market, direction, line, probability, floor }) {
-  if (probability >= floor || probability < floor - NEAR_MISS_BAND) return;
+function _logBasketMarketNearMiss({ gameId, league, market, direction, line, probability, floor, unibetOdds, betclicOdds }) {
   const id = `${gameId}_${league}_${market}_${direction}_${line ?? 'x'}`;
   if (_nearMissBasketMkt.some(c => c.id === id)) return;
   _nearMissBasketMkt.push({
     id, gameId, league, market, direction, line: line ?? null,
     probability: +(probability * 100).toFixed(1), floor: +(floor * 100).toFixed(1),
+    unibetOdds: unibetOdds ?? null, betclicOdds: betclicOdds ?? null,
     status: 'pending', savedAt: Date.now(),
   });
 }
@@ -9596,12 +9609,16 @@ try {
 function _saveNearMissMlb() {
   try { writeFileSync(NEAR_MISS_MLB_FILE, JSON.stringify({ rows: _nearMissMlb }), 'utf8'); } catch {}
 }
-function _logMlbCandidate({ gameId, home, away, date, line, direction, probability, lambdaTotal, betclicOdds, unibetOdds }) {
+function _logMlbCandidate({ gameId, home, away, date, line, direction, probability, probabilityNB, lambdaTotal, betclicOdds, unibetOdds }) {
   const id = `${gameId}_total_${direction}_${line}`;
   if (_nearMissMlb.some(c => c.id === id)) return;
   _nearMissMlb.push({
     id, gameId, home, away, date, line, direction,
-    probability: +(probability * 100).toFixed(1), lambdaTotal: +lambdaTotal.toFixed(2),
+    probability: +(probability * 100).toFixed(1),
+    // Binomiale négative calculée en parallèle (28 juillet 2026) sur la MÊME direction/ligne que
+    // Poisson — comparaison directe possible une fois réglé, sans biais de sélection entre les deux.
+    probabilityNB: probabilityNB != null ? +(probabilityNB * 100).toFixed(1) : null,
+    lambdaTotal: +lambdaTotal.toFixed(2),
     betclicOdds: betclicOdds ?? null, unibetOdds: unibetOdds ?? null,
     status: 'pending', savedAt: Date.now(),
   });
@@ -11423,7 +11440,7 @@ async function generateBackgroundAlerts() {
     const newAlerts = [];
 
     // Helper : construit la base d'une alerte NBA
-    const baseAlert = (player, game, isHome, stat, line, estVal, teamHasQ = null, deviation = 0) => ({
+    const baseAlert = (player, game, isHome, stat, line, estVal, teamHasQ = null, deviation = 0, oppQFlag = false) => ({
       type: 'player_prop', league: 'nba', eventId: game.id,
       home: game.home.name, away: game.away.name,
       homeShort: game.home.short, awayShort: game.away.short,
@@ -11435,6 +11452,7 @@ async function generateBackgroundAlerts() {
       pinnacleOdds: null,
       injury: player.injury || null,
       ...(teamHasQ?.length ? { teamHasQ } : {}),
+      ...(oppQFlag ? { oppQSamePosition: true } : {}),
       // Écart au neutre (redistribution × ajustement matchup) vs plafond combiné — pour la jauge
       // "boost du modèle" côté carte d'alerte (9 juillet 2026). Plafond 0.30 = COMBINED_BOOST_CAP
       // (1.30) de computeEstimate/compute.js, dupliqué ici en dur (pas exporté par compute.js).
@@ -11612,9 +11630,14 @@ async function generateBackgroundAlerts() {
               if (estVal == null) continue;
               const refLine = bks.unibet?.[stat] ?? bks.winamax?.[stat] ?? null;
               if (!refLine?.line) continue;
-              // Effet adverse blessé : Q → bloquer ; OUT → booster projection
+              // Effet adverse blessé : Q → alerte quand même, avec avertissement "adversaire incertain
+              // au même poste" (pas de boost appliqué tant que son statut n'est pas confirmé) ; OUT →
+              // booster projection. Avant le 28 juillet 2026, un Q adverse bloquait complètement
+              // l'alerte — dans les deux cas (elle joue / elle est finalement Out), l'estimation du
+              // jour reste correcte ou avantageuse, donc mieux vaut prévenir que cacher (cas Napheesa
+              // Collier, adversaire Toronto Q).
               const { factor: oppFactor, shouldBlock: oppBlock } = oppInjuryEffect(oppPlayers_, oppStarters_, player.position, stat, hoursToGame, Q_STATUSES);
-              if (oppBlock) { _bgLog.push(`opp-Q block ${player.name} ${stat} (frozen)`); continue; }
+              if (oppBlock) _bgLog.push(`opp-Q uncertain ${player.name} ${stat} (frozen, no boost)`);
               const adjEstVal = estVal * oppFactor;
               if (oppFactor > 1) _bgLog.push(`opp-OUT boost ${player.name} ${stat} x${oppFactor.toFixed(2)}: ${estVal.toFixed(1)}→${adjEstVal.toFixed(1)}`);
               const std = calcStd(gamelog, stat);
@@ -11638,9 +11661,12 @@ async function generateBackgroundAlerts() {
               // Moyenne "effective" mélangeant saison + forme récente — cf. blendedSeasonAvg (compute.js), 15 juil. 2026
               const _frozenMarginAvg = blendedSeasonAvg(gamelog, stat, _frozenSeasonAvg);
               const _frozenEdge = Math.abs(estVal - refLine.line);
+              { const _nmDir = (disp?.pOver ?? pOver) >= (disp?.pUnder ?? pUnder) ? 'over' : 'under';
               _logNearMissCandidate({ gameId: game.id, league: 'nba', player: player.name, stat,
-                direction: (disp?.pOver ?? pOver) >= (disp?.pUnder ?? pUnder) ? 'over' : 'under',
-                line: refLine.line, probability: Math.max(disp?.pOver ?? pOver, disp?.pUnder ?? pUnder), floor: _frozenFloor });
+                direction: _nmDir,
+                line: refLine.line, probability: Math.max(disp?.pOver ?? pOver, disp?.pUnder ?? pUnder), floor: _frozenFloor,
+                unibetOdds: _nmDir === 'over' ? (refLine.over ?? null) : (refLine.under ?? null),
+                betclicOdds: _nmDir === 'over' ? (bcLine?.over ?? null) : (bcLine?.under ?? null) }); }
               // Marge moyenne saison ↔ ligne + minimum de volume TPM — étendu de la WNBA à la NBA le 22 juin 2026
               const _frozenMarginOverOk  = _frozenMarginAvg == null || _frozenMarginAvg >= refLine.line + SEASON_MARGIN[stat];
               const _frozenMarginUnderOk = _frozenMarginAvg == null || _frozenMarginAvg <= refLine.line - SEASON_MARGIN[stat];
@@ -11655,7 +11681,7 @@ async function generateBackgroundAlerts() {
                   return p >= _frozenFloor && Math.abs(estVal - line) >= minEdgeFor(stat, 'over', _frozenSeasonAvg) && marginOk;
                 } }) : null;
               if (_frozenOverOk && hasValidOverOdds(refLine.over??null, wmLine?.over??null, bcLine?.over??null)) {
-                newAlerts.push({ ...baseAlert(player, game, isHome, stat, refLine.line, estVal, teamQNames, deviation), id:`${game.id}_${player.id}_${stat}_over_${refLine.line}`, direction:'over', probability:Math.round((disp?.pOver ?? pOver)*100), unibetOdds:capOdds(refLine.over??null), winamaxOdds:capOdds(wmLine?.over??null), betclicOdds:capOdds(bcLine?.over??null) });
+                newAlerts.push({ ...baseAlert(player, game, isHome, stat, refLine.line, estVal, teamQNames, deviation, oppBlock), id:`${game.id}_${player.id}_${stat}_over_${refLine.line}`, direction:'over', probability:Math.round((disp?.pOver ?? pOver)*100), unibetOdds:capOdds(refLine.over??null), winamaxOdds:capOdds(wmLine?.over??null), betclicOdds:capOdds(bcLine?.over??null) });
               } else if (_frozenOverOk) {
                 const alt = findLadderAlternative({ direction: 'over', refLineValue: refLine.line, bks, stat,
                   computeProbAtLine: line => displayProb(adjEstVal, std, null, gamelog, line, stat, deviation, game.date, lastGameStr)?.pOver ?? Math.max(0, probAtLeast(adjEstVal, std, Math.ceil(line), stat, deviation, false, gamelog.length)),
@@ -11663,15 +11689,15 @@ async function generateBackgroundAlerts() {
                     const marginOk = _frozenMarginAvg == null || _frozenMarginAvg >= line + SEASON_MARGIN[stat];
                     return p >= _frozenFloor && Math.abs(estVal - line) >= minEdgeFor(stat, 'over', _frozenSeasonAvg) && marginOk && _frozenTpmVolOk;
                   } });
-                if (alt) newAlerts.push({ ...baseAlert(player, game, isHome, stat, alt.line, estVal, teamQNames, deviation), id:`${game.id}_${player.id}_${stat}_over_${alt.line}`, direction:'over', probability:Math.round(alt.p*100), unibetOdds: alt.book==='unibet'?capOdds(alt.odds):null, winamaxOdds:null, betclicOdds: alt.book==='betclic'?capOdds(alt.odds):null, lineSource:'ladder' });
+                if (alt) newAlerts.push({ ...baseAlert(player, game, isHome, stat, alt.line, estVal, teamQNames, deviation, oppBlock), id:`${game.id}_${player.id}_${stat}_over_${alt.line}`, direction:'over', probability:Math.round(alt.p*100), unibetOdds: alt.book==='unibet'?capOdds(alt.odds):null, winamaxOdds:null, betclicOdds: alt.book==='betclic'?capOdds(alt.odds):null, lineSource:'ladder' });
               } else if (_frozenAltOver) {
-                newAlerts.push({ ...baseAlert(player, game, isHome, stat, _frozenAltOver.line, estVal, teamQNames, deviation), id:`${game.id}_${player.id}_${stat}_over_${_frozenAltOver.line}`, direction:'over', probability:Math.round(_frozenAltOver.p*100), unibetOdds: _frozenAltOver.book==='unibet'?capOdds(_frozenAltOver.odds):null, winamaxOdds:null, betclicOdds: _frozenAltOver.book==='betclic'?capOdds(_frozenAltOver.odds):null, lineSource:'ladder' });
+                newAlerts.push({ ...baseAlert(player, game, isHome, stat, _frozenAltOver.line, estVal, teamQNames, deviation, oppBlock), id:`${game.id}_${player.id}_${stat}_over_${_frozenAltOver.line}`, direction:'over', probability:Math.round(_frozenAltOver.p*100), unibetOdds: _frozenAltOver.book==='unibet'?capOdds(_frozenAltOver.odds):null, winamaxOdds:null, betclicOdds: _frozenAltOver.book==='betclic'?capOdds(_frozenAltOver.odds):null, lineSource:'ladder' });
               } else if (!_frozenMarginOverOk && pOver>=_frozenFloor) { _bgLog.push(`block NBA ${stat} over ${player.name}: moy effective ${(_frozenMarginAvg??0).toFixed(1)} (saison ${(_frozenSeasonAvg??0).toFixed(1)}) < ligne ${refLine.line} + marge ${SEASON_MARGIN[stat]}`); }
               else if (!_frozenTpmVolOk && pOver>=_frozenFloor) { _bgLog.push(`block NBA tpm over ${player.name}: moy saison ${(_frozenSeasonAvg??0).toFixed(1)} < ${TPM_MIN_SEASON_AVG}`); }
               else {
                 const _frozenUnderOk = !teamQNames?.length && pUnder >= _frozenFloor && _frozenEdge >= minEdgeFor(stat, 'under', _frozenSeasonAvg) && _frozenMarginUnderOk;
                 if (_frozenUnderOk && hasValidUnderOdds(refLine.under??null, wmLine?.under??null, bcLine?.under??null)) {
-                  newAlerts.push({ ...baseAlert(player, game, isHome, stat, refLine.line, estVal, teamQNames, deviation), id:`${game.id}_${player.id}_${stat}_under_${refLine.line}`, direction:'under', probability:Math.round((disp?.pUnder ?? pUnder)*100), unibetOdds:capUnderOdds(refLine.under??null), winamaxOdds:capUnderOdds(wmLine?.under??null), betclicOdds:capUnderOdds(bcLine?.under??null), ...(playerIsQ?{playerIsQ:true}:{}) });
+                  newAlerts.push({ ...baseAlert(player, game, isHome, stat, refLine.line, estVal, teamQNames, deviation, oppBlock), id:`${game.id}_${player.id}_${stat}_under_${refLine.line}`, direction:'under', probability:Math.round((disp?.pUnder ?? pUnder)*100), unibetOdds:capUnderOdds(refLine.under??null), winamaxOdds:capUnderOdds(wmLine?.under??null), betclicOdds:capUnderOdds(bcLine?.under??null), ...(playerIsQ?{playerIsQ:true}:{}) });
                 } else if (_frozenUnderOk) {
                   const alt = findLadderAlternative({ direction: 'under', refLineValue: refLine.line, bks, stat,
                     computeProbAtLine: line => displayProb(adjEstVal, std, null, gamelog, line, stat, deviation, game.date, lastGameStr)?.pUnder ?? Math.max(0, 1 - probAtLeast(adjEstVal, std, Math.floor(line) + 1, stat, deviation, false, gamelog.length)),
@@ -11679,7 +11705,7 @@ async function generateBackgroundAlerts() {
                       const marginOk = _frozenMarginAvg == null || _frozenMarginAvg <= line - SEASON_MARGIN[stat];
                       return p >= _frozenFloor && Math.abs(estVal - line) >= minEdgeFor(stat, 'under', _frozenSeasonAvg) && marginOk;
                     } });
-                  if (alt) newAlerts.push({ ...baseAlert(player, game, isHome, stat, alt.line, estVal, teamQNames, deviation), id:`${game.id}_${player.id}_${stat}_under_${alt.line}`, direction:'under', probability:Math.round(alt.p*100), unibetOdds: alt.book==='unibet'?capUnderOdds(alt.odds):null, winamaxOdds:null, betclicOdds: alt.book==='betclic'?capUnderOdds(alt.odds):null, lineSource:'ladder', ...(playerIsQ?{playerIsQ:true}:{}) });
+                  if (alt) newAlerts.push({ ...baseAlert(player, game, isHome, stat, alt.line, estVal, teamQNames, deviation, oppBlock), id:`${game.id}_${player.id}_${stat}_under_${alt.line}`, direction:'under', probability:Math.round(alt.p*100), unibetOdds: alt.book==='unibet'?capUnderOdds(alt.odds):null, winamaxOdds:null, betclicOdds: alt.book==='betclic'?capUnderOdds(alt.odds):null, lineSource:'ladder', ...(playerIsQ?{playerIsQ:true}:{}) });
                 } else {
                   // Ligne de référence bloquée → cherche une ligne plus facile (seek='prob') avant
                   // d'abandonner (même principe que côté over, 16 juil. 2026).
@@ -11689,7 +11715,7 @@ async function generateBackgroundAlerts() {
                       const marginOk = _frozenMarginAvg == null || _frozenMarginAvg <= line - SEASON_MARGIN[stat];
                       return p >= _frozenFloor && Math.abs(estVal - line) >= minEdgeFor(stat, 'under', _frozenSeasonAvg) && marginOk;
                     } });
-                  if (altP) { newAlerts.push({ ...baseAlert(player, game, isHome, stat, altP.line, estVal, teamQNames, deviation), id:`${game.id}_${player.id}_${stat}_under_${altP.line}`, direction:'under', probability:Math.round(altP.p*100), unibetOdds: altP.book==='unibet'?capUnderOdds(altP.odds):null, winamaxOdds:null, betclicOdds: altP.book==='betclic'?capUnderOdds(altP.odds):null, lineSource:'ladder', ...(playerIsQ?{playerIsQ:true}:{}) }); }
+                  if (altP) { newAlerts.push({ ...baseAlert(player, game, isHome, stat, altP.line, estVal, teamQNames, deviation, oppBlock), id:`${game.id}_${player.id}_${stat}_under_${altP.line}`, direction:'under', probability:Math.round(altP.p*100), unibetOdds: altP.book==='unibet'?capUnderOdds(altP.odds):null, winamaxOdds:null, betclicOdds: altP.book==='betclic'?capUnderOdds(altP.odds):null, lineSource:'ladder', ...(playerIsQ?{playerIsQ:true}:{}) }); }
                   else if (!_frozenMarginUnderOk && pUnder>=_frozenFloor) { _bgLog.push(`block NBA ${stat} under ${player.name}: moy effective ${(_frozenMarginAvg??0).toFixed(1)} (saison ${(_frozenSeasonAvg??0).toFixed(1)}) > ligne ${refLine.line} - marge ${SEASON_MARGIN[stat]}`); }
                 }
               }
@@ -11731,9 +11757,10 @@ async function generateBackgroundAlerts() {
             const refLine = bks.unibet?.[stat] ?? bks.winamax?.[stat] ?? null;
             if (!refLine?.line) continue;
 
-            // Effet adverse blessé : Q → bloquer ; OUT → booster projection
+            // Effet adverse blessé : Q → alerte quand même avec avertissement (cf. commentaire bloc gelé
+            // ci-dessus, fix 28 juillet 2026) ; OUT → booster projection.
             const { factor: oppFactor, shouldBlock: oppBlock } = oppInjuryEffect(oppPlayers_, oppStarters_, player.position, stat, hoursToGame, Q_STATUSES);
-            if (oppBlock) { _bgLog.push(`opp-Q block ${player.name} ${stat}`); continue; }
+            if (oppBlock) _bgLog.push(`opp-Q uncertain ${player.name} ${stat} (no boost)`);
             const adjEstVal = estVal * oppFactor;
             if (oppFactor > 1) _bgLog.push(`opp-OUT boost ${player.name} ${stat} x${oppFactor.toFixed(2)}: ${estVal.toFixed(1)}→${adjEstVal.toFixed(1)}`);
 
@@ -11783,6 +11810,7 @@ async function generateBackgroundAlerts() {
               injury:       player.injury || null,
               ...(teamQNames?.length ? { teamHasQ: teamQNames } : {}),
               ...(playerIsQ ? { playerIsQ: true } : {}),
+              ...(oppBlock ? { oppQSamePosition: true } : {}),
               deviation, deviationCap: 0.30,
               savedAt:      Date.now(),
             };
@@ -11800,9 +11828,12 @@ async function generateBackgroundAlerts() {
             // Plancher abaissé à 75% si le joueur est "spécialiste" de cette stat — voir isConsistentStat (compute.js)
             const _nbaFloor = isConsistentStat(gamelog, stat) ? 0.75 : (_nbaIsStarter ? NBA_ALERT_FLOOR[stat] : NBA_ALERT_FLOOR_BENCH[stat]);
             const _nbaEdge = Math.abs(estVal - refLine.line);
+            { const _nmDir = (disp?.pOver ?? pOver) >= (disp?.pUnder ?? pUnder) ? 'over' : 'under';
             _logNearMissCandidate({ gameId: game.id, league: 'nba', player: player.name, stat,
-              direction: (disp?.pOver ?? pOver) >= (disp?.pUnder ?? pUnder) ? 'over' : 'under',
-              line: refLine.line, probability: Math.max(disp?.pOver ?? pOver, disp?.pUnder ?? pUnder), floor: _nbaFloor });
+              direction: _nmDir,
+              line: refLine.line, probability: Math.max(disp?.pOver ?? pOver, disp?.pUnder ?? pUnder), floor: _nbaFloor,
+              unibetOdds: _nmDir === 'over' ? (refLine.over ?? null) : (refLine.under ?? null),
+              betclicOdds: _nmDir === 'over' ? (bcLine?.over ?? null) : (bcLine?.under ?? null) }); }
             // Moyenne "effective" mélangeant saison + forme récente — cf. blendedSeasonAvg (compute.js), 15 juil. 2026
             const _nbaMarginAvg = blendedSeasonAvg(gamelog, stat, seasonAvgStat);
             // Marge moyenne saison ↔ ligne + minimum de volume TPM — étendu de la WNBA à la NBA le 22 juin 2026
@@ -12080,7 +12111,7 @@ async function generateBackgroundAlerts() {
                   const refLine = bks.unibet?.[stat] ?? bks.winamax?.[stat] ?? null; if (!refLine?.line) continue;
                   const std = calcStd(gamelog, stat) ?? (stat==='pts'?6:stat==='reb'?2.5:stat==='tpm'?1.2:1.5);
                   const { factor: oppFactorW, shouldBlock: oppBlockW } = oppInjuryEffect(oppPlayersWNBA_, oppStartersWNBA_, player.position, stat, hoursToGame, Q_STATUSES_WNBA);
-                  if (oppBlockW) { _bgLog.push(`opp-Q block wnba ${player.name} ${stat} (frozen)`); continue; }
+                  if (oppBlockW) _bgLog.push(`opp-Q uncertain wnba ${player.name} ${stat} (frozen, no boost)`);
                   const adjEstValW = estVal * oppFactorW;
                   if (oppFactorW > 1) _bgLog.push(`opp-OUT boost wnba ${player.name} ${stat} x${oppFactorW.toFixed(2)}: ${estVal.toFixed(1)}→${adjEstValW.toFixed(1)}`);
                   const pOver = Math.max(0, probAtLeast(adjEstValW, std, Math.ceil(refLine.line), stat, 0, true, gamelog.length));
@@ -12092,7 +12123,7 @@ async function generateBackgroundAlerts() {
                     if (!snap.probs) snap.probs = {};
                     snap.probs[stat] = { pOver: +((disp?.pOver ?? pOver)).toFixed(3), pUnder: +((disp?.pUnder ?? pUnder)).toFixed(3), line: refLine.line, ubOver: refLine.over??null, bcOver: bcLine?.over??null, wmOver: wmLine?.over??null, ubUnder: refLine.under??null, bcUnder: bcLine?.under??null, wmUnder: wmLine?.under??null };
                   }
-                  const base = { type:'player_prop', league:'wnba', eventId:game.id, home:game.home.name, away:game.away.name, homeShort:game.home.short, awayShort:game.away.short, homeTeam:game.home.name, awayTeam:game.away.name, player:player.name, team:isHome?game.home.short:game.away.short, fixture:`${game.home.short} vs ${game.away.short}`, round:'', fixtureDate:game.date, stat, line:refLine.line, estimate:estVal, pinnacleOdds:null, injury:player.injury||null, ...(teamQNamesWNBA?.length?{teamHasQ:teamQNamesWNBA}:{}), ...(playerIsQWNBA?{playerIsQ:true}:{}), deviation: snap.deviation?.[stat] ?? 0, deviationCap: 0.30, savedAt:Date.now() };
+                  const base = { type:'player_prop', league:'wnba', eventId:game.id, home:game.home.name, away:game.away.name, homeShort:game.home.short, awayShort:game.away.short, homeTeam:game.home.name, awayTeam:game.away.name, player:player.name, team:isHome?game.home.short:game.away.short, fixture:`${game.home.short} vs ${game.away.short}`, round:'', fixtureDate:game.date, stat, line:refLine.line, estimate:estVal, pinnacleOdds:null, injury:player.injury||null, ...(teamQNamesWNBA?.length?{teamHasQ:teamQNamesWNBA}:{}), ...(playerIsQWNBA?{playerIsQ:true}:{}), ...(oppBlockW?{oppQSamePosition:true}:{}), deviation: snap.deviation?.[stat] ?? 0, deviationCap: 0.30, savedAt:Date.now() };
                   const _wnbaFrozenStarter = myStartersWNBA.has(String(player.id));
                   // Plancher abaissé à 72% si la joueuse est "spécialiste" de cette stat — voir isConsistentStat (compute.js)
                   const _wnbaFrozenFloor = isConsistentStat(gamelog, stat) ? WNBA_SPECIALIST_FLOOR : (_wnbaFrozenStarter ? WNBA_ALERT_FLOOR[stat] : WNBA_ALERT_FLOOR_BENCH[stat]);
@@ -12100,9 +12131,12 @@ async function generateBackgroundAlerts() {
                   // Moyenne "effective" mélangeant saison + forme récente — cf. blendedSeasonAvg (compute.js), 15 juil. 2026
                   const _wnbaFrozenMarginAvg = blendedSeasonAvg(gamelog, stat, _wnbaFrozenSeasonAvg);
                   const _wnbaFrozenEdge = Math.abs(estVal - refLine.line);
+                  { const _nmDir = (disp?.pOver ?? pOver) >= (disp?.pUnder ?? pUnder) ? 'over' : 'under';
                   _logNearMissCandidate({ gameId: game.id, league: 'wnba', player: player.name, stat,
-                    direction: (disp?.pOver ?? pOver) >= (disp?.pUnder ?? pUnder) ? 'over' : 'under',
-                    line: refLine.line, probability: Math.max(disp?.pOver ?? pOver, disp?.pUnder ?? pUnder), floor: _wnbaFrozenFloor });
+                    direction: _nmDir,
+                    line: refLine.line, probability: Math.max(disp?.pOver ?? pOver, disp?.pUnder ?? pUnder), floor: _wnbaFrozenFloor,
+                    unibetOdds: _nmDir === 'over' ? (refLine.over ?? null) : (refLine.under ?? null),
+                    betclicOdds: _nmDir === 'over' ? (bcLine?.over ?? null) : (bcLine?.under ?? null) }); }
                   const _wnbaFrozenMarginOverOk  = _wnbaFrozenMarginAvg == null || _wnbaFrozenMarginAvg >= refLine.line + WNBA_SEASON_MARGIN[stat];
                   const _wnbaFrozenMarginUnderOk = _wnbaFrozenMarginAvg == null || _wnbaFrozenMarginAvg <= refLine.line - WNBA_SEASON_MARGIN[stat];
                   const _wnbaFrozenTpmVolOk = stat !== 'tpm' || (_wnbaFrozenSeasonAvg??0) >= WNBA_TPM_MIN_SEASON_AVG;
@@ -12192,9 +12226,10 @@ async function generateBackgroundAlerts() {
             const refLine = bks.unibet?.[stat] ?? bks.winamax?.[stat] ?? null;
             if (!refLine?.line) continue;
 
-            // Effet adverse blessé WNBA
+            // Effet adverse blessé WNBA — Q → alerte quand même avec avertissement (fix 28 juillet 2026,
+            // cf. commentaire bloc gelé plus haut) ; OUT → booster projection.
             const { factor: oppFactorW2, shouldBlock: oppBlockW2 } = oppInjuryEffect(oppPlayersWNBA_, oppStartersWNBA_, player.position, stat, hoursToGame, Q_STATUSES_WNBA);
-            if (oppBlockW2) { _bgLog.push(`opp-Q block wnba ${player.name} ${stat}`); continue; }
+            if (oppBlockW2) _bgLog.push(`opp-Q uncertain wnba ${player.name} ${stat} (no boost)`);
             const adjEstValW2 = estVal * oppFactorW2;
             if (oppFactorW2 > 1) _bgLog.push(`opp-OUT boost wnba ${player.name} ${stat} x${oppFactorW2.toFixed(2)}: ${estVal.toFixed(1)}→${adjEstValW2.toFixed(1)}`);
 
@@ -12249,6 +12284,7 @@ async function generateBackgroundAlerts() {
               injury:       player.injury || null,
               ...(teamQNamesWNBA?.length ? { teamHasQ: teamQNamesWNBA } : {}),
               ...(playerIsQWNBA ? { playerIsQ: true } : {}),
+              ...(oppBlockW2 ? { oppQSamePosition: true } : {}),
               deviation, deviationCap: 0.30,
               savedAt:      Date.now(),
             };
@@ -12262,9 +12298,12 @@ async function generateBackgroundAlerts() {
             // Moyenne "effective" mélangeant saison + forme récente — cf. blendedSeasonAvg (compute.js), 15 juil. 2026
             const _wnbaMarginAvg = blendedSeasonAvg(gamelog, stat, _wnbaSeasonAvg);
             const _wnbaEdge = Math.abs(estVal - refLine.line);
+            { const _nmDir = (disp?.pOver ?? pOver) >= (disp?.pUnder ?? pUnder) ? 'over' : 'under';
             _logNearMissCandidate({ gameId: game.id, league: 'wnba', player: player.name, stat,
-              direction: (disp?.pOver ?? pOver) >= (disp?.pUnder ?? pUnder) ? 'over' : 'under',
-              line: refLine.line, probability: Math.max(disp?.pOver ?? pOver, disp?.pUnder ?? pUnder), floor: alertFloor });
+              direction: _nmDir,
+              line: refLine.line, probability: Math.max(disp?.pOver ?? pOver, disp?.pUnder ?? pUnder), floor: alertFloor,
+              unibetOdds: _nmDir === 'over' ? (refLine.over ?? null) : (refLine.under ?? null),
+              betclicOdds: _nmDir === 'over' ? (bcLine?.over ?? null) : (bcLine?.under ?? null) }); }
             _bgLog.push(`wnba dbg ${player.name} ${stat}: est=${estVal?.toFixed(1)} line=${refLine.line} std=${std?.toFixed(1)} pOver=${Math.round(rawPOver*100)}% pUnder=${Math.round(rawPUnder*100)}% adj=${minVarianceAdj}`);
             const _wnbaMarginOverOk  = _wnbaMarginAvg == null || _wnbaMarginAvg >= refLine.line + WNBA_SEASON_MARGIN[stat];
             const _wnbaMarginUnderOk = _wnbaMarginAvg == null || _wnbaMarginAvg <= refLine.line - WNBA_SEASON_MARGIN[stat];
@@ -12429,7 +12468,8 @@ async function generateBackgroundAlerts() {
 
           const bestP = Math.max(full.pOver ?? 0, full.pUnder ?? 0);
           const direction = full.direction;
-          _logBasketMarketNearMiss({ gameId: game.id, league: leagueKey, market: 'total', direction, line, probability: bestP, floor: TOTAL_ALERT_PROB });
+          _logBasketMarketNearMiss({ gameId: game.id, league: leagueKey, market: 'total', direction, line, probability: bestP, floor: TOTAL_ALERT_PROB,
+            unibetOdds: bks.unibet?.[direction] ?? null, betclicOdds: bks.betclic?.[direction] ?? null });
           const dirOdds = Math.max(bks.unibet?.[direction] ?? 0, bks.betclic?.[direction] ?? 0); // winamax exclu depuis le 22 juin (cf. props)
           const oddsStillOk = dirOdds >= 1.60;
           const alertId   = `${game.id}_${leagueKey}_total`;
@@ -12723,8 +12763,10 @@ async function generateBackgroundAlerts() {
           });
           if (!result) continue;
           _bgLog.push(`${euLeague} result dbg ${g.home.short}v${g.away.short}: pHome=${(result.pHome*100).toFixed(1)}% pAway=${(result.pAway*100).toFixed(1)}% margin=${result.marginExpected} outPen=${homeOutPenalty.toFixed(1)}/${awayOutPenalty.toFixed(1)}`);
-          _logBasketMarketNearMiss({ gameId: g.id, league: euLeague, market: 'result', direction: 'home', line: null, probability: result.pHome, floor: RESULT_ALERT_PROB });
-          _logBasketMarketNearMiss({ gameId: g.id, league: euLeague, market: 'result', direction: 'away', line: null, probability: result.pAway, floor: RESULT_ALERT_PROB });
+          _logBasketMarketNearMiss({ gameId: g.id, league: euLeague, market: 'result', direction: 'home', line: null, probability: result.pHome, floor: RESULT_ALERT_PROB,
+            unibetOdds: h2hBks.unibet?.home ?? null, betclicOdds: h2hBks.betclic?.home ?? null });
+          _logBasketMarketNearMiss({ gameId: g.id, league: euLeague, market: 'result', direction: 'away', line: null, probability: result.pAway, floor: RESULT_ALERT_PROB,
+            unibetOdds: h2hBks.unibet?.away ?? null, betclicOdds: h2hBks.betclic?.away ?? null });
 
           const resultCreatedSidesEU = new Set();
           for (const [bk, h] of Object.entries(h2hBks).filter(([bk]) => bk !== 'winamax')) { // winamax exclu depuis le 22 juin
@@ -12793,7 +12835,8 @@ async function generateBackgroundAlerts() {
               if (spreadCreatedSidesEU.has(side)) continue;
               const stillAlt = findSpreadLadderAlternative({ direction: side, spreadAllLinesBks: spreadAllLinesBksEU, marginExpected: result.marginExpected, std: result.std, probFloor: 0, lineScale: scaleF });
               const prob = stillAlt?.p ?? 0;
-              if (stillAlt) _logBasketMarketNearMiss({ gameId: g.id, league: euLeague, market: 'spread', direction: side, line: stillAlt.line, probability: prob, floor: SPREAD_ALERT_PROB });
+              if (stillAlt) _logBasketMarketNearMiss({ gameId: g.id, league: euLeague, market: 'spread', direction: side, line: stillAlt.line, probability: prob, floor: SPREAD_ALERT_PROB,
+                unibetOdds: stillAlt.book === 'unibet' ? stillAlt.odds : null, betclicOdds: stillAlt.book === 'betclic' ? stillAlt.odds : null });
               refreshOrDropPendingById(newAlerts, `${g.id}_eu_spread_${side}`, +(prob * 100).toFixed(1),
                 !!stillAlt && stillAlt.odds >= SPREAD_MIN_ODDS && prob >= SPREAD_ALERT_PROB,
                 { probability: +(prob * 100).toFixed(1), margin: result.marginExpected, line: stillAlt?.line, odds: stillAlt?.odds }, `${(prob*100).toFixed(1)}%`);
@@ -12895,8 +12938,10 @@ async function generateBackgroundAlerts() {
             });
             if (!result) continue;
             _bgLog.push(`${leagueKey} result dbg ${g.home.short}v${g.away.short}: pHome=${(result.pHome*100).toFixed(1)}% pAway=${(result.pAway*100).toFixed(1)}% margin=${result.marginExpected} outPen=${homeOutPenalty.toFixed(1)}/${awayOutPenalty.toFixed(1)}`);
-            _logBasketMarketNearMiss({ gameId: g.id, league: leagueKey, market: 'result', direction: 'home', line: null, probability: result.pHome, floor: RESULT_ALERT_PROB });
-            _logBasketMarketNearMiss({ gameId: g.id, league: leagueKey, market: 'result', direction: 'away', line: null, probability: result.pAway, floor: RESULT_ALERT_PROB });
+            _logBasketMarketNearMiss({ gameId: g.id, league: leagueKey, market: 'result', direction: 'home', line: null, probability: result.pHome, floor: RESULT_ALERT_PROB,
+              unibetOdds: h2hBks.unibet?.home ?? null, betclicOdds: h2hBks.betclic?.home ?? null });
+            _logBasketMarketNearMiss({ gameId: g.id, league: leagueKey, market: 'result', direction: 'away', line: null, probability: result.pAway, floor: RESULT_ALERT_PROB,
+              unibetOdds: h2hBks.unibet?.away ?? null, betclicOdds: h2hBks.betclic?.away ?? null });
 
             const resultCreatedSides = new Set();
             for (const [bk, h] of Object.entries(h2hBks).filter(([bk]) => bk !== 'winamax')) { // winamax exclu depuis le 22 juin
@@ -12967,7 +13012,8 @@ async function generateBackgroundAlerts() {
                 if (spreadCreatedSides.has(side)) continue;
                 const stillAlt = findSpreadLadderAlternative({ direction: side, spreadAllLinesBks, marginExpected: result.marginExpected, std: result.std, probFloor: 0 });
                 const prob = stillAlt?.p ?? 0;
-                if (stillAlt) _logBasketMarketNearMiss({ gameId: g.id, league: leagueKey, market: 'spread', direction: side, line: stillAlt.line, probability: prob, floor: SPREAD_ALERT_PROB });
+                if (stillAlt) _logBasketMarketNearMiss({ gameId: g.id, league: leagueKey, market: 'spread', direction: side, line: stillAlt.line, probability: prob, floor: SPREAD_ALERT_PROB,
+                  unibetOdds: stillAlt.book === 'unibet' ? stillAlt.odds : null, betclicOdds: stillAlt.book === 'betclic' ? stillAlt.odds : null });
                 refreshOrDropPendingById(newAlerts, `${g.id}_${leagueKey}_spread_${side}`, +(prob * 100).toFixed(1),
                   !!stillAlt && stillAlt.odds >= SPREAD_MIN_ODDS && prob >= SPREAD_ALERT_PROB,
                   { probability: +(prob * 100).toFixed(1), margin: result.marginExpected, line: stillAlt?.line, odds: stillAlt?.odds }, `${(prob*100).toFixed(1)}%`);
@@ -13107,7 +13153,8 @@ async function generateBackgroundAlerts() {
 
             const bestP = Math.max(full.pOver ?? 0, full.pUnder ?? 0);
             const direction = full.direction;
-            _logBasketMarketNearMiss({ gameId: g.id, league: euLeague, market: 'total', direction, line, probability: bestP, floor: TOTAL_ALERT_PROB });
+            _logBasketMarketNearMiss({ gameId: g.id, league: euLeague, market: 'total', direction, line, probability: bestP, floor: TOTAL_ALERT_PROB,
+              unibetOdds: bks.unibet?.[direction] ?? null, betclicOdds: bks.betclic?.[direction] ?? null });
             const dirOdds = Math.max(bks.unibet?.[direction] ?? 0, bks.betclic?.[direction] ?? 0); // winamax exclu depuis le 22 juin (cf. props)
             const oddsStillOk = dirOdds >= 1.60;
             const alertId = `${g.id}_${euLeague}_total`;
@@ -13421,7 +13468,8 @@ async function generateBackgroundAlerts() {
             estimated: +(lambdaHome + lambdaAway).toFixed(2), savedAt: Date.now(),
           };
           _saveFootballSnapshot();
-          _logFootballNearMiss({ fixtureId: f.fixtureId, league: f.league, market: 'btts', direction: 'yes', line: null, probability: bttsProb, floor: FB_BTTS_ALERT_PROB });
+          _logFootballNearMiss({ fixtureId: f.fixtureId, league: f.league, market: 'btts', direction: 'yes', line: null, probability: bttsProb, floor: FB_BTTS_ALERT_PROB,
+            unibetOdds: bttsBk.unibet?.yes ?? null, betclicOdds: bttsBk.betclic?.yes ?? null });
           if (bttsProb >= FB_BTTS_ALERT_PROB && !f.isQualifRound) {
             const bestBk = FB_BOOKS.find(bk => (bttsBk[bk]?.yes ?? 0) >= FB_BTTS_OU_MIN_ODDS);
             if (bestBk) {
@@ -13468,7 +13516,8 @@ async function generateBackgroundAlerts() {
           ];
           for (const { key, prob } of RESULT_OUTCOMES) {
             if (isCdmJ3) continue; // J3 CDM bloqué — enjeux tactiques imprévisibles
-            _logFootballNearMiss({ fixtureId: f.fixtureId, league: f.league, market: 'result', direction: key, line: null, probability: prob, floor: FB_RESULT_ALERT_PROB });
+            _logFootballNearMiss({ fixtureId: f.fixtureId, league: f.league, market: 'result', direction: key, line: null, probability: prob, floor: FB_RESULT_ALERT_PROB,
+              unibetOdds: h2hBk.unibet?.[key] ?? null, betclicOdds: h2hBk.betclic?.[key] ?? null });
             if (prob < FB_RESULT_ALERT_PROB || f.isQualifRound) continue;
             const bestBk = FB_BOOKS.find(bk => (h2hBk[bk]?.[key] ?? 0) >= FB_RESULT_MIN_ODDS);
             if (!bestBk) continue;
@@ -13595,7 +13644,9 @@ async function generateBackgroundAlerts() {
           for (const line of OU_LINES) {
             const ou = computeOUProb(lambdaHome, lambdaAway, parseFloat(line));
             const bestP = Math.max(ou.pOver, ou.pUnder);
-            _logFootballNearMiss({ fixtureId: f.fixtureId, league: f.league, market: 'total', direction: ou.pOver >= ou.pUnder ? 'over' : 'under', line: parseFloat(line), probability: bestP, floor: FB_OU_ALERT_PROB });
+            const _nmOuDir = ou.pOver >= ou.pUnder ? 'over' : 'under';
+            _logFootballNearMiss({ fixtureId: f.fixtureId, league: f.league, market: 'total', direction: _nmOuDir, line: parseFloat(line), probability: bestP, floor: FB_OU_ALERT_PROB,
+              unibetOdds: totalsBk.unibet?.[line]?.[_nmOuDir] ?? null, betclicOdds: totalsBk.betclic?.[line]?.[_nmOuDir] ?? null });
             if (bestP < FB_OU_ALERT_PROB || f.isQualifRound) continue;
             const direction = ou.pOver >= ou.pUnder ? 'over' : 'under';
             const bestBk = FB_BOOKS.find(bk => (totalsBk[bk]?.[line]?.[direction] ?? 0) >= FB_BTTS_OU_MIN_ODDS);
@@ -13639,6 +13690,10 @@ async function generateBackgroundAlerts() {
           const dcBttsProbs = computeDCBTTSProbs(lambdaHome, lambdaAway);
           for (const [key, prob] of Object.entries(dcBttsProbs)) {
             if (key === '12') continue;
+            // Near-miss ajouté le 28 juillet 2026 — seul marché avec modèle de proba qui n'avait
+            // encore aucun suivi de calibration (cf. mémoire projet_near_miss_unfiltered_odds_juillet28).
+            _logFootballNearMiss({ fixtureId: f.fixtureId, league: f.league, market: 'dc_btts', direction: key, line: null, probability: prob, floor: FB_DC_BTTS_ALERT_PROB,
+              unibetOdds: dcBttsBk.unibet?.[key] ?? null, betclicOdds: dcBttsBk.betclic?.[key] ?? null });
             if (prob < FB_DC_BTTS_ALERT_PROB || f.isQualifRound) continue;
             const bestBk = FB_BOOKS.find(bk => (dcBttsBk[bk]?.[key] ?? 0) >= FB_DC_MIN_ODDS);
             if (!bestBk) continue;
@@ -13669,6 +13724,8 @@ async function generateBackgroundAlerts() {
           const dcOuProbs = computeDCOverProbs(lambdaHome, lambdaAway, 1.5);
           for (const [key, prob] of Object.entries(dcOuProbs)) {
             if (key === '12') continue;
+            _logFootballNearMiss({ fixtureId: f.fixtureId, league: f.league, market: 'dc_ou', direction: key, line: 1.5, probability: prob, floor: FB_DC_OU_ALERT_PROB,
+              unibetOdds: dcOuBk.unibet?.[key] ?? null, betclicOdds: dcOuBk.betclic?.[key] ?? null });
             if (prob < FB_DC_OU_ALERT_PROB || f.isQualifRound) continue;
             const bestBk = FB_BOOKS.find(bk => (dcOuBk[bk]?.[key] ?? 0) >= FB_DC_MIN_ODDS);
             if (!bestBk) continue;
@@ -13733,8 +13790,12 @@ async function generateBackgroundAlerts() {
               const p = computeMlbTotalProb(lambdas.lambdaHome, lambdas.lambdaAway, line);
               const direction = p.pOver >= p.pUnder ? 'over' : 'under';
               const probability = direction === 'over' ? p.pOver : p.pUnder;
+              // Binomiale négative en parallèle (28 juillet 2026, comparaison de calibration) — même
+              // direction que Poisson (choisie ci-dessus), pas de re-décision indépendante.
+              const pNB = computeMlbTotalProbNB(lambdas.lambdaHome, lambdas.lambdaAway, line);
+              const probabilityNB = direction === 'over' ? pNB.pOver : pNB.pUnder;
               _logMlbCandidate({
-                gameId: g.id, home: g.home.name, away: g.away.name, date: g.date, line, direction, probability,
+                gameId: g.id, home: g.home.name, away: g.away.name, date: g.date, line, direction, probability, probabilityNB,
                 lambdaTotal: p.lambdaTotal,
                 betclicOdds: oddsMatch?.betclic?.totals?.[lineStr]?.[direction] ?? null,
                 unibetOdds: oddsMatch?.unibet?.totals?.[lineStr]?.[direction] ?? null,
@@ -13880,16 +13941,24 @@ async function generateBackgroundAlerts() {
     });
 
     // Notifications Telegram — envoyées ici, après enrichissement (teammateOverlap/matchCorrelation
-    // déjà posés dessus), une par alerte réellement nouvelle. Fire-and-forget : une panne Telegram
-    // (réseau, token invalide) ne doit jamais faire échouer generateBackgroundAlerts. Dédup par ID
-    // déjà notifié (persisté sur disque, cf. _telegramNotifiedIds) — pas par "1er cycle après
-    // restart", qui avalait silencieusement les alertes nées juste avant un redémarrage (18 juillet 2026).
+    // déjà posés dessus), une par alerte réellement nouvelle. Une panne Telegram (réseau, token
+    // invalide) ne doit jamais faire échouer generateBackgroundAlerts, mais ne doit pas non plus être
+    // avalée en silence : awaited (pas fire-and-forget) et l'ID n'est marqué "notifié" (persisté dans
+    // _telegramNotifiedIds, donc plus jamais retenté) que si le message est réellement parti. Avant ce
+    // fix (28 juillet 2026), l'ID était marqué notifié inconditionnellement juste après avoir lancé
+    // l'envoi — un échec silencieux (DNS, Telegram down, etc., notifyNewAlert n'a jamais throw)
+    // faisait disparaître l'alerte pour Telegram sans jamais la renvoyer, alors qu'elle restait
+    // visible côté app (dédup par ID déjà notifié, pas par "1er cycle après restart", qui avalait
+    // silencieusement les alertes nées juste avant un redémarrage — 18 juillet 2026).
     const _toNotify = _newForTelegram.filter(a => !_telegramNotifiedIds.has(a.id));
     if (telegramConfigured() && _toNotify.length) {
-      _toNotify.forEach(a => notifyNewAlert(a).catch(e => console.error('telegram notify error:', e.message)));
-      _toNotify.forEach(a => _telegramNotifiedIds.add(a.id));
-      _saveTelegramNotifiedIds();
-      _bgLog.push(`telegram: ${_toNotify.length} nouvelle(s) alerte(s) notifiée(s)`);
+      const _sent = await Promise.all(_toNotify.map(a =>
+        notifyNewAlert(a).catch(e => { console.error('telegram notify error:', e.message); return false; })
+      ));
+      let _sentCount = 0;
+      _toNotify.forEach((a, i) => { if (_sent[i]) { _telegramNotifiedIds.add(a.id); _sentCount++; } });
+      if (_sentCount) _saveTelegramNotifiedIds();
+      _bgLog.push(`telegram: ${_sentCount}/${_toNotify.length} nouvelle(s) alerte(s) notifiée(s)`);
     }
 
     // SSE (19 juillet 2026) — jusqu'ici un onglet ouvert ne découvrait une alerte tout juste générée

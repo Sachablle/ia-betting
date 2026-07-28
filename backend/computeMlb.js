@@ -56,4 +56,49 @@ function computeMlbTotalProb(lambdaHome, lambdaAway, line) {
   return { pOver: 1 - pUnderOrEqual, pUnder: pUnderOrEqual, lambdaTotal };
 }
 
-export { poissonPmf, shrinkFactor, MLB_HOME_ADV, computeMlbLambdas, computeMlbTotalProb };
+// Binomiale négative — comparaison en parallèle avec Poisson (28 juillet 2026, mode fantôme MLB).
+// 4 points de calibration (25→28 juillet, cf. mémoire projet) montrent Poisson trop confiant en
+// haut d'échelle (proba affichée 90-100% → réussite réelle ~62%) : signature classique d'une
+// surdispersion réelle des runs (bullpen qui craque, grosse manche) que Poisson ne peut pas
+// représenter (Poisson impose variance = moyenne, par construction). La binomiale négative garde
+// la même moyenne (λtotal) mais autorise une variance plus grande via un paramètre de dispersion r.
+//
+// Paramétrage choisi : variance = MLB_NB_VARIANCE_RATIO × moyenne (Poisson = ratio de 1). Le ratio
+// est un repère de départ, PAS calibré sur nos propres données — même statut que MLB_HOME_ADV
+// ci-dessus et DIXON_COLES_RHO côté foot. r dérive de λtotal (r = λtotal / (ratio-1)) plutôt que
+// d'être une constante fixe : la dispersion doit croître avec la moyenne, pas rester indépendante.
+const MLB_NB_VARIANCE_RATIO = 1.5;
+
+// ln(Γ(x)) — approximation de Lanczos (nécessaire pour un r non-entier, la binomiale négative
+// "vraie" utilise Γ plutôt que la factorielle de la définition à base de tirages entiers).
+function logGamma(x) {
+  const g = 7;
+  const c = [
+    0.99999999999980993, 676.5203681218851, -1259.1392167224028,
+    771.32342877765313, -176.61502916214059, 12.507343278686905,
+    -0.13857109526572012, 9.9843695780195716e-6, 1.5056327351493116e-7,
+  ];
+  if (x < 0.5) return Math.log(Math.PI / Math.sin(Math.PI * x)) - logGamma(1 - x);
+  x -= 1;
+  let a = c[0];
+  const t = x + g + 0.5;
+  for (let i = 1; i < g + 2; i++) a += c[i] / (x + i);
+  return 0.5 * Math.log(2 * Math.PI) + (x + 0.5) * Math.log(t) - t + Math.log(a);
+}
+
+function nbPmf(k, r, p) {
+  const logPmf = logGamma(k + r) - logGamma(r) - logGamma(k + 1) + r * Math.log(p) + k * Math.log(1 - p);
+  return Math.exp(logPmf);
+}
+
+function computeMlbTotalProbNB(lambdaHome, lambdaAway, line, varianceRatio = MLB_NB_VARIANCE_RATIO) {
+  const lambdaTotal = lambdaHome + lambdaAway;
+  const r = lambdaTotal / (varianceRatio - 1);
+  const p = r / (r + lambdaTotal);
+  const floorLine = Math.floor(line);
+  let pUnderOrEqual = 0;
+  for (let k = 0; k <= floorLine; k++) pUnderOrEqual += nbPmf(k, r, p);
+  return { pOver: 1 - pUnderOrEqual, pUnder: pUnderOrEqual, lambdaTotal };
+}
+
+export { poissonPmf, shrinkFactor, MLB_HOME_ADV, computeMlbLambdas, computeMlbTotalProb, computeMlbTotalProbNB, MLB_NB_VARIANCE_RATIO };

@@ -307,6 +307,7 @@ export async function syncBackgroundAlerts() {
             probability: a.probability ?? pendingMatch.probability,
             estimate:    a.estimate    ?? pendingMatch.estimate,
             teammateOverlap: a.teammateOverlap ?? pendingMatch.teammateOverlap ?? null,
+            oppQSamePosition: a.oppQSamePosition ?? pendingMatch.oppQSamePosition ?? false,
           };
           changed = true;
         }
