@@ -28,7 +28,6 @@ const ALERT_KEY     = 'nba_prop_alerts';
 const HISTORY_KEY   = 'nba_bet_history';
 const GAME_TOTAL_KEY = 'nba_game_total_alerts';
 const BASKETBALL_RESULT_KEY = 'basketball_result_alerts';
-const BASKETBALL_SPREAD_KEY = 'basketball_spread_alerts';
 const FB_BTTS_KEY   = 'fb_btts_alerts';
 const FB_TOTAL_KEY  = 'fb_total_alerts';
 const FB_RESULT_KEY = 'fb_result_alerts';
@@ -42,10 +41,7 @@ const PURGE_PLAYERS = ['Justin Bean', 'Jack Kayil', 'Leandro Bolmaro'];
 // quelle page. Boucle sur toutes les clés d'alertes connues (props, total, résultat équipe, foot)
 // pour que chaque type bénéficie du même règlement serveur — un seul endroit à étendre pour un
 // futur type d'alerte (22 juin 2026, avant ça seul ALERT_KEY/props était couvert ici).
-// BASKETBALL_SPREAD_KEY manquait ici jusqu'au 11 juillet 2026 — le backend règle bien les paris
-// spread (runAutoSettle) mais le frontend ne les recevait jamais, restant bloqués en 'accepted'
-// indéfiniment sans jamais passer won/lost (trouvé lors de l'audit suite à l'incident Breanna Stewart).
-const SETTLEABLE_KEYS = [ALERT_KEY, GAME_TOTAL_KEY, BASKETBALL_RESULT_KEY, BASKETBALL_SPREAD_KEY, FB_BTTS_KEY, FB_TOTAL_KEY, FB_RESULT_KEY, FB_PINNACLE_KEY, BBALL_PINNACLE_KEY, FB_DC_BTTS_KEY, FB_DC_OU_KEY];
+const SETTLEABLE_KEYS = [ALERT_KEY, GAME_TOTAL_KEY, BASKETBALL_RESULT_KEY, FB_BTTS_KEY, FB_TOTAL_KEY, FB_RESULT_KEY, FB_PINNACLE_KEY, BBALL_PINNACLE_KEY, FB_DC_BTTS_KEY, FB_DC_OU_KEY];
 
 const PENDING_SYNC_KEY = 'pending_alert_sync';
 const readPendingSync  = () => { try { return JSON.parse(localStorage.getItem(PENDING_SYNC_KEY) || '[]'); } catch { return []; } };
@@ -248,7 +244,15 @@ export async function syncBackgroundAlerts() {
         // — n'affecte jamais probability/status (le pari reste tel qu'accepté), juste un signal.
         const driftChanged = !!a.probDropWarning !== !!acceptedMatch.probDropWarning
           || a.currentProbability !== acceptedMatch.currentProbability;
-        if (lineShift || ubShift || bcShift || wmShift || probChanged || estChanged || driftChanged) {
+        // Fix 20 août 2026 — acceptedMatch peut venir de `history` seule (jamais de `existing`,
+        // donc jamais encore dans byId) : cas réel Allisha Gray, présente accepted dans
+        // nba_bet_history mais absente de nba_prop_alerts, cote/ligne/proba identiques depuis
+        // l'acceptation → aucun des 6 "shift" ci-dessus n'était vrai, donc byId[acceptedMatch.id]
+        // n'était jamais posé et l'alerte ne revenait jamais dans la liste courante (invisible sur
+        // Running). Il faut restaurer l'entrée dans byId dès qu'elle n'y est pas déjà, même sans
+        // rien de changé à afficher.
+        const needsRestore = !byId[acceptedMatch.id];
+        if (lineShift || ubShift || bcShift || wmShift || probChanged || estChanged || driftChanged || needsRestore) {
           byId[acceptedMatch.id] = {
             ...acceptedMatch,
             ...((lineShift || ubShift || bcShift || wmShift) ? {
@@ -263,6 +267,7 @@ export async function syncBackgroundAlerts() {
             betclicOdds: a.betclicOdds ?? acceptedMatch.betclicOdds,
             winamaxOdds: a.winamaxOdds ?? acceptedMatch.winamaxOdds,
             probability: a.probability ?? acceptedMatch.probability,
+            rawProbability: a.rawProbability ?? acceptedMatch.rawProbability ?? null,
             estimate:    a.estimate    ?? acceptedMatch.estimate,
             probDropWarning: a.probDropWarning ?? false,
             currentProbability: a.probDropWarning ? a.currentProbability : null,
@@ -305,6 +310,7 @@ export async function syncBackgroundAlerts() {
             betclicOdds: a.betclicOdds ?? pendingMatch.betclicOdds,
             winamaxOdds: a.winamaxOdds ?? pendingMatch.winamaxOdds,
             probability: a.probability ?? pendingMatch.probability,
+            rawProbability: a.rawProbability ?? pendingMatch.rawProbability ?? null,
             estimate:    a.estimate    ?? pendingMatch.estimate,
             teammateOverlap: a.teammateOverlap ?? pendingMatch.teammateOverlap ?? null,
             oppQSamePosition: a.oppQSamePosition ?? pendingMatch.oppQSamePosition ?? false,
@@ -322,14 +328,34 @@ export async function syncBackgroundAlerts() {
         // Breanna Stewart — même famille que l'incident du 11 juillet référencé plus haut).
         byId[a.id] = {
           ...a,
-          status: prev?.status || 'pending',
+          // Fix 2 août 2026 — cette fonction (player_prop) avait échappé au fix du 22 juillet qui a
+          // corrigé les 11 autres syncXxxAlerts() (cf. project_accepted_alert_revert_fix_juillet22) :
+          // sans `a.status ||`, un id absent du localStorage local (ex: après un restart backend,
+          // le catch-up _acceptedAlerts régénère l'alerte mais le frontend ne l'avait pas encore vue)
+          // retombait en 'pending' même si le backend renvoyait déjà 'accepted'.
+          // Fix 20 août 2026 — `prev?.status ||` ne servait à rien : on n'entre dans cette branche
+          // que quand prev est absent OU déjà 'pending' (garde ligne 319), donc prev?.status valait
+          // toujours soit undefined soit 'pending' (chaîne non vide = truthy) et gagnait
+          // systématiquement le `||` face à a.status. Une alerte acceptée via Telegram (pas via
+          // l'app) ne touche jamais le localStorage directement — son statut 'accepted' venu du
+          // backend était donc silencieusement ignoré si une copie locale 'pending' existait déjà
+          // (cas réel : Allisha Gray acceptée sur Telegram, restée "pending" en local indéfiniment,
+          // absente de Running). Le backend fait foi ici, jamais l'inverse.
+          status: a.status || 'pending',
           unibetOdds:   a.unibetOdds   ?? prev?.unibetOdds   ?? null,
           betclicOdds:  a.betclicOdds  ?? prev?.betclicOdds  ?? null,
           winamaxOdds:  a.winamaxOdds  ?? prev?.winamaxOdds  ?? null,
           lastEnriched: prev?.lastEnriched,
         };
         // Marquer changed seulement si quelque chose de significatif a changé
+        // Fix 20 août 2026 — cette liste ne comparait jamais le statut : le fix juste au-dessus
+        // recalculait bien `status: 'accepted'` dans byId[a.id], mais si aucun des autres champs
+        // n'avait bougé depuis la dernière synchro pending (cas fréquent — l'alerte n'a pas eu le
+        // temps de dériver entre sa création et son acceptation Telegram), `changed` restait false
+        // et le `cloudSet` plus bas n'était jamais atteint : le recalcul restait piégé en mémoire,
+        // jamais écrit dans le localStorage réellement lu par Running/PlaceBetPage.
         if (!prev ||
+            (prev.status || 'pending') !== (a.status || 'pending') ||
             prev.probability !== a.probability ||
             prev.line !== a.line ||
             prev.unibetOdds !== a.unibetOdds ||
@@ -350,11 +376,14 @@ export async function syncBackgroundAlerts() {
         // (= divergence avec Analyse Props, ex. Caitlin Clark / Bridges / Castle / Brunson)
         const probChanged = a.probability != null && a.probability !== prev.probability;
         const estChanged  = a.estimate != null && a.estimate !== prev.estimate;
+        // rawProbability (2 août 2026) — vraie confiance du modèle avant le plafond sanityMax,
+        // affichée entre parenthèses. Se resynchronise comme le %, jamais figée à l'acceptation.
+        const rawChanged  = a.rawProbability != null && a.rawProbability !== prev.rawProbability;
         // Avertissement de dérive (8 juillet 2026, cf. refreshOrDropPendingProp/ById côté backend)
         // — n'affecte jamais probability/status (le pari reste tel qu'accepté), juste un signal.
         const driftChanged = !!a.probDropWarning !== !!prev.probDropWarning
           || a.currentProbability !== prev.currentProbability;
-        if (lineShift || ubShift || bcShift || wmShift || probChanged || estChanged || driftChanged) {
+        if (lineShift || ubShift || bcShift || wmShift || probChanged || estChanged || rawChanged || driftChanged) {
           byId[a.id] = {
             ...prev,
             ...((lineShift || ubShift || bcShift || wmShift) ? {
@@ -370,6 +399,7 @@ export async function syncBackgroundAlerts() {
             winamaxOdds: a.winamaxOdds ?? prev.winamaxOdds,
             line: lineShift ? a.line : prev.line,
             probability: a.probability ?? prev.probability,
+            rawProbability: a.rawProbability ?? prev.rawProbability ?? null,
             estimate:    a.estimate    ?? prev.estimate,
             probDropWarning: a.probDropWarning ?? false,
             currentProbability: a.probDropWarning ? a.currentProbability : null,
@@ -500,15 +530,14 @@ export async function syncGameTotalAlerts() {
     totalAlerts.forEach(a => {
       const idx = result.findIndex(p => p.id === a.id || sameFixture(p, a));
       if (idx === -1) {
-        result.push({
-          id: a.id, type: 'game_total', league: a.league,
-          eventId: a.eventId, home: a.home, away: a.away,
-          homeShort: a.homeShort, awayShort: a.awayShort, date: a.date,
-          estimated: a.estimated, line: a.line, edge: a.edge,
-          direction: a.direction, prob: a.prob,
-          unibetOdds: a.unibetOdds ?? null, betclicOdds: a.betclicOdds ?? null, winamaxOdds: a.winamaxOdds ?? null,
-          savedAt: Date.now(), status: a.status || 'pending',
-        });
+        // Fix 25 août 2026 (cas réel : mise/bookmaker Washington/Phoenix qui s'effaçaient tout seuls)
+        // — cette branche reconstruisait un objet "neuf" à la main, champ par champ, et n'incluait
+        // jamais stakeAmount/acceptedAt/acceptedBookmaker/acceptedOdds/accepted*Odds : si jamais elle
+        // se déclenche pour une alerte déjà ACCEPTÉE (ex: localStorage vidé/désynchro), tout
+        // l'enrichissement du moment de l'acceptation disparaissait silencieusement, alors que le
+        // backend (`a`) les a toujours (accepted_alerts.json les persiste). On part maintenant de
+        // l'objet backend complet plutôt que d'une liste de champs choisis à la main.
+        result.push({ ...a, savedAt: Date.now(), status: a.status || 'pending' });
         changed = true;
         return;
       }
@@ -755,75 +784,6 @@ export async function syncBasketballResultAlerts() {
 
     if (changed) {
       cloudSet(BASKETBALL_RESULT_KEY, JSON.stringify(purged));
-      window.dispatchEvent(new Event('nba_alerts_updated'));
-    }
-  } catch {}
-}
-
-// Pont alertes Écart H2H (Handicap, 9 juillet 2026) — même mécanique que syncBasketballResultAlerts
-// ci-dessus (même modèle marginExpected/std côté serveur), plus les champs propres à ce marché
-// (line, odds, bookmaker, matchCorrelation avec une alerte Résultat déjà acceptée sur le même sens).
-export async function syncBasketballSpreadAlerts() {
-  try {
-    const { alerts: bgAlerts } = await fetch('/api/nba/background-alerts').then(r => r.json());
-    // bgAlerts=[] est une réponse valide (aucune alerte ne qualifie ce cycle) et doit quand même
-    // atteindre la purge des orphelins pending plus bas — seul un fetch/parse raté (bgAlerts
-    // null/undefined) doit court-circuiter. Avant ce fix (14 juillet 2026), une réponse totalement
-    // vide empêchait TOUTE synchro de tourner, y compris la purge : une alerte locale pending dont
-    // le pendant backend disparaît (ex: titulaire passée Q/GTD) restait figée indéfiniment tant que
-    // le backend renvoyait au moins une alerte d'un autre type — et disparaissait carrément dès que
-    // le backend tombait à zéro alerte au total (cas réel : alerte spread Indiana Fever/Caitlin
-    // Clark toujours visible côté utilisateur alors que le backend ne la renvoyait plus).
-    if (!bgAlerts) return;
-    const spreadAlerts = bgAlerts.filter(a => a.type === 'basketball_spread' && a.probability > 0);
-
-    const existing = JSON.parse(localStorage.getItem(BASKETBALL_SPREAD_KEY) || '[]');
-
-    const sameBet = (a, b) => {
-      if (a.home !== b.home || a.away !== b.away || a.direction !== b.direction) return false;
-      const aT = new Date(a.date).getTime();
-      const bT = new Date(b.date).getTime();
-      if (isNaN(aT) || isNaN(bT)) return true;
-      return Math.abs(aT - bT) <= 36 * 3600_000;
-    };
-
-    let changed = false;
-    const result = [...existing];
-    spreadAlerts.forEach(a => {
-      const idx = result.findIndex(p => p.id === a.id || sameBet(p, a));
-      if (idx === -1) {
-        result.push({ ...a, status: a.status || 'pending' });
-        changed = true;
-        return;
-      }
-      const prev = result[idx];
-      if ((prev.status || 'pending') !== 'pending') {
-        if (prev.status === 'accepted') {
-          const driftChanged = !!a.probDropWarning !== !!prev.probDropWarning || a.currentProbability !== prev.currentProbability;
-          if (driftChanged) {
-            result[idx] = { ...prev, probDropWarning: a.probDropWarning ?? false, currentProbability: a.probDropWarning ? a.currentProbability : null };
-            changed = true;
-          }
-        }
-        return;
-      }
-      if (prev.probability !== a.probability || prev.margin !== a.margin || prev.line !== a.line
-          || prev.odds !== a.odds || prev.bookmaker !== a.bookmaker) {
-        result[idx] = { ...prev, probability: a.probability, margin: a.margin, line: a.line, odds: a.odds, bookmaker: a.bookmaker, matchCorrelation: a.matchCorrelation ?? null };
-        changed = true;
-      }
-    });
-
-    const ORPHAN_GRACE_MS = 25 * 60_000;
-    const purged = result.filter(a => {
-      if ((a.status || 'pending') !== 'pending') return true;
-      if (Date.now() - (a.savedAt || 0) < ORPHAN_GRACE_MS) return true;
-      return spreadAlerts.some(p => p.id === a.id || sameBet(p, a));
-    });
-    if (purged.length !== result.length) changed = true;
-
-    if (changed) {
-      cloudSet(BASKETBALL_SPREAD_KEY, JSON.stringify(purged));
       window.dispatchEvent(new Event('nba_alerts_updated'));
     }
   } catch {}
@@ -1324,7 +1284,6 @@ const TELEGRAM_TYPE_TO_KEY = {
   player_prop: ALERT_KEY,
   game_total: GAME_TOTAL_KEY,
   basketball_result: BASKETBALL_RESULT_KEY,
-  basketball_spread: BASKETBALL_SPREAD_KEY,
   basketball_pinnacle_edge: BBALL_PINNACLE_KEY,
   basketball_pinnacle_props: BBALL_PINNACLE_KEY,
   football_btts: FB_BTTS_KEY,
@@ -1388,4 +1347,52 @@ export async function syncTelegramActions() {
     }
     localStorage.setItem(TELEGRAM_ACTIONS_TS_KEY, String(earliestUnapplied != null ? earliestUnapplied - 1 : now));
   } catch {}
+}
+
+// ── Outrights (28 juillet 2026) ─────────────────────────────────────────────
+// Contrairement aux autres types d'alertes, le statut (accepted/rejected/won/lost) est déjà
+// autoritaire côté backend (`_outrightAlerts`, routes POST /api/outrights/alerts/:id/{accept,
+// reject,settle}) — pas besoin de logique de préservation aussi élaborée que les autres syncs,
+// `persistAlertsKey` (déjà généraliste) suffit comme garde-fou.
+export const OUTRIGHT_ALERTS_KEY = 'outright_alerts';
+
+export async function syncOutrightAlerts() {
+  try {
+    const alerts = await fetch('/api/outrights/alerts').then(r => r.json());
+    if (!Array.isArray(alerts)) return;
+    persistAlertsKey(OUTRIGHT_ALERTS_KEY, alerts);
+    window.dispatchEvent(new Event('outright_alerts_updated'));
+  } catch {}
+}
+
+function _updateOutrightLocal(id, patch) {
+  const list = JSON.parse(localStorage.getItem(OUTRIGHT_ALERTS_KEY) || '[]');
+  const idx = list.findIndex(a => a.id === id);
+  if (idx === -1) return;
+  list[idx] = { ...list[idx], ...patch };
+  cloudSet(OUTRIGHT_ALERTS_KEY, JSON.stringify(list));
+  window.dispatchEvent(new Event('outright_alerts_updated'));
+}
+
+export async function acceptOutrightAlert(id, bookmaker, odds) {
+  _updateOutrightLocal(id, { status: 'accepted', acceptedAt: Date.now(), acceptedBookmaker: bookmaker, acceptedOdds: odds });
+  try { await fetch(`/api/outrights/alerts/${id}/accept`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ bookmaker, odds }) }); } catch {}
+}
+
+export async function rejectOutrightAlert(id) {
+  _updateOutrightLocal(id, { status: 'rejected' });
+  try { await fetch(`/api/outrights/alerts/${id}/reject`, { method: 'POST' }); } catch {}
+}
+
+// status : 'won' | 'lost' — règlement manuel (pas de scraping fiable du vainqueur final sur
+// plusieurs mois/7 compétitions, décision actée avec l'utilisateur le 28 juillet 2026).
+export async function settleOutrightAlert(id, status) {
+  _updateOutrightLocal(id, { status, settledAt: Date.now() });
+  try { await fetch(`/api/outrights/alerts/${id}/settle`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status }) }); } catch {}
+}
+
+export function dismissOutrightAlert(id) {
+  const list = JSON.parse(localStorage.getItem(OUTRIGHT_ALERTS_KEY) || '[]').filter(a => a.id !== id);
+  cloudSet(OUTRIGHT_ALERTS_KEY, JSON.stringify(list));
+  window.dispatchEvent(new Event('outright_alerts_updated'));
 }

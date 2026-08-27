@@ -157,12 +157,6 @@ const ALERT_TYPES = {
     odds: a => [a.bookmaker ?? null, a.odds ?? null], // déjà figé à la génération, pas de choix à faire
     buildAccepted: () => ({ acceptedAt: Date.now() }),
   },
-  basketball_spread: {
-    dateField: 'date',
-    label: a => `📏 <b>${leagueLabel(a)} Écart H2H</b>\n${teamName(a, 'home')} vs ${teamName(a, 'away')}\n${teamName(a, a.direction)} ${a.line > 0 ? '+' : ''}${a.line} — <b>${a.probability}%</b>${fmtOdds(a.bookmaker, a.odds) !== '—' ? ` · ${fmtOdds(a.bookmaker, a.odds)}` : ''}`,
-    odds: a => [a.bookmaker ?? null, a.odds ?? null],
-    buildAccepted: () => ({ acceptedAt: Date.now() }),
-  },
   basketball_pinnacle_edge: {
     dateField: 'date',
     label: a => `💎 <b>${leagueLabel(a)} Value vs Pinnacle</b>\n${teamName(a, 'home')} vs ${teamName(a, 'away')}\nEdge : <b>${a.edge != null ? Math.round(a.edge * 100) + '%' : '—'}</b>`,
@@ -213,6 +207,21 @@ const ALERT_TYPES = {
     label: a => `💎 <b>${leagueLabel(a)} Value vs Pinnacle</b>\n${teamName(a, 'home')} vs ${teamName(a, 'away')}\nEdge : <b>${a.edge != null ? Math.round(a.edge * 100) + '%' : '—'}</b>`,
     odds: a => bestOdds([['unibet', a.unibetOdds], ['betclic', a.betclicOdds]]),
     buildAccepted: (a, bk, odds) => ({ acceptedAt: Date.now(), acceptedBookmaker: bk, acceptedUnibetOdds: bk === 'unibet' ? odds : null, acceptedBetclicOdds: bk === 'betclic' ? odds : null }),
+  },
+  // Outrights (28 juillet 2026) — traités par une branche dédiée dans /api/telegram/webhook
+  // (server.js, store _outrightAlerts séparé de backgroundAlerts/_acceptedAlerts) ; meta.odds/label
+  // sont quand même utilisés par cette branche et par notifyNewAlert (message initial).
+  outright_model: {
+    dateField: 'savedAt',
+    label: a => `📊 <b>${a.compLabel || a.compKey} — Outright</b>\n${a.team}\nScore modèle : <b>${a.score}/100</b>`,
+    odds: a => bestOdds([['betclic', a.books?.betclic], ['pmu', a.books?.pmu]]),
+    buildAccepted: (a, bk, odds) => ({ acceptedAt: Date.now(), acceptedBookmaker: bk, acceptedOdds: odds }),
+  },
+  outright_gap: {
+    dateField: 'savedAt',
+    label: a => `💎 <b>${a.compLabel || a.compKey} — Outright</b>\n${a.team}\nEdge vs Pinnacle : <b>+${a.edge}%</b> (${a.bookmaker})`,
+    odds: a => [a.bookmaker ?? null, a.odds ?? null],
+    buildAccepted: (a, bk, odds) => ({ acceptedAt: Date.now(), acceptedBookmaker: bk, acceptedOdds: odds }),
   },
 };
 

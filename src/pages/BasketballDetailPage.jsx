@@ -9,6 +9,14 @@ import StatBar from '../components/StatBar';
 import { OddsCell, EdgeBadge } from '../components/OddsCell';
 import { cachedFetch, invalidateCache } from '../utils/fetchCache';
 
+function timeAgo(ts) {
+  const min = Math.max(0, Math.round((Date.now() - ts) / 60000));
+  if (min < 1) return "à l'instant";
+  if (min < 60) return `il y a ${min} min`;
+  const h = Math.round(min / 60);
+  return `il y a ${h}h`;
+}
+
 // ── ESPN WNBA lookup (name → teamId) ─────────────────────────────────────────
 const ESPN_WNBA = {
   'Atlanta Dream':           20,
@@ -404,16 +412,32 @@ function propConfColor(stat, league, pct) {
   return '#ffb400';
 }
 
-// Légende cliquable pour les onglets Résultat/Points/Écart H2H/Joueurs — même format que
+// Légende cliquable pour les onglets Résultat/Points/Joueurs — même format que
 // PropLegendCard (dots de couleur + seuil d'alerte), sans texte descriptif sur ce que représente
 // chaque onglet (déjà documenté dans la page Utilisation, pas besoin de le répéter ici).
 function OddsLegendCard({ tab }) {
   const Dot = ({ color }) => <span style={{ display: 'inline-block', width: 6, height: 6, borderRadius: '50%', background: color, marginRight: 4, flexShrink: 0 }} />;
   const showBands = tab !== 'joueurs';
+  const secStyle = { marginTop: 3 };
   const ALERTS = {
-    all: <>Alerte si probabilité ≥ <b style={{ color: '#4ade80' }}>75%</b> + cote ≥ <b style={{ color: '#ef4444' }}>1.60</b>.</>,
-    points: <>Alerte si P(Over) ou P(Under) ≥ <b style={{ color: '#4ade80' }}>80%</b> + cote ≥ <b style={{ color: '#ef4444' }}>1.60</b> (Unibet/Betclic) — bloquée si joueur clé incertain/absent.</>,
-    handicap: <>Alerte mêmes seuils que Résultat (≥ <b style={{ color: '#4ade80' }}>75%</b>, cote ≥ <b style={{ color: '#ef4444' }}>1.60</b>).</>,
+    all: (
+      <>
+        <div>🚨 Alerte si probabilité ≥ <b style={{ color: '#4ade80' }}>71%</b> + cote ≥ <b style={{ color: '#ef4444' }}>1.50</b></div>
+        <div style={{ marginTop: 6, fontWeight: 700 }}>🔐 Sécurités :</div>
+        <div style={secStyle}>1. Joueur clé (≥15 pts/match) Out depuis ≤3j : −40% au rating de son équipe.</div>
+        <div style={secStyle}>2. Joueur clé (≥15 pts/match) Q/GTD : les alertes sont bloquées uniquement sur son équipe (l'adversaire reste alerté normalement).</div>
+        <div style={{ marginTop: 6 }}>✅ Une fois les compositions officielles connues, les sécurités sont levées.</div>
+      </>
+    ),
+    points: (
+      <>
+        <div>🚨 Alerte si Over ou Under ≥ <b style={{ color: '#4ade80' }}>74%</b> + cote ≥ <b style={{ color: '#ef4444' }}>1.60</b></div>
+        <div style={{ marginTop: 6, fontWeight: 700 }}>🔐 Sécurités :</div>
+        <div style={secStyle}>1. Joueur clé (≥15 pts/match) Out depuis ≤3j : −40% au rating de son équipe.</div>
+        <div style={secStyle}>2. Joueur clé (≥15 pts/match) Q/GTD : les alertes sont bloquées (Over et Under).</div>
+        <div style={{ marginTop: 6 }}>✅ Une fois les compositions officielles connues, les sécurités sont levées.</div>
+      </>
+    ),
     joueurs: <>Alerte si un bookmaker offre ≥ <b style={{ color: '#4ade80' }}>20% d'edge</b> vs la ligne Pinnacle, cote ≥ <b style={{ color: '#ef4444' }}>1.60</b>.</>,
   };
   return (
@@ -456,14 +480,18 @@ function PropLegendCard({ league }) {
         {isWNBA ? (
           <>
             <span style={{ display: 'flex', alignItems: 'center', fontSize: 9.5, whiteSpace: 'nowrap' }}>
-              <Dot color="#4a9b6f" /><b style={{ color: '#4a9b6f' }}>≥ 80%</b>&nbsp;— seuil AST
+              <Dot color="#4a9b6f" /><b style={{ color: '#4a9b6f' }}>≥ 65%</b>&nbsp;— seuil pts (spé. 62%)
             </span>
             <span style={{ display: 'flex', alignItems: 'center', fontSize: 9.5, whiteSpace: 'nowrap' }}>
-              <Dot color="#4a9b6f" style={{ opacity: 0.85 }} /><b style={{ color: '#4a9b6f', opacity: 0.9 }}>≥ 77%</b>&nbsp;— seuil pts / reb / 3pts
+              <Dot color="#4a9b6f" style={{ opacity: 0.9 }} /><b style={{ color: '#4a9b6f', opacity: 0.95 }}>≥ 77%</b>&nbsp;— seuil reb (spé. 72%)
             </span>
             <span style={{ display: 'flex', alignItems: 'center', fontSize: 9.5, whiteSpace: 'nowrap' }}>
-              <Dot color="#4a9b6f" style={{ opacity: 0.55 }} /><b style={{ color: '#4a9b6f', opacity: 0.7 }}>≥ 72%</b>&nbsp;— spécialiste régulière sur la stat
+              <Dot color="#4a9b6f" style={{ opacity: 0.8 }} /><b style={{ color: '#4a9b6f', opacity: 0.85 }}>≥ 80%</b>&nbsp;— seuil ast (spé. 72%)
             </span>
+            <span style={{ display: 'flex', alignItems: 'center', fontSize: 9.5, whiteSpace: 'nowrap' }}>
+              <Dot color="#4a9b6f" style={{ opacity: 0.7 }} /><b style={{ color: '#4a9b6f', opacity: 0.75 }}>≥ 73%</b>&nbsp;— seuil 3pts (spé. 72%)
+            </span>
+            <span style={{ fontSize: 8.5, color: 'var(--text-dim)', marginTop: 2 }}>Seuils recalibrés le 21 août 2026 sur l'historique complet near-miss (2005 candidats, 2,5 mois) — pts abaissé à 65% (seule stat avec un vrai edge mesuré en dessous de l'original) ; reb/ast confirmés à leur valeur d'origine (77%/80%), aucune tranche inférieure rentable. Plancher "spécialiste" allégé réservé aux Over depuis le 24 août 2026 (cas Caitlin Clark, Under manqué sur pts+ast malgré le statut spécialiste) — sur un Under, une joueuse régulière repasse par le seuil normal.</span>
           </>
         ) : (
           <>
@@ -471,7 +499,7 @@ function PropLegendCard({ league }) {
               <Dot color="#4a9b6f" /><b style={{ color: '#4a9b6f' }}>≥ 80%</b>&nbsp;— seuil de déclenchement
             </span>
             <span style={{ display: 'flex', alignItems: 'center', fontSize: 9.5, whiteSpace: 'nowrap' }}>
-              <Dot color="#4a9b6f" style={{ opacity: 0.6 }} /><b style={{ color: '#4a9b6f', opacity: 0.8 }}>≥ 75%</b>&nbsp;— spécialiste régulière sur la stat
+              <Dot color="#4a9b6f" style={{ opacity: 0.6 }} /><b style={{ color: '#4a9b6f', opacity: 0.8 }}>≥ 75%</b>&nbsp;— spécialiste régulière sur la stat (Over uniquement depuis le 24 août 2026)
             </span>
           </>
         )}
@@ -579,9 +607,11 @@ function probAtLeast(estimate, std, threshold, stat = null, deviation = 0, isWNB
 }
 
 // Écart-type empirique (Bessel n-1) sur les gamelogs pour une stat donnée
+// Fix 1er août 2026 : exclusion pts=0 (min≥12) retirée — cf. backend/compute.js même date,
+// elle cachait spécifiquement les mauvaises soirées de scoring et sous-estimait la variance réelle.
 function calcStd(games, key) {
   const vals = (games || [])
-    .filter(g => g.min > 10 && g[key] != null && !(key === 'pts' && g.pts === 0 && g.min >= 12))
+    .filter(g => g.min > 10 && g[key] != null)
     .map(g => g[key]);
   if (vals.length < 3) return null;
   const mean = vals.reduce((s, v) => s + v, 0) / vals.length;
@@ -961,9 +991,9 @@ function computeEstimate(player, isHome, oppGames, myGames, gamelogs, oppAbbr, g
 
   // Base EWA sur le gamelog mergé + blend 50/50 avec moyenne saison (prior bayésien)
   // redistributionFactor > 1 quand un coéquipier à fort USG est OUT → boost proportionnel
-  // Exclut les matchs à 0 pts avec minutes significatives (blowout / foul trouble) — outliers
-  const gClean = g.filter(gl => !(gl.pts === 0 && (gl.min ?? 0) >= 12));
-  const ewaBase   = gClean.length >= 4 ? calcEWA(gClean, 'pts', 10) : null;
+  // Fix 1er août 2026 : l'exclusion des matchs à 0 pts (min≥12) a été retirée — cf. backend/compute.js
+  // même date, ces matchs sont de la vraie variance à voir, pas des outliers à masquer.
+  const ewaBase   = g.length >= 4 ? calcEWA(g, 'pts', 10) : null;
   const ewaReb    = s.reb && g.length >= 4 ? calcEWA(g, 'reb', 10) : null;
   const ewaAst    = s.ast && g.length >= 4 ? calcEWA(g, 'ast', 10) : null;
   const ewaTpm    = s.tpm && g.length >= 4 ? calcEWA(g, 'tpm', 10) : null;
@@ -973,7 +1003,7 @@ function computeEstimate(player, isHome, oppGames, myGames, gamelogs, oppAbbr, g
   const rsW  = 1 - ewaW;
 
   // L3 crosscheck : si les 3 derniers matchs propres divergent >25% de l'EWA → L3 prioritaire
-  const l3Clean = gClean.slice(0, 3).filter(gl => (gl.min ?? 0) >= 12 && gl.pts != null);
+  const l3Clean = g.slice(0, 3).filter(gl => (gl.min ?? 0) >= 12 && gl.pts != null);
   const l3Avg   = l3Clean.length >= 2 ? l3Clean.reduce((s, gl) => s + gl.pts, 0) / l3Clean.length : null;
   const useL3   = l3Avg != null && ewaBase != null && Math.abs(l3Avg - ewaBase) / ewaBase > 0.25;
   const effEWA  = useL3 ? l3Avg : ewaBase;
@@ -1524,6 +1554,13 @@ function PropsSection({ fixture, homePlayers, awayPlayers, rosterLoading, isComp
   const [probabilities, setProbabilities] = useState({});
   const [expandedId,  setExpandedId]  = useState(null);
   const [injuryData,  setInjuryData]  = useState({});
+  // Modèle backend réel (1er août 2026) — mêmes fonctions que le moteur d'alertes
+  // (computeEstimate/computeEUEstimate + displayProb), via /api/basketball/player-projections,
+  // pour les 5 ligues qui ont un vrai moteur d'alertes props (NBA/WNBA/ACB/BBL/Lega A). Euroleague
+  // et LNB n'ont aucun équivalent backend (jamais couvertes par generateBackgroundAlerts/
+  // runEUPropsAlerts) — gardent le calcul local historique ci-dessous, seule source disponible.
+  const BACKEND_MODEL_LEAGUES = ['nba', 'wnba', 'acb', 'bbl', 'legaa'];
+  const [backendProjections, setBackendProjections] = useState(null);
 
   // Classement ligue par catégorie — clic sur une stat projetée dans Analyse Props (22 juin 2026).
   // Seules NBA/WNBA/ACB ont un classement complet aujourd'hui (cf. /api/<ligue>/leaders) ; les
@@ -1533,6 +1570,34 @@ function PropsSection({ fixture, homePlayers, awayPlayers, rosterLoading, isComp
   const [rankLoading, setRankLoading] = useState(false);
   const LEADERS_LEAGUES = new Set(['nba', 'wnba', 'acb']);
   const lastRankTriggerRef = useRef(null); // { id, stat } de la dernière perf cliquée pour ouvrir le panneau
+
+  // Astérisque "spécialiste" affiné par le classement ligue (23 août 2026) — isConsistentStat
+  // (régularité, écart-type/moyenne sur ~15 derniers matchs) seule taguait ~60% des stats évaluées
+  // "spécialiste" (vérifié en direct sur Chicago-Indiana : 18/30), y compris des remplaçantes
+  // régulières mais anecdotiques (ex: 4 pts/match très stable) au même titre qu'une All-Star — la
+  // régularité relative ne dit rien du volume absolu. Demande explicite utilisateur : n'afficher
+  // l'astérisque que si la joueuse est AUSSI dans le top 30 ligue sur cette stat précise (source
+  // /api/<ligue>/leaders, déjà utilisée pour le panneau "Voir le classement" au clic — même donnée,
+  // juste chargée en avance ici plutôt qu'au clic). N'affecte que l'affichage : isConsistentStat et
+  // les planchers d'alerte réels restent inchangés. Scopé à LEADERS_LEAGUES (nba/wnba/acb) — bbl/
+  // legaa reçoivent bien un flag `specialist` du backend mais n'ont pas de classement ligue fiable
+  // câblé ici, donc pas d'astérisque plutôt qu'un critère à moitié appliqué.
+  const TOP_PERFORMER_RANK = 30;
+  const [topPerformerIds, setTopPerformerIds] = useState(null); // { pts: Set<id>, reb: ..., ast: ..., tpm: ... }
+  useEffect(() => {
+    if (!fixture?.league || !LEADERS_LEAGUES.has(fixture.league)) { setTopPerformerIds(null); return; }
+    let cancelled = false;
+    cachedFetch(`/api/${fixture.league}/leaders`, 6 * 3_600_000).then(d => {
+      if (cancelled || !d?.full) return;
+      const next = {};
+      for (const stat of ['pts', 'reb', 'ast', 'tpm']) {
+        next[stat] = new Set((d.full[stat] || []).filter(e => e.rank <= TOP_PERFORMER_RANK).map(e => String(e.id)));
+      }
+      setTopPerformerIds(next);
+    }).catch(() => setTopPerformerIds(null));
+    return () => { cancelled = true; };
+  }, [fixture?.league]);
+  const isTopPerformer = (playerId, stat) => topPerformerIds?.[stat]?.has(String(playerId)) ?? false;
   async function openRankPanel(p, stat) {
     const last = lastRankTriggerRef.current;
     if (rankPlayer && last && String(last.id) === String(p.id) && last.stat === stat) {
@@ -1830,9 +1895,45 @@ function PropsSection({ fixture, homePlayers, awayPlayers, rosterLoading, isComp
     }
   }, [snapshot, homePlayers, awayPlayers, isCompleted]);
 
+  // Projections modèle réel — un seul appel pour tout l'effectif (NBA/WNBA/ACB/BBL/Lega A).
+  useEffect(() => {
+    if (isCompleted || !BACKEND_MODEL_LEAGUES.includes(fixture.league)) { setBackendProjections(null); return; }
+    const isEuro = ['acb', 'bbl', 'legaa'].includes(fixture.league);
+    const homeTeamId = fixture.league === 'wnba' ? ESPN_WNBA[fixture.home.name]
+      : fixture.league === 'nba' ? ESPN_NBA[fixture.home.name]
+      : fixture.home.id;
+    const awayTeamId = fixture.league === 'wnba' ? ESPN_WNBA[fixture.away.name]
+      : fixture.league === 'nba' ? ESPN_NBA[fixture.away.name]
+      : fixture.away.id;
+    if (!homeTeamId || !awayTeamId) { setBackendProjections(null); return; }
+    fetch('/api/basketball/player-projections', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        league: fixture.league, homeTeamId, awayTeamId,
+        homeTeamName: fixture.home.name, awayTeamName: fixture.away.name,
+        homeTeamShort: fixture.home.short, awayTeamShort: fixture.away.short,
+        gameDate: fixture.date, round: fixture.round,
+      }),
+    }).then(r => r.json()).then(d => setBackendProjections(d?.found ? d.players : null)).catch(() => setBackendProjections(null));
+  }, [fixture.id, fixture.league, isCompleted]);
+
+  // Applique les projections backend (NBA/WNBA/ACB/BBL/Lega A) — mêmes fonctions que le moteur
+  // d'alertes, remplace le calcul local pour ces 5 ligues (cf. useEffect ci-dessus).
+  useEffect(() => {
+    if (!backendProjections) return;
+    const next = {};
+    for (const [pid, p] of Object.entries(backendProjections)) {
+      next[pid] = { pts: p.pts, reb: p.reb, ast: p.ast, tpm: p.tpm, deviation: p.deviation, factors: p.factors, isInjured: !!p.injury };
+    }
+    if (Object.keys(next).length) setEstimates(prev => ({ ...prev, ...next }));
+  }, [backendProjections]);
+
   // Recalcule les estimations quand gamelogs ou schedules changent — attend que le snapshot ait répondu
+  // N'agit plus que pour Euroleague/LNB (1er août 2026) — NBA/WNBA/ACB/BBL/Lega A viennent du
+  // vrai modèle backend ci-dessus (voir BACKEND_MODEL_LEAGUES).
   useEffect(() => {
     if (isCompleted || !schedules) return;
+    if (BACKEND_MODEL_LEAGUES.includes(fixture.league)) return;
     if (!snapshotChecked) return; // attend que le snapshot backend ait répondu (évite la race condition)
     if (!homePlayers?.length && !awayPlayers?.length) return;
     const isEL        = fixture.league === 'euroleague';
@@ -2051,6 +2152,16 @@ function PropsSection({ fixture, homePlayers, awayPlayers, rosterLoading, isComp
         const ref = pin?.line ? pin : ub?.line ? ub : bc?.line ? bc : wm?.line ? wm : null;
         if (!ref?.line || !est[stat]) continue;
         const dk = bks.draftkings?.[stat];
+        // Modèle backend réel (1er août 2026) — prioritaire sur le snapshot pour les 5 ligues
+        // couvertes (NBA/WNBA/ACB/BBL/Lega A) : toujours frais (calculé à l'ouverture de la page,
+        // pas dépendant du cycle d'alertes qui peut ne pas encore avoir évalué ce joueur/stat, cf.
+        // cas Natasha Cloud). Euroleague/LNB n'ont pas d'entrée ici (beStat toujours null) →
+        // retombent sur le snapshot puis le calcul local ci-dessous, comportement inchangé.
+        const beStat = BACKEND_MODEL_LEAGUES.includes(fixture.league) ? backendProjections?.[String(p.id)]?.stats?.[stat] : null;
+        if (beStat) {
+          prob[stat] = { pOver: beStat.pOver, pUnder: beStat.pUnder, line: beStat.line, pinOver: pin?.over ?? null, pinUnder: pin?.under ?? null, dkOver: dk?.over ?? null, dkUnder: dk?.under ?? null, ubOver: ub?.over ?? null, ubUnder: ub?.under ?? null, ubLine: ub?.line ?? null, bcOver: bc?.over ?? null, bcUnder: bc?.under ?? null, bcLine: bc?.line ?? null, wmOver: wm?.over ?? null, wmUnder: wm?.under ?? null, wmLine: wm?.line ?? null, std: beStat.std, specialist: beStat.specialist ?? false };
+          continue;
+        }
         // Source UNIQUE de vérité : si le backend a déjà figé un % pour ce joueur/stat dans son
         // snapshot (= celui qui décide des alertes), on l'utilise tel quel — % ET ligne — sans
         // jamais recalculer en parallèle. Une seule décision possible = plus de divergence
@@ -2093,7 +2204,7 @@ function PropsSection({ fixture, homePlayers, awayPlayers, rosterLoading, isComp
         localStorage.setItem(probKey, JSON.stringify({ ...existing, ...next }));
       } catch {}
     }
-  }, [estimates, playerProps, homePlayers, awayPlayers, gamelogs, seriesGamelogs, snapshot]);
+  }, [estimates, playerProps, homePlayers, awayPlayers, gamelogs, seriesGamelogs, snapshot, backendProjections]);
 
   // Source UNIQUE de vérité pour les alertes : le backend (generateBackgroundAlerts,
   // cron 20min) est désormais le SEUL système qui décide "ceci est une alerte" — plus
@@ -2449,7 +2560,15 @@ function PropsSection({ fixture, homePlayers, awayPlayers, rosterLoading, isComp
                       onClick={e => { if (!val) return; e.stopPropagation(); openRankPanel(p, stat); }}
                       title={val ? 'Voir le classement ligue' : undefined}
                     >{val ?? '—'}</span>
-                    {show && <span style={{ fontSize: 9, fontWeight: 800, color: pc, lineHeight: 1 }}>{dir}{pct}%</span>}
+                    {show && (
+                      <span style={{ fontSize: 9, fontWeight: 800, color: pc, lineHeight: 1 }}>
+                        {dir}{pct}%
+                        {/* Astérisque "spécialiste" (23 août 2026) — joueur régulier sur cette stat
+                            précise (isConsistentStat), bénéficie du plancher d'alerte allégé. Purement
+                            informatif ici, aucun effet sur le calcul affiché. */}
+                        {sp?.specialist && isTopPerformer(p.id, stat) && <span title="Spécialiste de cette catégorie (régularité élevée + top 30 ligue)" style={{ cursor: 'help' }}>*</span>}
+                      </span>
+                    )}
                   </div>
                 );
               })}
@@ -2546,7 +2665,7 @@ const BK_ORDER   = ['pinnacle', 'unibet', 'betclic', 'betfair'];
 // EdgeBadge / OddsCell : importés de ../components/OddsCell (source unique avec MatchDetailPage
 // depuis le 22 juin 2026, voir ce fichier pour le détail).
 
-function OddsCard({ odds, home, away, league, homePlayers, awayPlayers, onRefresh, refreshing, defaultTab = 'all', gameTotalEstimate = null, resultEstimate = null, gameSpreadEstimate = null, fixture = null, onTabChange = null, onTeamChange = null, showHomeOverride = null, eventId = null, onLegendToggle = null }) {
+function OddsCard({ odds, home, away, league, homePlayers, awayPlayers, onRefresh, refreshing, defaultTab = 'all', gameTotalEstimate = null, resultEstimate = null, fixture = null, onTabChange = null, onTeamChange = null, showHomeOverride = null, eventId = null, onLegendToggle = null }) {
   const navigate = useNavigate();
   const location = useLocation();
   const isEL = league === 'euroleague';
@@ -2715,7 +2834,7 @@ function OddsCard({ odds, home, away, league, homePlayers, awayPlayers, onRefres
   const ch = { fontSize: 9, fontWeight: 700, textTransform: 'uppercase', color: 'var(--text-dim)', textAlign: 'center', letterSpacing: '0.05em' };
   const sep = { borderLeft: '1px solid var(--border)', height: '70%', alignSelf: 'center' };
 
-  const TABS = [{ id: 'all', label: 'Résultat' }, { id: 'points', label: 'Points' }, { id: 'handicap', label: 'Écart H2H' }, { id: 'joueurs', label: 'Joueurs' }];
+  const TABS = [{ id: 'all', label: 'Résultat' }, { id: 'points', label: 'Points' }, { id: 'joueurs', label: 'Joueurs' }];
 
   const tabStyle = (id) => ({
     padding: '0.25rem 0.75rem', borderRadius: 5, border: '1px solid', cursor: 'pointer',
@@ -2730,7 +2849,7 @@ function OddsCard({ odds, home, away, league, homePlayers, awayPlayers, onRefres
   const showH2H = tab === 'all';
   const showTot = tab === 'all' || tab === 'points';
 
-  const cols = tab === 'all' ? COLS : (tab === 'points' || tab === 'handicap') ? COLS_TOT : COLS_H2H;
+  const cols = tab === 'all' ? COLS : tab === 'points' ? COLS_TOT : COLS_H2H;
 
   const oddsCardRef = useRef(null);
 
@@ -2815,15 +2934,6 @@ function OddsCard({ odds, home, away, league, homePlayers, awayPlayers, onRefres
           <div style={ch}>Under</div>
         </div>
       )}
-      {tab === 'handicap' && (
-        <div style={{ display: 'grid', gridTemplateColumns: COLS_TOT, gap: '0 0.25rem', paddingBottom: '0.35rem', borderBottom: '1px solid var(--border)', marginBottom: '0.2rem' }}>
-          <div />
-          <div style={ch}>Écart</div>
-          <div style={ch}>{home.short}</div>
-          <div style={ch}>{away.short}</div>
-        </div>
-      )}
-
       {tab === 'joueurs' && (() => {
         const lastName = n => n?.split(' ').slice(-1)[0]?.toLowerCase();
         const teamPlayers = showHome ? (homePlayers || []) : (awayPlayers || []);
@@ -2999,7 +3109,6 @@ function OddsCard({ odds, home, away, league, homePlayers, awayPlayers, onRefres
         const isPinnacle = bk === 'pinnacle';
         const h = h2h?.bookmakers?.[bk];
         const t = tot?.bookmakers?.[bk];
-        const sp = spread?.bookmakers?.[bk];
         const gridCols = tab === 'all' ? COLS_H2H : COLS_TOT;
         return (
           <div key={bk} style={{
@@ -3019,12 +3128,6 @@ function OddsCard({ odds, home, away, league, homePlayers, awayPlayers, onRefres
                 <OddsCell value={h?.away} edge={null} isPinnacle={isPinnacle} color={isPinnacle ? undefined : BK_COLORS[bk]} />
                 {ew?.bookmakers?.[bk]?.away && <span style={{ position: 'absolute', left: '50%', marginLeft: '1.3rem', fontSize: 9, color: 'var(--text-dim)', whiteSpace: 'nowrap', pointerEvents: 'none' }}>({ew.bookmakers[bk].away.toFixed(2)})</span>}
               </div>
-            </> : tab === 'handicap' ? <>
-              <div style={{ textAlign: 'center', fontSize: 10, fontVariantNumeric: 'tabular-nums', fontWeight: isPinnacle ? 700 : 400, color: 'var(--text)' }}>
-                {sp?.home?.line != null ? `${sp.home.line > 0 ? '+' : ''}${sp.home.line}` : '—'}
-              </div>
-              <OddsCell value={sp?.home?.odds} edge={null} isPinnacle={isPinnacle} color={isPinnacle ? undefined : BK_COLORS[bk]} />
-              <OddsCell value={sp?.away?.odds} edge={null} isPinnacle={isPinnacle} color={isPinnacle ? undefined : BK_COLORS[bk]} />
             </> : <>
               <div style={{ textAlign: 'center', fontSize: 10, fontVariantNumeric: 'tabular-nums', fontWeight: isPinnacle ? 700 : 400, color: 'var(--text)' }}>
                 {t?.line ?? '—'}
@@ -3097,31 +3200,6 @@ function OddsCard({ odds, home, away, league, homePlayers, awayPlayers, onRefres
         <GameTotalWidget estimate={gameTotalEstimate} fixture={fixture} tot={tot} edgePopupKey={edgePopupKey} setEdgePopupKey={setEdgePopupKey} edgePopupRef={edgePopupRef} />
       )}
 
-      {tab === 'handicap' && gameSpreadEstimate && (() => {
-        const { pHomeCovers, pAwayCovers, homeLine, refBk } = gameSpreadEstimate;
-        if (pHomeCovers == null || pAwayCovers == null) return null;
-        // Même code couleur que Modèle 1X2/O.U — vert ≥62%, orange 52-62%, rouge <52% (9 juillet 2026)
-        const items = [
-          { key: 'home', label: home?.short ?? 'Dom', line: homeLine, prob: Math.round(pHomeCovers) },
-          { key: 'away', label: away?.short ?? 'Ext', line: -homeLine, prob: Math.round(pAwayCovers) },
-        ];
-        return (
-          <div style={{ borderTop: '1px solid var(--border)', marginTop: '0.5rem', paddingTop: '0.5rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem', flexWrap: 'nowrap' }}>
-            <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-dim)', flexShrink: 0 }}>Modèle Écart{refBk ? ` (${BK_LABELS[refBk] ?? refBk})` : ''}</span>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '1.1rem', flexWrap: 'nowrap', flexShrink: 0 }}>
-              {items.map(it => {
-                const probColor = it.prob >= 62 ? '#10b981' : it.prob >= 52 ? '#f59e0b' : '#ef4444';
-                return (
-                  <span key={it.key} style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-                    <span style={{ fontSize: 9, fontWeight: 700, color: 'var(--text)' }}>{it.label} {it.line > 0 ? '+' : ''}{it.line}</span>
-                    <span style={{ fontSize: 8, fontWeight: 600, color: probColor }}>{it.prob}%</span>
-                  </span>
-                );
-              })}
-            </div>
-          </div>
-        );
-      })()}
     </div>
   );
 }
@@ -3196,7 +3274,6 @@ export default function BasketballDetailPage() {
   const [gameSchedules, setGameSchedules]     = useState(null);
   const [gameTotalEstimate, setGameTotalEstimate] = useState(null);
   const [resultEstimate, setResultEstimate] = useState(null);
-  const [gameSpreadEstimate, setGameSpreadEstimate] = useState(null);
   const [showOddsDropdown, setShowOddsDropdown] = useState(fromAlert);
   const [oddsTab, setOddsTab] = useState(fromAlert ? 'joueurs' : 'all'); // onglet actif de la boîte Odds — pilote l'affichage des cartes en dessous
   const [oddsLegendOpen, setOddsLegendOpen] = useState(false); // légende "?" de la boîte Odds ouverte — force aussi celle d'Analyse Props sur l'onglet Joueurs
@@ -3221,6 +3298,9 @@ export default function BasketballDetailPage() {
   const [euroH2H, setEuroH2H]             = useState([]);
   const [euroTeamStats, setEuroTeamStats] = useState({ home: null, away: null });
   const [euroLeagueGames, setEuroLeagueGames] = useState([]);
+  const [showTweets, setShowTweets]       = useState(false);
+  const [tweets, setTweets]               = useState(null);
+  const [tweetsLoading, setTweetsLoading] = useState(false);
 
   useEffect(() => {
     if (staticFixture?.league === 'euroleague') return;
@@ -3562,24 +3642,19 @@ export default function BasketballDetailPage() {
     const homeProj = projLineup.starters?.[homeAbbr] ?? projLineup.starters?.[fixture?.home?.short?.toUpperCase()];
     const awayProj = projLineup.starters?.[awayAbbr] ?? projLineup.starters?.[fixture?.away?.short?.toUpperCase()];
 
-    const top5Names = players => [...(players || [])]
-      .filter(p => !p.injury)
-      .sort((a, b) => (b.stats?.pts ?? 0) - (a.stats?.pts ?? 0))
-      .slice(0, 5).map(p => p.name);
-
     if (isEuro) return; // EU : cour vide, placement manuel uniquement
 
+    // Plus de repli sur une estimation (top 5 points de saison) quand RotoWire/ESPN n'ont rien
+    // (19 août 2026, demande explicite) — ça remplissait la grille avec des noms qui ressemblaient
+    // à une vraie compo (et l'étiquette affichait "Compos probables") alors que ce n'était qu'une
+    // supposition statistique. Si rien de réel n'est dispo, on laisse vide plutôt que de deviner.
     if (homePlayers && homeProj) {
       const names = resolveNames(homePlayers, homeProj);
       if (names) setHomeNames(names);
-    } else if (homePlayers && !homeProj) {
-      setHomeNames(top5Names(homePlayers));
     }
     if (awayPlayers && awayProj) {
       const names = resolveNames(awayPlayers, awayProj);
       if (names) setAwayNames(names);
-    } else if (awayPlayers && !awayProj) {
-      setAwayNames(top5Names(awayPlayers));
     }
   }, [projLineup, homePlayers, awayPlayers]);
 
@@ -3684,24 +3759,6 @@ export default function BasketballDetailPage() {
         homePlayers: patchedHomePlayers, awayPlayers: patchedAwayPlayers,
       }),
     }).then(r => r.json()).then(d => setResultEstimate(d?.error ? null : d)).catch(() => setResultEstimate(null));
-
-    // Écart de points (Handicap, 9 juillet 2026) — même source unique que Résultat/Total, réutilise
-    // computeTeamWinProb côté serveur (marge attendue + écart-type déjà ancrés saison).
-    const spBks = bballOdds?.markets?.spread?.bookmakers ?? {};
-    const spRefBk = ['unibet', 'betclic'].find(b => spBks[b]?.home?.line != null);
-    const spHomeLine = spRefBk ? spBks[spRefBk].home.line : null;
-    if (spHomeLine != null) {
-      fetch('/api/basketball/spread', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          homeGames: gameSchedules.home, awayGames: gameSchedules.away,
-          gameDate: fixture.date, round: fixture.round, league: fixture.league, homeLine: spHomeLine,
-          homePlayers: patchedHomePlayers, awayPlayers: patchedAwayPlayers,
-        }),
-      }).then(r => r.json()).then(d => setGameSpreadEstimate(d?.error ? null : { ...d, refBk: spRefBk })).catch(() => setGameSpreadEstimate(null));
-    } else {
-      setGameSpreadEstimate(null);
-    }
   }, [gameSchedules, bballOdds, outerInjuryData]);
 
   // Reset + fetch cotes quand le match change
@@ -3805,6 +3862,19 @@ export default function BasketballDetailPage() {
     if (homeStarters.length) setHomeNames(homeStarters);
     if (awayStarters.length) setAwayNames(awayStarters);
   }, [boxscore, isCompleted]);
+
+  useEffect(() => {
+    if (!isWNBA || !showTweets) return;
+    if (!fixture?.home?.short || !fixture?.away?.short) return;
+    setTweetsLoading(true);
+    const names = [...(homePlayers || []), ...(awayPlayers || [])].map(p => p.name).filter(Boolean).join(',');
+    const params = new URLSearchParams({ home: fixture.home.short, away: fixture.away.short, players: names });
+    fetch(`/api/wnba/underdog-tweets?${params}`)
+      .then(r => r.json())
+      .then(d => setTweets(d.tweets || []))
+      .catch(() => setTweets([]))
+      .finally(() => setTweetsLoading(false));
+  }, [isWNBA, showTweets, fixture?.home?.short, fixture?.away?.short, homePlayers, awayPlayers]);
 
   if (loadingLive) {
     return <div className="page"><div className="loading-state"><div className="loading-dot"/><div className="loading-dot"/><div className="loading-dot"/></div></div>;
@@ -3994,7 +4064,36 @@ export default function BasketballDetailPage() {
             <rect x="15" y="1" width="4" height="16" fill="none" stroke="white" strokeWidth="0.9"/>
           </svg>
         </button>
+        {isWNBA && (
+          <button
+            className={`info-chip info-chip--btn info-chip--pitch ${showTweets ? 'active' : ''}`}
+            onClick={() => setShowTweets(v => !v)}
+            title="Historique tweets Underdog"
+          >
+            <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+              <path d="M17 3.5c-.6.3-1.3.5-2 .6.7-.4 1.3-1.1 1.5-2-.7.4-1.4.7-2.2.9A3.4 3.4 0 0 0 8.7 6c0 .3 0 .5.1.8C5.9 6.6 3.4 5.3 1.7 3.2c-.3.5-.5 1.1-.5 1.8 0 1.2.6 2.2 1.5 2.9-.6 0-1.1-.2-1.6-.4v.1c0 1.7 1.2 3.2 2.8 3.5-.3.1-.6.1-.9.1-.2 0-.4 0-.6-.1.4 1.4 1.7 2.4 3.2 2.4A6.8 6.8 0 0 1 1 15.1a9.6 9.6 0 0 0 5.2 1.5c6.2 0 9.6-5.1 9.6-9.6v-.4c.7-.5 1.2-1.1 1.7-1.8z" fill="white"/>
+            </svg>
+          </button>
+        )}
       </div>
+
+      {isWNBA && showTweets && (
+        <section className="detail-card compact-card" style={{ marginBottom: '0.5rem', maxHeight: 260, overflowY: 'auto' }}>
+          <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: '0.5rem', color: 'var(--text-sub)' }}>
+            🐦 Historique Underdog — {fixture?.home?.short} vs {fixture?.away?.short}
+          </div>
+          {tweetsLoading && <div style={{ fontSize: 12, color: 'var(--text-dim)' }}>Chargement…</div>}
+          {!tweetsLoading && tweets?.length === 0 && (
+            <div style={{ fontSize: 12, color: 'var(--text-dim)' }}>Aucun tweet récent lié à ce match.</div>
+          )}
+          {!tweetsLoading && tweets?.map((t, i) => (
+            <div key={i} style={{ padding: '0.4rem 0', borderBottom: i < tweets.length - 1 ? '1px solid var(--border)' : 'none' }}>
+              <div style={{ fontSize: 12.5, color: 'var(--text-main)', lineHeight: 1.4 }}>{t.text}</div>
+              <div style={{ fontSize: 10.5, color: 'var(--text-dim)', marginTop: 2 }}>{timeAgo(t.postedAt)}</div>
+            </div>
+          ))}
+        </section>
+      )}
 
       {/* Emplacement du panneau classement ligue (PropsSection) — entre les chips et la boîte
           Odds, pousse le contenu en dessous plutôt que de flotter par-dessus. */}
@@ -4002,7 +4101,7 @@ export default function BasketballDetailPage() {
 
       {showOddsDropdown && (bballOdds?.found || (isEuroleague && bballOdds !== null)) && (
         <section className="detail-card compact-card" style={{ marginBottom: '0.5rem' }}>
-          <OddsCard key={fixture?.id} odds={bballOdds} home={home} away={away} league={fixture.league} homePlayers={homePlayers} awayPlayers={(awayPlayers||[]).filter(p=>!new Set((homePlayers||[]).map(p=>String(p.id))).has(String(p.id)))} onRefresh={refreshOdds} refreshing={oddsRefreshing} defaultTab={fromAlert ? 'joueurs' : 'all'} gameTotalEstimate={!isCompleted ? gameTotalEstimate : null} resultEstimate={!isCompleted ? resultEstimate : null} gameSpreadEstimate={!isCompleted ? gameSpreadEstimate : null} fixture={fixture} onTabChange={(id) => { setOddsTab(id); if (id === 'joueurs') { setShowProps(true); setPropsCollapsed(false); } else { setPropsCollapsed(true); } }} onTeamChange={setOddsTeam} showHomeOverride={oddsTeam} eventId={bballOdds?.eventId ?? null} onLegendToggle={setOddsLegendOpen} />
+          <OddsCard key={fixture?.id} odds={bballOdds} home={home} away={away} league={fixture.league} homePlayers={homePlayers} awayPlayers={(awayPlayers||[]).filter(p=>!new Set((homePlayers||[]).map(p=>String(p.id))).has(String(p.id)))} onRefresh={refreshOdds} refreshing={oddsRefreshing} defaultTab={fromAlert ? 'joueurs' : 'all'} gameTotalEstimate={!isCompleted ? gameTotalEstimate : null} resultEstimate={!isCompleted ? resultEstimate : null} fixture={fixture} onTabChange={(id) => { setOddsTab(id); if (id === 'joueurs') { setShowProps(true); setPropsCollapsed(false); } else { setPropsCollapsed(true); } }} onTeamChange={setOddsTeam} showHomeOverride={oddsTeam} eventId={bballOdds?.eventId ?? null} onLegendToggle={setOddsLegendOpen} />
         </section>
       )}
 

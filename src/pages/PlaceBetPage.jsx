@@ -1,12 +1,13 @@
 import { useState, useEffect, useRef, Fragment } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { BBALL_FIXTURES } from '../utils/basketball';
-import { syncBackgroundAlerts, syncGameTotalAlerts, syncBasketballResultAlerts, syncBasketballSpreadAlerts, syncBballPinnacleAlerts, syncBballPinnaclePropsAlerts, loadBballPinnaclePropsAlerts, saveBballPinnaclePropsAlerts, syncOddsDrift, syncFootballAlerts, resolveCompletedFootballAlerts, postAcceptedAlertReliably, persistAlertsKey, FB_DC_BTTS_KEY, FB_DC_OU_KEY, syncTelegramActions } from '../utils/syncAlerts';
+import { syncBackgroundAlerts, syncGameTotalAlerts, syncBasketballResultAlerts, syncBballPinnacleAlerts, syncBballPinnaclePropsAlerts, loadBballPinnaclePropsAlerts, saveBballPinnaclePropsAlerts, syncOddsDrift, syncFootballAlerts, resolveCompletedFootballAlerts, postAcceptedAlertReliably, flushPendingAlertSync, persistAlertsKey, FB_DC_BTTS_KEY, FB_DC_OU_KEY, syncTelegramActions, syncOutrightAlerts, acceptOutrightAlert, rejectOutrightAlert, dismissOutrightAlert, OUTRIGHT_ALERTS_KEY } from '../utils/syncAlerts';
 import { BTTSAlertCard, FootballTotalCard, FootballResultCard, PinnacleEdgeCard, DCBTTSAlertCard, DCOUAlertCard, FootballGroupCard } from '../components/FootballAlertCards';
+import { OutrightModelCard, OutrightGapCard } from '../components/OutrightAlertCards';
 import { setItem as cloudSet } from '../utils/cloudStorage';
 import { cachedFetch } from '../utils/fetchCache';
 import { groupAlerts } from '../utils/groupAlerts';
-import { loadBankrollState, getRecommendedStake } from '../utils/bankroll';
+import { loadBankrollState, getRecommendedStake, getEngagedToday, BANKROLL_BRACKETS } from '../utils/bankroll';
 
 // Mise engagée au moment de l'acceptation — mise pleine du palier courant, sans répartition
 // automatique entre plusieurs alertes du même jour (testé puis abandonné le 16 juillet 2026,
@@ -19,8 +20,6 @@ const HISTORY_KEY      = 'nba_bet_history';
 const GAME_TOTAL_KEY   = 'nba_game_total_alerts';
 const BASKETBALL_RESULT_KEY  = 'basketball_result_alerts';
 const BASKETBALL_RESULT_MIN_ODDS = 1.50; // cote mini — sous ce seuil, pas d'intérêt même à forte confiance
-const BASKETBALL_SPREAD_KEY  = 'basketball_spread_alerts';
-const BASKETBALL_SPREAD_MIN_ODDS = 1.60; // même seuil que la génération backend (SPREAD_MIN_ODDS)
 const FB_BTTS_KEY      = 'fb_btts_alerts';
 const FB_TOTAL_KEY     = 'fb_total_alerts';
 const FB_RESULT_KEY    = 'fb_result_alerts';
@@ -205,6 +204,10 @@ function DateGroup({ dateLabel, items, variant, onDismissGroup, onDismissTotal, 
 }
 
 const STAT_LABEL = { pts: 'Pts', reb: 'Reb', ast: 'Ast' };
+// Bornes du test seuil WNBA affichées dans le tooltip 🧪 (test → original), mises à jour le 14 août
+// 2026 — jusque-là ce tooltip était figé sur "rebonds (68-77%)" alors que le flag floorTest
+// s'applique aussi aux tests pts/ast, désormais sur des seuils différents par stat.
+const WNBA_FLOOR_TEST_RANGE = { pts: '65-77%', reb: '68-77%', ast: '72-80%', tpm: '65-73%' };
 
 const CARD_ACCENT = {
   won:      { border: 'rgba(74,222,128,0.3)',   bg: 'rgba(74,222,128,0.06)',  bgHover: 'rgba(74,222,128,0.12)' },
@@ -506,7 +509,7 @@ function CompactAcceptedTotalCard({ alert, onDismiss, variant = 'accepted' }) {
 }
 
 function GameTotalCard({ alert, onAccept, onReject, onDismiss }) {
-  const { id, home, away, homeShort, awayShort, date, estimated, line, edge, direction, prob, status, league, unibetOdds, betclicOdds, winamaxOdds, eventId } = alert;
+  const { id, home, away, homeShort, awayShort, date, estimated, line, edge, direction, prob, status, league, unibetOdds, betclicOdds, winamaxOdds, eventId, keyPlayerMatchCorrelation } = alert;
   const navigate   = useNavigate();
   const isPending  = status === 'pending';
   const isAccepted = status === 'accepted';
@@ -569,6 +572,12 @@ function GameTotalCard({ alert, onAccept, onReject, onDismiss }) {
           {edge != null && <> · <b style={{ color: accent }}>{edge > 0 ? '+' : ''}{edge}%</b></>}
         </span>
       </div>
+
+      {keyPlayerMatchCorrelation && (
+        <div title="Une joueuse clé (≥15 pts projetés) de ce match a un prop points en cours — sa perf influence directement le total du match. Pas un edge indépendant." style={{ fontSize: 9, fontWeight: 700, color: '#fbbf24', margin: '0 0 0.35rem', padding: '2px 6px', borderRadius: 4, background: 'rgba(251,191,36,0.1)', border: '1px solid rgba(251,191,36,0.35)', display: 'inline-block' }}>
+          ⚠ Corrélée — {keyPlayerMatchCorrelation.player} {keyPlayerMatchCorrelation.direction === 'over' ? '▲' : '▼'} {keyPlayerMatchCorrelation.line} pts {keyPlayerMatchCorrelation.status === 'accepted' ? 'déjà accepté' : 'aussi proposé'} ({keyPlayerMatchCorrelation.probability}%)
+        </div>
+      )}
 
       <div className="bc-stats" style={{ margin: '0 0 0.35rem' }}>
         <div className="bc-prob">
@@ -798,7 +807,7 @@ function BasketballPinnaclePropsCard({ alert, onAccept, onReject, onDismiss }) {
 }
 
 function BasketballResultCard({ alert, onAccept, onReject, onDismiss }) {
-  const { id, home, away, homeShort, awayShort, date, teamName, teamShort, probability, edge, odds, bookmaker, status, league, eventId, matchCorrelation } = alert;
+  const { id, home, away, homeShort, awayShort, date, teamName, teamShort, probability, edge, odds, bookmaker, status, league, eventId, matchCorrelation, keyPlayerMatchCorrelation, opposingPositionWarning } = alert;
   const navigate   = useNavigate();
   const isPending  = status === 'pending';
   const isAccepted = status === 'accepted';
@@ -855,118 +864,14 @@ function BasketballResultCard({ alert, onAccept, onReject, onDismiss }) {
           P(victoire) <b style={{ color: 'var(--text)' }}>{probability}%</b>
           {edge != null && <> · <b style={{ color: '#fbbf24' }}>{edge > 0 ? '+' : ''}{edge}%</b></>}
         </div>
-        {matchCorrelation && (
-          <div title="Une alerte Écart H2H porte sur le même sens de ce match — même ressource (marge de victoire), pas un edge indépendant" style={{ fontSize: 9, fontWeight: 700, color: '#fbbf24', marginTop: 4, padding: '2px 6px', borderRadius: 4, background: 'rgba(251,191,36,0.1)', border: '1px solid rgba(251,191,36,0.35)', display: 'inline-block' }}>
-            ⚠ Corrélée — Écart H2H {matchCorrelation.status === 'accepted' ? 'déjà accepté' : 'aussi proposé'} ({matchCorrelation.probability}%)
+        {keyPlayerMatchCorrelation && (
+          <div title="Une joueuse clé (≥15 pts projetés) de ce match a un prop points en cours — sa perf influence directement le score final, donc ce marché équipe aussi. Pas un edge indépendant." style={{ fontSize: 9, fontWeight: 700, color: '#fbbf24', marginTop: 4, padding: '2px 6px', borderRadius: 4, background: 'rgba(251,191,36,0.1)', border: '1px solid rgba(251,191,36,0.35)', display: 'inline-block' }}>
+            ⚠ Corrélée — {keyPlayerMatchCorrelation.player} {keyPlayerMatchCorrelation.direction === 'over' ? '▲' : '▼'} {keyPlayerMatchCorrelation.line} pts {keyPlayerMatchCorrelation.status === 'accepted' ? 'déjà accepté' : 'aussi proposé'} ({keyPlayerMatchCorrelation.probability}%)
           </div>
         )}
-      </div>
-      <div className="bc-stats" style={{ margin: '0.3rem 0' }}>
-        <div className="bc-prob">
-          <div className="bc-prob-bar-track">
-            <div className="bc-prob-bar-fill" style={{ width: `${barPct}%`, background: '#60a5fa' }} />
-          </div>
-          <span className="bc-prob-pct" style={{ color: '#60a5fa', fontSize: 10 }}>{timeLabel}</span>
-        </div>
-      </div>
-      {odds && (
-        <div style={{ marginBottom: isPending ? '0.4rem' : 0 }}>
-          <div style={{ textAlign: 'center', background: 'rgba(255,255,255,0.04)', borderRadius: 6, padding: '0.25rem' }}>
-            <div style={{ fontSize: 9, color: 'var(--text-dim)', marginBottom: 2, textTransform: 'capitalize' }}>{bookmaker}</div>
-            <div style={{ fontSize: 13, fontWeight: 700, color: bkColor, fontVariantNumeric: 'tabular-nums' }}>{odds.toFixed(2)}</div>
-          </div>
-        </div>
-      )}
-      {isPending ? (
-        <div style={{ display: 'flex', gap: '0.5rem' }}>
-          <button onClick={e => { e.stopPropagation(); onAccept(id); }} style={{ flex: 1, padding: '0.4rem', borderRadius: 6, border: '1px solid rgba(74,222,128,0.5)', background: 'rgba(74,222,128,0.08)', color: '#4ade80', cursor: 'pointer', fontSize: 11, fontWeight: 700 }}>✓ Accepter</button>
-          <button onClick={e => { e.stopPropagation(); onReject(id); }} style={{ flex: 1, padding: '0.4rem', borderRadius: 6, border: '1px solid rgba(248,113,113,0.4)', background: 'rgba(248,113,113,0.06)', color: '#f87171', cursor: 'pointer', fontSize: 11, fontWeight: 700 }}>✗ Rejeter</button>
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-// Écart H2H (Handicap, 9 juillet 2026) — même modèle/mêmes seuils que BasketballResultCard
-// (computeTeamWinProb), plus la ligne handicap et un avertissement si une alerte Résultat déjà
-// acceptée porte sur le même match/sens (matchCorrelation, même ressource : marge de victoire).
-function BasketballSpreadCard({ alert, onAccept, onReject, onDismiss }) {
-  const { id, home, away, homeShort, awayShort, date, teamName, teamShort, line, probability, odds, bookmaker, status, league, eventId, matchCorrelation } = alert;
-  const navigate   = useNavigate();
-  const isPending  = status === 'pending';
-  const isAccepted = status === 'accepted';
-  const leagueParam = league && league !== 'nba' ? `?league=${league}` : '';
-  const leagueLabel = { euroleague: 'EL Écart', wnba: 'WNBA Écart', acb: 'ACB Écart', bbl: 'BBL Écart', legaa: 'Lega A Écart' }[league] || 'NBA Écart';
-
-  const now = Date.now();
-  const msLeft = new Date(date).getTime() - now;
-  const hoursLeft = msLeft / 3_600_000;
-  const daysLeft  = Math.floor(hoursLeft / 24);
-  const hRem      = Math.floor(hoursLeft % 24);
-  const mRem      = Math.floor((msLeft % 3_600_000) / 60_000);
-  const timeLabel = msLeft <= 0 ? 'Imminent' : daysLeft > 0 ? `${daysLeft}j ${hRem}h` : hoursLeft >= 1 ? `${Math.floor(hoursLeft)}h ${mRem}m` : `${mRem}m`;
-  const barPct    = Math.min(Math.max(msLeft / (7 * 24 * 3_600_000) * 100, 0), 100);
-  const bkColor   = bookmaker === 'unibet' ? '#1db954' : bookmaker === 'betclic' ? '#e0292e' : '#e5e7eb';
-
-  return (
-    <div
-      className="bet-card"
-      style={{ position: 'relative', '--league-accent': '#fbbf24', borderColor: 'rgba(244,124,32,0.3)', cursor: eventId ? 'pointer' : 'default' }}
-      onClick={() => eventId && navigate(`/basketball/${eventId}${leagueParam}`)}
-      onMouseEnter={() => _prefetchBballCard(home, away, league)}
-    >
-      {!isPending && (
-        <button onClick={e => { e.stopPropagation(); onDismiss(id); }} style={{ position: 'absolute', top: 8, right: 10, background: 'none', border: 'none', color: 'var(--text-dim)', cursor: 'pointer', fontSize: 16, lineHeight: 1, padding: 0 }}>×</button>
-      )}
-      <div className="bc-header">
-        <span className="bc-flag">▲</span>
-        <span className="bc-league">{leagueLabel}</span>
-        <div style={{ marginLeft: 'auto', marginRight: 24, display: 'flex', alignItems: 'center', gap: 6 }}>
-          <span className={`bc-edge-badge ${probability >= 90 ? 'high' : 'mid'}`}>{probability}%</span>
-          {!isPending && (
-            <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 10, color: isAccepted ? '#4ade80' : '#f87171', background: isAccepted ? 'rgba(74,222,128,0.12)' : 'rgba(248,113,113,0.1)' }}>
-              {isAccepted ? '✓ Accepté' : '✗ Rejeté'}
-            </span>
-          )}
-        </div>
-      </div>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem', marginTop: '0.35rem', flexWrap: 'wrap' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', flexWrap: 'wrap' }}>
-          <span className="bc-team bc-team-home" style={{ flex: '0 1 auto' }}>{home || homeShort}</span>
-          <span className="bc-vs">vs</span>
-          <span className="bc-team bc-team-away" style={{ flex: '0 1 auto' }}>{away || awayShort}</span>
-        </div>
-        <span style={{ fontSize: 10, color: 'var(--text-dim)', flexShrink: 0, whiteSpace: 'nowrap' }}>
-          {new Date(date).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
-        </span>
-      </div>
-      <div style={{ margin: '0.3rem 0' }}>
-        <span style={{ fontSize: 12, fontWeight: 700, color: '#fbbf24', background: 'rgba(251,191,36,0.12)', padding: '0.25rem 0.5rem', borderRadius: 6, display: 'inline-block', maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          🏆 {teamShort || teamName} {line > 0 ? '+' : ''}{line}
-        </span>
-        <div style={{ fontSize: 10, color: 'var(--text-dim)', marginTop: 3 }}>
-          P(couvre) <b style={{ color: 'var(--text)' }}>{probability}%</b>
-        </div>
-        {matchCorrelation && (
-          <div title="Une alerte Résultat porte sur le même sens de ce match — même ressource (marge de victoire), pas un edge indépendant" style={{ fontSize: 9, fontWeight: 700, color: '#fbbf24', marginTop: 4, padding: '2px 6px', borderRadius: 4, background: 'rgba(251,191,36,0.1)', border: '1px solid rgba(251,191,36,0.35)', display: 'inline-block' }}>
-            ⚠ Corrélée — Résultat {matchCorrelation.status === 'accepted' ? 'déjà accepté' : 'aussi proposé'} ({matchCorrelation.probability}%)
-          </div>
-        )}
-        {/* 19 juillet 2026 — certains bookmakers (Betclic constaté) proposent ce marché en seuil
-            entier inclusif ("gagne de X ou +") plutôt qu'en handicap .5 classique, plus facile à
-            couvrir (X pile suffit, pas besoin de X+1). Pure mention informative, pas de cote réelle
-            suivie pour ce marché — cas réel : ligne -8.5 perdue, "gagne de 8 ou +" gagnée chez Betclic.
-            Étendu le 22 juillet 2026 au côté outsider (line > 0) : "ne perd pas ou perd de X ou -",
-            équivalent exact d'un +X.5 (fiable côté scraping depuis le fix collision de lignes du
-            même jour, cf. memory project_betclic_spread_family_collision_juillet22). */}
-        {line < 0 && (
-          <div style={{ fontSize: 10, fontWeight: 700, color: '#4ade80', marginTop: 4 }}>
-            ⚠️ Prioriser le {Math.floor(Math.abs(line))} ou +
-          </div>
-        )}
-        {line > 0 && (
-          <div style={{ fontSize: 10, fontWeight: 700, color: '#4ade80', marginTop: 4 }}>
-            ⚠️ Existe aussi : "ne perd pas ou perd de {Math.floor(line)} ou -"
+        {opposingPositionWarning && (
+          <div title="Un pari déjà accepté sur ce match penche du côté opposé — le modèle a probablement recalculé depuis (ex: blessure confirmée après coup). Pas un blocage, juste un signal avant de doubler la mise dans deux sens différents." style={{ fontSize: 9, fontWeight: 700, color: '#f87171', marginTop: 4, padding: '2px 6px', borderRadius: 4, background: 'rgba(248,113,113,0.1)', border: '1px solid rgba(248,113,113,0.35)', display: 'inline-block' }}>
+            ⚠ Camp opposé déjà accepté — Résultat {opposingPositionWarning.teamName || (opposingPositionWarning.direction === 'home' ? home : away)} ({opposingPositionWarning.probability}%)
           </div>
         )}
       </div>
@@ -1099,6 +1004,15 @@ function PropAlertCard({ group, onDismiss, onAccept, onReject }) {
         <span className="bc-league">{leagueLabel}</span>
         <div style={{ marginLeft: 'auto', marginRight: 24, display: 'flex', alignItems: 'center', gap: 6 }}>
           <span className={`bc-edge-badge ${propBadgeClass(primaryStat?.stat, league, maxProb)}`}>{maxProb}%</span>
+          {/* Vraie confiance du modèle (2 août 2026) — quand le % affiché est bridé par le plafond de
+              méfiance (sanityMax, écart estimation/ligne > 25%), le vrai calcul est montré entre
+              parenthèses. N'apparaît que si l'écart est visible (≥3 points), sinon ça alourdit
+              l'affichage pour rien sur les alertes qui ne sont pas plafonnées. */}
+          {primaryStat?.rawProbability != null && Math.abs(primaryStat.rawProbability - maxProb) >= 3 && (
+            <span title="Confiance réelle du modèle avant le plafond de méfiance (déclenché quand l'estimation s'écarte de plus de 25% de la ligne)" style={{ fontSize: 9, fontWeight: 700, color: 'var(--text-dim)' }}>
+              (réel {primaryStat.rawProbability}%)
+            </span>
+          )}
           {!isPending && (
             <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 10, color: isAccepted ? '#4ade80' : '#f87171', background: isAccepted ? 'rgba(74,222,128,0.12)' : 'rgba(248,113,113,0.1)' }}>
               {isAccepted ? '✓ Accepté' : '✗ Rejeté'}
@@ -1119,23 +1033,27 @@ function PropAlertCard({ group, onDismiss, onAccept, onReject }) {
         </span>
       </div>
 
-      {stats.map(({ stat, direction, line, estimate, unibetOdds, betclicOdds, winamaxOdds, oddsAlert, obsolete, teammateOverlap, oppQSamePosition, deviation, deviationCap }) => {
+      {stats.map(({ stat, direction, line, estimate, unibetOdds, betclicOdds, winamaxOdds, oddsAlert, obsolete, teammateOverlap, oppQSamePosition, deviation, deviationCap, floorTest, keyPlayerMatchCorrelation }) => {
         const isO = direction === 'over';
         const clr = isO ? '#4ade80' : '#f87171';
         const bg  = isO ? 'rgba(74,222,128,0.06)' : 'rgba(248,113,113,0.06)';
         return (
           <Fragment key={stat}>
             {/* Boîte ligne */}
-            <div style={{ margin: '0.3rem 0', display: 'flex', alignItems: 'center', gap: 6 }}>
+            <div style={{ margin: '0.3rem 0', display: 'flex', alignItems: 'center', flexWrap: 'wrap', rowGap: 4, gap: 6 }}>
               <span style={{ fontSize: 12, fontWeight: 700, color: oddsAlert ? '#ef4444' : clr, background: oddsAlert ? 'rgba(239,68,68,0.12)' : bg.replace('0.06', '0.12'), padding: '0.25rem 0.5rem', borderRadius: 6, whiteSpace: 'nowrap' }}>
                 {isO ? '▲ Over' : '▼ Under'} {line} {STAT_LABEL[stat] ?? stat}
               </span>
               {isPending && obsolete && <span style={{ fontSize: 9, fontWeight: 800, padding: '2px 6px', borderRadius: 4, background: 'rgba(148,163,184,0.15)', color: '#94a3b8', border: '1px solid rgba(148,163,184,0.4)', flexShrink: 0 }}>OBSOLÈTE</span>}
+              {isPending && floorTest && <span title={`Seuil ${STAT_LABEL[stat] ?? stat} WNBA abaissé en test (${WNBA_FLOOR_TEST_RANGE[stat] ?? ''}) — moins sûr que les autres alertes, surveillé automatiquement`} style={{ fontSize: 9, fontWeight: 800, padding: '2px 6px', borderRadius: 4, background: 'rgba(56,189,248,0.12)', color: '#38bdf8', border: '1px dashed rgba(56,189,248,0.5)', flexShrink: 0 }}>🧪 Test seuil</span>}
               {isPending && teammateOverlap && (
                 <span title={`${teammateOverlap.player} déjà acceptée sur la même stat (${STAT_LABEL[stat] ?? stat}, ${teammateOverlap.direction === 'over' ? '▲' : '▼'} ${teammateOverlap.line}, ${teammateOverlap.probability}%) — ressource partagée, pas un edge indépendant`} style={{ fontSize: 9, fontWeight: 800, padding: '2px 6px', borderRadius: 4, background: 'rgba(251,191,36,0.15)', color: '#fbbf24', border: '1px solid rgba(251,191,36,0.5)', flexShrink: 0 }}>⚠ Corrélée — {teammateOverlap.player}</span>
               )}
               {isPending && oppQSamePosition && (
                 <span title="Une adversaire à un poste pertinent pour cette stat est incertaine (Q/GTD) — projection calculée sans boost tant que son statut n'est pas confirmé. Si elle est finalement absente, l'estimation est plutôt sous-évaluée ; si elle joue, elle reste valable." style={{ fontSize: 9, fontWeight: 800, padding: '2px 6px', borderRadius: 4, background: 'rgba(251,146,60,0.10)', color: '#fb923c', border: '1px dashed rgba(251,146,60,0.4)', flexShrink: 0 }}>⚠ Adversaire Q au même poste</span>
+              )}
+              {isPending && stat === 'pts' && keyPlayerMatchCorrelation && (
+                <span title={`Un marché équipe (${keyPlayerMatchCorrelation.type === 'basketball_result' ? 'Résultat' : 'Total'}) de ce match est aussi en cours — sa perf en points influence directement le score final. Pas un edge indépendant.`} style={{ fontSize: 9, fontWeight: 800, padding: '2px 6px', borderRadius: 4, background: 'rgba(251,191,36,0.15)', color: '#fbbf24', border: '1px solid rgba(251,191,36,0.5)', flexShrink: 0 }}>⚠ Corrélée — marché équipe</span>
               )}
               {estimate != null && (
                 <span style={{ marginLeft: 'auto', fontSize: 10, color: 'var(--text-dim)', flexShrink: 0 }}>
@@ -1187,6 +1105,12 @@ function PropAlertCard({ group, onDismiss, onAccept, onReject }) {
                       <div style={{ fontSize: 13, fontWeight: 700, color, fontVariantNumeric: 'tabular-nums' }}>{odds.toFixed(2)}</div>
                     </div>
                   ))}
+              </div>
+            )}
+            {deviation != null && deviationCap > 0 && (
+              <div style={{ fontSize: 8, color: 'var(--text-dim)', opacity: 0.65, margin: '0.25rem 0 0', lineHeight: 1.3 }}>
+                <div>Barre courte = projection proche de sa forme habituelle (edge solide).</div>
+                <div>Barre proche du plafond = plusieurs hypothèses cumulées (edge plus fragile).</div>
               </div>
             )}
           </Fragment>
@@ -1336,6 +1260,191 @@ function RunningSection({ dated, liveStats, donutTotal, onDismissGroup, onDismis
   );
 }
 
+// Calculateur de mise multi-alertes (1er août 2026) — outil manuel, PAS une répartition
+// automatique : contrairement à la tentative du 16 juillet (abandonnée, cf. bankroll.js), ici
+// on ne cherche jamais à deviner si une alerte va sortir plus tard dans la journée — l'outil ne
+// regarde que les alertes déjà affichées à l'instant où on l'ouvre, et propose une répartition du
+// budget du jour RESTANT entre elles, pondérée par l'edge de chacune (proba×cote-1). Rien n'est
+// écrit automatiquement sur les alertes — juste un chiffre suggéré, la mise réelle continue de se
+// figer normalement à l'acceptation (stakeAtAccept).
+function extractProbOdds(item) {
+  const bestOdds = (...odds) => {
+    const valid = odds.filter(o => typeof o === 'number' && o > 1);
+    return valid.length ? Math.max(...valid) : null;
+  };
+  if (item.type === 'prop') {
+    const g = item.data;
+    const stats = g?.stats || [];
+    if (!stats.length) return null;
+    const top = stats.reduce((best, s) => (s.probability > (best?.probability ?? -1) ? s : best), null);
+    if (!top) return null;
+    const odds = bestOdds(top.unibetOdds, top.betclicOdds, top.winamaxOdds);
+    if (top.probability == null || !odds) return null;
+    return { label: `${g.player} · ${top.stat?.toUpperCase()} ${top.direction === 'over' ? '+' : '-'}${top.line}`, probability: top.probability, odds };
+  }
+  if (item.type === 'fbgroup') {
+    const alerts = item.data?.alerts?.filter(a => a.status === 'pending') || [];
+    if (!alerts.length) return null;
+    const top = alerts.reduce((best, a) => (a.probability > (best?.probability ?? -1) ? a : best), null);
+    const odds = bestOdds(top?.unibetOdds, top?.betclicOdds, top?.winamaxOdds);
+    if (!top || top.probability == null || !odds) return null;
+    return { label: `${top.home || top.homeShort} vs ${top.away || top.awayShort} · ${top.stat || top.type}`, probability: top.probability, odds };
+  }
+  if (item.type === 'fbsingle' || item.type === 'basketresult') {
+    const a = item.data;
+    const probability = a.probability;
+    const odds = a.odds ?? bestOdds(a.unibetOdds, a.betclicOdds, a.winamaxOdds);
+    if (probability == null || !odds) return null;
+    const label = a.teamName || a.teamShort ? `${a.home || a.homeShort} vs ${a.away || a.awayShort} · ${a.teamShort || a.teamName}`
+      : `${a.home || a.homeShort} vs ${a.away || a.awayShort}`;
+    return { label, probability, odds };
+  }
+  if (item.type === 'total' || item.type === 'bballpinnacle' || item.type === 'bballpinnacleprops') {
+    const a = item.data;
+    const probability = a.prob;
+    const odds = bestOdds(a.unibetOdds, a.betclicOdds, a.winamaxOdds);
+    if (probability == null || !odds) return null;
+    return { label: `${a.home || a.homeShort} vs ${a.away || a.awayShort} · ${a.player ? a.player : (a.direction === 'over' ? 'Over' : 'Under') + ' ' + (a.line ?? '')}`, probability, odds };
+  }
+  // outright : pari saison entière, pas une décision "aujourd'hui" — hors périmètre de cet outil
+  return null;
+}
+
+function StakeCalculatorWidget({ items }) {
+  const [open, setOpen] = useState(false);
+  // Décalage de palier (1er août 2026) — permet de simuler le calcul sur un palier plus prudent
+  // (ou plus agressif) que le bankroll réel actuel, sans toucher au bankroll réellement suivi
+  // (Suivi Bankroll, BacktestingPage.jsx) — purement une hypothèse pour CE calcul, remise à zéro
+  // à chaque fermeture du panneau.
+  const [bracketOffset, setBracketOffset] = useState(0);
+  if (!open) {
+    return (
+      <button
+        onClick={() => setOpen(true)}
+        title="Calculateur de mise — plusieurs alertes en même temps"
+        style={{ position: 'fixed', bottom: 20, right: 20, zIndex: 40, width: 32, height: 32, borderRadius: '50%', border: '1px solid rgba(96,165,250,0.4)', background: '#1a2332', color: '#60a5fa', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', boxShadow: '0 4px 16px rgba(0,0,0,0.4)' }}
+      >
+        <svg width="13" height="12" viewBox="0 0 20 18" fill="none">
+          <rect x="1" y="10" width="4" height="7" rx="1" stroke="currentColor" strokeWidth="1.3"/>
+          <rect x="8" y="4" width="4" height="13" rx="1" stroke="currentColor" strokeWidth="1.3"/>
+          <rect x="15" y="7" width="4" height="10" rx="1" stroke="currentColor" strokeWidth="1.3"/>
+        </svg>
+      </button>
+    );
+  }
+
+  const bk = loadBankrollState().current;
+  let realIdx = 0;
+  BANKROLL_BRACKETS.forEach((b, i) => { if (bk >= b.min) realIdx = i; });
+  const effIdx = Math.min(BANKROLL_BRACKETS.length - 1, Math.max(0, realIdx + bracketOffset));
+  const effBracket = BANKROLL_BRACKETS[effIdx];
+  const dailyBudget = effBracket.stake ?? Math.round(bk * 0.05);
+  const engaged = getEngagedToday().total;
+  const remaining = Math.max(0, dailyBudget - engaged);
+
+  // Pondération par fraction de Kelly (pas par edge brut) — corrige un vrai défaut signalé par
+  // l'utilisateur : quand plusieurs alertes affichent la même probabilité (ex: 65%, plafond de
+  // sécurité sanityMax), pondérer par edge seul revient à juste miser plus gros sur la cote la plus
+  // haute, sans tenir compte que ça veut aussi dire perdre plus si le pari rate. Kelly f=(bp-q)/b
+  // (b=cote-1) modère naturellement les grosses cotes — même classement qu'avec l'edge, écart moins
+  // extrême. Demi-Kelly (×0.5) : nos probabilités affichées ne sont jamais parfaitement calibrées
+  // (cf. suivi near-miss), Kelly plein suppose une proba exacte et sur-mise si elle est fausse.
+  const KELLY_FRACTION = 0.5;
+  // Plafond de concentration (24 août 2026) — sans lui, un edge nettement supérieur (ex: +15% vs
+  // +3%) peut recevoir ~80% du budget du jour : si CE pari précis rate pendant que l'autre gagne,
+  // la perte nette dépasse largement ce que le gain de l'autre compense (cas réel signalé par
+  // l'utilisateur : Collier perd + Atlanta gagne → -50,70€ sans plafond, sur seulement 75€ de
+  // budget). Le Kelly atténué suppose des probas parfaitement calibrées, ce qui n'est jamais vrai
+  // en pratique (cf. suivi near-miss) — un plafond dur limite l'impact d'une erreur de calibration
+  // sur un seul pari, au prix d'un edge théorique légèrement sous-optimal. Non calibré (v1, choix
+  // raisonné avec l'utilisateur) : 60% garde un net avantage au meilleur edge sans qu'un seul pari
+  // puisse représenter plus de 3/5 du risque du jour.
+  const CONCENTRATION_CAP = 0.6;
+  const rows = items
+    .map(item => {
+      const ext = extractProbOdds(item);
+      if (!ext) return null;
+      const p = ext.probability / 100;
+      const b = ext.odds - 1;
+      const edge = p * ext.odds - 1;
+      const kelly = Math.max(0, (p - (1 - p) / b)) * KELLY_FRACTION;
+      return { key: item.key, ...ext, edge, kelly };
+    })
+    .filter(r => r && r.kelly > 0)
+    .sort((a, b) => b.kelly - a.kelly);
+
+  // Répartition en cascade : tout pari qui dépasserait le plafond est fixé dessus, le reste du
+  // budget est réparti au prorata du Kelly restant parmi les paris non plafonnés — répété jusqu'à
+  // stabilisation (nécessaire si plusieurs paris à fort edge dépassent le plafond tour à tour).
+  const capAmount = remaining * CONCENTRATION_CAP;
+  const stakeByKey = {};
+  let pool = remaining;
+  let active = rows;
+  while (active.length) {
+    const totalW = active.reduce((s, r) => s + r.kelly, 0);
+    if (totalW <= 0) break;
+    const overCap = active.filter(r => pool * (r.kelly / totalW) > capAmount + 1e-9);
+    if (!overCap.length) {
+      active.forEach(r => { stakeByKey[r.key] = pool * (r.kelly / totalW); });
+      break;
+    }
+    overCap.forEach(r => { stakeByKey[r.key] = capAmount; pool -= capAmount; });
+    active = active.filter(r => stakeByKey[r.key] == null);
+  }
+  const withStake = rows.map(r => ({ ...r, stake: Math.round((stakeByKey[r.key] ?? 0) / 5) * 5 }));
+
+  return (
+    <div style={{ position: 'fixed', bottom: 20, right: 20, zIndex: 40, width: 340, maxHeight: '70vh', overflowY: 'auto', background: '#0f1620', border: '1px solid rgba(96,165,250,0.3)', borderRadius: 12, boxShadow: '0 8px 32px rgba(0,0,0,0.5)', padding: '0.9rem' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.6rem' }}>
+        <span style={{ fontSize: 13, fontWeight: 700, color: '#60a5fa', display: 'flex', alignItems: 'center', gap: 6 }}>
+          <svg width="14" height="13" viewBox="0 0 20 18" fill="none" style={{ flexShrink: 0 }}>
+            <rect x="1" y="10" width="4" height="7" rx="1" stroke="currentColor" strokeWidth="1.6"/>
+            <rect x="8" y="4" width="4" height="13" rx="1" stroke="currentColor" strokeWidth="1.6"/>
+            <rect x="15" y="7" width="4" height="10" rx="1" stroke="currentColor" strokeWidth="1.6"/>
+          </svg>
+          Répartition des mises
+        </span>
+        <button onClick={() => setOpen(false)} style={{ background: 'none', border: 'none', color: 'var(--text-dim)', cursor: 'pointer', fontSize: 16, lineHeight: 1 }}>×</button>
+      </div>
+      <div style={{ fontSize: 10, color: 'var(--text-dim)', marginBottom: '0.4rem', lineHeight: 1.5 }}>
+        Budget du jour <b style={{ color: 'var(--text)' }}>{dailyBudget}€</b> · déjà engagé <b style={{ color: 'var(--text)' }}>{engaged}€</b> · restant <b style={{ color: remaining > 0 ? '#4ade80' : '#f87171' }}>{remaining}€</b>
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: '0.6rem' }}>
+        <span style={{ fontSize: 9, color: 'var(--text-dim)' }}>Palier utilisé :</span>
+        <button onClick={() => setBracketOffset(o => Math.max(o - 1, -realIdx))} disabled={effIdx === 0} title="Palier plus prudent" style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 4, color: effIdx === 0 ? 'var(--text-dim)' : 'var(--text)', cursor: effIdx === 0 ? 'default' : 'pointer', fontSize: 11, padding: '1px 6px', opacity: effIdx === 0 ? 0.4 : 1 }}>‹</button>
+        <span style={{ fontSize: 10, color: bracketOffset !== 0 ? '#fbbf24' : 'var(--text)', fontWeight: 600 }}>
+          {effBracket.min}€+{bracketOffset !== 0 ? ' (simulé)' : ''}
+        </span>
+        <button onClick={() => setBracketOffset(o => Math.min(o + 1, BANKROLL_BRACKETS.length - 1 - realIdx))} disabled={effIdx === BANKROLL_BRACKETS.length - 1} title="Palier plus agressif" style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 4, color: effIdx === BANKROLL_BRACKETS.length - 1 ? 'var(--text-dim)' : 'var(--text)', cursor: effIdx === BANKROLL_BRACKETS.length - 1 ? 'default' : 'pointer', fontSize: 11, padding: '1px 6px', opacity: effIdx === BANKROLL_BRACKETS.length - 1 ? 0.4 : 1 }}>›</button>
+        {bracketOffset !== 0 && (
+          <button onClick={() => setBracketOffset(0)} style={{ fontSize: 9, color: '#60a5fa', background: 'none', border: 'none', cursor: 'pointer', marginLeft: 2 }}>↺ réel</button>
+        )}
+      </div>
+      {rows.length === 0 && (
+        <p style={{ fontSize: 11, color: 'var(--text-dim)' }}>Aucune alerte avec cote et probabilité exploitables en ce moment.</p>
+      )}
+      {rows.length > 0 && remaining <= 0 && (
+        <p style={{ fontSize: 11, color: '#f87171', marginBottom: '0.5rem' }}>Budget du jour déjà atteint — mise suggérée à 0€ pour toutes.</p>
+      )}
+      {withStake.map(r => (
+        <div key={r.key} style={{ padding: '0.4rem 0', borderTop: '1px solid rgba(255,255,255,0.06)' }}>
+          <div style={{ fontSize: 11, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.label}</div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginTop: 2 }}>
+            <span style={{ fontSize: 10, color: 'var(--text-dim)' }}>{r.probability}% · cote {r.odds.toFixed(2)} · edge {(r.edge * 100).toFixed(1)}%</span>
+            <span style={{ fontSize: 13, fontWeight: 700, color: '#4ade80' }}>{r.stake}€</span>
+          </div>
+        </div>
+      ))}
+      {withStake.length > 0 && (
+        <div style={{ marginTop: '0.5rem', paddingTop: '0.5rem', borderTop: '1px solid rgba(255,255,255,0.1)', display: 'flex', justifyContent: 'space-between', fontSize: 11 }}>
+          <span style={{ color: 'var(--text-dim)' }}>Total suggéré</span>
+          <span style={{ fontWeight: 700, color: 'var(--text)' }}>{withStake.reduce((s, r) => s + r.stake, 0)}€</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function PlaceBetPage() {
   const [rawAlerts, setRawAlerts] = useState(() => {
     try {
@@ -1351,13 +1460,13 @@ export default function PlaceBetPage() {
   const [bballPinnacleAlerts, setBballPinnacleAlerts] = useState([]);
   const [bballPinnaclePropsAlerts, setBballPinnaclePropsAlerts] = useState([]);
   const [rawResultAlerts, setRawResultAlerts]   = useState([]);
-  const [rawSpreadAlerts, setRawSpreadAlerts]   = useState([]);
   const [bttsAlerts, setBttsAlerts]             = useState([]);
   const [fbTotalAlerts, setFbTotalAlerts]       = useState([]);
   const [fbResultAlerts, setFbResultAlerts]     = useState([]);
   const [fbPinnacleAlerts, setFbPinnacleAlerts] = useState([]);
   const [dcBttsAlerts, setDcBttsAlerts]         = useState([]);
   const [dcOuAlerts, setDcOuAlerts]             = useState([]);
+  const [outrightAlerts, setOutrightAlerts]     = useState([]);
   // historyExists : true dès qu'une alerte a été acceptée/rejetée, ne repasse jamais à false
   const [historyExists, setHistoryExists] = useState(() => {
     try {
@@ -1634,6 +1743,15 @@ export default function PlaceBetPage() {
   };
 
   const saveDcOuAlerts = (alerts) => { persistAlertsKey(FB_DC_OU_KEY, alerts); setDcOuAlerts(alerts); };
+
+  // Outrights (28 juillet 2026) — pas de fixtureDate à filtrer (un pari saison entière n'expire
+  // jamais côté client), le backend purge déjà lui-même les pending non régénérés. Accept/reject/
+  // dismiss passent directement par les fonctions dédiées de syncAlerts.js (statut déjà autoritaire
+  // côté backend), pas besoin de logique locale ici comme pour les autres types.
+  const loadOutrightAlerts = () => {
+    try { setOutrightAlerts(JSON.parse(localStorage.getItem(OUTRIGHT_ALERTS_KEY) || '[]')); }
+    catch { setOutrightAlerts([]); }
+  };
 
   const updateDcOuStatus = (id, status, bk = null, odds = null) => {
     if (status === 'rejected') { saveDcOuAlerts(dcOuAlerts.map(a => a.id === id ? { ...a, status: 'rejected', rejectedAt: Date.now() } : a)); window.dispatchEvent(new Event('fb_dc_ou_alerts_updated')); return; }
@@ -2100,48 +2218,6 @@ export default function PlaceBetPage() {
     notify();
   };
 
-  // Écart H2H (Handicap, 9 juillet 2026) — même mécanique que loadResultAlerts/updateResultStatus/
-  // dismissResult ci-dessus (même modèle serveur, mêmes seuils).
-  const loadSpreadAlerts = () => {
-    try {
-      const raw = JSON.parse(localStorage.getItem(BASKETBALL_SPREAD_KEY) || '[]');
-      const now = Date.now();
-      const cutoff7d = now - 7 * 24 * 3600 * 1000;
-      const valid = raw.filter(a => {
-        const matchTime = new Date(a.date).getTime();
-        if (isNaN(matchTime)) return false;
-        const status = a.status || 'pending';
-        if (status === 'won' || status === 'lost') return matchTime > cutoff7d;
-        if (status === 'accepted' || status === 'rejected') return matchTime > cutoff7d;
-        if (status === 'pending' && (a.odds ?? 0) < BASKETBALL_SPREAD_MIN_ODDS) return false;
-        return matchTime > now;
-      });
-      if (valid.length !== raw.length) persistAlertsKey(BASKETBALL_SPREAD_KEY, valid);
-      setRawSpreadAlerts(valid);
-    } catch { setRawSpreadAlerts([]); }
-  };
-
-  const updateSpreadStatus = (id, status) => {
-    const updated = rawSpreadAlerts.map(a => a.id === id ? {
-      ...a, status,
-      ...(status === 'accepted' && !a.acceptedAt ? { acceptedAt: Date.now(), stakeAmount: stakeAtAccept() } : {})
-    } : a);
-    try { persistAlertsKey(BASKETBALL_SPREAD_KEY, updated); } catch {}
-    setRawSpreadAlerts(updated);
-    if (status === 'accepted') {
-      const a = updated.find(x => x.id === id);
-      if (a) postAcceptedAlertReliably({ ...a, fixtureDate: a.date });
-    }
-    notify();
-  };
-
-  const dismissSpread = (id) => {
-    const updated = rawSpreadAlerts.filter(a => a.id !== id);
-    try { persistAlertsKey(BASKETBALL_SPREAD_KEY, updated); } catch {}
-    setRawSpreadAlerts(updated);
-    notify();
-  };
-
   // Merge backend background alerts into localStorage
   const fetchBackgroundAlerts = syncBackgroundAlerts;
 
@@ -2155,7 +2231,6 @@ export default function PlaceBetPage() {
     loadAlerts();
     loadTotalAlerts();
     loadResultAlerts();
-    loadSpreadAlerts();
     loadBttsAlerts();
     loadFbTotalAlerts();
     loadFbResultAlerts();
@@ -2166,11 +2241,12 @@ export default function PlaceBetPage() {
     fetchBackgroundAlerts();
     syncGameTotalAlerts();
     syncBasketballResultAlerts();
-    syncBasketballSpreadAlerts();
     syncBballPinnacleAlerts();
     syncBballPinnaclePropsAlerts();
     loadBballPinnaclePropsAlertsState();
     syncFootballAlerts();
+    loadOutrightAlerts();
+    syncOutrightAlerts().then(loadOutrightAlerts);
     syncTelegramActions();
     syncOddsDrift().then(loadAlerts);
     applySettlements();
@@ -2179,7 +2255,7 @@ export default function PlaceBetPage() {
       const existing = JSON.parse(localStorage.getItem(ALERT_KEY) || '[]');
       existing.filter(a => a.status === 'accepted').forEach(a => postAcceptedAlertReliably(a));
       // game_total et basketball_result stockent la date dans `date` (pas fixtureDate) — normaliser avant envoi
-      [GAME_TOTAL_KEY, BASKETBALL_RESULT_KEY, BASKETBALL_SPREAD_KEY].forEach(key => {
+      [GAME_TOTAL_KEY, BASKETBALL_RESULT_KEY].forEach(key => {
         const stored = JSON.parse(localStorage.getItem(key) || '[]');
         stored.filter(a => a.status === 'accepted').forEach(a => postAcceptedAlertReliably({ ...a, fixtureDate: a.fixtureDate || a.date }));
       });
@@ -2194,7 +2270,6 @@ export default function PlaceBetPage() {
     window.addEventListener('nba_alerts_updated', loadAlerts);
     window.addEventListener('nba_alerts_updated', loadTotalAlerts);
     window.addEventListener('nba_alerts_updated', loadResultAlerts);
-    window.addEventListener('nba_alerts_updated', loadSpreadAlerts);
     window.addEventListener('fb_btts_alerts_updated', loadBttsAlerts);
     window.addEventListener('fb_total_alerts_updated', loadFbTotalAlerts);
     window.addEventListener('fb_result_alerts_updated', loadFbResultAlerts);
@@ -2203,6 +2278,7 @@ export default function PlaceBetPage() {
     window.addEventListener('fb_dc_ou_alerts_updated', loadDcOuAlerts);
     window.addEventListener('bball_pinnacle_alerts_updated', loadBballPinnacleAlerts);
     window.addEventListener('bball_pinnacle_props_alerts_updated', loadBballPinnaclePropsAlertsState);
+    window.addEventListener('outright_alerts_updated', loadOutrightAlerts);
     // Accept/reject fait depuis Telegram (18 juillet 2026) — sans ça, l'onglet Alertes ne reflétait
     // un clic fait sur le téléphone qu'au prochain polling (jusqu'à 2 min) ou à un refresh manuel,
     // cf. cas réel Jonquel Jones (acceptée sur Telegram, encore visible ici jusqu'à un rechargement
@@ -2210,14 +2286,22 @@ export default function PlaceBetPage() {
     // accept/reject Telegram est traité ; on va chercher la nouvelle action puis on recharge tout.
     const onTelegramSync = () => {
       syncTelegramActions().then(() => {
-        loadAlerts(); loadTotalAlerts(); loadResultAlerts(); loadSpreadAlerts();
+        loadAlerts(); loadTotalAlerts(); loadResultAlerts();
         loadBttsAlerts(); loadFbTotalAlerts(); loadFbResultAlerts(); loadFbPinnacleAlerts();
         loadDcBttsAlerts(); loadDcOuAlerts(); loadBballPinnacleAlerts(); loadBballPinnaclePropsAlertsState();
       });
+      // Outrights accept/reject Telegram géré directement côté backend (_outrightAlerts, pas
+      // recordAction/actionLog) — resync direct suffit, pas besoin de syncTelegramActions ici.
+      syncOutrightAlerts().then(loadOutrightAlerts);
     };
     window.addEventListener('cloud_synced', onTelegramSync);
     // Refresh cotes toutes les 2 min (mouvements de cotes sur alertes en jeu)
-    const timer = setInterval(() => { loadAlerts(); loadTotalAlerts(); loadResultAlerts(); loadSpreadAlerts(); fetchBackgroundAlerts(); syncGameTotalAlerts(); syncBasketballResultAlerts(); syncBasketballSpreadAlerts(); syncBballPinnacleAlerts(); syncBballPinnaclePropsAlerts(); syncFootballAlerts(); syncTelegramActions(); syncOddsDrift().then(loadAlerts); applySettlements(); }, 2 * 60 * 1000);
+    // flushPendingAlertSync() ajouté le 14 août 2026 — avant ça, une acceptation jamais confirmée
+    // côté serveur (échec réseau/restart backend au clic) ne se réessayait qu'au chargement de la
+    // page, jamais pendant qu'elle reste ouverte : trou réel qui a causé un risque de double-pari le
+    // 8 août (voir mémoire project_accept_alert_restart_race_aout8). Même filet que
+    // postAcceptedAlertReliably, juste rejoué à chaque cycle au lieu d'une seule fois au montage.
+    const timer = setInterval(() => { loadAlerts(); loadTotalAlerts(); loadResultAlerts(); fetchBackgroundAlerts(); syncGameTotalAlerts(); syncBasketballResultAlerts(); syncBballPinnacleAlerts(); syncBballPinnaclePropsAlerts(); syncFootballAlerts(); syncOutrightAlerts().then(loadOutrightAlerts); syncTelegramActions(); syncOddsDrift().then(loadAlerts); applySettlements(); flushPendingAlertSync(); }, 2 * 60 * 1000);
     // Aussi au retour sur la page (changement d'onglet / navigation)
     const onVisible = () => { if (document.visibilityState === 'visible') fetchBackgroundAlerts(); };
     document.addEventListener('visibilitychange', onVisible);
@@ -2225,7 +2309,6 @@ export default function PlaceBetPage() {
       window.removeEventListener('nba_alerts_updated', loadAlerts);
       window.removeEventListener('nba_alerts_updated', loadTotalAlerts);
       window.removeEventListener('nba_alerts_updated', loadResultAlerts);
-      window.removeEventListener('nba_alerts_updated', loadSpreadAlerts);
       document.removeEventListener('visibilitychange', onVisible);
       window.removeEventListener('fb_btts_alerts_updated', loadBttsAlerts);
       window.removeEventListener('fb_total_alerts_updated', loadFbTotalAlerts);
@@ -2235,6 +2318,7 @@ export default function PlaceBetPage() {
       window.removeEventListener('fb_dc_ou_alerts_updated', loadDcOuAlerts);
       window.removeEventListener('bball_pinnacle_alerts_updated', loadBballPinnacleAlerts);
       window.removeEventListener('bball_pinnacle_props_alerts_updated', loadBballPinnaclePropsAlertsState);
+      window.removeEventListener('outright_alerts_updated', loadOutrightAlerts);
       window.removeEventListener('cloud_synced', onTelegramSync);
       clearInterval(timer);
     };
@@ -2346,8 +2430,6 @@ export default function PlaceBetPage() {
   const acceptedTotalAlerts   = rawTotalAlerts.filter(a => a.status === 'accepted').sort((a, b) => (b.acceptedAt || 0) - (a.acceptedAt || 0));
   const pendingResultAlerts  = rawResultAlerts.filter(a => a.status === 'pending');
   const acceptedResultAlerts = rawResultAlerts.filter(a => a.status === 'accepted');
-  const pendingSpreadAlerts  = rawSpreadAlerts.filter(a => a.status === 'pending');
-  const acceptedSpreadAlerts = rawSpreadAlerts.filter(a => a.status === 'accepted');
   // Grouper toutes les alertes foot (pending + accepted) par fixtureId — une carte par match
   // La carte apparaît si ≥1 alerte est encore pending, mais montre aussi les accepted en lecture seule
   const _allFoot = [
@@ -2403,11 +2485,13 @@ export default function PlaceBetPage() {
     ...pendingGroups.map(g => ({ type: 'prop',     key: g.key,  date: g.fixtureDate,  data: g })),
     ...pendingTotalAlerts.map(a => ({ type: 'total',    key: a.id,   date: a.fixtureDate,  data: a })),
     ...pendingResultAlerts.map(a => ({ type: 'basketresult', key: a.id, date: a.date,      data: a })),
-    ...pendingSpreadAlerts.map(a => ({ type: 'basketspread', key: a.id, date: a.date,      data: a })),
     ...footballGroups.map(g => ({ type: 'fbgroup', key: g.fixtureId, date: g.fixtureDate, data: g })),
     ...footballSingleAlerts.map(a => ({ type: 'fbsingle', key: a.id, date: a.fixtureDate, data: a })),
     ...bballPinnacleAlerts.filter(a => a.status === 'pending').map(a => ({ type: 'bballpinnacle', key: a.id, date: a.date, data: a })),
     ...bballPinnaclePropsAlerts.filter(a => a.status === 'pending').map(a => ({ type: 'bballpinnacleprops', key: a.id, date: a.date, data: a })),
+    // Outrights n'ont pas de fixtureDate (pari saison entière) — triés par date de génération
+    // (savedAt) plutôt que d'atterrir systématiquement en tête via un fallback epoch 0.
+    ...outrightAlerts.filter(a => a.status === 'pending').map(a => ({ type: 'outright', key: a.id, date: a.savedAt, data: a })),
   ].sort((a, b) => new Date(a.date || 0) - new Date(b.date || 0));
   const wonTotalAlerts      = rawTotalAlerts.filter(a => a.status === 'won').sort((a, b) => (b.acceptedAt || 0) - (a.acceptedAt || 0));
   const lostTotalAlerts     = rawTotalAlerts.filter(a => a.status === 'lost').sort((a, b) => (b.acceptedAt || 0) - (a.acceptedAt || 0));
@@ -2419,7 +2503,7 @@ export default function PlaceBetPage() {
   const wonCount       = wonGroups.length + mixedGroups.length + wonTotalAlerts.length;
   const lostCount      = lostGroups.length + mixedGroups.length + lostTotalAlerts.length;
   const hasResults     = allResultGroups.length > 0 || wonTotalAlerts.length > 0 || lostTotalAlerts.length > 0;
-  const hasHistory     = historyExists || acceptedGroups.length > 0 || acceptedTotalAlerts.length > 0 || acceptedResultAlerts.length > 0 || acceptedSpreadAlerts.length > 0 || hasResults;
+  const hasHistory     = historyExists || acceptedGroups.length > 0 || acceptedTotalAlerts.length > 0 || acceptedResultAlerts.length > 0 || hasResults;
 
   const togglePanel = (panel) => setOpenPanel(p => p === panel ? null : panel);
 
@@ -2453,9 +2537,6 @@ export default function PlaceBetPage() {
     const keptResult = rawResultAlerts.filter(a => a.status !== 'pending');
     try { persistAlertsKey(BASKETBALL_RESULT_KEY, keptResult); } catch {}
     setRawResultAlerts(keptResult);
-    const keptSpread = rawSpreadAlerts.filter(a => a.status !== 'pending');
-    try { persistAlertsKey(BASKETBALL_SPREAD_KEY, keptSpread); } catch {}
-    setRawSpreadAlerts(keptSpread);
     notify();
   };
 
@@ -2495,7 +2576,6 @@ export default function PlaceBetPage() {
             if (item.type === 'prop')     return <PropAlertCard key={item.key} group={item.data} onDismiss={dismiss} onAccept={(ids, bk, odds) => updateStatus(ids, 'accepted', bk, odds)} onReject={ids => updateStatus(ids, 'rejected')} />;
             if (item.type === 'total')    return <GameTotalCard key={item.key} alert={item.data} onAccept={(id, bk, odds) => updateTotalStatus(id, 'accepted', bk, odds)} onReject={id => updateTotalStatus(id, 'rejected')} onDismiss={dismissTotal} />;
             if (item.type === 'basketresult') return <BasketballResultCard key={item.key} alert={item.data} onAccept={id => updateResultStatus(id, 'accepted')} onReject={id => updateResultStatus(id, 'rejected')} onDismiss={dismissResult} />;
-            if (item.type === 'basketspread') return <BasketballSpreadCard key={item.key} alert={item.data} onAccept={id => updateSpreadStatus(id, 'accepted')} onReject={id => updateSpreadStatus(id, 'rejected')} onDismiss={dismissSpread} />;
             if (item.type === 'fbgroup') return <FootballGroupCard key={item.key} group={item.data} onAccept={handleFootballAccept} onReject={handleFootballReject} onDismissAll={handleFootballDismissAll} />;
             if (item.type === 'fbsingle') {
               const cfg = FB_SINGLE_CARD[item.data.type];
@@ -2505,11 +2585,16 @@ export default function PlaceBetPage() {
             }
             if (item.type === 'bballpinnacle') return <BasketballPinnacleEdgeCard key={item.key} alert={item.data} onAccept={(id, bk, odds) => updateBballPinnacleStatus(id, 'accepted', bk, odds)} onReject={id => updateBballPinnacleStatus(id, 'rejected')} onDismiss={dismissBballPinnacle} />;
             if (item.type === 'bballpinnacleprops') return <BasketballPinnaclePropsCard key={item.key} alert={item.data} onAccept={(id, bk, odds) => updateBballPinnaclePropsStatus(id, 'accepted', bk, odds)} onReject={id => updateBballPinnaclePropsStatus(id, 'rejected')} onDismiss={dismissBballPinnacleProps} />;
+            if (item.type === 'outright') {
+              const OutrightCard = item.data.type === 'outright_gap' ? OutrightGapCard : OutrightModelCard;
+              return <OutrightCard key={item.key} alert={item.data} onAccept={acceptOutrightAlert} onReject={rejectOutrightAlert} onDismiss={dismissOutrightAlert} />;
+            }
             return null;
           })}
         </div>
       )}
 
+      <StakeCalculatorWidget items={allPendingItems} />
     </div>
   );
 }

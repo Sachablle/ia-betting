@@ -997,12 +997,58 @@ const BRESIL_TEAM_ALIASES = {
   // Ajouts 21 juillet 2026 — audit complet des 20 clubs Série A, même liste que server.js.
   camineiro: 'mineiro', atleticomineiro: 'mineiro', atleticomg: 'mineiro',
   caparanaense: 'paranaense', athleticoparanaense: 'paranaense', atleticoparanaense: 'paranaense',
+  // Ajout 30 juillet 2026 — "Atletico PR" (forme abrégée Unibet), même cas que server.js.
+  atleticopr: 'paranaense',
   coritibafbc: 'coritiba', coritibapr: 'coritiba',
   ecvitoria: 'vitoria', vitoriaba: 'vitoria',
   gremiofbpa: 'gremio', gremiors: 'gremio',
   crvascodagama: 'vasco', vascodagama: 'vasco', vascodegama: 'vasco',
   // Ajout 23 juillet 2026 — "Clube do Remo" (FD) vs "Remo PA" (bookmakers), même cas que server.js.
   clubederemo: 'remo', remopa: 'remo',
+  // Ajout 6 août 2026 — 3 clubs Big Five (pas Brésil, mais même table de repli générique dans
+  // norm()), miroir de la même correction côté backend (server.js, BRESIL_TEAM_ALIASES).
+  realracingdesantander: 'racingsantander',
+  celtadevigo: 'celtavigo',
+  bayernmunchen: 'bayernmunich',
+  // Ajout 9 août 2026 — 4 clubs Serie A, noms français Betclic vs italiens Pinnacle/FD, miroir de
+  // la même correction côté backend (server.js, BRESIL_TEAM_ALIASES).
+  come: 'como',
+  naples: 'napoli',
+  parme: 'parma',
+  intermilan: 'internazionale',
+  // Ajouts 14 août 2026 — audit complet Unibet Big Five, miroir de la même correction côté backend
+  // (server.js, BRESIL_TEAM_ALIASES) — manquaient ici, cause du "Odds N/D" sur Atlético Madrid
+  // signalé le 19 août. Cibles adaptées par rapport au backend là où nécessaire : le backend ne
+  // fusionne que les bookmakers entre eux (jamais contre le nom football-data.org), alors qu'ici
+  // c'est justement ce nom FD qu'il faut atteindre — vérifié en direct sur les vrais noms FD :
+  // "Club Atlético de Madrid" (pas "Atlético Madrid" tout court) et "Eintracht Frankfurt"
+  // (orthographe anglaise/allemande, pas "Francfort" en français).
+  manunited: 'manchesterunited',
+  mancity: 'manchestercity',
+  atlmadrid: 'atleticodemadrid',
+  atleticomadrid: 'atleticodemadrid', // "Atlético Madrid" (Betclic/Pinnacle) vs "Club Atlético de Madrid" (FD)
+  athbilbao: 'athleticbilbao',
+  rome: 'roma',
+  seville: 'sevilla',
+  lacorogne: 'deportivolacoruna',
+  deportivolacorogne: 'deportivolacoruna',
+  einfrancfort: 'eintrachtfrankfurt', // FD utilise l'orthographe anglaise/allemande, pas "Francfort"
+  hambourg: 'hamburgersv',
+  augsbourg: 'augsburg',
+  // Ajouts 25 août 2026 — miroir de la même correction côté backend (server.js, BRESIL_TEAM_ALIASES),
+  // cas réel : "Odds N/D" persistant sur LOSC-PSG après le fix backend, parce que CETTE table
+  // (utilisée pour faire correspondre l'entrée /api/odds déjà fusionnée au nom de la fixture FD)
+  // n'avait jamais reçu les mêmes ajouts que la table backend — deux copies qui divergent avec le
+  // temps si on ne pense qu'à en corriger une. Mêmes cibles que le backend ici (vérifié : le nom FD
+  // se normalise déjà vers ces cibles après strip fc/club, pas besoin d'adaptation comme atlmadrid/
+  // einfrancfort ci-dessus).
+  barcelone: 'barcelona',
+  parissg: 'parissaintgermain',
+  vienne: 'vienna',
+  nicosie: 'nicosia',
+  salzbourg: 'salzburg',
+  bologne: 'bologna',
+  brightonhove: 'brighton',
 };
 
 function findInTable(table, name) {
@@ -1235,20 +1281,29 @@ function formatUpcomingTime(iso) {
   return new Date(iso).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
 }
 
-function UpcomingList({ team }) {
+// 31 juillet 2026 (demande utilisateur) — remplace l'ancien "team.upcoming" (jamais alimenté nulle
+// part dans l'app, toujours vide) par une vraie source : /api/football/teammatches/:id?status=SCHEDULED,
+// même endpoint que "Derniers résultats". Juste les logos des 5 prochains adversaires alignés (pas
+// de liste détaillée date/lieu — simplifié suite retour utilisateur) ; date en tooltip au survol.
+// Affichage revu en une seule ligne (une équipe à la fois) + bouton de bascule, plutôt que les deux
+// équipes côte à côte — même animation flip (scaleX collapse) que le toggle Pinnacle du Backtesting.
+function UpcomingRow({ teamId, matches }) {
+  if (matches.length === 0) {
+    return <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>Aucun match disponible</span>;
+  }
   return (
-    <div className="upcoming-col">
-      <div className="upcoming-team-header">
-        <TeamLogo name={team.name} logoId={team.logoId} size={18} />
-        <span>{team.short}</span>
-      </div>
-      {team.upcoming.map((m, i) => (
-        <div key={i} className="upcoming-row">
-          <span className="upc-date">{formatUpcomingDate(m.date)} · {formatUpcomingTime(m.date)}</span>
-          <span className={`upc-ha ${m.home ? 'home' : 'away'}`}>{m.home ? 'D' : 'E'}</span>
-          <span className="upc-opp">{m.opponent}</span>
-        </div>
-      ))}
+    <div style={{ display: 'flex', gap: '1.1rem' }}>
+      {matches.slice(0, 5).map((m, i) => {
+        const isHome  = m.homeId === teamId;
+        const opp     = isHome ? m.awayTeam : m.homeTeam;
+        const oppCrest = isHome ? m.awayCrest : m.homeCrest;
+        const dateLabel = `${formatUpcomingDate(m.date)} · ${formatUpcomingTime(m.date)} · ${isHome ? 'Domicile' : 'Extérieur'} vs ${opp}`;
+        return (
+          <div key={i} title={dateLabel}>
+            <TeamLogo name={opp} logoId={oppCrest} size={15} />
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -1305,6 +1360,14 @@ export default function MatchDetailPage() {
   const [cdmPoolAvg,   setCdmPoolAvg]    = useState(null);
   const [homeMatches, setHomeMatches] = useState([]);
   const [awayMatches, setAwayMatches] = useState([]);
+  const [homeUpcoming, setHomeUpcoming] = useState([]);
+  const [awayUpcoming, setAwayUpcoming] = useState([]);
+  const [upcomingSide, setUpcomingSide] = useState('home');
+  const [upcomingFlipping, setUpcomingFlipping] = useState(false);
+  const handleUpcomingToggle = () => {
+    setUpcomingFlipping(true);
+    setTimeout(() => { setUpcomingSide(s => s === 'home' ? 'away' : 'home'); setUpcomingFlipping(false); }, 280);
+  };
   const [footballSnapshot, setFootballSnapshot] = useState(null);
 
   // Extrait en fonction réutilisable pour le bouton refresh manuel (FootballOddsBox) — appelle
@@ -1313,10 +1376,17 @@ export default function MatchDetailPage() {
   const loadOdds = () => {
     if (!fixture) return Promise.resolve();
     const norm = s => {
-      const base = (s || '').toLowerCase()
+      let base = (s || '').toLowerCase()
         .normalize('NFD').replace(/[̀-ͯ]/g, '')
+        .replace(/ø/g, 'o').replace(/å/g, 'a').replace(/æ/g, 'ae');
+      // Alias mot-à-mot (25 août 2026, miroir du fix backend normTeam) — la table n'était cherchée
+      // que sur la chaîne entière une fois les espaces supprimés, donc un nom avec préfixe non listé
+      // ci-dessous (ex: "Rapid Vienne") ne devenait jamais la chaîne exacte "vienne".
+      base = base.replace(/[a-z]+/g, w => CDM_NAME_ALIASES[w] || BRESIL_TEAM_ALIASES[w] || w);
+      base = base
         .replace(/\b(as|fc|sc|rc|ogc|afc|ac|stade|club|island|islands)\b/g, '')
         .replace(/\bst\b/g, 'saint')
+        .replace(/\butd\b/g, 'united')
         .replace(/[^a-z]/g, '');
       return CDM_NAME_ALIASES[base] || BRESIL_TEAM_ALIASES[base] || base;
     };
@@ -1385,8 +1455,18 @@ export default function MatchDetailPage() {
         // et le fetch xG ci-dessous (indépendant, peut résoudre avant ou après) s'écrasent l'un
         // l'autre selon l'ordre d'arrivée au lieu de fusionner (bug trouvé le 22 juillet 2026, xG
         // toujours à 0 malgré une route qui répondait correctement en direct).
-        if (h) { setLiveHomeStats(prev => ({ ...prev, ...h })); cachedFetch(`/api/football/teammatches/${h.id}`, 30 * 60_000).then(d => setHomeMatches(d.matches || [])).catch(() => {}); }
-        if (a) { setLiveAwayStats(prev => ({ ...prev, ...a })); cachedFetch(`/api/football/teammatches/${a.id}`, 30 * 60_000).then(d => setAwayMatches(d.matches || [])).catch(() => {}); }
+        if (h) {
+          setLiveHomeStats(prev => ({ ...prev, ...h }));
+          cachedFetch(`/api/football/teammatches/${h.id}`, 30 * 60_000).then(d => setHomeMatches(d.matches || [])).catch(() => {});
+          // "5 prochains matchs" (31 juillet 2026, demande utilisateur) — même endpoint que
+          // "Derniers résultats", juste status=SCHEDULED + limite à 5 (pas besoin de 30 ici).
+          cachedFetch(`/api/football/teammatches/${h.id}?status=SCHEDULED&limit=5`, 30 * 60_000).then(d => setHomeUpcoming(d.matches || [])).catch(() => {});
+        }
+        if (a) {
+          setLiveAwayStats(prev => ({ ...prev, ...a }));
+          cachedFetch(`/api/football/teammatches/${a.id}`, 30 * 60_000).then(d => setAwayMatches(d.matches || [])).catch(() => {});
+          cachedFetch(`/api/football/teammatches/${a.id}?status=SCHEDULED&limit=5`, 30 * 60_000).then(d => setAwayUpcoming(d.matches || [])).catch(() => {});
+        }
       })
       .catch(() => {});
     // xG/tirs/possession (22 juillet 2026, api-football) — panneau "Statistiques saison", séparé
@@ -1426,7 +1506,7 @@ export default function MatchDetailPage() {
   }, [showLineup]);
 
   const league = fixture ? getLeagueById(fixture.league) : null;
-  const { home, away, venue, weather, h2h, round } = fixture || {};
+  const { home, away, venue, weather, round } = fixture || {};
 
   const isLive  = fixture?.status === 'STATUS_IN_PROGRESS';
   const isFinal = FINAL_STATUSES.has(fixture?.status);
@@ -1693,56 +1773,92 @@ export default function MatchDetailPage() {
           </section>
         )}
 
+        {/* Derniers résultats — déplacé ici le 30 juillet 2026 (demande utilisateur) : à côté de
+            "Statistiques saison" plutôt que sous l'onglet Compositions (showLineup). Frère direct
+            dans .detail-grid (pas de grille imbriquée) pour occuper une colonne pleine comme le
+            reste de la page — la 1ère tentative les avait réduits à un quart de largeur chacun.
+            Données déjà génériques à tous les championnats football-data.org
+            (fdGet('/teams/:id/matches')), pas spécifiques au Brasileirão — seul le placement changeait. */}
+        {showOddsDropdown && (
+          <section className="detail-card compact-card">
+            <h2 className="card-title">Derniers résultats</h2>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1px 1fr', gap: '0 1rem' }}>
+              <div>
+                <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-sub)', marginBottom: '0.4rem' }}>{home.short}</div>
+                {homeMatches.length > 0
+                  ? homeMatches.slice(0, 6).map((m, i) => <RecentMatchLine key={i} match={m} teamId={liveHomeStats?.id} />)
+                  : <div style={{ fontSize: 11, color: 'var(--text-dim)' }}>Aucun match disponible</div>}
+              </div>
+              <div style={{ background: 'var(--border)' }} />
+              <div>
+                <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-sub)', marginBottom: '0.4rem' }}>{away.short}</div>
+                {awayMatches.length > 0
+                  ? awayMatches.slice(0, 6).map((m, i) => <RecentMatchLine key={i} match={m} teamId={liveAwayStats?.id} />)
+                  : <div style={{ fontSize: 11, color: 'var(--text-dim)' }}>Aucun match disponible</div>}
+              </div>
+            </div>
+          </section>
+        )}
+
         {showLineup && (homeMatches.length > 0 || awayMatches.length > 0) && (() => {
           const awayId = liveAwayStats?.id;
-          const homeId = liveHomeStats?.id;
           const realH2H = homeMatches
             .filter(m => m.homeId === awayId || m.awayId === awayId)
             .slice(0, 5)
             .map(m => ({ date: m.date.split('T')[0], home: m.homeTeam, away: m.awayTeam, scoreHome: m.scoreHome, scoreAway: m.scoreAway }));
-          return (
-            <>
-              <section className="detail-card compact-card">
-                <h2 className="card-title">Derniers résultats</h2>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1px 1fr', gap: '0 1rem' }}>
-                  <div>
-                    <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-sub)', marginBottom: '0.4rem' }}>{home.short}</div>
-                    {homeMatches.slice(0, 6).map((m, i) => <RecentMatchLine key={i} match={m} teamId={homeId} />)}
-                  </div>
-                  <div style={{ background: 'var(--border)' }} />
-                  <div>
-                    <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-sub)', marginBottom: '0.4rem' }}>{away.short}</div>
-                    {awayMatches.slice(0, 6).map((m, i) => <RecentMatchLine key={i} match={m} teamId={awayId} />)}
-                  </div>
-                </div>
-              </section>
-              {realH2H.length > 0 && (
-                <CollapsibleCard title="Confrontations directes (réelles)" className="h2h-card">
-                  <div className="h2h-list">
-                    {realH2H.map((m, i) => <H2HRow key={i} match={m} />)}
-                  </div>
-                </CollapsibleCard>
-              )}
-            </>
+          return realH2H.length > 0 && (
+            <CollapsibleCard title="Confrontations directes (réelles)" className="h2h-card">
+              <div className="h2h-list">
+                {realH2H.map((m, i) => <H2HRow key={i} match={m} />)}
+              </div>
+            </CollapsibleCard>
           );
         })()}
 
-        {showLineup && (
-          <CollapsibleCard title="5 prochains matchs" className="upcoming-card">
-            <div className="upcoming-grid">
-              <UpcomingList team={home} />
-              <UpcomingList team={away} />
-            </div>
-          </CollapsibleCard>
-        )}
+        {showLineup && (() => {
+          const upTeam    = upcomingSide === 'home' ? home : away;
+          const upTeamId  = upcomingSide === 'home' ? liveHomeStats?.id : liveAwayStats?.id;
+          const upMatches = upcomingSide === 'home' ? homeUpcoming : awayUpcoming;
+          return (
+            <section className="detail-card upcoming-card">
+              <div className="upcoming-header-row">
+                <span className="card-title upcoming-title-with-logo">
+                  5 prochains matchs
+                  <span
+                    style={{
+                      transition: 'transform 0.28s ease, opacity 0.28s ease',
+                      transform: upcomingFlipping ? 'scaleX(0)' : 'scaleX(1)',
+                      opacity: upcomingFlipping ? 0 : 1,
+                      display: 'inline-flex',
+                    }}
+                  >
+                    <TeamLogo name={upTeam.name} logoId={upTeam.logoId} size={16} />
+                  </span>
+                </span>
+                <div className="upcoming-header-right">
+                  <div
+                    className="upcoming-flip-wrap"
+                    style={{
+                      transition: 'transform 0.28s ease, opacity 0.28s ease',
+                      transform: upcomingFlipping ? 'scaleX(0)' : 'scaleX(1)',
+                      opacity: upcomingFlipping ? 0 : 1,
+                    }}
+                  >
+                    <UpcomingRow teamId={upTeamId} matches={upMatches} />
+                  </div>
+                  <button
+                    className="upcoming-toggle-btn"
+                    onClick={handleUpcomingToggle}
+                    title={`Voir les prochains matchs de ${upcomingSide === 'home' ? away.short : home.short}`}
+                  >
+                    ⇄
+                  </button>
+                </div>
+              </div>
+            </section>
+          );
+        })()}
 
-        {showLineup && (
-          <CollapsibleCard title="Confrontations directes" className="h2h-card">
-            <div className="h2h-list">
-              {[...h2h].reverse().map((m, i) => <H2HRow key={i} match={m} />)}
-            </div>
-          </CollapsibleCard>
-        )}
 
 
       </div>

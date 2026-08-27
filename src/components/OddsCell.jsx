@@ -14,15 +14,15 @@ export function EdgeBadge({ val }) {
 export function OddsCell({ value, edge, isPinnacle, fairProb, color, trend }) {
   if (value == null) return <div style={{ textAlign: 'center', color: 'var(--text-dim)' }}>—</div>;
   return (
-    <div style={{ textAlign: 'center' }}>
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
       <span style={{ fontWeight: isPinnacle ? 700 : 500, fontVariantNumeric: 'tabular-nums', fontSize: 11, color: isPinnacle ? '#60a5fa' : (color ?? undefined) }}>
         {value.toFixed(2)}
       </span>
-      {trend && (
-        <span style={{ fontSize: 8, marginLeft: 5, color: trend === 'up' ? '#4ade80' : '#f87171' }} title={trend === 'up' ? 'Cote en hausse' : 'Cote en baisse'}>
-          {trend === 'up' ? '▲' : '▼'}
-        </span>
-      )}
+      {/* Emplacement toujours réservé (même sans tendance) — sinon la présence/absence de la
+          flèche décale le centrage de la cote elle-même d'une ligne à l'autre (30 juillet 2026). */}
+      <span style={{ fontSize: 8, marginLeft: 5, width: 8, flexShrink: 0, display: 'inline-block', color: trend === 'up' ? '#4ade80' : '#f87171' }} title={trend === 'up' ? 'Cote en hausse' : trend === 'down' ? 'Cote en baisse' : undefined}>
+        {trend === 'up' ? '▲' : trend === 'down' ? '▼' : ''}
+      </span>
       {!isPinnacle && <EdgeBadge val={edge} />}
     </div>
   );

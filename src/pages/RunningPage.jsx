@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { BBALL_FIXTURES } from '../utils/basketball';
-import { syncBackgroundAlerts, syncSettlements, syncGameTotalAlerts, syncBballPinnacleAlerts, syncBasketballResultAlerts, syncBasketballSpreadAlerts, syncOddsDrift, syncFootballAlerts, resolveCompletedFootballAlerts, postAcceptedAlertReliably, persistAlertsKey, FB_DC_BTTS_KEY, FB_DC_OU_KEY, syncTelegramActions } from '../utils/syncAlerts';
+import { syncBackgroundAlerts, syncSettlements, syncGameTotalAlerts, syncBballPinnacleAlerts, syncBasketballResultAlerts, syncOddsDrift, syncFootballAlerts, resolveCompletedFootballAlerts, postAcceptedAlertReliably, persistAlertsKey, FB_DC_BTTS_KEY, FB_DC_OU_KEY, syncTelegramActions } from '../utils/syncAlerts';
 import { setItem as cloudSet } from '../utils/cloudStorage';
 import { cachedFetch } from '../utils/fetchCache';
 
@@ -9,7 +9,6 @@ const ALERT_KEY      = 'nba_prop_alerts';
 const HISTORY_KEY    = 'nba_bet_history';
 const GAME_TOTAL_KEY = 'nba_game_total_alerts';
 const BASKETBALL_RESULT_KEY = 'basketball_result_alerts';
-const BASKETBALL_SPREAD_KEY = 'basketball_spread_alerts';
 const BBALL_PINNACLE_KEY = 'bball_pinnacle_alerts';
 const FB_BTTS_KEY    = 'fb_btts_alerts';
 const FB_TOTAL_KEY   = 'fb_total_alerts';
@@ -100,7 +99,7 @@ function groupAlerts(raw) {
     if (a.probDropWarning) { map[key].probDropWarning = true; map[key].currentProbability = a.currentProbability; map[key].driftReason = a.driftReason ?? null; }
     const entry = {
       stat: a.stat, direction: a.direction, line: a.line,
-      estimate: a.estimate, probability: a.probability,
+      estimate: a.estimate, probability: a.probability, rawProbability: a.rawProbability ?? null,
       unibetOdds: a.unibetOdds, betclicOdds: a.betclicOdds, winamaxOdds: a.winamaxOdds,
       acceptedUnibetOdds: a.acceptedUnibetOdds ?? null,
       acceptedBetclicOdds: a.acceptedBetclicOdds ?? null,
@@ -173,33 +172,6 @@ function resultAlertToGroup(a) {
   };
 }
 
-// Convertit une alerte Écart H2H basket (Handicap, 9 juillet 2026, PlaceBetPage /
-// BASKETBALL_SPREAD_KEY) en objet "groupe" — même principe que resultAlertToGroup ci-dessus.
-function spreadAlertToGroup(a) {
-  const isUnibet = a.bookmaker === 'unibet';
-  const isBetclic = a.bookmaker === 'betclic';
-  return {
-    key: `bspread__${a.id}`, type: 'basketball_spread',
-    player: 'Écart H2H', team: null, fixture: `${a.home} vs ${a.away}`,
-    fixtureDate: a.date, homeTeam: a.home || null, awayTeam: a.away || null,
-    homeShort: a.homeShort || null, awayShort: a.awayShort || null,
-    eventId: a.eventId || null, league: a.league || 'nba',
-    stats: [{
-      stat: 'spread', direction: a.direction, line: a.line,
-      estimate: null, probability: a.probability,
-      unibetOdds: isUnibet ? a.odds : null, betclicOdds: isBetclic ? a.odds : null, winamaxOdds: null,
-      acceptedUnibetOdds: isUnibet ? a.odds : null,
-      acceptedBetclicOdds: isBetclic ? a.odds : null,
-      acceptedWinamaxOdds: null,
-      stakeAmount: a.stakeAmount ?? null,
-    }],
-    maxProb: a.probability || 0, ids: [a.id],
-    status: a.status || 'pending', acceptedAt: a.acceptedAt || 0,
-    acceptedBookmaker: a.bookmaker || null,
-    probDropWarning: a.probDropWarning || false, currentProbability: a.currentProbability ?? null,
-    matchCorrelation: a.matchCorrelation || null,
-  };
-}
 
 // Convertit une alerte "Value Bet vs Pinnacle" basket (bball_pinnacle_alerts, WNBA Total
 // uniquement) en objet "groupe" — même structure que totalAlertToGroup, mais stat: 'pinnacle_edge'
@@ -571,10 +543,6 @@ function AlertCard({ group, playerStats, onDismiss, onEditStake }) {
           <span style={{ fontSize: 11, fontWeight: 700, color: '#22d3ee', flexShrink: 0 }}>
             💎 {s.direction === 'draw' ? 'Nul' : s.direction === 'home' ? (group.homeShort || group.homeTeam) : (group.awayShort || group.awayTeam)}
           </span>
-        ) : s && s.stat === 'spread' ? (
-          <span style={{ fontSize: 11, fontWeight: 700, color: '#fbbf24', flexShrink: 0 }}>
-            ▲ {s.direction === 'home' ? (group.homeShort || group.homeTeam) : (group.awayShort || group.awayTeam)} {s.line > 0 ? '+' : ''}{s.line}
-          </span>
         ) : s && (s.stat === 'dc_btts' || s.stat === 'dc_ou') ? null : s && (
           <span style={{ fontSize: 11, fontWeight: 700, color: s.direction === 'over' ? '#4ade80' : '#f87171', flexShrink: 0 }}>
             {s.direction === 'over' ? '▲' : '▼'} {s.line} {STAT_LABEL[s.stat] ?? s.stat}
@@ -623,6 +591,12 @@ function AlertCard({ group, playerStats, onDismiss, onEditStake }) {
           );
         })()}
         <span style={{ fontSize: 10, fontWeight: 800, color: '#60a5fa', minWidth: 28, textAlign: 'right' }}>{group.maxProb}%</span>
+        {/* Vraie confiance du modèle (2 août 2026) — voir même logique côté PlaceBetPage.jsx */}
+        {s?.rawProbability != null && Math.abs(s.rawProbability - group.maxProb) >= 3 && (
+          <span title="Confiance réelle du modèle avant le plafond de méfiance (déclenché quand l'estimation s'écarte de plus de 25% de la ligne)" style={{ fontSize: 9, fontWeight: 700, color: 'var(--text-dim)', flexShrink: 0 }}>
+            (réel {s.rawProbability}%)
+          </span>
+        )}
         {group.probDropWarning && (
           <span
             title={`Recalculé depuis l'acceptation : ${group.currentProbability}% (était ${group.maxProb}%)${group.driftReason ? `\n${group.driftReason}` : ''}`}
@@ -758,9 +732,6 @@ export default function RunningPage() {
   const [rawResultAlerts, setRawResultAlerts] = useState(() => {
     try { return JSON.parse(localStorage.getItem(BASKETBALL_RESULT_KEY) || '[]'); } catch { return []; }
   });
-  const [rawSpreadAlerts, setRawSpreadAlerts] = useState(() => {
-    try { return JSON.parse(localStorage.getItem(BASKETBALL_SPREAD_KEY) || '[]'); } catch { return []; }
-  });
   const [bttsAlerts, setBttsAlerts] = useState(() => {
     try { return JSON.parse(localStorage.getItem(FB_BTTS_KEY) || '[]'); } catch { return []; }
   });
@@ -791,7 +762,6 @@ export default function RunningPage() {
       try { setRawAlerts(JSON.parse(localStorage.getItem(ALERT_KEY) || '[]')); } catch {}
       try { setRawTotalAlerts(JSON.parse(localStorage.getItem(GAME_TOTAL_KEY) || '[]')); } catch {}
       try { setRawResultAlerts(JSON.parse(localStorage.getItem(BASKETBALL_RESULT_KEY) || '[]')); } catch {}
-      try { setRawSpreadAlerts(JSON.parse(localStorage.getItem(BASKETBALL_SPREAD_KEY) || '[]')); } catch {}
       try { setBballPinnacleAlerts(JSON.parse(localStorage.getItem(BBALL_PINNACLE_KEY) || '[]')); } catch {}
     };
     const reloadFootball = () => {
@@ -813,7 +783,6 @@ export default function RunningPage() {
     syncBackgroundAlerts().then(reloadFromStorage);
     syncGameTotalAlerts().then(reloadFromStorage);
     syncBasketballResultAlerts().then(reloadFromStorage);
-    syncBasketballSpreadAlerts().then(reloadFromStorage);
     syncBballPinnacleAlerts().then(reloadFromStorage);
     syncOddsDrift().then(reloadFromStorage);
     syncFootballAlerts().then(reloadFootball);
@@ -822,11 +791,16 @@ export default function RunningPage() {
       syncBackgroundAlerts().then(reloadFromStorage);
       syncGameTotalAlerts().then(reloadFromStorage);
       syncBasketballResultAlerts().then(reloadFromStorage);
-      syncBasketballSpreadAlerts().then(reloadFromStorage);
       syncBballPinnacleAlerts().then(reloadFromStorage);
       syncOddsDrift().then(reloadFromStorage);
       syncFootballAlerts().then(reloadFootball);
       syncTelegramActions().then(reloadFromStorage);
+      // Ajouté le 14 août 2026 — syncSettlements() (donc flushPendingAlertSync()) n'était rejoué
+      // qu'une fois au montage de la page, jamais dans ce cycle 2min : une acceptation jamais
+      // confirmée côté serveur (échec réseau/restart backend au clic) restait bloquée en file
+      // d'attente tant que la page n'était pas rechargée — trou réel derrière le risque de
+      // double-pari du 8 août (project_accept_alert_restart_race_aout8).
+      syncSettlements().then(reloadFromStorage);
     }, 2 * 60 * 1000);
 
     // Filet de rattrapage : renvoie au backend les alertes accepted qui n'auraient pas
@@ -880,7 +854,6 @@ export default function RunningPage() {
   const acceptedGroups = groups.filter(g => g.status === 'accepted');
   const acceptedTotalGroups = rawTotalAlerts.filter(a => a.status === 'accepted').map(totalAlertToGroup);
   const acceptedResultGroups = rawResultAlerts.filter(a => a.status === 'accepted').map(resultAlertToGroup);
-  const acceptedSpreadGroups = rawSpreadAlerts.filter(a => a.status === 'accepted').map(spreadAlertToGroup);
   const acceptedBballPinnacle = bballPinnacleAlerts.filter(a => a.status === 'accepted').map(bballPinnacleAlertToGroup);
   const acceptedBtts = bttsAlerts.filter(a => a.status === 'accepted');
   const acceptedFbTotal = fbTotalAlerts.filter(a => a.status === 'accepted');
@@ -890,7 +863,7 @@ export default function RunningPage() {
   const acceptedDcBtts = dedupFootballDC(dcBttsAlerts.filter(a => a.status === 'accepted'));
   const acceptedDcOu   = dedupFootballDC(dcOuAlerts.filter(a => a.status === 'accepted'));
   const footballGroups = [...acceptedBtts.map(footballAlertToGroup), ...acceptedFbTotal.map(footballAlertToGroup), ...acceptedFbResult.map(footballAlertToGroup), ...acceptedFbPinnacle.map(footballAlertToGroup), ...acceptedDcBtts.map(footballAlertToGroup), ...acceptedDcOu.map(footballAlertToGroup)];
-  const allAcceptedGroups = [...acceptedGroups, ...acceptedTotalGroups, ...acceptedResultGroups, ...acceptedSpreadGroups, ...acceptedBballPinnacle, ...footballGroups];
+  const allAcceptedGroups = [...acceptedGroups, ...acceptedTotalGroups, ...acceptedResultGroups, ...acceptedBballPinnacle, ...footballGroups];
   const matchGroups = groupByMatch(allAcceptedGroups);
   const liveStats = useLiveBoxscore(acceptedGroups);
   const { scores: scoreData, loaded: scoresLoaded } = useLiveScores(matchGroups);
@@ -920,13 +893,6 @@ export default function RunningPage() {
       const updated = rawResultAlerts.map(a => idSet.has(a.id) ? { ...a, status: 'void' } : a);
       try { persistAlertsKey(BASKETBALL_RESULT_KEY, updated); } catch {}
       setRawResultAlerts(updated);
-      return;
-    }
-    if (group?.type === 'basketball_spread') {
-      const idSet = new Set(ids);
-      const updated = rawSpreadAlerts.map(a => idSet.has(a.id) ? { ...a, status: 'void' } : a);
-      try { persistAlertsKey(BASKETBALL_SPREAD_KEY, updated); } catch {}
-      setRawSpreadAlerts(updated);
       return;
     }
     if (group?.type === 'football_btts') { dismissBtts(group.ids[0]); return; }
@@ -990,11 +956,6 @@ export default function RunningPage() {
       const updated = rawResultAlerts.map(patch);
       try { persistAlertsKey(BASKETBALL_RESULT_KEY, updated); } catch {}
       setRawResultAlerts(updated); postIfNeeded(updated); return;
-    }
-    if (group?.type === 'basketball_spread') {
-      const updated = rawSpreadAlerts.map(patch);
-      try { persistAlertsKey(BASKETBALL_SPREAD_KEY, updated); } catch {}
-      setRawSpreadAlerts(updated); postIfNeeded(updated); return;
     }
     if (group?.type === 'football_btts') {
       const updated = bttsAlerts.map(patch);
@@ -1111,7 +1072,7 @@ export default function RunningPage() {
               </div>
             )}
             {scheduledGroups.length > 0 && (
-              <div style={{ position: 'fixed', bottom: 24, left: 236, zIndex: 200, display: 'flex', flexDirection: 'row', flexWrap: 'wrap', gap: '0.4rem', maxWidth: '70vw' }}>
+              <div style={{ position: 'fixed', bottom: 24, left: 16, right: 24, zIndex: 200, display: 'flex', flexDirection: 'row', flexWrap: 'nowrap', overflowX: 'auto', gap: '0.4rem', paddingBottom: 4 }}>
                 {scheduledGroups.map(m => (
                   <div key={m.matchKey} style={{ width: 340 }}>
                     <MatchGroup match={m} scoreData={scoreData[m.matchKey] || null} liveStats={liveStats} onDismiss={dismiss} onEditStake={updateStake} />

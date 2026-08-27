@@ -3,7 +3,7 @@ import { BrowserRouter, Routes, Route, Navigate, useParams, useNavigate, useLoca
 import LeftNav from './components/LeftNav';
 import StarField from './components/StarField';
 import DashboardPage from './pages/DashboardPage';
-import { syncSettlements, syncBackgroundAlerts, syncGameTotalAlerts, syncBasketballResultAlerts, syncFootballAlerts } from './utils/syncAlerts';
+import { syncSettlements, syncBackgroundAlerts, syncGameTotalAlerts, syncBasketballResultAlerts, syncFootballAlerts, syncOutrightAlerts } from './utils/syncAlerts';
 import { loadFromCloud } from './utils/cloudStorage';
 import { cachedFetch } from './utils/fetchCache';
 
@@ -60,8 +60,10 @@ function purgeAlerts() {
 const FB_ALERT_KEYS = ['fb_btts_alerts', 'fb_total_alerts', 'fb_result_alerts', 'fb_dc_btts_alerts', 'fb_dc_ou_alerts'];
 const FB_ALERT_EVENTS = ['fb_btts_alerts_updated', 'fb_total_alerts_updated', 'fb_result_alerts_updated'];
 
+const OUTRIGHT_ALERTS_KEY = 'outright_alerts';
+
 function useAlertCount() {
-  const [counts, setCounts] = useState({ total: 0, basket: 0, foot: 0 });
+  const [counts, setCounts] = useState({ total: 0, basket: 0, foot: 0, outright: 0 });
   const refresh = () => {
     let basket = 0;
     try {
@@ -113,11 +115,19 @@ function useAlertCount() {
       });
     } catch {}
 
-    setCounts({ total: basket + foot, basket, foot });
+    // Outrights (28 juillet 2026) — pas de fixtureDate (pari saison entière), juste le statut.
+    let outright = 0;
+    try {
+      const raw = JSON.parse(localStorage.getItem(OUTRIGHT_ALERTS_KEY) || '[]');
+      outright = raw.filter(a => (a.status || 'pending') === 'pending').length;
+    } catch {}
+
+    setCounts({ total: basket + foot, basket, foot, outright });
   };
   useEffect(() => {
     refresh();
     window.addEventListener('nba_alerts_updated', refresh);
+    window.addEventListener('outright_alerts_updated', refresh);
     FB_ALERT_EVENTS.forEach(e => window.addEventListener(e, refresh));
     const tick = setInterval(refresh, 60_000);
 
@@ -127,6 +137,7 @@ function useAlertCount() {
       syncGameTotalAlerts();
       syncBasketballResultAlerts();
       syncFootballAlerts();
+      syncOutrightAlerts();
     };
 
     const cloudSync = () => loadFromCloud().then(() => { refresh(); syncAll(); window.dispatchEvent(new Event('cloud_synced')); });
@@ -170,6 +181,7 @@ function useAlertCount() {
 
     return () => {
       window.removeEventListener('nba_alerts_updated', refresh);
+      window.removeEventListener('outright_alerts_updated', refresh);
       FB_ALERT_EVENTS.forEach(e => window.removeEventListener(e, refresh));
       clearInterval(tick);
       clearInterval(syncTick);
@@ -183,7 +195,6 @@ function useAlertCount() {
 
 const importMatchDetail     = () => import('./pages/MatchDetailPage');
 const importBasketballDetail = () => import('./pages/BasketballDetailPage');
-const importMlbDetail       = () => import('./pages/MlbDetailPage');
 const importPlaceBet        = () => import('./pages/PlaceBetPage');
 const importRunning         = () => import('./pages/RunningPage');
 const importBacktesting     = () => import('./pages/BacktestingPage');
@@ -191,10 +202,10 @@ const importWorldMap        = () => import('./pages/WorldMapPage');
 const importDatabaseMap     = () => import('./pages/DatabaseMapPage');
 const importPlayerLines     = () => import('./pages/PlayerLinesPage');
 const importOutrights       = () => import('./pages/OutrightsPage');
+const importOutrightComp    = () => import('./pages/OutrightCompetitionPage');
 
 const MatchDetailPage      = lazy(importMatchDetail);
 const BasketballDetailPage = lazy(importBasketballDetail);
-const MlbDetailPage        = lazy(importMlbDetail);
 const PlaceBetPage         = lazy(importPlaceBet);
 const RunningPage          = lazy(importRunning);
 const BacktestingPage      = lazy(importBacktesting);
@@ -202,6 +213,7 @@ const WorldMapPage         = lazy(importWorldMap);
 const DatabaseMapPage      = lazy(importDatabaseMap);
 const PlayerLinesPage      = lazy(importPlayerLines);
 const OutrightsPage        = lazy(importOutrights);
+const OutrightCompetitionPage = lazy(importOutrightComp);
 const UtilisationPage      = lazy(() => import('./pages/UtilisationPage'));
 const AnalyserPage         = lazy(() => import('./pages/AnalyserPage'));
 const SportsPage           = lazy(() => import('./pages/SportsPage'));
@@ -233,7 +245,7 @@ export function preloadPage(path) {
   else if (path.includes('carte'))      importWorldMap();
   else if (path.includes('effectif'))   importDatabaseMap();
   else if (path.includes('/player/'))   importPlayerLines();
-  else if (path.includes('outrights'))  importOutrights();
+  else if (path.includes('outrights'))  { importOutrights(); importOutrightComp(); }
   else if (path.includes('basketball')) importBasketballDetail();
   else if (path.includes('football'))   importMatchDetail();
 }
@@ -321,7 +333,13 @@ function StatsHolo() {
 
 function ScrollToTop() {
   const { pathname } = useLocation();
-  useEffect(() => { window.scrollTo(0, 0); }, [pathname]);
+  useEffect(() => {
+    window.scrollTo(0, 0);
+    // Le vrai conteneur scrollable est .app-main (overflow-y:auto), pas window — sans ce reset,
+    // changer de page en étant scrollé provoque un clamp brutal du scrollTop au montage de la
+    // nouvelle page (plus courte), visible comme un sursaut vertical juste avant le fondu d'entrée.
+    document.querySelector('.app-main')?.scrollTo(0, 0);
+  }, [pathname]);
   return null;
 }
 
@@ -359,7 +377,6 @@ export default function App() {
               <Route path="/dashboard" element={<DashboardPage />} />
               <Route path="/sports" element={<Navigate to="/carte" replace />} />
               <Route path="/football/:id" element={<MatchDetailPage />} />
-              <Route path="/mlb/:id" element={<MlbDetailPage />} />
               <Route path="/basketball/:id" element={<BasketballDetailRoute />} />
               <Route path="/basketball/:id/player/:playerName" element={<PlayerLinesRoute />} />
               <Route path="/placebet" element={<PlaceBetPage />} />
@@ -369,6 +386,7 @@ export default function App() {
               <Route path="/utilisation" element={<UtilisationPage />} />
               <Route path="/backtesting" element={<BacktestingPage />} />
               <Route path="/outrights" element={<OutrightsPage />} />
+              <Route path="/outrights/:compKey" element={<OutrightCompetitionPage />} />
               <Route path="/carte" element={<WorldMapPage />} />
             </Routes>
           </Suspense>

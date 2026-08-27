@@ -79,6 +79,7 @@ function AlertesGroup({ alertCounts, isLinkActive }) {
         >
           Alertes
           {total > 0 && <span className="topbar-badge" style={badgeStyle}>{total}</span>}
+          {alertCounts.outright > 0 && <span className="topbar-badge" style={{ background: '#60a5fa' }}>{alertCounts.outright}</span>}
         </span>
         <button
           onClick={e => { e.stopPropagation(); setOpen(o => !o); }}
@@ -174,7 +175,7 @@ function AnalyserCards() {
   );
 }
 
-export default function LeftNav({ alertCounts = { total: 0, basket: 0, foot: 0 } }) {
+export default function LeftNav({ alertCounts = { total: 0, basket: 0, foot: 0, outright: 0 } }) {
   const location = useLocation();
   const isLinkActive = (to) => {
     const [path, query] = to.split('?');

@@ -45,6 +45,32 @@ const ALERT_STORAGE_KEYS = [
   'fb_pinnacle_alerts', 'bball_pinnacle_alerts', 'bball_pinnacle_props_alerts',
 ];
 
+// Split par bookmaker (14 août 2026) — décision explicite de l'utilisateur : les perfs joueurs
+// (props) sont le plus souvent prises sur Unibet, tout le reste (foot, résultat/écart/total équipe,
+// outrights) sur Betclic. `bookmakerForType` reste le repli par défaut pour les ~8 vieux paris du
+// registre sans `acceptedBookmaker` fiable.
+// Fix 18 août 2026 — un pari perso (Ogunbowale, prop pts) réellement pris sur Betclic était compté
+// dans le solde Unibet : la règle par type ignorait `acceptedBookmaker`, pourtant déjà posé et fiable
+// sur la quasi-totalité du registre depuis le 1er août. `resolveBookmaker` privilégie maintenant le
+// vrai bookmaker de chaque pari, ne retombe sur la règle par type que si absent.
+export const BOOKMAKER_LABELS = { betclic: 'Betclic', unibet: 'Unibet' };
+export function bookmakerForType(type) {
+  return type === 'player_prop' ? 'unibet' : 'betclic';
+}
+export function resolveBookmaker(type, acceptedBookmaker) {
+  if (acceptedBookmaker === 'unibet' || acceptedBookmaker === 'betclic') return acceptedBookmaker;
+  return bookmakerForType(type);
+}
+function bookmakerForAlertKey(key) {
+  return /prop/i.test(key) ? 'unibet' : 'betclic';
+}
+
+// Soldes réels constatés sur les comptes bookmaker le 14 août 2026 — point de départ du suivi séparé
+// par BK. Pas de reconstitution rétroactive de l'historique (8 vieux paris sans bookmaker fiable,
+// et d'anciennes corrections manuelles de mise auraient pu faire dériver un rejeu complet loin des
+// vrais soldes) : seuls les paris réglés APRÈS cette date répartissent leur gain/perte par BK.
+const BALANCE_SEED = { betclic: 1210, unibet: 100 };
+
 function dateKey(iso) {
   const d = new Date(iso);
   if (isNaN(d.getTime())) return null;
@@ -60,19 +86,21 @@ function dateKey(iso) {
 // Austin 2026-07-16T23:00Z, acceptées la même soirée, 16 juillet 2026).
 export function getEngagedToday(iso) {
   const target = dateKey(iso ?? new Date().toISOString());
-  if (!target) return { total: 0, stakes: [] };
+  if (!target) return { total: 0, stakes: [], byBookmaker: { betclic: 0, unibet: 0 } };
   const stakes = [];
+  const byBookmaker = { betclic: 0, unibet: 0 };
   for (const key of ALERT_STORAGE_KEYS) {
+    const bk = bookmakerForAlertKey(key);
     try {
       const arr = JSON.parse(localStorage.getItem(key) || '[]');
       for (const a of arr) {
         if (a.status !== 'accepted') continue;
         if (dateKey(a.acceptedAt) !== target) continue;
-        if (typeof a.stakeAmount === 'number' && a.stakeAmount > 0) stakes.push(a.stakeAmount);
+        if (typeof a.stakeAmount === 'number' && a.stakeAmount > 0) { stakes.push(a.stakeAmount); byBookmaker[bk] += a.stakeAmount; }
       }
     } catch { /* clé absente ou format inattendu — ignorée */ }
   }
-  return { total: stakes.reduce((s, v) => s + v, 0), stakes };
+  return { total: stakes.reduce((s, v) => s + v, 0), stakes, byBookmaker };
 }
 
 // Total réellement bloqué en ce moment sur des paris encore en attente de résultat (statut
@@ -83,16 +111,18 @@ export function getEngagedToday(iso) {
 // "logique" avec 50€ engagés = 650€ réellement visibles sur Betclic tant que le pari n'est pas réglé).
 export function getEngagedPending() {
   const stakes = [];
+  const byBookmaker = { betclic: 0, unibet: 0 };
   for (const key of ALERT_STORAGE_KEYS) {
+    const bk = bookmakerForAlertKey(key);
     try {
       const arr = JSON.parse(localStorage.getItem(key) || '[]');
       for (const a of arr) {
         if (a.status !== 'accepted') continue;
-        if (typeof a.stakeAmount === 'number' && a.stakeAmount > 0) stakes.push(a.stakeAmount);
+        if (typeof a.stakeAmount === 'number' && a.stakeAmount > 0) { stakes.push(a.stakeAmount); byBookmaker[bk] += a.stakeAmount; }
       }
     } catch { /* clé absente ou format inattendu — ignorée */ }
   }
-  return { total: stakes.reduce((s, v) => s + v, 0), stakes };
+  return { total: stakes.reduce((s, v) => s + v, 0), stakes, byBookmaker };
 }
 
 export function getBracketLabel(bk) {
@@ -106,7 +136,8 @@ const DEFAULT_STATE = () => ({
   startAmount: 250,
   startDate: new Date().toISOString(),
   current: 250,
-  history: [], // { date, type: 'win'|'loss'|'reset', stake, odds, profit, balanceAfter, betId?, betLabel? }
+  balances: { betclic: 250, unibet: 0 }, // cas fictif (aucun état existant) — cf. BALANCE_SEED pour la vraie migration
+  history: [], // { date, type: 'win'|'loss'|'reset', stake, odds, profit, balanceAfter, betId?, betLabel?, bookmaker? }
   processedIds: [], // ids des paris bet-history déjà appliqués — évite le double-comptage à l'auto-sync
   baselineSeeded: false, // cf. seedBaselineIfNeeded()
 });
@@ -119,6 +150,14 @@ export function loadBankrollState() {
     if (!parsed || typeof parsed.current !== 'number') return DEFAULT_STATE();
     if (!Array.isArray(parsed.processedIds)) parsed.processedIds = [];
     if (typeof parsed.baselineSeeded !== 'boolean') parsed.baselineSeeded = false;
+    // Migration split par bookmaker (14 août 2026) — état pré-existant sans `balances` : on seede les
+    // vrais soldes du jour plutôt que de rejouer l'historique (cf. commentaire BALANCE_SEED). Non
+    // persisté ici (juste en mémoire) — deviendra définitif au premier saveBankrollState() qui suit,
+    // sans risque à rejouer ce bloc plusieurs fois entretemps (mêmes valeurs à chaque fois).
+    if (!parsed.balances) {
+      parsed.balances = { ...BALANCE_SEED };
+      parsed.current = BALANCE_SEED.betclic + BALANCE_SEED.unibet;
+    }
     return parsed;
   } catch { return DEFAULT_STATE(); }
 }
@@ -147,14 +186,18 @@ export function saveBankrollState(state) {
   return state;
 }
 
-export function recordBet(state, { won, odds, betId = null, betLabel = null, stake = null }) {
+export function recordBet(state, { won, odds, betId = null, betLabel = null, stake = null, type = null, acceptedBookmaker = null }) {
   const finalStake = stake ?? getRecommendedStake(state.current);
   const profit = won ? +(finalStake * (odds - 1)).toFixed(2) : -finalStake;
   const balanceAfter = +(state.current + profit).toFixed(2);
-  const entry = { date: new Date().toISOString(), type: won ? 'win' : 'loss', stake: finalStake, odds, profit, balanceAfter, betId, betLabel };
+  const bk = resolveBookmaker(type, acceptedBookmaker);
+  const prevBalances = state.balances || { ...BALANCE_SEED };
+  const balances = { ...prevBalances, [bk]: +((prevBalances[bk] ?? 0) + profit).toFixed(2) };
+  const entry = { date: new Date().toISOString(), type: won ? 'win' : 'loss', stake: finalStake, odds, profit, balanceAfter, betId, betLabel, bookmaker: bk };
   return saveBankrollState({
     ...state,
     current: balanceAfter,
+    balances,
     history: [...state.history, entry],
     processedIds: betId ? [...state.processedIds, betId] : state.processedIds,
   });
@@ -174,7 +217,14 @@ export async function resetBankroll(state, amount) {
     const allSettledIds = bets.filter(b => (b.status === 'won' || b.status === 'lost') && b.id).map(b => b.id);
     existingIds = [...new Set([...state.processedIds, ...allSettledIds])];
   } catch { /* si le fetch échoue, on garde processedIds tel quel — pas bloquant */ }
-  return saveBankrollState({ startAmount: amount, startDate: entry.date, current: amount, history: [...state.history, entry], processedIds: existingIds, baselineSeeded: true });
+  // Répartit le nouveau montant en gardant le même ratio Betclic/Unibet qu'avant le reset (14 août
+  // 2026) — pas de règle plus fine possible ici, l'utilisateur choisit un seul montant total dans
+  // l'UI de reset, jamais deux soldes séparés.
+  const prevBalances = state.balances || { ...BALANCE_SEED };
+  const prevTotal = (prevBalances.betclic ?? 0) + (prevBalances.unibet ?? 0);
+  const ratio = prevTotal > 0 ? (prevBalances.betclic ?? 0) / prevTotal : 1;
+  const balances = { betclic: +(amount * ratio).toFixed(2), unibet: +(amount * (1 - ratio)).toFixed(2) };
+  return saveBankrollState({ startAmount: amount, startDate: entry.date, current: amount, balances, history: [...state.history, entry], processedIds: existingIds, baselineSeeded: true });
 }
 
 // Fix 19 juillet 2026 — basketball_result/basketball_spread stockent leur cote dans un champ plat
@@ -220,7 +270,7 @@ export async function syncBankrollFromHistory(state) {
     const odds = pickOdds(b);
     if (odds == null) { s = { ...s, processedIds: [...s.processedIds, b.id] }; continue; } // pas de cote exploitable, on marque quand même traité pour ne pas boucler dessus
     const stake = (typeof b.stakeAmount === 'number' && b.stakeAmount > 0) ? b.stakeAmount : getRecommendedStake(s.current);
-    s = recordBet(s, { won: b.status === 'won', odds, betId: b.id, betLabel: labelFor(b), stake });
+    s = recordBet(s, { won: b.status === 'won', odds, betId: b.id, betLabel: labelFor(b), stake, type: b.type, acceptedBookmaker: b.acceptedBookmaker });
   }
   return s;
 }

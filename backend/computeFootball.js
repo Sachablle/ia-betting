@@ -26,6 +26,19 @@ function shrinkFactor(rawFactor, games, k = SHRINK_K) {
   return 1 + (rawFactor - 1) * confidence;
 }
 
+// Facteur attaque/défense d'une équipe seule, sans adversaire — même formule que les facteurs
+// intermédiaires de computeLambdas (28 juillet 2026, extrait pour les outrights : on a besoin
+// d'une force d'équipe indépendante d'un match précis). Ne pas dupliquer SHRINK_K ailleurs.
+function computeTeamAttackDefenseFactor(goalsFor, goalsAgainst, played, leagueAvgGoals, avgGF, avgGA) {
+  if (!played || !leagueAvgGoals || goalsFor == null || goalsAgainst == null) return null;
+  const attackBase  = avgGF || leagueAvgGoals;
+  const defenseBase = avgGA || leagueAvgGoals;
+  return {
+    attack:  shrinkFactor((goalsFor / played) / attackBase, played),
+    defense: shrinkFactor((goalsAgainst / played) / defenseBase, played),
+  };
+}
+
 // Pénalités blessures/absences clé (22 juillet 2026, api-football) — multiplicatives, neutres par
 // défaut (1) donc aucun changement de comportement pour un appelant qui ne les passe pas encore
 // (CDM notamment, pas encore branché). `*AttackPenalty` < 1 réduit le facteur attaque d'une équipe
@@ -155,4 +168,4 @@ function computeDCOverProbs(lambdaHome, lambdaAway, line, rho = DIXON_COLES_RHO)
   return { '1x': p1x, 'x2': px2, '12': p12 };
 }
 
-export { poissonPmf, computeLambdas, computeBTTSProb, computeOUProb, compute1X2Probs, computeScoreGrid, dixonColesTau, DIXON_COLES_RHO, computeDCBTTSProbs, computeDCOverProbs };
+export { poissonPmf, computeLambdas, computeBTTSProb, computeOUProb, compute1X2Probs, computeScoreGrid, dixonColesTau, DIXON_COLES_RHO, computeDCBTTSProbs, computeDCOverProbs, shrinkFactor, computeTeamAttackDefenseFactor };

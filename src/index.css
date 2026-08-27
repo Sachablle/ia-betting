@@ -5,9 +5,11 @@
   to   { opacity: 1; transform: translateY(0)    scale(1); }
 }
 
-@keyframes pageFadeIn {
-  from { opacity: 0; }
-  to   { opacity: 1; }
+/* Même effet "reveal" que WorldMapPage.jsx (mapReveal) / DatabaseMapPage.jsx (dbMapReveal) —
+   scale + fondu (2 août 2026, remplace l'ancien pageFadeIn opacity-only 0.18s, jugé trop discret). */
+@keyframes pageEnterFade {
+  from { opacity: 0; transform: scale(0.96); }
+  to   { opacity: 1; transform: scale(1); }
 }
 
 @keyframes spin {
@@ -879,7 +881,7 @@ body {
   padding: 1.5rem 2.5rem 2rem;
   width: 100%;
   min-height: 100%;
-  animation: pageFadeIn 0.18s ease-out both;
+  animation: pageEnterFade 0.8s ease-out both;
 }
 
 .page-header {
@@ -1607,7 +1609,7 @@ body {
   overflow: hidden;
 }
 .compact-card { padding: 0.75rem 0.9rem; }
-.upcoming-card { grid-column: 1 / -1; }
+.upcoming-card { grid-column: 1 / -1; padding: 0.65rem 1rem; }
 .h2h-card      { grid-column: 1 / -1; }
 .full-card     { grid-column: 1 / -1; }
 
@@ -1693,29 +1695,47 @@ body {
 
 /* ── Upcoming matches ── */
 
-.upcoming-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 1.5rem;
-}
-.upcoming-col { display: flex; flex-direction: column; gap: 4px; }
-.upcoming-team-header {
+.upcoming-header-row {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
-  font-size: 12px;
-  font-weight: 700;
-  color: var(--text-sub);
-  margin-bottom: 0.35rem;
-  padding-bottom: 0.35rem;
-  border-bottom: 1px solid var(--border);
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
 }
-.upcoming-row {
-  display: flex;
+.upcoming-title-with-logo {
+  display: inline-flex;
   align-items: center;
   gap: 0.5rem;
-  padding: 3px 0;
-  font-size: 12px;
+  margin-bottom: 0;
+}
+.upcoming-header-right {
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+}
+.upcoming-flip-wrap {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+.upcoming-toggle-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  height: 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.15s;
+  background: rgba(96,165,250,0.18);
+  border: 1px solid rgba(96,165,250,0.5);
+  color: #60a5fa;
+  font-size: 8px;
+  flex-shrink: 0;
+}
+.upcoming-toggle-btn:hover {
+  background: rgba(96,165,250,0.32);
+  border-color: #60a5fa;
 }
 .upc-date { color: var(--text-dim); font-size: 11px; white-space: nowrap; flex-shrink: 0; }
 .upc-ha {

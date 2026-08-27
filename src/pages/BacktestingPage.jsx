@@ -1,6 +1,6 @@
-import { useState, useEffect, useMemo } from 'react';
-import { syncSettlements, resolveCompletedFootballAlerts } from '../utils/syncAlerts';
-import { BANKROLL_BRACKETS, BANKROLL_TARGET, getRecommendedStake, getEngagedToday, getEngagedPending, getBracketLabel, loadBankrollState, saveBankrollState, recordBet, resetBankroll, syncBankrollFromHistory, seedBaselineIfNeeded } from '../utils/bankroll';
+import { useState, useEffect, useMemo, useRef } from 'react';
+import { syncSettlements, resolveCompletedFootballAlerts, syncOutrightAlerts, settleOutrightAlert } from '../utils/syncAlerts';
+import { BANKROLL_BRACKETS, BANKROLL_TARGET, getRecommendedStake, getEngagedToday, getEngagedPending, getBracketLabel, loadBankrollState, saveBankrollState, recordBet, resetBankroll, syncBankrollFromHistory, seedBaselineIfNeeded, bookmakerForType } from '../utils/bankroll';
 import { waitForInitialCloudSync } from '../utils/cloudStorage';
 
 const ROLLING_N = 20;
@@ -26,7 +26,10 @@ async function updateBetStake(alertId, stakeAmount) {
 // affichée ici n'avait aucun effet sur l'argent réel suivi ailleurs, alors que les deux doivent
 // toujours correspondre. Recalcule le profit de l'entrée déjà appliquée (même cote, nouvelle mise)
 // et répercute l'écart sur balanceAfter de cette entrée ET de toutes les suivantes, plus `current`.
-async function updateBetStakeAndBankroll(alertId, newStake) {
+// `type` = type brut du pari (a.type du registre backend, ex: 'player_prop') transmis par l'appelant
+// (bet._rawType) — sert à router le delta sur le bon solde bookmaker (14 août 2026). Repli sur
+// entry.bookmaker (déjà posé par recordBet depuis la migration) si absent, puis 'betclic' par défaut.
+async function updateBetStakeAndBankroll(alertId, newStake, type) {
   await updateBetStake(alertId, newStake);
   try {
     const state = loadBankrollState();
@@ -42,7 +45,10 @@ async function updateBetStakeAndBankroll(alertId, newStake) {
       const balanceAfter = +(h.balanceAfter + delta).toFixed(2);
       return i === idx ? { ...h, stake: newStake, profit: newProfit, balanceAfter } : { ...h, balanceAfter };
     });
-    saveBankrollState({ ...state, history: newHistory, current: +(state.current + delta).toFixed(2) });
+    const bk = entry.bookmaker || bookmakerForType(type);
+    const prevBalances = state.balances || { betclic: state.current, unibet: 0 };
+    const balances = { ...prevBalances, [bk]: +((prevBalances[bk] ?? 0) + delta).toFixed(2) };
+    saveBankrollState({ ...state, history: newHistory, current: +(state.current + delta).toFixed(2), balances });
   } catch {}
 }
 
@@ -138,7 +144,7 @@ function mapLedgerEntry(a) {
     acceptedAt: a.acceptedAt ?? null,
     stakeAmount: a.stakeAmount ?? null,
     manual: a.source === 'manual',
-    _sourceKey: 'bet_ledger', _alertId: a.id,
+    _sourceKey: 'bet_ledger', _alertId: a.id, _rawType: a.type,
   };
   switch (a.type) {
     case 'player_prop':
@@ -226,10 +232,28 @@ async function loadAllResolved(periodDays, model = 'new') {
   // match le 16/07 — remise à 500€ le 16/07 10h36) ne fait pas partie du bankroll actuel même si le
   // match lui-même a eu lieu après. Comparaison précise à bankroll_tracker.startDate, sans passer par
   // l'approximation en jours utilisée pour les autres modes.
+  // Fix 22 août 2026 — un pari encore PENDING au moment du reset (accepté juste avant, réglé après)
+  // est délibérément conservé dans le nouveau bankroll par syncBankrollFromHistory (aucun filtre de
+  // date là-bas — seul `processedIds` compte, et ce pari n'y était pas encore au reset puisque non
+  // réglé) : son gain/perte est bien appliqué à `current`. Mais ce filtre-ci l'excluait quand même de
+  // la liste affichée, faute de connaître ce cas (cas réel : Écart H2H Washington +5,5, accepté 20 min
+  // avant le reset du 21 août, perte bien déduite du solde mais absente de "Paris résolus"). 1er essai
+  // avec `settledAt >= bkStart` rejeté après vérification directe du registre : `settledAt` n'est pas
+  // stable dans le temps (un pari déjà réglé et appliqué au bankroll bien AVANT le reset, ex.
+  // fdbr_554946_dc_ou_x2 réglé/appliqué le 30 juillet, se voit réécrire un `settledAt` du jour même par
+  // un passage backend sans rapport — ce champ aurait fait entrer plein de vieux paris hors-sujet dans
+  // la BK actuelle). Source fiable à la place : `bankroll_tracker.history` lui-même — chaque entrée
+  // n'y est ajoutée qu'une fois, au moment réel où `recordBet` applique le gain/perte à `current` ; un
+  // `betId` présent avec une date ≥ startDate a donc *réellement* été appliqué au nouveau bankroll,
+  // par construction, sans dépendre de la fiabilité d'un champ tiers du ledger.
   if (model === 'bk500') {
-    const bkStart = new Date(loadBankrollState().startDate).getTime();
+    const state = loadBankrollState();
+    const bkStart = new Date(state.startDate).getTime();
+    const carriedOverIds = new Set(
+      state.history.filter(h => h.betId && new Date(h.date).getTime() >= bkStart).map(h => h.betId)
+    );
     return mapped
-      .filter(a => a.acceptedAt != null && a.acceptedAt >= bkStart)
+      .filter(a => (a.acceptedAt != null && a.acceptedAt >= bkStart) || carriedOverIds.has(a._alertId))
       .sort((a, b) => a.acceptedAt - b.acceptedAt);
   }
 
@@ -873,56 +897,6 @@ function CalibCategoryCard({ group }) {
   );
 }
 
-function DonutResults({ metrics, accepted = 0 }) {
-  const segments = [
-    { key: 'won',      label: 'Gagné',   color: '#4ade80', count: metrics.won },
-    { key: 'lost',     label: 'Perdu',   color: '#ef4444', count: metrics.lost },
-    { key: 'accepted', label: 'En jeu',  color: '#60a5fa', count: accepted },
-  ].filter(s => s.count > 0);
-  const total = metrics.won + metrics.lost + accepted;
-  if (total === 0) return <div style={{ textAlign: 'center', color: 'var(--text-dim)', fontSize: 13, padding: '2rem 0' }}>Aucun résultat</div>;
-
-  const R = 53, r = 35, cx = 80, cy = 80;
-  const toXY = (pct, rad) => {
-    const a = pct * 2 * Math.PI - Math.PI / 2;
-    return { x: cx + rad * Math.cos(a), y: cy + rad * Math.sin(a) };
-  };
-  const arc = (startPct, pct) => {
-    const s = toXY(startPct, R), e = toXY(startPct + pct, R);
-    const is = toXY(startPct, r), ie = toXY(startPct + pct, r);
-    const large = pct > 0.5 ? 1 : 0;
-    return `M ${s.x} ${s.y} A ${R} ${R} 0 ${large} 1 ${e.x} ${e.y} L ${ie.x} ${ie.y} A ${r} ${r} 0 ${large} 0 ${is.x} ${is.y} Z`;
-  };
-
-  let offset = 0;
-  const arcs = segments.map(s => {
-    const pct = s.count / total;
-    const a = { ...s, pct, offset };
-    offset += pct;
-    return a;
-  });
-
-  return (
-    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '1.75rem', padding: '0.5rem 0' }}>
-      <svg width={160} height={160} viewBox="0 0 160 160" style={{ flexShrink: 0 }}>
-        {arcs.map(a => (
-          <path key={a.key} d={arc(a.offset, a.pct)} fill={a.color} opacity={0.85} />
-        ))}
-        <text x={cx} y={cy - 6}  textAnchor="middle" fontSize="19" fontWeight="800" fill="var(--text)" fontFamily="inherit">{total}</text>
-        <text x={cx} y={cy + 10} textAnchor="middle" fontSize="9" fill="rgba(255,255,255,0.45)" fontFamily="inherit">résultats</text>
-      </svg>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem' }}>
-        {arcs.map(a => (
-          <div key={a.key} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <div style={{ width: 28, height: 12, borderRadius: 6, background: a.color }} />
-            <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>{a.label} <span style={{ color: a.color }}>{a.count}</span></span>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
 const SECTIONS = [
   { key: 'pl',       label: 'P&L cumulé' },
   { key: 'rolling',  label: `Win Rate glissant` },
@@ -1024,8 +998,8 @@ function BetRow({ bet, rank, stake = 10, compact = false, editableStake = false,
           <span style={{ fontSize: 10, fontWeight: 800, color: statusColor, flexShrink: 0 }}>{isVoid ? 'V' : isWon ? '✓' : '✗'}</span>
           <span style={{ fontSize: 11, fontWeight: 800, color: plColor, flexShrink: 0, fontVariantNumeric: 'tabular-nums' }}>{plStr}</span>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', paddingLeft: 14 }}>
-          <span style={{ fontSize: 10, color: 'var(--text-dim)' }}>{bet.sub}</span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', paddingLeft: 14, minWidth: 0 }}>
+          <span style={{ fontSize: 10, color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>{bet.sub}</span>
           {bet.manual && <span style={{ fontSize: 7, fontWeight: 700, color: '#a78bfa', background: 'rgba(167,139,250,0.15)', borderRadius: 3, padding: '0px 3px', flexShrink: 0, whiteSpace: 'nowrap', lineHeight: '1.4' }}>PERSO</span>}
           <span style={{ fontSize: 9, color: 'var(--text-dim)', flexShrink: 0, marginLeft: 'auto' }}>{dateStr}</span>
           <span style={{ fontSize: 10, fontWeight: 700, color: '#60a5fa', flexShrink: 0, fontVariantNumeric: 'tabular-nums' }}>
@@ -1041,12 +1015,12 @@ function BetRow({ bet, rank, stake = 10, compact = false, editableStake = false,
   }
 
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: `24px 1fr auto auto auto ${editableStake ? 'auto' : ''} auto auto 22px`, alignItems: 'center', gap: '0 0.5rem', padding: '0.35rem 0.75rem', borderRadius: 7, background: 'rgba(255,255,255,0.02)', borderLeft: `3px solid ${statusColor}44`, fontSize: 12 }}>
+    <div style={{ display: 'grid', gridTemplateColumns: `24px 1fr 50px 34px 34px ${editableStake ? '42px' : ''} 20px 54px 22px`, alignItems: 'center', gap: '0 0.5rem', padding: '0.35rem 0.75rem', borderRadius: 7, background: 'rgba(255,255,255,0.02)', borderLeft: `3px solid ${statusColor}44`, fontSize: 12 }}>
       <span style={{ fontSize: 10, color: 'var(--text-dim)', textAlign: 'center' }}>#{rank}</span>
       <div style={{ minWidth: 0 }}>
         <div style={{ fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{bet.label}</div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
-          <span style={{ fontSize: 10, color: 'var(--text-dim)' }}>{bet.sub}</span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', minWidth: 0 }}>
+          <span style={{ fontSize: 10, color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>{bet.sub}</span>
           {bet.manual && <span style={{ fontSize: 7, fontWeight: 700, color: '#a78bfa', background: 'rgba(167,139,250,0.15)', borderRadius: 3, padding: '0px 3px', flexShrink: 0, whiteSpace: 'nowrap', lineHeight: '1.4' }}>PERSO</span>}
         </div>
       </div>
@@ -1077,7 +1051,7 @@ function BetRow({ bet, rank, stake = 10, compact = false, editableStake = false,
           <span
             title="Mise réelle sur ce pari — cliquer pour corriger"
             onClick={() => setEditingStake(true)}
-            style={{ fontSize: 10, fontWeight: 700, color: '#a78bfa', flexShrink: 0, padding: '1px 5px', borderRadius: 4, background: 'rgba(167,139,250,0.12)', border: '1px dashed rgba(167,139,250,0.3)', cursor: 'pointer', whiteSpace: 'nowrap' }}
+            style={{ fontSize: 9, fontWeight: 700, color: '#a78bfa', flexShrink: 0, padding: '0px 4px', borderRadius: 3, background: 'rgba(167,139,250,0.12)', border: '1px dashed rgba(167,139,250,0.3)', cursor: 'pointer', whiteSpace: 'nowrap' }}
           >
             {stake}€
           </span>
@@ -1181,13 +1155,155 @@ function DropdownFilter({ label, options, value, onChange }) {
   );
 }
 
-function Section({ title, children, mb = true, defaultOpen = true, pinnacle = false }) {
+// ── Settlement Outrights (30 juillet 2026) — mini backtest dédié, même principe que "20 derniers
+// paris" mais sur le store séparé outright_alerts (pas de fixtureDate/eventId à grouper, réglage
+// manuel via settleOutrightAlert). Pas de stakeAmount par pari sur les outrights (pas encore de
+// saisie de mise à l'acceptation, contrairement aux autres types) — utilise la mise flat de la page.
+function OutrightBetRow({ bet, stake }) {
+  const isWon = bet.status === 'won';
+  const statusColor = isWon ? '#4ade80' : '#f87171';
+  const odds = bet.acceptedOdds != null ? Number(bet.acceptedOdds) : null;
+  const betStake = bet.stakeAmount ?? stake;
+  const pl = odds != null ? (isWon ? (odds - 1) * betStake : -betStake) : null;
+  const plColor = pl == null ? '#94a3b8' : pl >= 0 ? '#4ade80' : '#ef4444';
+  const plStr = pl == null ? '—' : `${pl >= 0 ? '+' : ''}${pl.toFixed(0)}€`;
+  const dateStr = bet.settledAt ? new Date(bet.settledAt).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' }) : '—';
+  const typeLabel = bet.type === 'outright_gap' ? 'Écart de cote' : 'Modèle perso';
+  const sportColor = bet.sport === 'basketball' ? '#fb923c' : '#4ade80';
+
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: '1fr 50px 34px 60px', alignItems: 'center', gap: '0 0.5rem', padding: '0.35rem 0.75rem', borderRadius: 7, background: 'rgba(255,255,255,0.02)', borderLeft: `3px solid ${statusColor}44`, fontSize: 12 }}>
+      <div style={{ minWidth: 0 }}>
+        <div style={{ fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{bet.team}</div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+          <span style={{ fontSize: 10, color: 'var(--text-dim)' }}>{bet.compLabel || bet.compKey}</span>
+          <span style={{ fontSize: 9, fontWeight: 700, color: sportColor }}>{typeLabel}</span>
+        </div>
+      </div>
+      <span style={{ fontSize: 10, color: 'var(--text-dim)', whiteSpace: 'nowrap' }}>{dateStr}</span>
+      <span style={{ fontSize: 11, fontWeight: 700, color: '#60a5fa', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
+        {odds != null ? odds.toFixed(2) : '—'}
+      </span>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', justifyContent: 'flex-end' }}>
+        <span style={{ fontSize: 12, fontWeight: 800, color: statusColor, textAlign: 'center' }}>{isWon ? '✓' : '✗'}</span>
+        <span style={{ fontSize: 12, fontWeight: 800, color: plColor, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{plStr}</span>
+      </div>
+    </div>
+  );
+}
+
+// Outright accepté, pas encore réglé — même forme compacte que OutrightBetRow, mais avec
+// boutons Gagné/Perdu en ligne. Remplace la section carte "Outrights en cours" de RunningPage.jsx
+// (30 juillet 2026, demande explicite de l'utilisateur : un seul endroit pour les outrights,
+// même format que le reste du backtesting).
+function OutrightPendingRow({ bet }) {
+  const odds = bet.acceptedOdds != null ? Number(bet.acceptedOdds) : null;
+  const dateStr = bet.acceptedAt ? new Date(bet.acceptedAt).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' }) : '—';
+  const typeLabel = bet.type === 'outright_gap' ? 'Écart de cote' : 'Modèle perso';
+  const sportColor = bet.sport === 'basketball' ? '#fb923c' : '#4ade80';
+
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: '1fr 50px 34px 60px', alignItems: 'center', gap: '0 0.5rem', padding: '0.35rem 0.75rem', borderRadius: 7, background: 'rgba(255,255,255,0.02)', borderLeft: '3px solid rgba(96,165,250,0.4)', fontSize: 12 }}>
+      <div style={{ minWidth: 0 }}>
+        <div style={{ fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{bet.team}</div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+          <span style={{ fontSize: 10, color: 'var(--text-dim)' }}>{bet.compLabel || bet.compKey}</span>
+          <span style={{ fontSize: 9, fontWeight: 700, color: sportColor }}>{typeLabel}</span>
+        </div>
+      </div>
+      <span style={{ fontSize: 10, color: 'var(--text-dim)', whiteSpace: 'nowrap' }}>{dateStr}</span>
+      <span style={{ fontSize: 11, fontWeight: 700, color: '#60a5fa', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
+        {odds != null ? odds.toFixed(2) : '—'}
+      </span>
+      <div style={{ display: 'flex', gap: '0.3rem', justifyContent: 'flex-end' }}>
+        <button
+          title="Marquer gagné"
+          onClick={() => settleOutrightAlert(bet.id, 'won')}
+          style={{ fontSize: 12, fontWeight: 800, width: 20, height: 20, padding: 0, borderRadius: 5, border: '1px solid rgba(74,222,128,0.35)', background: 'rgba(74,222,128,0.1)', color: '#4ade80', cursor: 'pointer' }}
+        >✓</button>
+        <button
+          title="Marquer perdu"
+          onClick={() => settleOutrightAlert(bet.id, 'lost')}
+          style={{ fontSize: 12, fontWeight: 800, width: 20, height: 20, padding: 0, borderRadius: 5, border: '1px solid rgba(248,113,113,0.35)', background: 'rgba(248,113,113,0.1)', color: '#f87171', cursor: 'pointer' }}
+        >✗</button>
+      </div>
+    </div>
+  );
+}
+
+function loadOutrightAlertsAll() {
+  try { return JSON.parse(localStorage.getItem('outright_alerts') || '[]'); } catch { return []; }
+}
+
+function OutrightsSettlementSection({ stake }) {
+  const [all, setAll] = useState(loadOutrightAlertsAll);
+
+  useEffect(() => {
+    const reload = () => setAll(loadOutrightAlertsAll());
+    window.addEventListener('outright_alerts_updated', reload);
+    syncOutrightAlerts().then(reload);
+    return () => window.removeEventListener('outright_alerts_updated', reload);
+  }, []);
+
+  const pending = all.filter(a => a.status === 'accepted').sort((a, b) => (b.acceptedAt || 0) - (a.acceptedAt || 0));
+  const settled = all.filter(a => a.status === 'won' || a.status === 'lost');
+  const sorted  = [...settled].sort((a, b) => (b.settledAt || 0) - (a.settledAt || 0));
+  const won   = settled.filter(a => a.status === 'won').length;
+  const lost  = settled.filter(a => a.status === 'lost').length;
+  const total = won + lost;
+  const winRate = total > 0 ? (won / total) * 100 : null;
+  const pl = settled.reduce((sum, a) => {
+    const o = a.acceptedOdds != null ? Number(a.acceptedOdds) : null;
+    if (o == null) return sum;
+    const s = a.stakeAmount ?? stake;
+    return sum + (a.status === 'won' ? (o - 1) * s : -s);
+  }, 0);
+
+  // KPI toujours affiché (même à 0), pour rester homogène avec le panneau "20 derniers paris"
+  // (30 juillet 2026, demande explicite de l'utilisateur) — contrairement à ce dernier qui, lui,
+  // masque son KPI tant qu'il n'a pas de données.
+  const kpiRow = (
+    <div style={{ display: 'flex', gap: '1.25rem', marginBottom: '0.75rem' }}>
+      {[
+        { lbl: 'Win Rate', val: winRate != null ? `${winRate.toFixed(0)}%` : '—', col: winRate == null ? '#4ade80' : winRate >= 50 ? '#4ade80' : '#ef4444' },
+        { lbl: 'P&L',      val: `${pl >= 0 ? '+' : ''}${pl.toFixed(0)}€`, col: pl >= 0 ? '#4ade80' : '#ef4444' },
+        { lbl: 'Bilan',    val: `${won}W/${lost}L`, col: 'var(--text)' },
+      ].map(({ lbl, val, col }) => (
+        <div key={lbl}>
+          <div style={{ fontSize: 9, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 2 }}>{lbl}</div>
+          <div style={{ fontSize: 18, fontWeight: 800, color: col, fontVariantNumeric: 'tabular-nums' }}>{val}</div>
+        </div>
+      ))}
+    </div>
+  );
+
+  // Liste unique mélangeant en cours + réglés, triée par date la plus récente — même niveau/format
+  // que "20 derniers paris" (30 juillet 2026, demande explicite : retirer la séparation "En cours").
+  const merged = [...pending, ...sorted].sort((a, b) => (b.settledAt || b.acceptedAt || 0) - (a.settledAt || a.acceptedAt || 0));
+
+  return (
+    <Section title="Settlement Outrights" mb={false}>
+      {kpiRow}
+      {merged.length === 0
+        ? <div style={{ fontSize: 12, color: 'var(--text-dim)' }}>Aucun outright accepté pour l'instant — les paris acceptés (page Outrights) apparaîtront ici, avec les boutons Gagné/Perdu.</div>
+        : <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', maxHeight: 240, overflowY: 'auto' }}>
+            {merged.map(bet => bet.status === 'accepted'
+              ? <OutrightPendingRow key={bet.id} bet={bet} />
+              : <OutrightBetRow key={bet.id} bet={bet} stake={stake} />
+            )}
+          </div>
+      }
+    </Section>
+  );
+}
+
+function Section({ title, children, mb = true, defaultOpen = true, pinnacle = false, style }) {
   const [open, setOpen] = useState(defaultOpen);
   const border = pinnacle ? 'rgba(96,165,250,0.35)' : 'rgba(255,255,255,0.07)';
   const bg     = 'rgba(255,255,255,0.02)';
   const titleColor = pinnacle ? '#60a5fa' : 'var(--text-dim)';
   return (
-    <div style={{ background: bg, border: `1px solid ${border}`, borderRadius: 16, overflow: 'hidden', marginBottom: mb ? '1.25rem' : 0 }}>
+    <div style={{ background: bg, border: `1px solid ${border}`, borderRadius: 16, overflow: 'hidden', marginBottom: mb ? '1.25rem' : 0, ...style }}>
       <button
         onClick={() => setOpen(o => !o)}
         style={{
@@ -1226,6 +1342,34 @@ export default function BacktestingPage() {
   const [reloadKey,      setReloadKey]      = useState(0);
   const [stake,          setStake]          = useState(10);
   const [refreshing,     setRefreshing]     = useState(false);
+  // Fix 2 août 2026 — `loadAllResolved` fait un vrai fetch réseau (/api/bet-history), donc `allBets`
+  // est TOUJOURS vide au 1er rendu, avant de se remplir quelques centaines de ms plus tard. Ce
+  // battement "Aucun pari résolu" → stats réelles arrivait pile pendant l'animation d'entrée de .page
+  // (pageEnterFade, scale+fondu 0.8s) — repéré en filmant l'écran et en extrayant les frames vidéo :
+  // WebKit affichait un frame où l'ancien texte "Aucun pari résolu" et les vraies stats (16 paris,
+  // 87.5%...) se chevauchaient, un vrai artefact de recomposition pendant l'animation de transform.
+  // `loading` évite d'afficher le message "Aucun pari résolu" (trompeur en plus — c'est juste pas
+  // encore chargé) avant que la 1ère vraie réponse soit arrivée.
+  const [loading,        setLoading]        = useState(true);
+  // Le "loading" seul réduisait le glitch sans l'éliminer : quand le fetch revenait vite (backend/
+  // cache chaud), le passage loading→chargé tombait quand même PENDANT les 0.8s de pageEnterFade —
+  // même artefact WebKit, juste "Chargement…" qui se chevauchait au lieu de "Aucun pari résolu"
+  // (glitch moins visible donc signalé "de temps en temps" plutôt que disparu, pas éliminé). Fix
+  // définitif : le tout 1er affichage du contenu (peu importe LEQUEL des 3 appels loadData() du mount
+  // — sync settlements, effet [period,model,reloadKey], sync Telegram — arrive en premier, ils sont
+  // concurrents) est gardé par le temps écoulé depuis le montage du composant, pas par un simple flag
+  // "1er appel" (un 1er essai avec juste `isFirstLoad` rate le cas où un 2e appel concurrent, non
+  // retardé lui, gagne la course et affiche son résultat avant les 850ms). `revealed` une fois vrai
+  // rend tous les rechargements suivants (changement de filtre) instantanés comme avant.
+  const mountedAtRef = useRef(Date.now());
+  const revealedRef  = useRef(false);
+  const PAGE_ANIM_MS = 850;
+  const revealBets = (bets) => {
+    const commit = () => { revealedRef.current = true; setAllBets(bets); setLoading(false); };
+    if (revealedRef.current) { commit(); return; }
+    const wait = PAGE_ANIM_MS - (Date.now() - mountedAtRef.current);
+    if (wait > 0) setTimeout(commit, wait); else commit();
+  };
 
   const handleModelChange = (m) => { setModel(m); setTimelineLabel('Tous'); setSportFilter('all'); setCompFilter('all'); setTypeFilter('all'); };
   const handleSportChange = (v) => { setSportFilter(v); setCompFilter('all'); setTypeFilter('all'); };
@@ -1234,10 +1378,8 @@ export default function BacktestingPage() {
   const compOptions = [{ key: 'all', label: 'Toutes' }, ...COMP_FILTERS.filter(c => sportFilter === 'all' || c.sport === sportFilter)];
   const typeOptions = sportFilter === 'basket' ? TYPE_FILTERS_BASKET : sportFilter === 'foot' ? TYPE_FILTERS_FOOT : TYPE_FILTERS_ALL;
 
-  const acceptedCount = useMemo(() => countAccepted(period, sportFilter, typeFilter, model), [period, sportFilter, typeFilter, model]);
-
   const loadData = (p, m) => {
-    loadAllResolved(p, m).then(setAllBets);
+    loadAllResolved(p, m).then(revealBets);
     setPinnacleAllBets(loadPinnacleBets(p));
   };
 
@@ -1373,7 +1515,7 @@ export default function BacktestingPage() {
         </div>
         {/* Toggle modèle */}
         <div style={{ display: 'flex', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 12, padding: 3, gap: 2, alignSelf: 'flex-start', marginTop: '0.5rem' }}>
-          {[{ key: 'bk500', label: 'BK 500€', sub: 'depuis le 16 juil.', color: '#4ade80' }, { key: 'new', label: 'Tous les paris', sub: 'historique complet', color: '#60a5fa' }].map(m => (
+          {[{ key: 'bk500', label: `BK ${Math.round(loadBankrollState().startAmount)}€`, sub: `depuis le ${new Date(loadBankrollState().startDate).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' })}`, color: '#4ade80' }, { key: 'new', label: 'Tous les paris', sub: 'historique complet', color: '#60a5fa' }].map(m => (
             <button key={m.key} onClick={() => handleModelChange(m.key)} style={{
               background: model === m.key ? `${m.color}2e` : 'transparent',
               border: model === m.key ? `1px solid ${m.color}66` : '1px solid transparent',
@@ -1436,13 +1578,23 @@ export default function BacktestingPage() {
         </div>
       </div>
 
-      {metrics.total === 0 ? (
+      {loading ? (
         <div style={{ padding: '3rem', textAlign: 'center', borderRadius: 16, background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.07)' }}>
-          <div style={{ fontSize: 32, marginBottom: '0.75rem' }}>📊</div>
-          <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)', marginBottom: '0.35rem' }}>Aucun pari résolu</div>
-          <div style={{ fontSize: 12, color: 'var(--text-dim)' }}>Les paris marqués Won / Perdu / Void apparaîtront ici automatiquement.</div>
+          <div style={{ fontSize: 12, color: 'var(--text-dim)' }}>Chargement…</div>
         </div>
       ) : (<>
+        {/* 21 août 2026 — toutes les catégories (KPIs, graphiques, Settlement Outrights) restent
+            visibles même à 0 pari résolu (ex: juste après un reset de BK), demande explicite de
+            l'utilisateur. Avant ce fix, metrics.total === 0 remplaçait tout le bloc par un simple
+            message "Aucun pari résolu" — masquait au passage Settlement Outrights, qui n'a pourtant
+            aucun rapport avec le nombre de paris de LA BK affichée (store séparé outright_alerts).
+            Chaque carte gère déjà son propre état vide (KpiCard affiche '—', "20 derniers paris"
+            affiche "Pas assez de données", OutrightsSettlementSection son propre message dédié). */}
+        {metrics.total === 0 && (
+          <div style={{ padding: '0.75rem 1rem', marginBottom: '0.75rem', borderRadius: 10, background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.07)', fontSize: 12, color: 'var(--text-dim)' }}>
+            📊 Aucun pari résolu pour l'instant sur cette BK — les paris marqués Won / Perdu / Void apparaîtront ici automatiquement.
+          </div>
+        )}
 
         {/* Conteneur animé — flip au toggle Pinnacle */}
         <div style={{ transition: 'transform 0.28s ease, opacity 0.28s ease', transform: sectionsFlipping ? 'scaleX(0)' : 'scaleX(1)', opacity: sectionsFlipping ? 0 : 1 }}>
@@ -1494,49 +1646,27 @@ export default function BacktestingPage() {
                     ))}
                   </div>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', maxHeight: 240, overflowY: 'auto' }}>
-                    {[...D.rolling].reverse().map((bet, i) => <BetRow key={`${bet.date}_${bet.label}_${bet.sub}`} bet={bet} rank={D.rolling.length - i} stake={model === 'bk500' ? realStakeFor(bet, stake) : stake} editableStake={model === 'bk500'} onStakeChange={(id, val) => updateBetStakeAndBankroll(id, val).then(() => setReloadKey(k => k + 1))} />)}
+                    {[...D.rolling].reverse().map((bet, i) => <BetRow key={`${bet.date}_${bet.label}_${bet.sub}`} bet={bet} rank={D.rolling.length - i} stake={model === 'bk500' ? realStakeFor(bet, stake) : stake} editableStake={model === 'bk500'} onStakeChange={(id, val) => updateBetStakeAndBankroll(id, val, bet._rawType).then(() => setReloadKey(k => k + 1))} />)}
                   </div>
                 </>
             }
           </Section>
-          <Section title="Calibration modèle" mb={false} pinnacle={showPinnacle}>
-            <div style={{ fontSize: 10, color: 'var(--text-dim)', marginBottom: '0.75rem' }}>Win rate réel vs probabilité estimée · pp = points de %</div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-              {D.calib.map(band => <CalibrationRow key={band.label} band={band} />)}
-            </div>
-          </Section>
+          <OutrightsSettlementSection stake={stake} />
         </div>
 
-        {/* Ligne 2b : Calibration par catégorie */}
-        {!showPinnacle && calibCats.length > 0 && (() => {
-          const footCats   = calibCats.filter(g => g.key.startsWith('Foot ·'));
-          const basketCats = calibCats.filter(g => !g.key.startsWith('Foot ·'));
-          return (
-            <Section title="Calibration par catégorie" mb={true}>
-              <div style={{ fontSize: 10, color: 'var(--text-dim)', marginBottom: '0.75rem' }}>
-                Win rate réel des paris dont la probabilité affichée est ≥ seuil · permet de trouver le seuil de déclenchement par catégorie
+        {/* Ligne 2b : Calibration par catégorie + (Calibration modèle + Performance par type empilés
+            dans la colonne droite, collés l'un à l'autre — 30 juillet 2026) */}
+        {(() => {
+          const calibModeleSection = (
+            <Section title="Calibration modèle" mb={false} pinnacle={showPinnacle} style={{ gridColumn: '2', gridRow: '1' }}>
+              <div style={{ fontSize: 10, color: 'var(--text-dim)', marginBottom: '0.75rem' }}>Win rate réel vs probabilité estimée · pp = points de %</div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                {D.calib.map(band => <CalibrationRow key={band.label} band={band} />)}
               </div>
-              {footCats.length > 0 && (
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '0.75rem', marginBottom: basketCats.length > 0 ? '0.75rem' : 0 }}>
-                  {footCats.map(g => <CalibCategoryCard key={g.key} group={g} />)}
-                </div>
-              )}
-              {basketCats.length > 0 && (
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '0.75rem' }}>
-                  {basketCats.map(g => <CalibCategoryCard key={g.key} group={g} />)}
-                </div>
-              )}
             </Section>
           );
-        })()}
-
-        {/* Ligne 3 : Répartition + Performance par type */}
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', marginBottom: '1.25rem', alignItems: 'start' }}>
-          <Section title="Répartition des résultats" mb={false} pinnacle={showPinnacle}>
-            <DonutResults metrics={D.metrics} accepted={showPinnacle ? D.metrics.total : acceptedCount} />
-          </Section>
-          {D.typeStats.length > 0 && (
-            <Section title="Performance par type" mb={false} pinnacle={showPinnacle}>
+          const typeStatsSection = D.typeStats.length > 0 && (
+            <Section title="Performance par type" mb={false} pinnacle={showPinnacle} style={{ gridColumn: '2', gridRow: '2' }}>
               <div style={{ display: 'grid', gridTemplateColumns: '90px 40px 40px 1fr 60px 60px', gap: '0 0.75rem', padding: '0 0.75rem', marginBottom: '0.4rem' }}>
                 {['Type', 'Total', 'Won', '', 'Win%', 'ROI'].map((h, i) => (
                   <span key={i} style={{ fontSize: 10, color: 'var(--text-dim)', fontWeight: 600, textTransform: 'uppercase', textAlign: i >= 4 ? 'right' : i === 1 || i === 2 ? 'center' : 'left' }}>{h}</span>
@@ -1546,8 +1676,38 @@ export default function BacktestingPage() {
                 {D.typeStats.map(g => <TypeStatsRow key={g.label} g={g} />)}
               </div>
             </Section>
-          )}
-        </div>
+          );
+          const showCats = !showPinnacle && calibCats.length > 0;
+          if (!showCats) {
+            return <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', marginBottom: '1.25rem' }}>{calibModeleSection}{typeStatsSection}</div>;
+          }
+          const footCats   = calibCats.filter(g => g.key.startsWith('Foot ·'));
+          const basketCats = calibCats.filter(g => !g.key.startsWith('Foot ·'));
+          return (
+            // gridRow '1 / span 2' sur "Calibration par catégorie" + alignItems par défaut (stretch)
+            // pour que sa hauteur suive exactement celle de Calibration modèle + Performance par type
+            // empilés en face (30 juillet 2026, demande explicite d'alignement des bas de panneaux).
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gridAutoRows: 'min-content', gap: '1rem', marginBottom: '1.25rem' }}>
+              <Section title="Calibration par catégorie" mb={false} style={{ gridColumn: '1', gridRow: '1 / span 2' }}>
+                <div style={{ fontSize: 10, color: 'var(--text-dim)', marginBottom: '0.75rem' }}>
+                  Win rate réel des paris dont la probabilité affichée est ≥ seuil · permet de trouver le seuil de déclenchement par catégorie
+                </div>
+                {footCats.length > 0 && (
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '0.75rem', marginBottom: basketCats.length > 0 ? '0.75rem' : 0 }}>
+                    {footCats.map(g => <CalibCategoryCard key={g.key} group={g} />)}
+                  </div>
+                )}
+                {basketCats.length > 0 && (
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '0.75rem' }}>
+                    {basketCats.map(g => <CalibCategoryCard key={g.key} group={g} />)}
+                  </div>
+                )}
+              </Section>
+              {calibModeleSection}
+              {typeStatsSection}
+            </div>
+          );
+        })()}
 
         {/* Historique complet */}
         <Section title={`Historique complet${showPinnacle ? ' · Pinnacle' : ''}`} mb={false} defaultOpen={false} pinnacle={showPinnacle}>
@@ -1566,7 +1726,7 @@ export default function BacktestingPage() {
             )}
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', maxHeight: 480, overflowY: 'auto' }}>
-            {[...D.bets].reverse().map((bet, i) => <BetRow key={`${bet.date}_${bet.label}_${bet.sub}`} bet={bet} rank={D.bets.length - i} stake={model === 'bk500' ? realStakeFor(bet, stake) : stake} editableStake={model === 'bk500'} onStakeChange={(id, val) => updateBetStakeAndBankroll(id, val).then(() => setReloadKey(k => k + 1))} />)}
+            {[...D.bets].reverse().map((bet, i) => <BetRow key={`${bet.date}_${bet.label}_${bet.sub}`} bet={bet} rank={D.bets.length - i} stake={model === 'bk500' ? realStakeFor(bet, stake) : stake} editableStake={model === 'bk500'} onStakeChange={(id, val) => updateBetStakeAndBankroll(id, val, bet._rawType).then(() => setReloadKey(k => k + 1))} />)}
           </div>
         </Section>
 

@@ -587,13 +587,17 @@ function QuotasWidget() {
   const bballLim = q?.basketballApi?.limit ?? 7500;
   const footRem  = q?.footballApi?.remaining;
   const footLim  = q?.footballApi?.limit ?? 7500;
+  const footBlocked = q?.footballApi?.blocked === true;
 
   const cards = [
     { label: 'football-data.org', rem: fdRem,    lim: fdLim,    period: 'requêtes /min'  },
     { label: 'API-Basketball',    rem: bballRem, lim: bballLim, period: 'requêtes /jour' },
     // api-football (22 juillet 2026, plan Pro) — 3e carte, réduit d'autant l'espace dispo pour
     // UpcomingMatchesWidget juste à côté (grid `auto 1fr`, effet automatique voulu).
-    { label: 'API-Football',      rem: footRem,  lim: footLim,  period: 'requêtes /jour' },
+    // `blocked` (29 juillet 2026) — l'API renvoie un header "remaining" périmé/non décrémenté quand
+    // le quota journalier est réellement dépassé (vérifié en direct) ; affiché à part plutôt que de
+    // montrer un chiffre qui laisserait croire à du quota encore disponible.
+    { label: 'API-Football',      rem: footRem,  lim: footLim,  period: 'requêtes /jour', blocked: footBlocked },
   ];
 
   return (
@@ -607,12 +611,16 @@ function QuotasWidget() {
             {i > 0 && <div style={{ width: 1, background: 'var(--border)', flexShrink: 0 }} />}
             <div style={{ padding: '0.25rem 0.75rem', display: 'flex', flexDirection: 'column', justifyContent: 'center', minWidth: 130 }}>
               <div style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: dim, marginBottom: '0.25rem' }}>{c.label}</div>
-              <div style={{ display: 'flex', alignItems: 'baseline', gap: '0.2rem' }}>
-                <span style={{ fontSize: '1rem', fontWeight: 800, color: c.rem != null ? POS_COLORS[i] : dim, lineHeight: 1, fontVariantNumeric: 'tabular-nums' }}>
-                  {c.rem != null ? c.lim - c.rem : '—'}
-                </span>
-                <span style={{ fontSize: '1rem', fontWeight: 800, color: dim, lineHeight: 1, fontVariantNumeric: 'tabular-nums' }}>/{c.lim}</span>
-              </div>
+              {c.blocked ? (
+                <span style={{ fontSize: '0.8rem', fontWeight: 800, color: '#f87171', lineHeight: 1.2 }}>Quota épuisé</span>
+              ) : (
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: '0.2rem' }}>
+                  <span style={{ fontSize: '1rem', fontWeight: 800, color: c.rem != null ? POS_COLORS[i] : dim, lineHeight: 1, fontVariantNumeric: 'tabular-nums' }}>
+                    {c.rem != null ? c.lim - c.rem : '—'}
+                  </span>
+                  <span style={{ fontSize: '1rem', fontWeight: 800, color: dim, lineHeight: 1, fontVariantNumeric: 'tabular-nums' }}>/{c.lim}</span>
+                </div>
+              )}
               <div style={{ fontSize: 9, color: dim, marginTop: '0.2rem' }}>{c.period}</div>
             </div>
           </div>
@@ -1107,6 +1115,33 @@ function AlertsChart({ accepted, days: numDays = 30 }) {
 
 const FOOT_LEAGUES_SET = new Set(['ligue1','pl','laliga','bundes','seriea','cdm']);
 
+// Nettoyage nom club (Dashboard, 24 août 2026) — football-data.org renvoie la dénomination
+// officielle complète ("Bologna FC 1909", "SS Lazio", "1. FC Union Berlin") ; on retire les
+// préfixes/suffixes génériques de club plutôt qu'un dictionnaire par équipe (trop lourd à
+// maintenir sur 5 ligues) — passe itérative car certains noms cumulent 2 affixes ("1. FC Union
+// Berlin" → retire "1. " puis "FC "). Les sélections nationales (CDM) n'ont aucun affixe, donc
+// intactes. Volontairement pas de dictionnaire de surnoms usuels (ex: "Lens" pour "Racing Club de
+// Lens") — resterait un nom complet lisible plutôt que le nom populaire exact.
+const CLUB_PREFIXES = ['1\\.', 'AC', 'AS', 'SS', 'ACF', 'CA', 'RC', 'AFC', 'US', 'VfB', 'SC', 'SV', 'FC', 'FSV', 'AJ', 'ES'];
+const CLUB_SUFFIXES = ['FC', 'AC', 'AFC', 'CF', 'UD', 'Calcio', 'Balompi\\u00e9', 'de Futebol', 'de F\\u00fatbol', 'OSC', 'SCO', '\\d{4}'];
+function cleanFootballTeamName(raw) {
+  if (!raw) return raw;
+  let name = raw.trim();
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const p of CLUB_PREFIXES) {
+      const re = new RegExp(`^${p}\\s+`, 'i');
+      if (re.test(name)) { name = name.replace(re, '').trim(); changed = true; }
+    }
+    for (const s of CLUB_SUFFIXES) {
+      const re = new RegExp(`\\s+${s}$`, 'i');
+      if (re.test(name)) { name = name.replace(re, '').trim(); changed = true; }
+    }
+  }
+  return name || raw;
+}
+
 const LEAGUE_LABEL_MAP = {
   nba:'NBA', wnba:'WNBA', cdm:'CDM', euroleague:'EL',
   acb:'ACB', lnb:'LNB', bbl:'BBL', legaa:'LegA',
@@ -1144,8 +1179,8 @@ function UpcomingMatchesWidget() {
       status:     g.status,
       league,
       sport:      FOOT_LEAGUES_SET.has(league) ? 'foot' : 'basket',
-      home:       FOOT_LEAGUES_SET.has(league) ? (g.home?.short || g.home?.name || '?') : (g.home?.name || '?'),
-      away:       FOOT_LEAGUES_SET.has(league) ? (g.away?.short || g.away?.name || '?') : (g.away?.name || '?'),
+      home:       FOOT_LEAGUES_SET.has(league) ? cleanFootballTeamName(g.home?.name) || g.home?.short || '?' : (g.home?.name || '?'),
+      away:       FOOT_LEAGUES_SET.has(league) ? cleanFootballTeamName(g.away?.name) || g.away?.short || '?' : (g.away?.name || '?'),
       homeScore:  g.home?.score ?? null,
       awayScore:  g.away?.score ?? null,
     });
@@ -1191,7 +1226,12 @@ function UpcomingMatchesWidget() {
   // IDs des matchs qui ont au moins une alerte non rejetée
   const alertedIds = useMemo(() => {
     const ids = new Set();
-    const KEYS = ['nba_prop_alerts','nba_game_total_alerts','fb_btts_alerts','fb_total_alerts','fb_result_alerts','basketball_result_alerts'];
+    // 26 août 2026 — liste jamais mise à jour au fil des sessions : basketball_spread_alerts
+    // (Écart H2H, ajouté 10 juillet) manquait, cas réel Sun-Sky signalé par l'utilisateur (2
+    // alertes actives sans pastille). Complétée avec tous les types d'alerte liés à un match
+    // précis (fb_pinnacle_alerts/bball_pinnacle_alerts = value bet Pinnacle, fb_dc_btts/ou =
+    // Double Chance) — voir src/utils/syncAlerts.js pour la liste faisant foi.
+    const KEYS = ['nba_prop_alerts','nba_game_total_alerts','basketball_result_alerts','basketball_spread_alerts','fb_btts_alerts','fb_total_alerts','fb_result_alerts','fb_pinnacle_alerts','fb_dc_btts_alerts','fb_dc_ou_alerts','bball_pinnacle_alerts','bball_pinnacle_props_alerts'];
     for (const key of KEYS) {
       try {
         JSON.parse(localStorage.getItem(key)||'[]')
@@ -1319,7 +1359,7 @@ function UpcomingMatchesWidget() {
                   )}
                   {/* Alerte */}
                   {alert && !live && (
-                    <span style={{ width:5, height:5, borderRadius:'50%', background:'#fb923c', flexShrink:0, boxShadow:'0 0 4px #fb923c88' }} title="Alerte active" />
+                    <span style={{ width:5, height:5, borderRadius:'50%', background:'#60a5fa', flexShrink:0, boxShadow:'0 0 4px #60a5fa88' }} title="Alerte active" />
                   )}
                 </div>
               );
@@ -1406,7 +1446,7 @@ export default function DashboardPage() {
   const allDedupAlerts  = dedupAlerts(alerts);
 
   return (
-    <div style={{ padding: '0.9rem 2.5rem 2rem' }}>
+    <div className="page" style={{ padding: '0.9rem 2.5rem 2rem' }}>
 
       {/* Header */}
       <div style={{ marginBottom: '2.5rem', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>

@@ -33,9 +33,14 @@ function tCDF4(t) {
 }
 
 // Écart-type empirique — sample std (n-1) + plancher par stat
+// Fix 1er août 2026 : l'exclusion des matchs pts=0 (min≥12) a été retirée — elle cachait
+// spécifiquement les mauvaises soirées de scoring (fautes, tir glacial, blowout) sans équivalent
+// pour reb/ast/tpm, ce qui sous-estimait la vraie variance des points et contribuait à la
+// surconfiance mesurée sur le near-miss (écart proba/réussite jusqu'à -9,5pp). Ces matchs sont de
+// la variance réelle à voir, pas des outliers à retirer.
 function calcStd(games, key) {
   const vals = (games || [])
-    .filter(g => g.min > 10 && g[key] != null && !(key === 'pts' && g.pts === 0 && g.min >= 12))
+    .filter(g => g.min > 10 && g[key] != null)
     .map(g => g[key]);
   if (vals.length < 3) return null;
   const mean = vals.reduce((s, v) => s + v, 0) / vals.length;
@@ -56,7 +61,7 @@ const CONSISTENCY_CV_CUTOFF = { pts: 0.42, reb: 0.46, ast: 0.58, tpm: 0.76 };
 const CONSISTENCY_MIN_SAMPLE = 10;
 function isConsistentStat(games, key) {
   const vals = (games || [])
-    .filter(g => g.min > 10 && g[key] != null && !(key === 'pts' && g.pts === 0 && g.min >= 12))
+    .filter(g => g.min > 10 && g[key] != null)
     .map(g => g[key]);
   if (vals.length < CONSISTENCY_MIN_SAMPLE) return false;
   const mean = vals.reduce((s, v) => s + v, 0) / vals.length;
@@ -74,7 +79,7 @@ function isConsistentStat(games, key) {
 function blendedSeasonAvg(games, key, seasonAvg, n = 10, k = 5) {
   if (seasonAvg == null) return seasonAvg;
   const vals = (games || [])
-    .filter(g => g.min > 10 && g[key] != null && !(key === 'pts' && g.pts === 0 && g.min >= 12))
+    .filter(g => g.min > 10 && g[key] != null)
     .slice(0, n)
     .map(g => g[key]);
   if (!vals.length) return seasonAvg;
@@ -120,17 +125,29 @@ function probAtLeast(estimate, std, threshold, stat = null, deviation = 0, isWNB
 
   // Shrinkage : tire l'estimation vers la ligne du bookmaker.
   // Plus l'échantillon est petit, plus on fait confiance au bookmaker (shrinkExtra).
-  const shrinkBase = stat === 'pts' ? 0.35 : stat === 'reb' ? 0.12 : stat === 'ast' ? 0.20 : stat === 'tpm' ? 0.25 : 0.20;
+  // Fix 21 août 2026 — pts était à 0.35 (contre 0.12-0.25 pour les 3 autres stats), un écart jamais
+  // recalibré depuis son ajout : un edge de +50% par rapport à la ligne se faisait quasi entièrement
+  // absorber avant même le calcul de proba (cas réel Natasha Cloud : estimation 16.1 vs ligne 10.5,
+  // ramenée à 58% de confiance). Aligné sur les autres stats plutôt que traité à part.
+  const shrinkBase = stat === 'pts' ? 0.22 : stat === 'reb' ? 0.12 : stat === 'ast' ? 0.20 : stat === 'tpm' ? 0.25 : 0.20;
   const shrinkA    = Math.min(0.55, shrinkBase + shrinkExtra);
   const shrunk     = estimate + shrinkA * (threshold - estimate);
 
-  // Std calibré : plancher ×stdScale selon taille d'échantillon + ×1.5 correction variance
+  // Std calibré : plancher ×stdScale selon taille d'échantillon + correction variance
   // + boost proportionnel à l'écart de la projection par rapport à la moyenne saison.
   const stdFloorBase = stat === 'pts' ? 4.0 : stat === 'reb' ? 2.0 : stat === 'ast' ? 1.5 : stat === 'tpm' ? 1.0 : 3.0;
   const statSizeScale = isWNBA ? 0.80 : 1.0;
   const stdFloor   = stdFloorBase * statSizeScale * stdScale;
   const devBoost   = 1 + Math.min(1.0, deviation * 2.5);
-  const adjStd     = Math.max(stdFloor, (std || stdFloor) * 1.5 * devBoost);
+  // Fix 21 août 2026 — la correction variance (×1.5, ajoutée le 6 juin) et devBoost (jusqu'à ×2,
+  // ajouté au même moment) se multipliaient entre elles au lieu d'être deux garde-fous indépendants
+  // pour deux situations différentes (calibration historique trop serrée / projection qui s'écarte
+  // fort de la moyenne saison) — un gros edge génère presque toujours un devBoost élevé, donc les deux
+  // pénalités tombaient systématiquement ensemble sur les mêmes cas, écrasant précisément les edges
+  // les plus larges (constaté sur 86 candidats WNBA d'une même soirée : aucun au-dessus de 61%,
+  // y compris des edges >50% par rapport à la ligne). On garde le plus grand des deux au lieu de les
+  // cumuler — protège toujours contre les deux situations sans les taxer deux fois à la fois.
+  const adjStd     = Math.max(stdFloor, (std || stdFloor) * Math.max(1.5, devBoost));
 
   // Correction de continuité -0.5 (stats discrètes) + t-distribution df=4
   const z = (threshold - 0.5 - shrunk) / adjStd;
@@ -422,10 +439,11 @@ function computeEstimate(player, isHome, oppGames, myGames, gamelogs, oppAbbr, g
   const poCount   = poStart ? g.filter(gl => new Date(gl.date) >= poStart).length : 0;
   const hasPOData = poCount > 0;
 
-  const gClean = g.filter(gl => !(gl.pts === 0 && (gl.min ?? 0) >= 12));
+  // Fix 1er août 2026 : gClean (exclusion des matchs pts=0, min≥12) retiré — cf. commentaire
+  // calcStd plus haut, même cause de surconfiance sur pts. `g` utilisé directement, comme reb/ast/tpm.
 
   // Plafonne les pics isolés des matchs récents avant l'EWA (cf. winsorizeRecent)
-  const gPtsW = winsorizeRecent(gClean, 'pts', s.pts, calcStd(g, 'pts'));
+  const gPtsW = winsorizeRecent(g, 'pts', s.pts, calcStd(g, 'pts'));
   const gRebW = winsorizeRecent(g, 'reb', s.reb, calcStd(g, 'reb'));
   const gAstW = winsorizeRecent(g, 'ast', s.ast, calcStd(g, 'ast'));
   const gTpmW = winsorizeRecent(g, 'tpm', s.tpm, calcStd(g, 'tpm'));
@@ -447,7 +465,7 @@ function computeEstimate(player, isHome, oppGames, myGames, gamelogs, oppAbbr, g
   const ewaW = roleShrunk ? Math.max(ewaWBase, 0.92) : ewaWBase;
   const rsW  = 1 - ewaW;
 
-  const l3Clean = gClean.slice(0, 3).filter(gl => (gl.min ?? 0) >= 12 && gl.pts != null);
+  const l3Clean = g.slice(0, 3).filter(gl => (gl.min ?? 0) >= 12 && gl.pts != null);
   const l3Avg   = l3Clean.length >= 2 ? l3Clean.reduce((sum, gl) => sum + gl.pts, 0) / l3Clean.length : null;
   const useL3   = l3Avg != null && ewaBase != null && Math.abs(l3Avg - ewaBase) / ewaBase > 0.25;
   const effEWA  = useL3 ? l3Avg : ewaBase;
@@ -499,6 +517,7 @@ function computeEstimate(player, isHome, oppGames, myGames, gamelogs, oppAbbr, g
   const streak  = getStreakFactor(g, s.pts);
 
   let adjMult, adjMultReb, adjMultAst, adjMultTpm, h2hCapped, h2hRebCapped, h2hAstCapped, h2hTpmCapped;
+  let playoff, series;
 
   if (inPO) {
     // Base EWA déjà alimentée par les matchs PO de la série → H2H double-compte ; cap resserré
@@ -506,8 +525,8 @@ function computeEstimate(player, isHome, oppGames, myGames, gamelogs, oppAbbr, g
     h2hRebCapped = Math.min(1.08, Math.max(0.92, h2hReb.val));
     h2hAstCapped = Math.min(1.08, Math.max(0.92, h2hAst.val));
     h2hTpmCapped = Math.min(1.08, Math.max(0.92, h2hTpm.val));
-    const playoff    = getPlayoffFactor(round);
-    const series     = getSeriesGameFactor(round, player.usg, isHome);
+    playoff    = getPlayoffFactor(round);
+    series     = getSeriesGameFactor(round, player.usg, isHome);
     const paceDamped = 1 + (pace.val - 1) * 0.5;
     const roleNormPO = (() => {
       const seasonMin = player.stats?.min;
@@ -615,15 +634,48 @@ function computeEstimate(player, isHome, oppGames, myGames, gamelogs, oppAbbr, g
   const astRaw = baseAst ? +(baseAst * adjMultAst).toFixed(1) : null;
   const tpmRaw = baseTpm ? +(baseTpm * adjMultTpm).toFixed(1) : null;
 
+  // Panneau "Facteurs du modèle" (1er août 2026) — lecture seule des valeurs déjà calculées
+  // ci-dessus pour reconstituer le détail affiché côté frontend (jusqu'ici une copie locale
+  // divergente). N'affecte aucun calcul : playoffDisp/seriesDisp sont un second appel, purement
+  // informatif, aux mêmes fonctions pures déjà utilisées dans la branche PO (round/usg/isHome
+  // identiques) — en saison régulière ils restent neutres (val:1.0), exactement comme le panneau
+  // frontend actuel qui les calcule aussi sans les intégrer au multiplicateur hors playoffs.
+  const playoffDisp = inPO ? playoff : getPlayoffFactor(round);
+  const seriesDisp  = inPO ? series  : getSeriesGameFactor(round, player.usg, isHome);
+  const factors = [
+    { name: 'TS% (efficacité tir)',       ...tsF      },
+    { name: 'Volume tirs (FGA/min)',      ...shotVol  },
+    { name: 'Taux lancers francs',        ...ftRate   },
+    { name: 'H2H vs adversaire',          ...h2hPts, val: h2hCapped },
+    { name: 'Pace adversaire',            ...pace     },
+    { name: oppDefByPos ? 'Défense vs position' : 'Défense adverse', ...def },
+    { name: 'Repos / B2B',                ...rest     },
+    { name: 'Densité calendrier',         ...density  },
+    { name: 'Lieu',                       ...loc      },
+    { name: 'Total Vegas',                ...vegas    },
+    { name: 'Playoff round',              ...playoffDisp },
+    { name: 'Numéro match série',         ...seriesDisp  },
+    { name: 'Blowout / garbage time',     ...blowout  },
+    { name: 'Blessure / retour',          ...injRet   },
+    { name: 'Série en cours',             ...streak   },
+    { name: 'Absent coéquipier (USG)',    val: redistributionFactor, desc: redistributionFactor > 1.0 ? `+${Math.round((redistributionFactor - 1) * 100)}% USG redistribué` : '—' },
+  ];
+
   return {
     pts:       +projPts.toFixed(1),
     reb:       capRedistStack(rebRaw, baseReb),
     ast:       capRedistStack(astRaw, baseAst),
     tpm:       capRedistStack(tpmRaw, baseTpm),
-    // Écart de la projection par rapport à la moyenne saison — sert à élargir le std dans probAtLeast
-    deviation: { pts: Math.abs(adjMult - 1), reb: Math.abs(adjMultReb - 1), ast: Math.abs(adjMultAst - 1), tpm: Math.abs(adjMultTpm - 1) },
+    // Écart de la projection par rapport à la moyenne saison — sert à élargir le std dans probAtLeast.
+    // Fix 1er août 2026 (pts uniquement) : basé sur |adjMult-1| avant ce fix, qui ne voyait pas le
+    // tirage de volAnchor (blend 85/15 après adjMult, cf. ci-dessus) — une projection tirée vers le
+    // haut par une série chaude au tir n'élargissait jamais l'incertitude, alors que volAnchor est lui
+    // aussi construit sur la même fenêtre récente (donc pas un signal indépendant qui compense). Utilise
+    // maintenant l'écart réel final projPts/basePts, qui capture les deux sources de mouvement.
+    deviation: { pts: basePts ? Math.abs(projPts / basePts - 1) : Math.abs(adjMult - 1), reb: Math.abs(adjMultReb - 1), ast: Math.abs(adjMultAst - 1), tpm: Math.abs(adjMultTpm - 1) },
     streak,
     isInjured: injRet.isInjured,
+    factors,
   };
 }
 

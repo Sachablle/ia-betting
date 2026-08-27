@@ -1,5 +1,5 @@
 // Fond d'écran — 5 styles dispo, switcher en haut à droite, choix mémorisé dans localStorage.
-import { useState } from 'react';
+import { useState, memo } from 'react';
 
 function generateDotShadows(count, colorFn, spread = 0, minOpacity = 0.25, opacityRange = 0.7) {
   const shadows = [];
@@ -15,6 +15,7 @@ function generateDotShadows(count, colorFn, spread = 0, minOpacity = 0.25, opaci
 const white  = o => `rgba(255,255,255,${o})`;
 const bubble = o => `rgba(165,243,252,${o})`;
 const violet = o => `rgba(167,139,250,${o})`;
+const cyan   = o => `rgba(96,165,250,${o})`;
 
 const STARS_A   = generateDotShadows(70, white,  0.5, 0.18, 0.42);
 const STARS_B   = generateDotShadows(60, white,  0.5, 0.18, 0.42);
@@ -22,12 +23,39 @@ const BUBBLES   = generateDotShadows(70, bubble, 0.5, 0.18, 0.42);
 const BUBBLES_2 = generateDotShadows(60, bubble, 0.5, 0.18, 0.42);
 const VIOLETS_A = generateDotShadows(80, violet, 0.5, 0.15, 0.50);
 const VIOLETS_B = generateDotShadows(70, violet, 0.5, 0.15, 0.50);
+const CYAN_A    = generateDotShadows(70, cyan,   0.5, 0.15, 0.45);
+const CYAN_B    = generateDotShadows(60, cyan,   0.5, 0.15, 0.45);
 
 const Wrap = ({ bg, children }) => (
   <div style={{ position: 'fixed', inset: 0, zIndex: -1, pointerEvents: 'none', overflow: 'hidden', background: bg }}>
     {children}
   </div>
 );
+
+// ── 0. Nébuleuse bleue (31 juillet 2026) — portée telle quelle depuis
+// "Projets marchés/src/components/StarField.jsx" (l'autre projet de l'utilisateur, PulseSignal) sur
+// demande explicite ("je veux le même que PulseSignal") — même structure que Nébuleuse spatiale
+// juste en dessous, palette bleu/cyan/émeraude au lieu de violet/magenta.
+function MarketNebulaBackground() {
+  return (
+    <Wrap bg="radial-gradient(ellipse at 50% 30%, #0a1120 0%, #05070c 70%)">
+      <style>{`
+        @keyframes riseUp  { 0% { transform: translateY(10vh); opacity: 0.9; } 100% { transform: translateY(-30vh); opacity: 0; } }
+        @keyframes riseUp2 { 0% { transform: translateY(15vh); opacity: 0.85; } 100% { transform: translateY(-35vh); opacity: 0; } }
+        @keyframes nebulaDrift1 { 0%,100% { transform: translate(-8%, -6%) scale(1); } 50% { transform: translate(6%, 4%) scale(1.12); } }
+        @keyframes nebulaDrift2 { 0%,100% { transform: translate(6%, 8%) scale(1.05); } 50% { transform: translate(-6%, -4%) scale(0.92); } }
+        @keyframes nebulaDrift3 { 0%,100% { transform: translate(-4%, 4%) scale(0.95); } 50% { transform: translate(4%, -8%) scale(1.1); } }
+      `}</style>
+      <div style={{ position: 'absolute', top: 0, left: 0, width: '1px', height: '1px', borderRadius: '50%', boxShadow: STARS_A, animation: 'riseUp 16s linear infinite' }} />
+      <div style={{ position: 'absolute', top: 0, left: 0, width: '1px', height: '1px', borderRadius: '50%', boxShadow: STARS_B, animation: 'riseUp2 22s linear infinite', animationDelay: '-8s' }} />
+      <div style={{ position: 'absolute', top: 0, left: 0, width: '1px', height: '1px', borderRadius: '50%', boxShadow: CYAN_A, animation: 'riseUp 20s linear infinite', animationDelay: '-4s' }} />
+      <div style={{ position: 'absolute', top: 0, left: 0, width: '1px', height: '1px', borderRadius: '50%', boxShadow: CYAN_B, animation: 'riseUp2 26s linear infinite', animationDelay: '-12s' }} />
+      <div style={{ position: 'absolute', top: '8%', left: '12%', width: '50vw', height: '50vw', borderRadius: '50%', background: 'radial-gradient(circle, rgba(59,130,246,0.28), transparent 70%)', filter: 'blur(70px)', mixBlendMode: 'lighten', animation: 'nebulaDrift1 30s ease-in-out infinite', willChange: 'transform' }} />
+      <div style={{ position: 'absolute', top: '50%', left: '50%', marginTop: '-27.5vw', marginLeft: '-27.5vw', width: '55vw', height: '55vw', borderRadius: '50%', background: 'radial-gradient(circle, rgba(16,185,129,0.16), transparent 70%)', filter: 'blur(70px)', mixBlendMode: 'lighten', animation: 'nebulaDrift2 36s ease-in-out infinite', willChange: 'transform' }} />
+      <div style={{ position: 'absolute', top: '35%', left: '50%', width: '40vw', height: '40vw', borderRadius: '50%', background: 'radial-gradient(circle, rgba(34,211,238,0.18), transparent 70%)', filter: 'blur(80px)', mixBlendMode: 'lighten', animation: 'nebulaDrift3 42s ease-in-out infinite', willChange: 'transform' }} />
+    </Wrap>
+  );
+}
 
 // ── 1. Nébuleuse spatiale ────────────────────────────────────────────────────
 function NebulaBackground() {
@@ -142,6 +170,7 @@ function StormBackground() {
 
 // ── Switcher ─────────────────────────────────────────────────────────────────
 const VARIANTS = [
+  { name: 'Nébuleuse bleue',    Comp: MarketNebulaBackground },
   { name: 'Nébuleuse spatiale', Comp: NebulaBackground },
   { name: 'Profondeurs océan',  Comp: OceanDepthBackground },
   { name: 'Minuit violet',      Comp: MidnightVioletBackground },
@@ -150,7 +179,10 @@ const VARIANTS = [
   { name: 'Orage nocturne',     Comp: StormBackground },
 ];
 
-export default function StarField() {
+// memo() : ce composant ne prend aucune prop — sans ça, il se re-rendait (et repeignait ses
+// dégradés/ombres lourdes) à chaque re-render de App (ex: alertCounts qui change toutes les 60s),
+// alors que rien dans le fond d'écran n'a besoin de changer à ce moment-là.
+const StarField = memo(function StarField() {
   const [i, setI] = useState(() => {
     const saved = Number(localStorage.getItem('bg_preview_variant'));
     return Number.isInteger(saved) && saved >= 0 && saved < VARIANTS.length ? saved : 0;
@@ -177,4 +209,6 @@ export default function StarField() {
       </div>
     </>
   );
-}
+});
+
+export default StarField;

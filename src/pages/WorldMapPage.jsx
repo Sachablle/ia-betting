@@ -9,7 +9,10 @@ const GEO_URL = GEO_DATA;
 // Ordre du tableau `leagues` = ordre d'affichage/sport par défaut (cf. _firstSport plus bas) —
 // football en premier partout sauf États-Unis (pas de foot couvert là-bas, basket reste devant).
 const COVERED = {
-  '840': { name: 'États-Unis', flag: '🇺🇸', leagues: ['nba','wnba','mlb'] },
+  // WNBA avant NBA (31 juillet 2026, demande explicite) — saison WNBA en cours, NBA hors-saison ;
+  // à réinverser manuellement quand la NBA reprend et que la WNBA se termine (pas de détection
+  // automatique de saison, même logique que _preferredBasketLeague dans Panel).
+  '840': { name: 'États-Unis', flag: '🇺🇸', leagues: ['wnba','nba'] },
   '250': { name: 'France',     flag: '🇫🇷', leagues: ['ligue1','lnb'] },
   '724': { name: 'Espagne',    flag: '🇪🇸', leagues: ['laliga','acb'] },
   '276': { name: 'Allemagne',  flag: '🇩🇪', leagues: ['bundes','bbl'] },
@@ -19,7 +22,7 @@ const COVERED = {
 };
 
 const LEAGUE_META = {
-  nba: 'NBA', wnba: 'WNBA', mlb: 'MLB', lnb: 'Betclic Élite',
+  nba: 'NBA', wnba: 'WNBA', lnb: 'Betclic Élite',
   acb: 'ACB', bbl:  'BBL',  legaa: 'Lega A',
   ligue1: 'Ligue 1', laliga: 'La Liga', bundes: 'Bundesliga', seriea: 'Serie A', pl: 'Premier League',
   euroleague: 'EuroLeague', cdm: 'Coupe du Monde', bresil: 'Brasileirão',
@@ -29,26 +32,12 @@ const LEAGUE_META = {
 // Coupes européennes de clubs (23 juillet 2026) — source api-football, /api/football/eucup/:comp/matches
 const EU_CUP_LEAGUES = ['europa', 'conference', 'champions'];
 const FOOTBALL_LEAGUES = new Set(['ligue1','laliga','bundes','seriea','pl','cdm','bresil', ...EU_CUP_LEAGUES]);
-// MLB (24 juillet 2026) — 3e catégorie de sport dans le panneau États-Unis, à part du basket
-// (NBA/WNBA) : masquée par défaut, visible uniquement quand l'icône ⚾ est cliquée explicitement.
-const MLB_LEAGUES = new Set(['mlb']);
-const sportOf = l => FOOTBALL_LEAGUES.has(l) ? 'football' : MLB_LEAGUES.has(l) ? 'baseball' : 'basket';
-// CDN RotoWire écarté pour les logos MLB (bloque les requêtes cross-origin par Referer, vérifié en
-// direct : 403 avec un Referer localhost). CDN ESPN à la place (déjà utilisé ailleurs dans l'app),
-// aucune restriction de ce type. Seule exception sur les 30 franchises : Arizona ("az" chez MLB
-// Stats API, 404 côté ESPN qui attend "ari").
-const ESPN_MLB_ALIASES = { az: 'ari' };
-const mlbLogo = short => {
-  if (!short) return null;
-  const code = short.toLowerCase();
-  return `https://a.espncdn.com/i/teamlogos/mlb/500/${ESPN_MLB_ALIASES[code] || code}.png`;
-};
+const sportOf = l => FOOTBALL_LEAGUES.has(l) ? 'football' : 'basket';
 
 const _ESPN_WNBA = { 'Atlanta Dream':20,'Chicago Sky':19,'Connecticut Sun':18,'Dallas Wings':3,'Golden State Valkyries':129689,'Indiana Fever':5,'Las Vegas Aces':17,'Los Angeles Sparks':6,'Minnesota Lynx':8,'New York Liberty':9,'Phoenix Mercury':11,'Portland Fire':132052,'Seattle Storm':14,'Toronto Tempo':131935,'Washington Mystics':16 };
 const _ESPN_NBA  = { 'Atlanta Hawks':1,'Boston Celtics':2,'New Orleans Pelicans':3,'Chicago Bulls':4,'Cleveland Cavaliers':5,'Dallas Mavericks':6,'Denver Nuggets':7,'Detroit Pistons':8,'Golden State Warriors':9,'Houston Rockets':10,'Indiana Pacers':11,'LA Clippers':12,'Los Angeles Lakers':13,'Miami Heat':14,'Milwaukee Bucks':15,'Minnesota Timberwolves':16,'Brooklyn Nets':17,'New York Knicks':18,'Orlando Magic':19,'Philadelphia 76ers':20,'Phoenix Suns':21,'Portland Trail Blazers':22,'Sacramento Kings':23,'San Antonio Spurs':24,'Oklahoma City Thunder':25,'Utah Jazz':26,'Washington Wizards':27,'Toronto Raptors':28,'Memphis Grizzlies':29,'Charlotte Hornets':30 };
 function _prefetchMatch(g, league) {
   if (FOOTBALL_LEAGUES.has(league)) { import('./MatchDetailPage').catch(()=>{}); return; }
-  if (league === 'mlb') { import('./MlbDetailPage').catch(()=>{}); return; }
   import('./BasketballDetailPage').catch(()=>{});
   const map = league==='wnba' ? _ESPN_WNBA : _ESPN_NBA;
   const api = league==='wnba' ? 'wnba' : 'nba';
@@ -68,8 +57,6 @@ function _prefetchCountry(country) {
       cachedFetch(`${base}/scoreboard`, 20_000).catch(()=>{});
       cachedFetch(`${base}/standings`,  6*3_600_000).catch(()=>{});
       cachedFetch(`${base}/leaders`,    6*3_600_000).catch(()=>{});
-    } else if (l === 'mlb') {
-      cachedFetch('/api/mlb/matches', 5*60_000).catch(()=>{});
     } else if (l === 'acb') {
       cachedFetch('/api/euro/acb/scoreboard', 20_000).catch(()=>{});
       cachedFetch('/api/acb/standings', 6*3_600_000).catch(()=>{});
@@ -135,10 +122,28 @@ const STAT_CATS = [
   { key: 'tpm', label: '3PM', sub: '3 pts / match',     color: '#c084fc' },
 ];
 
+// Buteurs/Passeurs (31 juillet 2026) — équivalent foot de STAT_CATS, 2 catégories au lieu de 4.
+const FOOTBALL_CATS = [
+  { key: 'buteurs',  label: 'BUTEURS',  sub: 'Buts / saison',   color: '#4ade80' },
+  { key: 'passeurs', label: 'PASSEURS', sub: 'Passes / saison', color: '#60a5fa' },
+];
+
+// Championnats basket EU (31 juillet 2026) — même overlay Classement+leaders que NBA/WNBA/ACB,
+// juste une source de données différente côté backend (/api/euro/:league/standings|leaders).
+const EURO_BASKET_STATS_LEAGUES = ['lnb', 'bbl', 'legaa'];
+// Foot (31 juillet 2026) — 5 grands championnats + Brasileirão seulement, pas les 3 coupes d'Europe
+// (LDC/Europa/Conference n'ont pas de classement unique — groupes puis élimination directe, décision
+// utilisateur explicite de ne pas leur donner cet overlay du tout).
+const FOOTBALL_STATS_LEAGUES = ['ligue1', 'pl', 'laliga', 'bundes', 'seriea', 'bresil'];
+
 function StatsOverlay({ league, onClose, standData, cats }) {
   const [standView, setStandView] = useState('ligue');
 
-  if (league !== 'wnba' && league !== 'nba' && league !== 'acb') return null;
+  const BASKET_STATS_LEAGUES = new Set(['nba', 'wnba', 'acb', ...EURO_BASKET_STATS_LEAGUES]);
+  const isFootball = FOOTBALL_STATS_LEAGUES.includes(league);
+  if (!isFootball && !BASKET_STATS_LEAGUES.has(league)) return null;
+  const activeCats = isFootball ? FOOTBALL_CATS : STAT_CATS;
+  const hasConferences = league === 'nba' || league === 'wnba';
 
   const card = {
     background:'rgba(0,6,20,0.97)', border:'1px solid rgba(96,165,250,0.15)',
@@ -152,18 +157,20 @@ function StatsOverlay({ league, onClose, standData, cats }) {
     textTransform:'uppercase',
   });
 
+  // Foot (31 juillet 2026) : J/V/N/D/PTS (classement classique) au lieu de V/D/.PCT/GB — pas de
+  // notion de %victoires/games-behind en foot, mais un classement par points avec nuls.
   const StandTable = ({ teams }) => (
     <table style={{ width:'100%', borderCollapse:'collapse' }}>
       <thead>
         <tr style={{ borderBottom:'1px solid rgba(255,255,255,0.06)', position:'sticky', top:0, background:'rgba(0,6,20,0.98)' }}>
-          {['#','ÉQUIPE','V','D','.PCT','GB'].map(h => (
+          {(isFootball ? ['#','ÉQUIPE','J','V','N','D','PTS'] : ['#','ÉQUIPE','V','D','.PCT','GB']).map(h => (
             <th key={h} style={{ fontSize:8, fontWeight:700, color:'rgba(255,255,255,0.3)', fontFamily:'monospace', padding:'4px 6px', textAlign: h==='ÉQUIPE'?'left':'center', letterSpacing:'0.08em' }}>{h}</th>
           ))}
         </tr>
       </thead>
       <tbody>
         {teams.map((t, i) => (
-          <tr key={t.abbr} style={{ borderBottom:'1px solid rgba(255,255,255,0.04)', background: i%2===0?'rgba(255,255,255,0.01)':'none' }}>
+          <tr key={t.id ?? t.abbr} style={{ borderBottom:'1px solid rgba(255,255,255,0.04)', background: i%2===0?'rgba(255,255,255,0.01)':'none' }}>
             <td style={{ fontSize:9, color:'rgba(255,255,255,0.35)', padding:'4px 6px', textAlign:'center', fontFamily:'monospace' }}>{t.rank}</td>
             <td style={{ padding:'4px 6px' }}>
               <div style={{ display:'flex', alignItems:'center', gap:5 }}>
@@ -171,10 +178,22 @@ function StatsOverlay({ league, onClose, standData, cats }) {
                 <span style={{ fontSize:10, fontWeight:700, color:'#fff' }}>{t.abbr}</span>
               </div>
             </td>
-            <td style={{ fontSize:10, color:'#4ade80', fontWeight:700, textAlign:'center', padding:'4px 4px', fontFamily:'monospace' }}>{t.wins}</td>
-            <td style={{ fontSize:10, color:'rgba(255,255,255,0.5)', textAlign:'center', padding:'4px 4px', fontFamily:'monospace' }}>{t.losses}</td>
-            <td style={{ fontSize:10, color:'rgba(255,255,255,0.7)', textAlign:'center', padding:'4px 4px', fontFamily:'monospace' }}>{t.pct != null ? t.pct.toFixed(3) : '—'}</td>
-            <td style={{ fontSize:10, color:'rgba(255,255,255,0.4)', textAlign:'center', padding:'4px 4px', fontFamily:'monospace' }}>{t.gb != null && t.gb > 0 ? t.gb : '—'}</td>
+            {isFootball ? (
+              <>
+                <td style={{ fontSize:10, color:'rgba(255,255,255,0.5)', textAlign:'center', padding:'4px 4px', fontFamily:'monospace' }}>{t.played}</td>
+                <td style={{ fontSize:10, color:'#4ade80', fontWeight:700, textAlign:'center', padding:'4px 4px', fontFamily:'monospace' }}>{t.wins}</td>
+                <td style={{ fontSize:10, color:'rgba(255,255,255,0.5)', textAlign:'center', padding:'4px 4px', fontFamily:'monospace' }}>{t.draws}</td>
+                <td style={{ fontSize:10, color:'rgba(255,255,255,0.5)', textAlign:'center', padding:'4px 4px', fontFamily:'monospace' }}>{t.losses}</td>
+                <td style={{ fontSize:10, color:'#fff', fontWeight:800, textAlign:'center', padding:'4px 4px', fontFamily:'monospace' }}>{t.points}</td>
+              </>
+            ) : (
+              <>
+                <td style={{ fontSize:10, color:'#4ade80', fontWeight:700, textAlign:'center', padding:'4px 4px', fontFamily:'monospace' }}>{t.wins}</td>
+                <td style={{ fontSize:10, color:'rgba(255,255,255,0.5)', textAlign:'center', padding:'4px 4px', fontFamily:'monospace' }}>{t.losses}</td>
+                <td style={{ fontSize:10, color:'rgba(255,255,255,0.7)', textAlign:'center', padding:'4px 4px', fontFamily:'monospace' }}>{t.pct != null ? t.pct.toFixed(3) : '—'}</td>
+                <td style={{ fontSize:10, color:'rgba(255,255,255,0.4)', textAlign:'center', padding:'4px 4px', fontFamily:'monospace' }}>{t.gb != null && t.gb > 0 ? t.gb : '—'}</td>
+              </>
+            )}
           </tr>
         ))}
       </tbody>
@@ -192,7 +211,7 @@ function StatsOverlay({ league, onClose, standData, cats }) {
         <div style={{ padding:'8px 12px 6px', borderBottom:'1px solid rgba(96,165,250,0.1)', display:'flex', alignItems:'center', gap:6 }}>
           <span style={{ fontSize:10, fontWeight:800, color:'#60a5fa', fontFamily:'monospace', textTransform:'uppercase', letterSpacing:'0.1em', flex:1 }}>Classement {league?.toUpperCase()}</span>
           <button style={btnToggle(standView==='ligue')} onClick={()=>setStandView('ligue')}>Ligue</button>
-          {league !== 'acb' && <button style={btnToggle(standView==='conf')} onClick={()=>setStandView('conf')}>Conf.</button>}
+          {hasConferences && <button style={btnToggle(standView==='conf')} onClick={()=>setStandView('conf')}>Conf.</button>}
           <button onClick={onClose} style={{ background:'none', border:'none', color:'rgba(255,255,255,0.3)', cursor:'pointer', fontSize:14, lineHeight:1, padding:0, marginLeft:4 }}>×</button>
         </div>
         <div style={{ maxHeight:'calc(50vh - 60px)', overflowY:'auto' }}>
@@ -211,9 +230,9 @@ function StatsOverlay({ league, onClose, standData, cats }) {
         </div>
       </div>
 
-      {/* 4 fenêtres stats — s'étendent jusqu'à la légende */}
-      <div style={{ display:'grid', gridTemplateColumns:'repeat(4, 1fr)', gap:6, flex:1, minHeight:0 }}>
-        {STAT_CATS.map(({ key, label, sub, color }, ci) => (
+      {/* Fenêtres stats — 4 (basket) ou 2 (foot, Buteurs/Passeurs), s'étendent jusqu'à la légende */}
+      <div style={{ display:'grid', gridTemplateColumns:`repeat(${activeCats.length}, 1fr)`, gap:6, flex:1, minHeight:0 }}>
+        {activeCats.map(({ key, label, sub, color }, ci) => (
           <div key={`${league}-${key}`} onClick={(e) => e.stopPropagation()} style={{ ...card, display:'flex', flexDirection:'column', minHeight:0, animation:'mapReveal 1.4s ease-out both', animationDelay:`${0.25 + ci * 0.18}s`, pointerEvents:'auto' }}>
             <div style={{ padding:'6px 10px 4px', borderBottom:`1px solid ${color}22`, flexShrink:0 }}>
               <span style={{ fontSize:11, fontWeight:800, color, fontFamily:'monospace' }}>{label}</span>
@@ -250,27 +269,53 @@ function Panel({ country, onClose, statsLeague, setStatsLeague }) {
   const [matches, setMatches] = useState({});
   const [loading, setLoading] = useState(true);
   const [view, setView] = useState({}); // { [league]: 'upcoming' | 'done' } — bouton À venir / Terminés par championnat
-  // Tous les championnats repliés par défaut à l'ouverture d'un pays (demande explicite, 24 juillet
-  // 2026) — il faut déplier un championnat pour voir ses matchs, et pour le basket ce dépliage
-  // déclenche aussi l'affichage des widgets Classement/leaders (cf. plus bas) au lieu de l'ancien
-  // auto-open au clic sur le pays. Absorbe au passage le cas NBA hors-saison (mémoire
-  // project_nba_regular_season) puisque tout part fermé désormais.
-  const [openLeagues, setOpenLeagues] = useState({});
+  // Tous les championnats repliés par défaut à l'ouverture d'un pays — décision du 24 juillet 2026,
+  // **revenue en arrière le 31 juillet 2026** (demande explicite) : la liste de matchs doit s'afficher
+  // directement dépliée pour tous les pays, comme c'était déjà le cas pour les pays à un seul
+  // championnat (Angleterre, Brésil) depuis plus tôt le 31 juillet. Le repli par jour (juste en
+  // dessous, `openDays`) ajouté le même jour compense la densité que le dépliage systématique
+  // rouvre — seul le jour le plus proche par championnat est visible sans clic supplémentaire.
+  // Ne touche PAS `statsLeague` (overlay Classement/leaders basket, plus bas) qui reste gated sur un
+  // clic explicite — un overlay plein écran qui s'ouvrirait tout seul serait trop intrusif.
+  const _allLeaguesOpen = Object.fromEntries(country.leagues.map(l => [l, true]));
+  const [openLeagues, setOpenLeagues] = useState(_allLeaguesOpen);
+  // Repli par jour (31 juillet 2026, demande explicite) — dans la liste de matchs d'un championnat
+  // déplié, seul le jour le plus proche s'affiche ouvert par défaut ; les jours suivants sont repliés
+  // sous leur séparateur de date (clic pour dérouler). Clé `${league}::${dateLabel}`, ouverture par
+  // défaut décidée par l'ordre d'apparition (1er jour rencontré = le plus proche, les matchs arrivent
+  // déjà triés chronologiquement) plutôt qu'une comparaison de date en dur.
+  const [openDays, setOpenDays] = useState({});
   const _hasFootball = country.leagues.some(l => sportOf(l) === 'football');
   const _hasBasket   = country.leagues.some(l => sportOf(l) === 'basket');
-  const _hasBaseball = country.leagues.some(l => sportOf(l) === 'baseball');
   // Par défaut : sport de la première ligue du pays (acb avant laliga → basket ; cdm avant euroleague
-  // → football ; nba avant mlb → basket, le MLB reste masqué tant qu'on ne clique pas l'icône ⚾).
+  // → football).
   const _firstSport = sportOf(country.leagues[0]);
-  const _sportsPresent = [_hasFootball && 'football', _hasBasket && 'basket', _hasBaseball && 'baseball'].filter(Boolean);
+  const _sportsPresent = [_hasFootball && 'football', _hasBasket && 'basket'].filter(Boolean);
   const [sportFilter, setSportFilter] = useState(_sportsPresent.length > 1 ? _firstSport : _sportsPresent[0] || null);
+  // Ligue basket à ouvrir automatiquement dans l'overlay Classement/leaders (31 juillet 2026, demande
+  // explicite) quand l'onglet Basket devient actif — WNBA privilégiée sur NBA tant que la NBA est
+  // hors-saison (préférence en dur, pas de détection automatique de saison : l'utilisateur redemandera
+  // explicitement le switch vers NBA quand la WNBA se terminera). Pays à une seule ligue basket
+  // (ACB/LNB/BBL/Lega A) : cette ligue-là, pas d'ambiguïté.
+  const _basketLeagues = country.leagues.filter(l => sportOf(l) === 'basket');
+  const _preferredBasketLeague = _basketLeagues.includes('wnba') ? 'wnba' : (_basketLeagues[0] || null);
+  // Même principe côté foot (31 juillet 2026) — un seul championnat domestique éligible par pays
+  // (les 3 coupes d'Europe, sous "Monde", ne sont jamais dans FOOTBALL_STATS_LEAGUES donc jamais
+  // sélectionnées ici, cohérent avec la décision de ne pas leur donner cet overlay).
+  const _footballLeagues = country.leagues.filter(l => FOOTBALL_STATS_LEAGUES.includes(l));
+  const _preferredFootballLeague = _footballLeagues[0] || null;
+  const _preferredStatsLeague = sport => sport === 'basket' ? _preferredBasketLeague : sport === 'football' ? _preferredFootballLeague : null;
 
   // Le panneau n'est pas remonté quand on change de pays sans le fermer (pas de `key` côté parent) —
   // sportFilter restait donc bloqué sur le sport du pays précédent (ex: basket vu sur États-Unis
   // puis clic direct sur Espagne → ACB au lieu de La Liga). Réinitialise explicitement au sport par
   // défaut du nouveau pays à chaque changement (26 juillet 2026).
   useEffect(() => {
-    setSportFilter(_sportsPresent.length > 1 ? _firstSport : _sportsPresent[0] || null);
+    const nextSport = _sportsPresent.length > 1 ? _firstSport : _sportsPresent[0] || null;
+    setSportFilter(nextSport);
+    setOpenLeagues(_allLeaguesOpen);
+    setOpenDays({});
+    setStatsLeague(_preferredStatsLeague(nextSport));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [country?.name]);
 
@@ -290,28 +335,26 @@ function Panel({ country, onClose, statsLeague, setStatsLeague }) {
       if (l === 'nba')  return cachedFetch('/api/nba/scoreboard', 20_000).then(d=>{const s=splitGames(d.games||[]);return{l,...s};});
       if (l === 'wnba') return cachedFetch('/api/wnba/scoreboard', 20_000).then(d=>{const s=splitGames(d.games||[]);return{l,...s};});
       if (l === 'euroleague') return cachedFetch('/api/euroleague/scoreboard', 20_000).then(d=>{const s=splitGames(d.games||[]);return{l,...s};});
-      // MLB (24 juillet 2026) — mode fantôme : matchs affichés normalement, mais aucune alerte
-      // dessus (MLB_ALERTS_ENABLED=false côté backend) tant que la calibration near-miss n'est
-      // pas vérifiée. fixtureId préfixé mlb_, comme les autres namespaces de l'app.
-      if (l === 'mlb') return cachedFetch('/api/mlb/matches', 5*60_000).then(d => {
-        const all=(d.matches||[]).map(m=>({
-          id:`mlb_${m.id}`,date:m.date,status:m.status,round:m.venue||'',
-          home:{name:m.home?.name,short:m.home?.short,logo:mlbLogo(m.home?.short),score:m.home?.score ?? null},
-          away:{name:m.away?.name,short:m.away?.short,logo:mlbLogo(m.away?.short),score:m.away?.score ?? null},
-        }));
-        return{l,...splitGames(all)};
-      });
       // 5 grands championnats — football-data.org (même source/même id `fd_<id>` que MatchDetailPage
-      // via useFootballFixtures, cf. src/utils/useFootballFixtures.js). Seuls les matchs SCHEDULED
-      // sont renvoyés par /api/fd/matches (pas encore de source de score final pour ces 5 ligues,
-      // contrairement à la CDM) — l'onglet "Terminés" restera vide pour elles, comme documenté.
-      if (FOOTBALL_LEAGUES.has(l) && l !== 'cdm' && l !== 'bresil' && !EU_CUP_LEAGUES.includes(l)) return cachedFetch('/api/fd/matches', 30_000).then(d=>{
-        const all=(d.matches||[]).filter(f=>f.league===l).map(f=>({
+      // via useFootballFixtures, cf. src/utils/useFootballFixtures.js). /api/fd/matches ne renvoie que
+      // les matchs SCHEDULED (à venir) ; /api/fd/results (16 août 2026, jusque-là utilisé uniquement
+      // pour le règlement des alertes) apporte les scores finaux — fusionnés ici pour que l'onglet
+      // "Terminés" ne reste plus vide pour ces 5 ligues comme avant.
+      if (FOOTBALL_LEAGUES.has(l) && l !== 'cdm' && l !== 'bresil' && !EU_CUP_LEAGUES.includes(l)) return Promise.all([
+        cachedFetch('/api/fd/matches', 30_000),
+        cachedFetch('/api/fd/results', 30_000),
+      ]).then(([dm, dr])=>{
+        const scheduled=(dm.matches||[]).filter(f=>f.league===l).map(f=>({
           id:`fd_${f.id}`,date:f.date,status:'STATUS_SCHEDULED',round:f.round,
           home:{name:f.home?.name,short:f.home?.short,logo:f.home?.logoId,score:null},
           away:{name:f.away?.name,short:f.away?.short,logo:f.away?.logoId,score:null},
         }));
-        return{l,...splitGames(all)};
+        const finished=(dr.matches||[]).filter(f=>f.league===l).map(f=>({
+          id:`fd_${f.id}`,date:f.date,status:f.status,round:f.round,
+          home:{name:f.home?.name,short:f.home?.short,logo:f.home?.logo,score:f.home?.score},
+          away:{name:f.away?.name,short:f.away?.short,logo:f.away?.logo,score:f.away?.score},
+        }));
+        return{l,...splitGames([...scheduled, ...finished])};
       });
       if (l === 'cdm') return cachedFetch('/api/fd/worldcup', 30_000).then(d => {
         const games = (d.games || []).map(g => ({ ...g, id: `fdcdm_${g.id}` }));
@@ -398,28 +441,20 @@ function Panel({ country, onClose, statsLeague, setStatsLeague }) {
               ? (country.name === 'Brésil'
                   ? [['football','⚽','#2d8a2d','rgba(45,138,45,',_hasFootball]]
                   : [['football','⚽','#2d8a2d','rgba(45,138,45,',_hasFootball],['basket','🏀','#fb923c','rgba(251,146,60,',_hasBasket]])
-              // Icône foot désactivée retirée pour les États-Unis spécifiquement (24 juillet 2026,
-              // demande explicite) — inutile d'encombrer avec un ⚽ qui ne sera jamais actif dès
-              // qu'un pays a du MLB. Comportement inchangé pour un éventuel futur pays basket-only
-              // sans MLB (dimmed ⚽ conservé dans ce cas, aucun aujourd'hui).
-              : _hasBaseball ? [['basket','🏀','#fb923c','rgba(251,146,60,',_hasBasket]]
               : [['basket','🏀','#fb923c','rgba(251,146,60,',_hasBasket],['football','⚽','#2d8a2d','rgba(45,138,45,',_hasFootball]]),
-            // ⚾ MLB (24 juillet 2026) — n'apparaît que pour les pays qui ont effectivement une ligue
-            // baseball (États-Unis aujourd'hui), contrairement à foot/basket toujours affichés en
-            // duo (même sans ligue) : pas d'intérêt à montrer une icône désactivée sur les 6 autres
-            // pays qui n'auront jamais de MLB.
-            ...(_hasBaseball ? [['baseball','⚾','#60a5fa','rgba(96,165,250,',_hasBaseball]] : []),
           ].map(([sport, icon, col, rgba, has]) => {
             const active = sportFilter === sport;
             return (
               <button key={sport} onClick={() => {
                   if (!has) return;
-                  setSportFilter(sportFilter === sport ? null : sport);
-                  // Changer d'onglet sport referme les widgets stats — ils ne se rouvrent que sur
-                  // dépliage explicite d'un championnat (cf. openLeagues plus bas).
-                  setStatsLeague(null);
+                  const willActivate = sportFilter !== sport;
+                  setSportFilter(willActivate ? sport : null);
+                  // Cliquer sur l'onglet Basket ou Football rouvre directement l'overlay
+                  // Classement/leaders (31 juillet 2026, demande explicite, étendu au foot le même
+                  // jour) — les autres sports/désactivations le referment comme avant.
+                  setStatsLeague(willActivate ? _preferredStatsLeague(sport) : null);
                 }}
-                title={sport === 'football' ? 'Football uniquement' : sport === 'baseball' ? 'Baseball uniquement' : 'Basket uniquement'}
+                title={sport === 'football' ? 'Football uniquement' : 'Basket uniquement'}
                 style={{
                   background: active ? `${rgba}0.15)` : 'none',
                   border: `1px solid ${active ? col : has ? `${rgba}0.2)` : 'rgba(255,255,255,0.06)'}`,
@@ -508,22 +543,31 @@ function Panel({ country, onClose, statsLeague, setStatsLeague }) {
                     if (!byDate[dk]) byDate[dk] = [];
                     byDate[dk].push(g);
                   });
-                  return Object.entries(byDate).map(([dateLabel, dayGames]) => (
+                  return Object.entries(byDate).map(([dateLabel, dayGames], dayIdx) => {
+                    const dayKey = `${league}::${dateLabel}`;
+                    const dayOpen = openDays[dayKey] ?? (dayIdx === 0);
+                    return (
                     <div key={dateLabel}>
-                      {/* Séparateur date — plus compact dans le panneau Monde (23 juillet 2026) */}
-                      <div style={{display:'flex',alignItems:'center',gap:8,padding: country.isMonde ? '2px 4px' : '6px 4px',margin: country.isMonde ? '1px 0' : '4px 0'}}>
+                      {/* Séparateur date — plus compact dans le panneau Monde (23 juillet 2026). Cliquable
+                          depuis le 31 juillet 2026 : seul le jour le plus proche (dayIdx 0) est déplié par
+                          défaut, les suivants se déroulent au clic sur le libellé. */}
+                      <div
+                        onClick={() => setOpenDays(s => ({ ...s, [dayKey]: !dayOpen }))}
+                        style={{display:'flex',alignItems:'center',gap:8,padding: country.isMonde ? '2px 4px' : '6px 4px',margin: country.isMonde ? '1px 0' : '4px 0',cursor:'pointer'}}
+                      >
                         <div style={{flex:1,height:'1px',background:'rgba(255,255,255,0.08)'}}/>
+                        <span style={{fontSize:7,color:'rgba(255,255,255,0.35)',transform:dayOpen?'none':'rotate(-90deg)',transition:'transform .15s',display:'inline-block'}}>▾</span>
                         <span style={{fontSize: country.isMonde ? 8 : 9,fontWeight:700,color:'rgba(255,255,255,0.35)',textTransform:'capitalize',letterSpacing:'0.06em',whiteSpace:'nowrap'}}>{dateLabel}</span>
                         <div style={{flex:1,height:'1px',background:'rgba(255,255,255,0.08)'}}/>
                       </div>
-                      {dayGames.map((g,i) => {
+                      {dayOpen && dayGames.map((g,i) => {
                         const live = isLiveGame(g);
                         const logoSize = country.isMonde ? 14 : 20;
                         return (
                           <button key={i} onClick={()=>{
                             // Met à jour le state de /carte AVANT de naviguer → navigate(-1) restaurera returnCountry
                             navigate(location.pathname+location.search, { replace:true, state:{ returnCountry: country } });
-                            setTimeout(()=>navigate(isFootball?`/football/${g.id}`:league==='mlb'?`/mlb/${g.id}`:`/basketball/${g.id}${lp}`), 0);
+                            setTimeout(()=>navigate(isFootball?`/football/${g.id}`:`/basketball/${g.id}${lp}`), 0);
                           }}
                             style={{width:'100%',background:'none',border:'none',borderTop:i>0?'1px solid rgba(255,255,255,0.04)':'none',padding: country.isMonde ? '0.3rem 0.5rem' : '0.65rem 0.5rem',cursor:'pointer',textAlign:'center',transition:'background .15s'}}
                             onMouseEnter={e=>{e.currentTarget.style.background='rgba(255,255,255,0.04)';_prefetchMatch(g,league);}}
@@ -557,7 +601,7 @@ function Panel({ country, onClose, statsLeague, setStatsLeague }) {
                         );
                       })}
                     </div>
-                  ));
+                  );});
                 })()
               ) : (
                 done.length === 0 ? (
@@ -567,7 +611,7 @@ function Panel({ country, onClose, statsLeague, setStatsLeague }) {
                   return(
                     <button key={i} onClick={()=>{
                       navigate(location.pathname+location.search, { replace:true, state:{ returnCountry: country } });
-                      setTimeout(()=>navigate(isFootball?`/football/${g.id}`:league==='mlb'?`/mlb/${g.id}`:`/basketball/${g.id}${lp2}`), 0);
+                      setTimeout(()=>navigate(isFootball?`/football/${g.id}`:`/basketball/${g.id}${lp2}`), 0);
                     }}
                       style={{width:'100%',background:'none',border:'none',borderTop:i>0?'1px solid rgba(255,255,255,0.04)':'none',padding:'0.55rem 0.5rem',cursor:'pointer',textAlign:'center',transition:'background .15s',opacity:0.6}}
                       onMouseEnter={e=>{e.currentTarget.style.background='rgba(255,255,255,0.04)';e.currentTarget.style.opacity='1';_prefetchMatch(g,league);}}
@@ -642,14 +686,34 @@ export default function WorldMapPage() {
   const [statsLeague, setStatsLeague] = useState(null);
   const [prefetch,    setPrefetch]    = useState({}); // { nba: {standData, cats}, wnba: {standData, cats} }
 
-  const STATS_LEAGUES = new Set(['nba', 'wnba', 'acb']);
-  const statsBase = l => l === 'nba' ? '/api/nba' : l === 'wnba' ? '/api/wnba' : '/api/acb';
+  // Étendu le 31 juillet 2026 : basket EU (LNB/BBL/Lega A, même overlay que NBA/WNBA/ACB) et foot
+  // (5 grands championnats + Brasileirão, Classement+Buteurs+Passeurs) — pas les 3 coupes d'Europe
+  // (décision explicite, pas de classement unique pour elles).
+  const STATS_LEAGUES = new Set(['nba', 'wnba', 'acb', ...EURO_BASKET_STATS_LEAGUES, ...FOOTBALL_STATS_LEAGUES]);
+  const statsBase = l => l === 'nba' ? '/api/nba' : l === 'wnba' ? '/api/wnba' : l === 'acb' ? '/api/acb' : `/api/euro/${l}`;
 
-  // Pré-fetch standings + leaders dès qu'un pays avec basket est sélectionné
+  // Pré-fetch standings + leaders dès qu'un pays avec basket/foot éligible est sélectionné
   useEffect(() => {
     if (!selected) return;
     const leagues = selected.leagues.filter(l => STATS_LEAGUES.has(l));
     leagues.forEach(l => {
+      if (FOOTBALL_STATS_LEAGUES.includes(l)) {
+        // Forme différente côté backend (/api/football/standings + /api/football/topscorers,
+        // pas un seul couple standings+leaders comme le basket) — normalisée ici en {standData,cats}
+        // pour que StatsOverlay n'ait à connaître qu'une seule forme de données côté basket vs foot.
+        Promise.all([
+          cachedFetch(`/api/football/standings/${l}`, 30 * 60_000),
+          cachedFetch(`/api/football/topscorers/${l}`, 6 * 3600_000),
+        ]).then(([standRaw, catsRaw]) => {
+          const standData = { standings: (standRaw.table || []).map(t => ({
+            id: t.id, rank: t.position, abbr: t.tla, logo: t.crest,
+            played: t.played, wins: t.wins, draws: t.draws, losses: t.losses, points: t.points,
+          })) };
+          const cats = { buteurs: catsRaw.buteurs || [], passeurs: catsRaw.passeurs || [] };
+          setPrefetch(p => ({ ...p, [l]: { standData, cats } }));
+        }).catch(() => {});
+        return;
+      }
       const base = statsBase(l);
       Promise.all([
         cachedFetch(`${base}/standings`, 6 * 3600_000),
@@ -660,12 +724,13 @@ export default function WorldMapPage() {
     });
   }, [selected]);
 
-  // Le panneau classement/leaders ne s'ouvre plus jamais automatiquement à l'ouverture d'un pays
-  // (demande explicite, 24 juillet 2026, y compris pour un pays 100% basket comme les États-Unis
-  // qui s'ouvrait directement auparavant) — il ne s'affiche que sur dépliage explicite d'un
-  // championnat basket dans le Panel (cf. openLeagues/setStatsLeague, Panel).
+  // Politique du 24 juillet 2026 ("jamais d'auto-ouverture") inversée le 31 juillet 2026 — le
+  // panneau Classement/leaders s'ouvre maintenant automatiquement (cf. Panel, _preferredStatsLeague).
+  // Ne reste ici que le nettoyage du prefetch à la fermeture — `setStatsLeague` est entièrement
+  // piloté par Panel désormais ; le forcer à `null` ici à chaque changement de `selected` entrait en
+  // course avec l'effet de montage de Panel et annulait l'auto-ouverture par défaut (sans clic sur
+  // l'icône sport) un coup sur deux, trouvé en testant l'enchaînement direct d'un pays à l'autre.
   useEffect(() => {
-    setStatsLeague(null);
     if (!selected) setPrefetch({});
   }, [selected]);
 
@@ -848,7 +913,7 @@ export default function WorldMapPage() {
         {LEGEND_ROWS.map((row, ri) => (
           <div key={ri} style={{ display:'flex', alignItems:'center', gap:4, pointerEvents:'auto' }}>
             {row.map(c => (
-              <button key={c.name} onClick={() => { const desel=c===selected; setSelected(desel?null:c); if(desel) setStatsLeague(null); }} title={c.leagues.map(l => LEAGUE_META[l]).join(' · ')}
+              <button key={c.name} onClick={(e) => { e.stopPropagation(); const desel=c===selected; setSelected(desel?null:c); if(desel) setStatsLeague(null); }} title={c.leagues.map(l => LEAGUE_META[l]).join(' · ')}
                 style={{ display:'flex', alignItems:'center', gap:4, background:'none', border:'none', borderRadius:6, padding:'2px 6px', cursor:'pointer', transition:'opacity .15s', opacity: selected===c ? 1 : 0.55 }}
                 onMouseEnter={e => { e.currentTarget.style.opacity='1'; _prefetchCountry(c); }}
                 onMouseLeave={e => e.currentTarget.style.opacity = selected===c ? '1' : '0.55'}
