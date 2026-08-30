@@ -348,7 +348,14 @@ function Panel({ country, onClose, statsLeague, setStatsLeague }) {
         cachedFetch('/api/fd/matches', 30_000),
         cachedFetch('/api/fd/results', 30_000),
       ]).then(([dm, dr])=>{
-        const scheduled=(dm.matches||[]).filter(f=>f.league===l && f.status!=='STATUS_FINAL').map(f=>({
+        // Fix 30 août 2026 — /api/fd/matches peut rester périmé plus longtemps que son cache 30min
+        // (429 répétés côté football-data.org qui bloquent le rafraîchissement), au point de garder
+        // un match en "STATUS_SCHEDULED" alors qu'il a été joué il y a 2 jours et que /api/fd/results
+        // (source séparée, plus fraîche) a déjà le vrai résultat — cas réel signalé : AC Milan-Venezia
+        // affiché à la fois dans "À venir" ET "Terminés". /api/fd/results fait foi dès qu'il connaît
+        // déjà l'id, quel que soit le statut (même périmé) renvoyé par /api/fd/matches.
+        const freshIds = new Set((dr.matches||[]).filter(f=>f.league===l).map(f=>String(f.id)));
+        const scheduled=(dm.matches||[]).filter(f=>f.league===l && f.status!=='STATUS_FINAL' && !freshIds.has(String(f.id))).map(f=>({
           id:`fd_${f.id}`,date:f.date,status:f.status||'STATUS_SCHEDULED',round:f.round,
           home:{name:f.home?.name,short:f.home?.short,logo:f.home?.logoId,score:null},
           away:{name:f.away?.name,short:f.away?.short,logo:f.away?.logoId,score:null},

@@ -1290,6 +1290,12 @@ const FD_STATUS_MAP_RESULTS = {
   IN_PLAY: 'STATUS_IN_PROGRESS', PAUSED: 'STATUS_IN_PROGRESS', LIVE: 'STATUS_IN_PROGRESS',
   FINISHED: 'STATUS_FINAL', AWARDED: 'STATUS_FINAL',
 };
+// football-data.org laisse parfois un match "IN_PLAY" en amont bien après la fin réelle (constaté
+// en direct : Deportivo La Coruña-Valencia toujours IN_PLAY 5h30 après le coup d'envoi, y compris
+// sur un fetch tout juste rafraîchi — pas un souci de cache côté nous). Un vrai match ne dépasse
+// jamais ~2h30 (90min + mi-temps + prolongations/tirs au but éventuels) ; au-delà, on force FINISHED
+// pour ne pas laisser WorldMapPage afficher "EN COURS" indéfiniment sur un match déjà terminé.
+const FD_MAX_LIVE_MATCH_MS = 3 * 3600_000;
 async function _getFdLeaguesResults() {
   if (!FD_KEY) return { matches: [] };
   if (_fdResultsCache && Date.now() - _fdResultsCacheTs < 30 * 60 * 1000) return _fdResultsCache;
@@ -1302,8 +1308,11 @@ async function _getFdLeaguesResults() {
       const matchesRes = await fdGet(`/competitions/${league.code}/matches?dateFrom=${dateFrom}&dateTo=${dateTo}`);
       await new Promise(r => setTimeout(r, 600));
       for (const m of (matchesRes.matches || [])) {
-        const mapped = FD_STATUS_MAP_RESULTS[m.status];
+        let mapped = FD_STATUS_MAP_RESULTS[m.status];
         if (!mapped) continue; // POSTPONED, CANCELLED, SUSPENDED, SCHEDULED (pas encore joué, rien à régler)
+        if (mapped === 'STATUS_IN_PROGRESS' && Date.now() - new Date(m.utcDate).getTime() > FD_MAX_LIVE_MATCH_MS) {
+          mapped = 'STATUS_FINAL';
+        }
         allMatches.push({
           id: String(m.id), league: league.key, status: mapped, date: m.utcDate,
           home: { name: m.homeTeam?.name, short: m.homeTeam?.shortName, logo: m.homeTeam?.crest, score: m.score?.fullTime?.home ?? null },
@@ -11088,7 +11097,13 @@ try {
   }
 } catch {}
 function _saveFootballCycleProgress() { try { writeFileSync(FOOTBALL_CYCLE_PROGRESS_FILE, JSON.stringify(_footballCycleProgress), 'utf8'); } catch {} }
-function _fcpSetTotal(n) { if (_footballCycleProgress.active) { _footballCycleProgress.total = n; _saveFootballCycleProgress(); } }
+// Fix 31 août 2026 — remet `done` à 0 à chaque appel (pas seulement `total`) : si deux cycles
+// s'enchaînent dans la même session "active" (cf. fix _waitForBgAlertsCycle du même jour, qui
+// garantit désormais un cycle frais après une attente), `done` continuait sinon de s'accumuler sans
+// jamais repartir de zéro — cas réel observé : 26/13 (deux passages de 13 fixtures dont le 2e sans
+// reset). `_fcpSetTotal` marque le début d'un nouveau passage sur la liste de fixtures, c'est le bon
+// point pour repartir de zéro.
+function _fcpSetTotal(n) { if (_footballCycleProgress.active) { _footballCycleProgress.total = n; _footballCycleProgress.done = 0; _saveFootballCycleProgress(); } }
 function _fcpTick() { if (_footballCycleProgress.active) { _footballCycleProgress.done++; _saveFootballCycleProgress(); } }
 
 // Pause manuelle API-Basketball (api-sports.io, 30 août 2026, demande explicite — même principe que
@@ -11132,8 +11147,32 @@ try {
   }
 } catch {}
 function _saveBasketballCycleProgress() { try { writeFileSync(BASKETBALL_CYCLE_PROGRESS_FILE, JSON.stringify(_basketballCycleProgress), 'utf8'); } catch {} }
-function _bcpSetTotal(n) { if (_basketballCycleProgress.active) { _basketballCycleProgress.total = n; _saveBasketballCycleProgress(); } }
-function _bcpTick() { if (_basketballCycleProgress.active) { _basketballCycleProgress.done++; _saveBasketballCycleProgress(); } }
+// Fix 30 août 2026 (demande explicite — "1 = 1 match, les 3 marchés pris en compte") : `total` compte
+// désormais les matchs réels (pas × 3), et `done` n'avance que quand un match a été vu par les 3
+// boucles (props + Résultat + Total), pas une fois par boucle. `_bcpGameTicks` compte les passages par
+// gameId, `_bcpGamesCounted` évite de compter le même match deux fois une fois les 3 passages atteints.
+let _bcpGameTicks = {};
+let _bcpGamesCounted = new Set();
+// Fix 31 août 2026 — même correctif que _fcpSetTotal (foot) : `done` remis à 0 ici aussi, pas
+// seulement les trackers internes, sinon deux cycles enchaînés dans la même session "active"
+// accumulaient `done` sans jamais repartir de zéro.
+function _bcpSetTotal(n) {
+  if (!_basketballCycleProgress.active) return;
+  _basketballCycleProgress.total = n;
+  _basketballCycleProgress.done = 0;
+  _bcpGameTicks = {};
+  _bcpGamesCounted = new Set();
+  _saveBasketballCycleProgress();
+}
+function _bcpTickGame(gameId) {
+  if (!_basketballCycleProgress.active) return;
+  _bcpGameTicks[gameId] = (_bcpGameTicks[gameId] || 0) + 1;
+  if (_bcpGameTicks[gameId] >= 3 && !_bcpGamesCounted.has(gameId)) {
+    _bcpGamesCounted.add(gameId);
+    _basketballCycleProgress.done++;
+    _saveBasketballCycleProgress();
+  }
+}
 
 let _fdQuota = { remaining: null, limit: 10, ts: null }; // football-data.org (10/min)
 
@@ -12538,6 +12577,15 @@ function blendedSeasonAvgEU(games, stat, seasonAvg, n = 10, k = 5) {
 // +25%), négatif juste au-dessus (80-86%, -12 à -65%, petits échantillons). 74% capture le pic
 // (+5,8% en agrégat ≥74%, n=41) sans redescendre dans la zone négative. Auparavant 0.80.
 const TOTAL_ALERT_PROB = 0.74; // P(over) ou P(under) minimum pour déclencher
+// Total équipe — pause manuelle (31 août 2026, demande explicite) : marché activé en argent réel le
+// 28 août SANS calibration near-miss préalable (seuil/cote repris tels quels du Total O/U classique),
+// contrairement à tous les autres marchés de l'app — 2-3 paris réels perdus en quelques jours,
+// signal jugé suffisant pour couper la génération de nouvelles alertes le temps d'accumuler un vrai
+// échantillon. Le near-miss (`_logBasketMarketNearMiss`, market:'team_total') continue de tourner
+// SANS filtre pendant la pause — même principe que MLB (`MLB_ALERTS_ENABLED`) : on garde la mesure,
+// on coupe l'argent réel. `computeGameTotalFull`/`calcTeamPtsStdBg` (le calcul) restent inchangés —
+// vérifiés le jour même, aucun bug trouvé dedans, juste un seuil jamais éprouvé sur des résultats réels.
+const TEAM_TOTAL_ALERTS_ENABLED = false;
 const MAX_TOTAL_P = 0.88;      // un total ne peut jamais être "certain" à 93%+
 const Q_STATUSES_TOTAL = ['Questionable', 'GTD', 'Game Time Decision', 'Doubtful', 'Day-To-Day'];
 // Constantes partagées generateBackgroundAlerts() + /api/basketball/total (NBA réutilise NBA_REF_BG,
@@ -13846,7 +13894,7 @@ async function runEUPropsAlerts(newAlerts, PORT) {
             }
           }
         } catch { /* skip game */ }
-        finally { _bcpTick(); }
+        finally { _bcpTickGame(game.id); }
       }
     } catch { /* skip league */ }
   }
@@ -14827,13 +14875,23 @@ async function generateBackgroundAlertsGuarded(reason) {
 // continuait de tourner et de consommer du quota juste en dessous (`_fcpSetTotal`/`_fcpTick` sont
 // gatés sur `active`, donc devenaient des no-op pour le reste du cycle réel — jauge bloquée à 0/0
 // malgré un vrai quota dépensé, cas observé en direct : 5788 requêtes foot consommées, jauge à 0/0).
-// Ce helper attend la VRAIE fin du cycle en cours au lieu de considérer le no-op comme terminé.
+//
+// Fix 2 (31 août 2026) — le 1er correctif ci-dessus ne suffisait pas : si le cycle DÉJÀ en cours
+// avait déjà DÉPASSÉ sa section foot/basket au moment où `active` passe à true (chaque section ne
+// s'exécute qu'une fois par cycle, à son point fixe), attendre sa fin ne fait qu'attendre un cycle
+// dont la section pertinente est déjà derrière lui — `active` est mis à true "trop tard" pour être
+// vu par cette section-là. Résultat identique au bug d'origine : quota réellement consommé (par ce
+// cycle qui tournait déjà), jauge jamais mise à jour. Cas réel confirmé : `pausedAt - startedAt`
+// = 500ms pile (durée d'un seul tick du sleep-loop) des deux côtés foot ET basket au même réveil.
+// Fix : ne jamais se contenter d'un cycle déjà en cours — toujours attendre sa fin PUIS lancer un
+// cycle à soi (garanti de démarrer après que `active` ait été positionné), quitte à enchaîner deux
+// cycles de suite dans ce cas rare. Coût négligeable, seule façon de garantir que la jauge reflète
+// toujours le vrai travail effectué.
 async function _waitForBgAlertsCycle(reason) {
   if (_bgAlertsInFlight) {
     while (_bgAlertsInFlight) await new Promise(r => setTimeout(r, 500));
-  } else {
-    await generateBackgroundAlertsGuarded(reason);
   }
+  await generateBackgroundAlertsGuarded(reason);
 }
 async function generateBackgroundAlerts() {
   _bgLastRun = Date.now();
@@ -16081,6 +16139,11 @@ async function generateBackgroundAlerts() {
                 refreshOrDropPendingById(newAlerts, alertId, refreshUpdate.prob, false, {}, null);
                 return;
               }
+              if (!TEAM_TOTAL_ALERTS_ENABLED) {
+                _bgLog.push(`${leagueKey} teamtotal skip ${game.home.short}v${game.away.short} (${side}): alertes en pause (recalibration, 31 août 2026)`);
+                refreshOrDropPendingById(newAlerts, alertId, refreshUpdate.prob, false, {}, null);
+                return;
+              }
               if (newAlerts.find(a => a.id === alertId)) return;
               newAlerts.push({
                 id: alertId, type: 'team_total', league: leagueKey, eventId: game.id,
@@ -16320,9 +16383,11 @@ async function generateBackgroundAlerts() {
     } catch { /* EL scoreboard unavailable */ }
 
     // Jauge de progression basket Dashboard (30 août 2026) — total fixé une fois pour toutes ici,
-    // sur les matchs EU réellement programmés dans les 3 ligues (acb/bbl/legaa) × 3 (props + Résultat
-    // + Total, 3 boucles séparées contrairement au foot qui n'en a qu'une) — voir commentaire complet
-    // sur _basketballCycleProgress plus haut dans le fichier.
+    // sur les matchs EU réellement programmés dans les 3 ligues (acb/bbl/legaa). Revu le même jour
+    // (demande explicite — "1 = 1 match, les 3 marchés pris en compte") : `total` compte les matchs,
+    // pas les passages de boucle — `_bcpTickGame` (voir commentaire complet sur
+    // _basketballCycleProgress plus haut) ne fait avancer `done` qu'une fois les 3 boucles (props +
+    // Résultat + Total) passées sur un même match, pas une fois par boucle.
     // Fix démarrage à froid (30 août 2026) : `_euroCache[euro_sb_*]` peut être vide juste après un
     // redémarrage backend (jamais encore visité), donnant un total=0 même s'il y a de vrais matchs —
     // même auto-fetch que celui déjà utilisé par runEUPropsAlerts() juste plus bas, appelé ici aussi
@@ -16348,7 +16413,7 @@ async function generateBackgroundAlerts() {
         return n;
       };
       const totalEuGames = ['acb', 'bbl', 'legaa'].reduce((s, lg) => s + _bcpCountUpcoming(lg), 0);
-      _bcpSetTotal(totalEuGames * 3);
+      _bcpSetTotal(totalEuGames);
     }
 
     // 4a. EU leagues — Props joueurs (moteur computeEUEstimate)
@@ -16514,7 +16579,7 @@ async function generateBackgroundAlerts() {
               _bgLog.push(`${euLeague} pinnacle edge (h2h): ${g.home.short}v${g.away.short} ${dir} edge=${Math.round(edge * 100)}% (${bestBk})`);
             }
           }
-          } catch { /* skip game */ } finally { _bcpTick(); }
+          } catch { /* skip game */ } finally { _bcpTickGame(g.id); }
         }
       } catch { /* skip */ }
     }
@@ -16820,6 +16885,11 @@ async function generateBackgroundAlerts() {
                   refreshOrDropPendingById(newAlerts, alertId, refreshUpdate.prob, false, {}, null);
                   return;
                 }
+                if (!TEAM_TOTAL_ALERTS_ENABLED) {
+                  _bgLog.push(`${euLeague} teamtotal skip ${g.home.short}v${g.away.short} (${side}): alertes en pause (recalibration, 31 août 2026)`);
+                  refreshOrDropPendingById(newAlerts, alertId, refreshUpdate.prob, false, {}, null);
+                  return;
+                }
                 if (newAlerts.find(a => a.id === alertId)) return;
                 newAlerts.push({
                   id: alertId, type: 'team_total', league: euLeague, eventId: g.id,
@@ -16949,7 +17019,7 @@ async function generateBackgroundAlerts() {
               }
             }
           } catch { /* skip game */ }
-          finally { _bcpTick(); }
+          finally { _bcpTickGame(g.id); }
         }
       } catch { /* skip league */ }
     }
@@ -18038,7 +18108,12 @@ app.post('/api/nba/test-alert', (req, res) => {
 });
 
 // ── Football-data.org Standings ───────────────────────────────────────────────
-const _fdStandingsCache = {};
+// Persisté sur disque (31 août 2026, fix "classement vide") — voir commentaire complet un peu plus
+// bas sur le repli anti-tableau-vide.
+const FD_STANDINGS_CACHE_FILE = join(CACHE_DIR, 'fd_standings.json');
+let _fdStandingsCache = {};
+try { if (existsSync(FD_STANDINGS_CACHE_FILE)) _fdStandingsCache = JSON.parse(readFileSync(FD_STANDINGS_CACHE_FILE, 'utf8')) || {}; } catch {}
+const _saveFdStandingsCache = () => { try { writeFileSync(FD_STANDINGS_CACHE_FILE, JSON.stringify(_fdStandingsCache), 'utf8'); } catch {} };
 
 app.get('/api/football/standings/:league', async (req, res) => {
   if (!FD_KEY) return res.status(503).json({ error: 'FD_API_KEY not configured' });
@@ -18054,6 +18129,16 @@ app.get('/api/football/standings/:league', async (req, res) => {
   try {
     const data = await fdGet(`/competitions/${fdLeague.code}/standings`);
     const table = data.standings?.find(s => s.type === 'TOTAL')?.table || [];
+    // Fix "classement vide" (31 août 2026, signalé par l'utilisateur — PL/La Liga/Bundesliga/Serie A
+    // affichaient un tableau totalement VIDE, même pas les équipes) : cas différent du "classement
+    // périmé" ci-dessous (qui renvoie une VRAIE table, juste celle de la saison passée) — ici
+    // football-data.org ne renvoie carrément AUCUNE ligne pour la nouvelle saison, alors que de vrais
+    // matchs de cette même saison sont déjà FINISHED côté /api/fd/matches (vérifié en direct sur PL :
+    // 8 matchs déjà joués, `standings` toujours vide). Décalage d'initialisation upstream entre leur
+    // endpoint résultats et leur endpoint classement, pas une erreur de notre côté. En attendant que
+    // FD peuple son classement, on garde le dernier classement non-vide connu plutôt que d'écraser
+    // avec une réponse vide qui n'affiche même plus les noms d'équipe.
+    if (!table.length && hit?.data?.table?.length) return res.json(hit.data);
     // Classement périmé (31 juillet 2026) — même détection que pour les outrights (_isFdStandingsStale,
     // bug du 28 juillet 2026) : football-data.org crée parfois la nouvelle saison avant de
     // réinitialiser son tableau standings, qui renvoie alors encore la grille finale de la saison
@@ -18081,9 +18166,11 @@ app.get('/api/football/standings/:league', async (req, res) => {
       })),
     };
     _fdStandingsCache[league] = { data: result, ts: Date.now() };
+    _saveFdStandingsCache();
     res.json(result);
   } catch (err) {
     console.error('FD standings error:', err.message);
+    if (hit?.data) return res.json(hit.data);
     res.status(500).json({ error: err.message });
   }
 });

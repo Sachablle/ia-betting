@@ -286,7 +286,12 @@ function groupByMatch(acceptedGroups) {
     const mk = `${homeKey}__${awayKey}__${(g.fixtureDate||'').slice(0,10)}`;
     if (!map[mk]) map[mk] = {
       matchKey: mk, league: g.league,
-      homeShort: normShort(g.homeShort), awayShort: normShort(g.awayShort),
+      // Fix 31 août 2026 — ESPN_NORM (SA→SAS, GS→GSW, LA→LAC...) est pensé pour le NBA ; appliqué
+      // tel quel à la WNBA il corrompt des codes déjà valides (GS/LA restent GS/LA côté WNBA, pas
+      // GSW/LAC) — cas réel : logo LA Sparks 404 (wnba/500/lac.png n'existe pas). Même bypass que
+      // celui déjà appliqué à l'affichage (TeamLogo) plus bas dans ce fichier.
+      homeShort: g.league === 'wnba' ? g.homeShort : normShort(g.homeShort),
+      awayShort: g.league === 'wnba' ? g.awayShort : normShort(g.awayShort),
       homeTeam: g.homeTeam, awayTeam: g.awayTeam,
       fixtureDate: g.fixtureDate, eventId: g.eventId, alerts: [],
       pairKey: [homeKey, awayKey].sort().join('__'),

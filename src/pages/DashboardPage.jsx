@@ -694,7 +694,7 @@ function QuotasWidget() {
                       display: 'flex', alignItems: 'center', justifyContent: 'center',
                       background: footPaused ? 'rgba(248,113,113,0.18)' : 'rgba(74,222,128,0.18)',
                       color: footPaused ? '#f87171' : '#4ade80',
-                      cursor: toggling ? 'default' : 'pointer', opacity: toggling ? 0.5 : 1, flexShrink: 0,
+                      cursor: toggling ? 'default' : 'pointer', opacity: toggling ? 0.5 : 1, flexShrink: 0, marginLeft: '0.2cm',
                     }}
                   >
                     {footPaused
@@ -712,7 +712,7 @@ function QuotasWidget() {
                       display: 'flex', alignItems: 'center', justifyContent: 'center',
                       background: bballPaused ? 'rgba(248,113,113,0.18)' : 'rgba(74,222,128,0.18)',
                       color: bballPaused ? '#f87171' : '#4ade80',
-                      cursor: bballToggling ? 'default' : 'pointer', opacity: bballToggling ? 0.5 : 1, flexShrink: 0,
+                      cursor: bballToggling ? 'default' : 'pointer', opacity: bballToggling ? 0.5 : 1, flexShrink: 0, marginLeft: '0.2cm',
                     }}
                   >
                     {bballPaused
@@ -1495,8 +1495,6 @@ function UpcomingMatchesWidget() {
                   {/* Badge ligue — pill coloré */}
                   {g.league === 'cdm' ? (
                     <span style={{ fontSize:11, lineHeight:1, flexShrink:0 }}>🌍</span>
-                  ) : g.league === 'wnba' ? (
-                    <img src="https://a.espncdn.com/i/teamlogos/leagues/500/wnba.png" alt="WNBA" style={{ width:12, height:12, objectFit:'contain', flexShrink:0 }} />
                   ) : (
                     <span style={{
                       fontSize:7, fontWeight:800, letterSpacing:'0.06em',
