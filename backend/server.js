@@ -11031,8 +11031,16 @@ async function _checkTelegramHealth() {
 }
 
 // Quotas API — mis à jour à chaque appel réel (pas depuis le cache)
+// Persistés sur disque (30 août 2026, demande explicite — "c'est chiant les infos du widget
+// disparaissent") : jusqu'ici uniquement en mémoire, donc remis à `null` à chaque redémarrage
+// backend (fréquent en dev, --watch décroche parfois sans raison) — la case Dashboard affichait
+// "—/7500" au lieu du dernier chiffre connu. Rechargés au démarrage, sauvegardés à chaque capture réelle.
+const BASKETBALL_API_QUOTA_FILE = join(CACHE_DIR, 'basketball_api_quota.json');
+const FOOTBALL_API_QUOTA_FILE   = join(CACHE_DIR, 'football_api_quota.json');
 let _basketballApiQuota = { remaining: null, limit: null, ts: null }; // API-Basketball (7500/jour)
 let _footballApiQuota = { remaining: null, limit: null, ts: null }; // api-football (22 juillet 2026, 7500/jour plan Pro)
+try { if (existsSync(BASKETBALL_API_QUOTA_FILE)) _basketballApiQuota = JSON.parse(readFileSync(BASKETBALL_API_QUOTA_FILE, 'utf8')); } catch {}
+try { if (existsSync(FOOTBALL_API_QUOTA_FILE)) _footballApiQuota = JSON.parse(readFileSync(FOOTBALL_API_QUOTA_FILE, 'utf8')); } catch {}
 // Pause manuelle api-football (28 août 2026, demande explicite utilisateur — quota journalier
 // épuisé en ~4h certains jours, le xG à lui seul coûte 18 requêtes/match). Bouton Dashboard plutôt
 // qu'une coupure automatique par seuil : l'utilisateur juge lui-même quand couper (ex. laisser
@@ -11068,9 +11076,20 @@ function _saveFootballApiPaused() { try { writeFileSync(FOOTBALL_API_PAUSED_FILE
 // via `finally`, succès ou échec confondus). Moins précis au sens "requêtes HTTP réelles" mais
 // beaucoup plus lisible, et gratuit à calculer (fbFixtures vient de sources déjà en cache, aucun
 // appel supplémentaire).
+// Persistée (30 août 2026, même demande que ci-dessus) — `active` n'est jamais rechargé à `true`
+// (un cycle "en cours" au moment d'un redémarrage n'existe plus vraiment), seul le résultat du
+// dernier cycle terminé (total/done) survit pour que la barre ne redevienne pas vide.
+const FOOTBALL_CYCLE_PROGRESS_FILE = join(CACHE_DIR, 'football_cycle_progress.json');
 let _footballCycleProgress = { active: false, total: 0, done: 0, startedAt: null };
-function _fcpSetTotal(n) { if (_footballCycleProgress.active) _footballCycleProgress.total = n; }
-function _fcpTick() { if (_footballCycleProgress.active) _footballCycleProgress.done++; }
+try {
+  if (existsSync(FOOTBALL_CYCLE_PROGRESS_FILE)) {
+    const parsed = JSON.parse(readFileSync(FOOTBALL_CYCLE_PROGRESS_FILE, 'utf8'));
+    _footballCycleProgress = { ...parsed, active: false };
+  }
+} catch {}
+function _saveFootballCycleProgress() { try { writeFileSync(FOOTBALL_CYCLE_PROGRESS_FILE, JSON.stringify(_footballCycleProgress), 'utf8'); } catch {} }
+function _fcpSetTotal(n) { if (_footballCycleProgress.active) { _footballCycleProgress.total = n; _saveFootballCycleProgress(); } }
+function _fcpTick() { if (_footballCycleProgress.active) { _footballCycleProgress.done++; _saveFootballCycleProgress(); } }
 
 // Pause manuelle API-Basketball (api-sports.io, 30 août 2026, demande explicite — même principe que
 // la pause football ci-dessus). Différence structurelle importante par rapport au foot : côté foot,
@@ -11103,22 +11122,37 @@ function _saveBasketballApiPaused() { try { writeFileSync(BASKETBALL_API_PAUSED_
 // par match, total fixé une fois pour toutes au début du cycle EU). `total` = nb de matchs EU à venir
 // (acb/bbl/legaa) × 3 passes (props + Résultat + Total, 3 boucles séparées contrairement au foot qui
 // n'en a qu'une) — `done` avance de 1 à chaque match traité par n'importe laquelle des 3 boucles.
+// Persistée (30 août 2026, même principe que _footballCycleProgress ci-dessus).
+const BASKETBALL_CYCLE_PROGRESS_FILE = join(CACHE_DIR, 'basketball_cycle_progress.json');
 let _basketballCycleProgress = { active: false, total: 0, done: 0, startedAt: null };
-function _bcpSetTotal(n) { if (_basketballCycleProgress.active) _basketballCycleProgress.total = n; }
-function _bcpTick() { if (_basketballCycleProgress.active) _basketballCycleProgress.done++; }
+try {
+  if (existsSync(BASKETBALL_CYCLE_PROGRESS_FILE)) {
+    const parsed = JSON.parse(readFileSync(BASKETBALL_CYCLE_PROGRESS_FILE, 'utf8'));
+    _basketballCycleProgress = { ...parsed, active: false };
+  }
+} catch {}
+function _saveBasketballCycleProgress() { try { writeFileSync(BASKETBALL_CYCLE_PROGRESS_FILE, JSON.stringify(_basketballCycleProgress), 'utf8'); } catch {} }
+function _bcpSetTotal(n) { if (_basketballCycleProgress.active) { _basketballCycleProgress.total = n; _saveBasketballCycleProgress(); } }
+function _bcpTick() { if (_basketballCycleProgress.active) { _basketballCycleProgress.done++; _saveBasketballCycleProgress(); } }
 
 let _fdQuota = { remaining: null, limit: 10, ts: null }; // football-data.org (10/min)
 
 function _captureBasketballApiQuota(resp) {
   const remaining = parseInt(resp.headers.get('x-ratelimit-requests-remaining'), 10);
   const limit     = parseInt(resp.headers.get('x-ratelimit-requests-limit'), 10);
-  if (!isNaN(remaining)) _basketballApiQuota = { remaining, limit: isNaN(limit) ? null : limit, ts: Date.now() };
+  if (!isNaN(remaining)) {
+    _basketballApiQuota = { remaining, limit: isNaN(limit) ? null : limit, ts: Date.now() };
+    try { writeFileSync(BASKETBALL_API_QUOTA_FILE, JSON.stringify(_basketballApiQuota), 'utf8'); } catch {}
+  }
 }
 // Mêmes en-têtes que l'API-Basketball (même famille api-sports.io) — vérifié en direct le 22 juillet.
 function _captureFootballApiQuota(resp) {
   const remaining = parseInt(resp.headers.get('x-ratelimit-requests-remaining'), 10);
   const limit     = parseInt(resp.headers.get('x-ratelimit-requests-limit'), 10);
-  if (!isNaN(remaining)) _footballApiQuota = { remaining, limit: isNaN(limit) ? null : limit, ts: Date.now() };
+  if (!isNaN(remaining)) {
+    _footballApiQuota = { remaining, limit: isNaN(limit) ? null : limit, ts: Date.now() };
+    try { writeFileSync(FOOTBALL_API_QUOTA_FILE, JSON.stringify(_footballApiQuota), 'utf8'); } catch {}
+  }
 }
 function _captureFdQuota(resp) {
   const remaining = parseInt(resp.headers.get('x-requests-available-minute'), 10);

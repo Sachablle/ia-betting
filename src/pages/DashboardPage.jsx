@@ -421,22 +421,10 @@ function SystemHealthSection() {
   const [health, setHealth] = useState(() => getCached('/api/system/health', 60_000));
   const [refreshing, setRefreshing] = useState(false);
   const [lastRefreshed, setLastRefreshed] = useState(null);
-  const cardRef = useRef(null);
-  const [cardRect, setCardRect] = useState({ w: 420, h: 120 });
-
-  useEffect(() => {
-    const measure = () => {
-      if (!cardRef.current) return;
-      const r = cardRef.current.getBoundingClientRect();
-      const gridRight = cardRef.current.parentElement?.getBoundingClientRect().right ?? (r.right + 200);
-      const gap = 12;
-      const panelW = Math.max(200, gridRight - r.right - gap);
-      setCardRect({ w: panelW, h: r.height });
-    };
-    measure();
-    window.addEventListener('resize', measure);
-    return () => window.removeEventListener('resize', measure);
-  }, []);
+  // Mesure JS (largeur ET hauteur) retirée le 30 août 2026 — remplacée par un flex-wrap avec
+  // `alignItems:'stretch'` (défaut du flexbox) : les deux cartes s'égalisent nativement en hauteur
+  // tant qu'elles sont sur la même ligne, et une carte seule sur sa ligne (repassée dessous en cas de
+  // manque de place) n'hérite d'aucune hauteur forcée. Plus simple, plus robuste, zéro recalcul JS.
 
   useEffect(() => {
     const load = () => cachedFetch('/api/system/health', 12_000).then(setHealth).catch(() => {});
@@ -495,7 +483,15 @@ function SystemHealthSection() {
   const betclic  = merge(sc.betclic_foot,  sc.betclic);
 
   return (
-    <div ref={cardRef} style={{ position: 'relative', height: '100%', justifySelf: 'start' }}>
+    // Fix 30 août 2026 — l'ancien mécanisme (carte "Taux de scraping" en position:absolute, largeur
+    // calculée en JS via getBoundingClientRect du parent) débordait de la fenêtre en dessous d'une
+    // certaine largeur : le calcul supposait toujours une 2e colonne de grille adjacente, mais une
+    // fois la grille externe repassée en 1 colonne (cf. .dashboard-widgets-grid), l'espace mesuré
+    // devenait la largeur de la page entière au lieu de la vraie place disponible. Remplacé par un
+    // flex qui s'enroule nativement : les deux cartes restent côte à côte tant qu'il y a la place,
+    // et la 2e passe en dessous sinon — plus de mesure JS à maintenir.
+    <div style={{ display: 'flex', gap: '0.75rem', width: '100%' }}>
+    <div style={{ flex: '0 1 auto', marginLeft: '-0.35cm' }}>
     <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 16, display: 'flex', alignItems: 'stretch', height: '100%', boxSizing: 'border-box' }}>
 
       <div style={{ padding: '0.3rem 0.75rem', display: 'flex', flexDirection: 'column', justifyContent: 'flex-start', gap: '0.75rem' }}>
@@ -558,10 +554,10 @@ function SystemHealthSection() {
       </div>
 
     </div>
+    </div>
 
     <div className="no-scrollbar" style={{
-      position: 'absolute', top: 0, left: `calc(100% + 0.75rem)`, zIndex: 2,
-      width: cardRect.w, height: '100%',
+      flex: '1 1 380px', minWidth: 0, marginLeft: '-0.1cm',
       background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 16,
       padding: '0.3rem 0.75rem', boxSizing: 'border-box', overflowY: 'auto',
     }}>
@@ -681,13 +677,13 @@ function QuotasWidget() {
       <div style={{ padding: '0.3rem 0.75rem 0' }}>
         <div style={{ fontSize: 8, fontWeight: 700, color: 'var(--text-sub)', textTransform: 'uppercase', letterSpacing: '0.1em', borderBottom: '1px solid var(--border)', paddingBottom: '0.3rem' }}>Requêtes utilisées</div>
       </div>
-      <div style={{ display: 'flex', alignItems: 'stretch', marginTop: 'auto', marginBottom: '0.6rem' }}>
+      <div style={{ display: 'flex', alignItems: 'stretch', marginTop: '0.5rem', marginBottom: '0.6rem' }}>
         {cards.map((c, i) => (
           <div key={c.label} style={{ display: 'flex', alignItems: 'stretch' }}>
             {i > 0 && <div style={{ width: 1, background: 'var(--border)', flexShrink: 0 }} />}
-            <div style={{ padding: (c.label === 'API-Football' || c.label === 'API-Basketball') ? '0.25rem 0.75rem 0' : '0.25rem 0.75rem', display: 'flex', flexDirection: 'column', justifyContent: 'center', minWidth: 130 }}>
+            <div style={{ padding: (c.label === 'API-Football' || c.label === 'API-Basketball') ? '0.25rem 0.75rem 0' : '0.25rem 0.75rem', display: 'flex', flexDirection: 'column', justifyContent: 'flex-start', minWidth: 130 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginBottom: '0.25rem' }}>
-                <span style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: dim }}>{c.label}</span>
+                <span style={{ fontSize: 8, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: dim, whiteSpace: 'nowrap' }}>{c.label}</span>
                 {c.label === 'API-Football' && (
                   <button
                     onClick={toggleFootballApi}
@@ -729,10 +725,10 @@ function QuotasWidget() {
                 <span style={{ fontSize: '0.8rem', fontWeight: 800, color: '#f87171', lineHeight: 1.2 }}>Quota épuisé</span>
               ) : (
                 <div style={{ display: 'flex', alignItems: 'baseline', gap: '0.2rem' }}>
-                  <span style={{ fontSize: '1rem', fontWeight: 800, color: c.rem != null ? POS_COLORS[i] : dim, lineHeight: 1, fontVariantNumeric: 'tabular-nums' }}>
+                  <span style={{ fontSize: '0.85rem', fontWeight: 800, color: c.rem != null ? POS_COLORS[i] : dim, lineHeight: 1, fontVariantNumeric: 'tabular-nums' }}>
                     {c.rem != null ? c.lim - c.rem : '—'}
                   </span>
-                  <span style={{ fontSize: '1rem', fontWeight: 800, color: dim, lineHeight: 1, fontVariantNumeric: 'tabular-nums' }}>/{c.lim}</span>
+                  <span style={{ fontSize: '0.85rem', fontWeight: 800, color: dim, lineHeight: 1, fontVariantNumeric: 'tabular-nums' }}>/{c.lim}</span>
                 </div>
               )}
               <div style={{ fontSize: 9, color: dim, marginTop: '0.2rem' }}>{c.period}</div>
@@ -1432,8 +1428,14 @@ function UpcomingMatchesWidget() {
 
   const dim = 'var(--text-dim)';
 
+  // Fix 30 août 2026 — s'étire nativement à la hauteur de la ligne de grille (celle de "Requêtes
+  // utilisées", via align-items:stretch, défaut CSS Grid) au lieu d'être bloqué à sa hauteur de
+  // contenu (`alignSelf:'start'`). La liste plus bas prend `minHeight:0` (indispensable pour qu'un
+  // enfant flex accepte de ne PAS grandir avec son contenu) + `flex:1` : elle se limite à l'espace
+  // réellement disponible et fait défiler le surplus, au lieu de pousser toute la ligne à grandir
+  // avec elle (piège rencontré au 1er essai — la ligne entière explosait en hauteur).
   return (
-    <div style={{ background:'var(--bg-card)', border:'1px solid var(--border)', borderRadius:16, display:'flex', flexDirection:'column', alignSelf:'start', overflow:'hidden' }}>
+    <div style={{ background:'var(--bg-card)', border:'1px solid var(--border)', borderRadius:16, display:'flex', flexDirection:'column', overflow:'hidden', minHeight: 135 }}>
       {/* Header — clic partout pour ouvrir/fermer */}
       <div onClick={()=>setOpen(o=>!o)} style={{ padding:'0.3rem 0.75rem 0', flexShrink:0, cursor:'pointer', userSelect:'none' }}>
         <div style={{ fontSize:8, fontWeight:700, textTransform:'uppercase', letterSpacing:'0.1em', color:'var(--text-sub)', borderBottom: open ? '1px solid var(--border)' : '1px solid var(--border)', paddingBottom:'0.3rem', display:'flex', alignItems:'center', justifyContent:'space-between' }}>
@@ -1454,7 +1456,7 @@ function UpcomingMatchesWidget() {
       </div>
 
       {/* Liste — scrollable dans les deux états */}
-      <div className="no-scrollbar" style={{ overflowY: 'auto', maxHeight: open ? 320 : 78, padding:'0.15rem 0', transition:'max-height 0.25s ease' }}>
+      <div className="no-scrollbar" style={{ overflowY: 'auto', flex: open ? 'none' : '1 1 0', minHeight: open ? 'auto' : 0, maxHeight: open ? 320 : 'none', padding:'0.15rem 0', transition:'max-height 0.25s ease' }}>
         {loading ? (
           <div style={{ padding:'0.5rem 0.75rem', fontSize:10, color:dim }}>Chargement…</div>
         ) : visible.length === 0 ? (
@@ -1659,7 +1661,7 @@ export default function DashboardPage() {
       </div>
 
       {/* Grid 2 colonnes : chaque ligne partage la même hauteur */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '1.5rem', marginBottom: '1.5rem', width: '100%' }}>
+      <div className="dashboard-widgets-grid" style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '1.5rem', marginBottom: '1.5rem', width: '100%' }}>
         <CountdownWidget />
         <SystemHealthSection />
         <QuotasWidget />

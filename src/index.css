@@ -1991,6 +1991,10 @@ body {
   .match-row   { grid-template-columns: 90px 1fr 20px; }
   .match-row-venue { display: none; }
   .page        { padding: 1.25rem; }
+  /* Dashboard — la grille "auto 1fr" (Cycle alertes / Cotes & Données+Taux de scraping / Requêtes
+     utilisées / Matchs à venir) débordait horizontalement en dessous de ~860px, coupant les libellés
+     (ex. "RotoWire") au lieu de les faire passer à la ligne (30 août 2026, signalé par l'utilisateur). */
+  .dashboard-widgets-grid { grid-template-columns: 1fr !important; }
 }
 
 @media (max-width: 640px) {
