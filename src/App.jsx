@@ -3,7 +3,7 @@ import { BrowserRouter, Routes, Route, Navigate, useParams, useNavigate, useLoca
 import LeftNav from './components/LeftNav';
 import StarField from './components/StarField';
 import DashboardPage from './pages/DashboardPage';
-import { syncSettlements, syncBackgroundAlerts, syncGameTotalAlerts, syncBasketballResultAlerts, syncFootballAlerts, syncOutrightAlerts } from './utils/syncAlerts';
+import { syncSettlements, syncBackgroundAlerts, syncGameTotalAlerts, syncTeamTotalAlerts, syncBasketballResultAlerts, syncFootballAlerts, syncOutrightAlerts } from './utils/syncAlerts';
 import { loadFromCloud } from './utils/cloudStorage';
 import { cachedFetch } from './utils/fetchCache';
 
@@ -89,7 +89,7 @@ function useAlertCount() {
       // même format simple (status + date) — basketball_result/spread manquaient ici depuis leur
       // création (19 juin/9 juillet), le badge ne comptait jamais leurs alertes pending (trouvé
       // le 14 juillet sur une alerte spread Écart H2H invisible dans le badge).
-      ['nba_game_total_alerts', 'basketball_result_alerts', 'basketball_spread_alerts'].forEach(key => {
+      ['nba_game_total_alerts', 'basketball_teamtotal_alerts', 'basketball_result_alerts', 'basketball_spread_alerts'].forEach(key => {
         try {
           const arr = JSON.parse(localStorage.getItem(key) || '[]');
           basket += arr.filter(a => {
@@ -135,6 +135,7 @@ function useAlertCount() {
       syncSettlements();
       syncBackgroundAlerts();
       syncGameTotalAlerts();
+      syncTeamTotalAlerts();
       syncBasketballResultAlerts();
       syncFootballAlerts();
       syncOutrightAlerts();
@@ -215,8 +216,6 @@ const PlayerLinesPage      = lazy(importPlayerLines);
 const OutrightsPage        = lazy(importOutrights);
 const OutrightCompetitionPage = lazy(importOutrightComp);
 const UtilisationPage      = lazy(() => import('./pages/UtilisationPage'));
-const AnalyserPage         = lazy(() => import('./pages/AnalyserPage'));
-const SportsPage           = lazy(() => import('./pages/SportsPage'));
 
 // Précharge les pages les plus visitées dès que le navigateur est idle
 

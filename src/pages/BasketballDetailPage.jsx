@@ -7,6 +7,8 @@ import { formatFullDate, formatMatchTime, formatCapacity } from '../utils/format
 import FormStrip from '../components/FormStrip';
 import StatBar from '../components/StatBar';
 import { OddsCell, EdgeBadge } from '../components/OddsCell';
+import { FactorBar } from '../components/FactorBar';
+import { usePlayerNearMiss, PlayerStatBadge } from '../components/PlayerNearMissBadge';
 import { cachedFetch, invalidateCache } from '../utils/fetchCache';
 
 function timeAgo(ts) {
@@ -415,14 +417,17 @@ function propConfColor(stat, league, pct) {
 // Légende cliquable pour les onglets Résultat/Points/Joueurs — même format que
 // PropLegendCard (dots de couleur + seuil d'alerte), sans texte descriptif sur ce que représente
 // chaque onglet (déjà documenté dans la page Utilisation, pas besoin de le répéter ici).
-function OddsLegendCard({ tab }) {
+function OddsLegendCard({ tab, isWNBA = false }) {
   const Dot = ({ color }) => <span style={{ display: 'inline-block', width: 6, height: 6, borderRadius: '50%', background: color, marginRight: 4, flexShrink: 0 }} />;
-  const showBands = tab !== 'joueurs';
+  const showBands = tab !== 'joueurs' && tab !== 'teamtotal';
   const secStyle = { marginTop: 3 };
+  // Cote mini Résultat abaissée à 1.20 pour la WNBA uniquement le 27 août 2026 (marché validé,
+  // 91,7% sur 12 cas, ROI +19,9% réel) — NBA/EU restent à 1.50, pas de preuve équivalente pour elles.
+  const resultMinOdds = isWNBA ? '1.20' : '1.50';
   const ALERTS = {
     all: (
       <>
-        <div>🚨 Alerte si probabilité ≥ <b style={{ color: '#4ade80' }}>71%</b> + cote ≥ <b style={{ color: '#ef4444' }}>1.50</b></div>
+        <div>🚨 Alerte si probabilité ≥ <b style={{ color: '#4ade80' }}>71%</b> + cote ≥ <b style={{ color: '#ef4444' }}>{resultMinOdds}</b></div>
         <div style={{ marginTop: 6, fontWeight: 700 }}>🔐 Sécurités :</div>
         <div style={secStyle}>1. Joueur clé (≥15 pts/match) Out depuis ≤3j : −40% au rating de son équipe.</div>
         <div style={secStyle}>2. Joueur clé (≥15 pts/match) Q/GTD : les alertes sont bloquées uniquement sur son équipe (l'adversaire reste alerté normalement).</div>
@@ -439,6 +444,12 @@ function OddsLegendCard({ tab }) {
       </>
     ),
     joueurs: <>Alerte si un bookmaker offre ≥ <b style={{ color: '#4ade80' }}>20% d'edge</b> vs la ligne Pinnacle, cote ≥ <b style={{ color: '#ef4444' }}>1.60</b>.</>,
+    teamtotal: (
+      <>
+        <div>🔬 Marché expérimental — <b>aucune alerte</b> pour l'instant, le temps de vérifier sa fiabilité.</div>
+        <div style={{ marginTop: 6 }}>Seuil suivi (near-miss, pas d'alerte réelle) : Over ou Under ≥ <b style={{ color: '#4ade80' }}>74%</b> — même seuil que Total points. Pas de cote minimum fixée : toutes les cotes disponibles sont enregistrées pour juger la fiabilité avant d'en choisir une.</div>
+      </>
+    ),
   };
   return (
     <div>
@@ -491,7 +502,6 @@ function PropLegendCard({ league }) {
             <span style={{ display: 'flex', alignItems: 'center', fontSize: 9.5, whiteSpace: 'nowrap' }}>
               <Dot color="#4a9b6f" style={{ opacity: 0.7 }} /><b style={{ color: '#4a9b6f', opacity: 0.75 }}>≥ 73%</b>&nbsp;— seuil 3pts (spé. 72%)
             </span>
-            <span style={{ fontSize: 8.5, color: 'var(--text-dim)', marginTop: 2 }}>Seuils recalibrés le 21 août 2026 sur l'historique complet near-miss (2005 candidats, 2,5 mois) — pts abaissé à 65% (seule stat avec un vrai edge mesuré en dessous de l'original) ; reb/ast confirmés à leur valeur d'origine (77%/80%), aucune tranche inférieure rentable. Plancher "spécialiste" allégé réservé aux Over depuis le 24 août 2026 (cas Caitlin Clark, Under manqué sur pts+ast malgré le statut spécialiste) — sur un Under, une joueuse régulière repasse par le seuil normal.</span>
           </>
         ) : (
           <>
@@ -506,20 +516,21 @@ function PropLegendCard({ league }) {
         <span style={{ display: 'flex', alignItems: 'center', fontSize: 9.5, color: 'var(--text-dim)', whiteSpace: 'nowrap' }}><Dot color="#00d4ff" />{isWNBA ? '65–71%' : '70–79%'} moyen</span>
         <span style={{ display: 'flex', alignItems: 'center', fontSize: 9.5, color: 'var(--text-dim)', whiteSpace: 'nowrap' }}><Dot color="#ffb400" />&lt;{isWNBA ? '65%' : '70%'} faible</span>
       </div>
-      <div style={{ fontSize: 9, lineHeight: 1.45, color: 'var(--text-dim)', borderTop: '1px solid var(--border)', paddingTop: '0.4rem' }}>
+      <div style={{ fontSize: 9, lineHeight: 1.5, color: 'var(--text-dim)', borderTop: '1px solid var(--border)', paddingTop: '0.4rem' }}>
+        🚨 Alerte props si <b style={{ color: '#4a9b6f' }}>seuil vert</b> atteint (+ cotes {isWNBA ? '' : 'Unibet/Betclic '}≥ 1,60, minutes ≥ 10/match).
+        <br />
         {isWNBA
-          ? <>Alerte si <b style={{ color: '#4a9b6f' }}>seuil vert</b> + cotes ≥ 1,60 + minutes ≥ 10/match. AST Over bloqué si ligne ≥ 4,5 · 3pts Over : moy ≥ 1,2/match.</>
-          : <>Alerte si <b style={{ color: '#4a9b6f' }}>seuil vert</b> + cotes Unibet/Betclic ≥ 1,60 + minutes ≥ 10/match. 3pts Over : moy ≥ 1,5/match.</>
+          ? <>(Over assist bloqué si ligne ≥ 4,5 / Over 3pts requiert moy ≥ 1,2/match)</>
+          : <>(Over 3pts requiert moy ≥ 1,5/match)</>
         }
+      </div>
+      <div style={{ fontSize: 9, lineHeight: 1.5, color: 'var(--text-dim)', borderTop: '1px solid var(--border)', paddingTop: '0.4rem', marginTop: '0.4rem' }}>
+        <b style={{ color: 'var(--text)' }}>✔ n/N</b> — Historique réel de la joueuse sur cette stat sur les 90 derniers jours (Source : Near-miss de fond).
+        <br />
+        <b>Compte uniquement les cas dans le même sens que l'alerte affichée</b> (Over ▲ et Under ▼ jamais mélangés) — un ✔ 9/17 à côté d'un Under signifie que ses lignes Under sur cette stat sont passées 9 fois sur 17, pas un mélange Over+Under.
       </div>
     </div>
   );
-}
-
-function fmtFactor(val) {
-  const pct = ((val - 1) * 100);
-  const sign = pct >= 0 ? '+' : '';
-  return `${sign}${pct.toFixed(1)}%`;
 }
 
 function calcAvg(games, key, n) {
@@ -1068,22 +1079,30 @@ function computeEstimate(player, isHome, oppGames, myGames, gamelogs, oppAbbr, g
     // → on neutralise playoff.val pour éviter le double comptage
     // G1 ou pas de données PO → on garde playoff.val pour ajuster la base RS
     const playoffAdj = hasPOData ? 1.0 : playoff.val;
-    const rawMult = def.val * paceDamped * rest.val * density.val * loc.val * vegas.val * blowout.val * injRet.val * roleNormPO * h2hCapped * tsAttn * volAttn * ftAttn * playoffAdj * series.val;
-    adjMult    = Math.min(1.30, Math.max(0.74, rawMult));
-    adjMultReb = Math.min(1.30, Math.max(0.74, rawMult * (1 + (orebF.val - 1) * 0.6) * h2hRebCapped));
-    adjMultAst = Math.min(1.30, Math.max(0.74, rawMult * toaF.val * h2hAstCapped));
-    adjMultTpm = Math.min(1.30, Math.max(0.74, rawMult * h2hTpmCapped));
+    // Fix 27 août 2026 (miroir du même fix backend compute.js) — tsAttn/volAttn/ftAttn (scoring)
+    // isolés dans scoringAttn, appliqué uniquement à adjMult (points).
+    const sharedRawMult = def.val * paceDamped * rest.val * density.val * loc.val * vegas.val * blowout.val * injRet.val * roleNormPO * h2hCapped * playoffAdj * series.val;
+    const scoringAttn = tsAttn * volAttn * ftAttn;
+    adjMult    = Math.min(1.30, Math.max(0.74, sharedRawMult * scoringAttn));
+    adjMultReb = Math.min(1.30, Math.max(0.74, sharedRawMult * (1 + (orebF.val - 1) * 0.6) * h2hRebCapped));
+    adjMultAst = Math.min(1.30, Math.max(0.74, sharedRawMult * toaF.val * h2hAstCapped));
+    adjMultTpm = Math.min(1.30, Math.max(0.74, sharedRawMult * h2hTpmCapped));
   } else {
     h2hCapped    = Math.min(1.08, Math.max(0.92, h2h.val));
     h2hRebCapped = Math.min(1.08, Math.max(0.92, h2hReb.val));
     h2hAstCapped = Math.min(1.08, Math.max(0.92, h2hAst.val));
     h2hTpmCapped = Math.min(1.08, Math.max(0.92, h2hTpm.val));
     const streakCapped = Math.min(1.06, Math.max(0.94, streak.val));
-    const rawMult = def.val * pace.val * rest.val * density.val * loc.val * vegas.val * blowout.val * injRet.val * streakCapped * h2hCapped * tsF.val * shotVol.val * ftRate.val;
-    adjMult    = Math.min(1.24, Math.max(0.78, rawMult));
-    adjMultReb = Math.min(1.24, Math.max(0.78, rawMult * orebF.val * h2hRebCapped));
-    adjMultAst = Math.min(1.24, Math.max(0.78, rawMult * toaF.val * h2hAstCapped));
-    adjMultTpm = Math.min(1.24, Math.max(0.78, rawMult * h2hTpmCapped));
+    // Fix 27 août 2026 (miroir du même fix backend compute.js) — streakCapped/tsF/shotVol/ftRate
+    // sont des signaux de scoring (streak calculé sur s.pts, TS%/volume tirs/LF tous liés au tir),
+    // sans lien avec rebonds/passes/3pts. Isolés dans scoringMult, appliqué uniquement à adjMult
+    // (points) — sharedRawMult (sans ces 4 facteurs) alimente reb/ast/tpm à la place.
+    const sharedRawMult = def.val * pace.val * rest.val * density.val * loc.val * vegas.val * blowout.val * injRet.val * h2hCapped;
+    const scoringMult = streakCapped * tsF.val * shotVol.val * ftRate.val;
+    adjMult    = Math.min(1.24, Math.max(0.78, sharedRawMult * scoringMult));
+    adjMultReb = Math.min(1.24, Math.max(0.78, sharedRawMult * orebF.val * h2hRebCapped));
+    adjMultAst = Math.min(1.24, Math.max(0.78, sharedRawMult * toaF.val * h2hAstCapped));
+    adjMultTpm = Math.min(1.24, Math.max(0.78, sharedRawMult * h2hTpmCapped));
   }
 
   const floorPts = s.pts * 0.72;
@@ -1441,26 +1460,6 @@ function GameTotalWidget({ estimate, fixture, tot, edgePopupKey, setEdgePopupKey
   );
 }
 
-function FactorBar({ name, val, desc }) {
-  const pct = (val - 1) * 100;
-  const isPos = pct >= 0.5;
-  const isNeg = pct <= -0.5;
-  const barW = Math.min(100, Math.abs(pct) * 5);
-  return (
-    <div className="pf-row">
-      <span className="pf-name">{name}</span>
-      <div className="pf-bar-wrap">
-        <div className={`pf-bar ${isPos ? 'pf-bar--pos' : isNeg ? 'pf-bar--neg' : 'pf-bar--neu'}`}
-          style={{ width: `${barW}%` }} />
-      </div>
-      <span className={`pf-pct ${isPos ? 'pos' : isNeg ? 'neg' : ''}`}>
-        {fmtFactor(val)}
-      </span>
-      <span className="pf-desc">{desc}</span>
-    </div>
-  );
-}
-
 const VALUE_THRESHOLD = 5; // edge % minimum pour badge VALUE
 
 function BetLine({ label, estimated, line, onChange }) {
@@ -1507,7 +1506,7 @@ function PropsSection({ fixture, homePlayers, awayPlayers, rosterLoading, isComp
   const legendOpen = showLegend || forceLegendOpen;
   const [legendBox, setLegendBox]         = useState(null); // { top, left }
   const propsCardRef = useRef(null);
-  const propsHeaderRef = useRef(null);
+  const propsHeaderRowRef = useRef(null);
   const legendRef = useRef(null);
   const legendBtnRef = useRef(null);
   const LEGEND_W = 252;
@@ -1527,11 +1526,23 @@ function PropsSection({ fixture, homePlayers, awayPlayers, rosterLoading, isComp
     const update = () => {
       if (!propsCardRef.current) return;
       const r = propsCardRef.current.getBoundingClientRect();
-      const hr = propsHeaderRef.current ? propsHeaderRef.current.getBoundingClientRect() : null;
-      const top    = hr ? hr.bottom : r.top;
-      const height = hr ? r.bottom - hr.bottom : undefined;
+      // Alignée sur la ligne du titre "Analyse Props" — fix 29 août 2026, demande explicite. Ancrée sur
+      // le conteneur de la ligne entière (pas le petit rond "?" de 16px) : le rond est centré sur la
+      // hauteur du <h2> (police nettement plus grande), donc son propre top tombe plusieurs px plus bas
+      // que le haut visuel du titre — un écart perceptible une fois la légende ouverte à côté.
+      const headerR = propsHeaderRowRef.current ? propsHeaderRowRef.current.getBoundingClientRect() : null;
+      const top = headerR ? headerR.top : r.top;
+      // Plafond = hauteur restante de la fenêtre sous le haut de la boîte (pas la hauteur de la carte
+      // Analyse Props elle-même) — fix 29 août 2026 : le contenu de la légende (seuils + conditions
+      // d'alerte + explication du badge ✔ n/N) dépassait la hauteur de la carte, coupé net par l'ancien
+      // `height` fixe + overflow-y:auto sans indice visuel de scroll. maxHeight laisse le contenu
+      // s'afficher en entier tant qu'il tient dans la fenêtre, ne scrolle qu'en dernier recours.
+      const maxHeight = Math.max(160, window.innerHeight - top - 16);
       const gutterCenter = r.right + (window.innerWidth - r.right) / 2;
-      setLegendBox({ top, left: gutterCenter - LEGEND_W / 2, height });
+      // Clampée pour ne jamais déborder à droite de la fenêtre — sur un écran étroit/carte pleine
+      // largeur, le "gutter" à droite de la carte peut être trop petit pour centrer la boîte dedans.
+      const left = Math.min(gutterCenter - LEGEND_W / 2, window.innerWidth - LEGEND_W - 16);
+      setLegendBox({ top, left, maxHeight });
     };
     update();
     window.addEventListener('scroll', update, true);
@@ -2332,6 +2343,9 @@ function PropsSection({ fixture, homePlayers, awayPlayers, rosterLoading, isComp
   }
   const projected = [...startersSorted, { __separator: 'bench' }, ...benchSorted]
     .filter(p => p.__separator || !isPlayerOut(p));
+  // Historique near-miss de l'effectif affiché (29 août 2026) — une seule requête groupée pour
+  // tous les joueurs du roster courant, pas une par joueur.
+  const rosterNearMiss = usePlayerNearMiss(projected.filter(p => !p.__separator).map(p => p.name), fixture?.league);
 
   function TeamBtn({ home }) {
     const active = home ? showHome : !showHome;
@@ -2347,7 +2361,15 @@ function PropsSection({ fixture, homePlayers, awayPlayers, rosterLoading, isComp
     );
   }
 
-  const COL = '26px 1fr 36px 36px 36px 36px 8px 36px 36px 36px 36px';
+  // Colonnes "Projetées" élargies (36px → 60px) le 29 août 2026, demande explicite — le badge ✔ n/N
+  // compact ("▼55% (6/7)") ne rentrait sur une ligne qu'à une police illisible (5.5px) dans 36px.
+  // "Réalisées" (jamais de badge, juste un chiffre ou "—") reste à 36px, pas besoin de la largeur en plus.
+  // Avant le coup d'envoi, "Réalisées" n'a encore aucune donnée à montrer (que des "—") — masqué
+  // entièrement (même session, demande explicite) et son espace redistribué à "Projetées", qui reprend
+  // sa largeur/place normale dès que le match est terminé (`isCompleted`).
+  const COL = isCompleted
+    ? '26px 1fr 60px 60px 60px 60px 8px 36px 36px 36px 36px'
+    : '26px 1fr 60px 60px 60px 60px';
   const statStyle = (dim, green) => ({
     textAlign: 'right', fontSize: 12, fontWeight: dim ? 500 : 700,
     fontVariantNumeric: 'tabular-nums',
@@ -2356,7 +2378,7 @@ function PropsSection({ fixture, homePlayers, awayPlayers, rosterLoading, isComp
 
   return (
     <div ref={propsCardRef} className="detail-card props-card full-card">
-      <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '1.4rem', flexWrap: 'wrap', cursor: 'pointer' }} onClick={onClose}>
+      <div ref={propsHeaderRowRef} style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '1.4rem', flexWrap: 'wrap', cursor: 'pointer' }} onClick={onClose}>
         <h2 className="card-title" style={{ margin: 0 }}>Analyse Props</h2>
         <span
           ref={legendBtnRef}
@@ -2371,7 +2393,7 @@ function PropsSection({ fixture, homePlayers, awayPlayers, rosterLoading, isComp
           <div ref={legendRef} onClick={e => e.stopPropagation()} style={{
             position: 'fixed', top: legendBox.top, left: legendBox.left, zIndex: 200,
             width: LEGEND_W, maxWidth: 'calc(100vw - 2rem)',
-            ...(legendBox.height ? { height: legendBox.height, overflowY: 'auto' } : {}),
+            ...(legendBox.maxHeight ? { maxHeight: legendBox.maxHeight, overflowY: 'auto' } : {}),
             background: 'var(--bg-card, #11141c)', border: '1px solid var(--border)', borderRadius: 8,
             padding: '0.6rem 0.65rem', boxShadow: '0 8px 24px rgba(0,0,0,0.4)',
           }}>
@@ -2476,24 +2498,31 @@ function PropsSection({ fixture, homePlayers, awayPlayers, rosterLoading, isComp
       )}
 
       {/* En-têtes de colonnes */}
-      {/* Libellés de section */}
-      <div style={{ display: 'grid', gridTemplateColumns: COL, gap: '0 0.25rem', padding: '0 0.5rem 0.85rem' }}>
+      {/* Libellés de section — masqués avant le coup d'envoi : un seul bloc visible ("Projetées"),
+          le libellé n'apporte plus rien tant qu'il n'y a rien à distinguer d'un bloc "Réalisées". */}
+      {isCompleted && (
+        <div style={{ display: 'grid', gridTemplateColumns: COL, gap: '0 0.25rem', padding: '0 0.5rem 0.85rem' }}>
+          <div /><div />
+          <div style={{ gridColumn: 'span 4', fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-dim)', textAlign: 'center' }}>Projetées</div>
+          <div />
+          <div style={{ gridColumn: 'span 4', fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em', color: '#22c55e', textAlign: 'center' }}>Réalisées</div>
+        </div>
+      )}
+      <div style={{ display: 'grid', gridTemplateColumns: COL, gap: '0 0.25rem', padding: '0 0.5rem 0.35rem', borderBottom: '1px solid var(--border)' }}>
         <div /><div />
-        <div style={{ gridColumn: 'span 4', fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-dim)', textAlign: 'center' }}>Projetées</div>
-        <div />
-        <div style={{ gridColumn: 'span 4', fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em', color: isCompleted ? '#22c55e' : 'var(--text-dim)', textAlign: 'center' }}>Réalisées</div>
-      </div>
-      <div ref={propsHeaderRef} style={{ display: 'grid', gridTemplateColumns: COL, gap: '0 0.25rem', padding: '0 0.5rem 0.35rem', borderBottom: '1px solid var(--border)' }}>
-        <div /><div />
-        <div style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', color: 'var(--text-dim)', textAlign: 'right' }}>Pts</div>
-        <div style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', color: 'var(--text-dim)', textAlign: 'right' }}>Rebs</div>
-        <div style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', color: 'var(--text-dim)', textAlign: 'right' }}>Asst</div>
-        <div style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', color: 'var(--text-dim)', textAlign: 'right' }}>3pts</div>
-        <div />
-        <div style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', color: isCompleted ? '#22c55e' : 'var(--text-dim)', textAlign: 'right' }}>Pts</div>
-        <div style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', color: isCompleted ? '#22c55e' : 'var(--text-dim)', textAlign: 'right' }}>Rebs</div>
-        <div style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', color: isCompleted ? '#22c55e' : 'var(--text-dim)', textAlign: 'right' }}>Asst</div>
-        <div style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', color: isCompleted ? '#22c55e' : 'var(--text-dim)', textAlign: 'right' }}>3pts</div>
+        <div style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', color: 'var(--text-dim)', textAlign: 'left' }}>Pts</div>
+        <div style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', color: 'var(--text-dim)', textAlign: 'left' }}>Rebs</div>
+        <div style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', color: 'var(--text-dim)', textAlign: 'left' }}>Asst</div>
+        <div style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', color: 'var(--text-dim)', textAlign: 'left' }}>3pts</div>
+        {isCompleted && (
+          <>
+            <div />
+            <div style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', color: '#22c55e', textAlign: 'right' }}>Pts</div>
+            <div style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', color: '#22c55e', textAlign: 'right' }}>Rebs</div>
+            <div style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', color: '#22c55e', textAlign: 'right' }}>Asst</div>
+            <div style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', color: '#22c55e', textAlign: 'right' }}>3pts</div>
+          </>
+        )}
       </div>
 
       {/* Liste unifiée */}
@@ -2553,44 +2582,56 @@ function PropsSection({ fixture, homePlayers, awayPlayers, rosterLoading, isComp
                 const show = sp && best >= 0.50;
                 const pc = propConfColor(stat, fixture?.league, pct);
                 return (
-                  <div key={stat} style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 1 }}>
+                  // Colonne alignée à gauche (29 août 2026, demande explicite) — auparavant alignée à
+                  // droite, ce qui calait le bord DROIT de la ligne "▼55% (6/7)" sur le bord droit du
+                  // nombre projeté au-dessus. Comme le "(n/N)" final varie en largeur d'une joueuse à
+                  // l'autre, la position du "▼55%" lui-même glissait d'une ligne à l'autre (staircase),
+                  // rendant la colonne difficile à parcourir d'un coup d'œil. Alignés à gauche, le
+                  // premier chiffre de "9.0" et la flèche de "▼55%" démarrent tous les deux au même x,
+                  // fixe quelle que soit la largeur du "(n/N)" qui suit.
+                  <div key={stat} style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 1 }}>
                     <span
                       className={val ? 'rank-trigger' : undefined}
-                      style={{ ...statStyle(dim, false), ...(val ? { cursor: 'pointer', textDecoration: 'underline', textDecorationStyle: 'dotted', textDecorationColor: 'rgba(255,255,255,0.25)' } : {}) }}
+                      style={{ ...statStyle(dim, false), textAlign: 'left', ...(val ? { cursor: 'pointer', textDecoration: 'underline', textDecorationStyle: 'dotted', textDecorationColor: 'rgba(255,255,255,0.25)' } : {}) }}
                       onClick={e => { if (!val) return; e.stopPropagation(); openRankPanel(p, stat); }}
                       title={val ? 'Voir le classement ligue' : undefined}
                     >{val ?? '—'}</span>
                     {show && (
-                      <span style={{ fontSize: 9, fontWeight: 800, color: pc, lineHeight: 1 }}>
+                      <span style={{ fontSize: 9, fontWeight: 800, color: pc, lineHeight: 1, whiteSpace: 'nowrap', display: 'block' }}>
                         {dir}{pct}%
                         {/* Astérisque "spécialiste" (23 août 2026) — joueur régulier sur cette stat
                             précise (isConsistentStat), bénéficie du plancher d'alerte allégé. Purement
                             informatif ici, aucun effet sur le calcul affiché. */}
                         {sp?.specialist && isTopPerformer(p.id, stat) && <span title="Spécialiste de cette catégorie (régularité élevée + top 30 ligue)" style={{ cursor: 'help' }}>*</span>}
+                        <PlayerStatBadge stat={stat} direction={dir === '▲' ? 'over' : 'under'} byStat={rosterNearMiss[p.name]?.byStat} minN={3} compact />
                       </span>
                     )}
                   </div>
                 );
               })}
 
-              {/* Séparateur */}
-              <div style={{ borderLeft: '1px solid var(--border)', height: '70%', alignSelf: 'center' }} />
-
-              {/* Réalisé — tpm arrive au format boxscore "faits-tentés" (ex: "2-4"), jamais un nombre
-                  simple comme pts/reb/ast : il faut extraire le premier nombre avant affichage. */}
-              {boxscoreLoading ? (
-                <><span style={statStyle(true, false)}>…</span><span style={statStyle(true, false)}>…</span><span style={statStyle(true, false)}>…</span><span style={statStyle(true, false)}>…</span></>
-              ) : isDNP ? (
-                <span style={{ gridColumn: 'span 4', fontSize: 10, color: 'var(--text-dim)', textAlign: 'right' }}>DNP</span>
-              ) : hasReal ? (
+              {/* Séparateur + bloc Réalisé — masqués avant le coup d'envoi (rien à montrer tant que le
+                  match n'a pas eu lieu), l'espace libéré revient au bloc Projetées (COL ci-dessus). */}
+              {isCompleted && (
                 <>
-                  <span style={statStyle(false, true)}>{real.stats.pts}</span>
-                  <span style={statStyle(true,  false)}>{real.stats.reb}</span>
-                  <span style={statStyle(true,  false)}>{real.stats.ast}</span>
-                  <span style={statStyle(true,  false)}>{real.stats.tpm != null ? String(real.stats.tpm).split('-')[0] : '—'}</span>
+                  <div style={{ borderLeft: '1px solid var(--border)', height: '70%', alignSelf: 'center' }} />
+                  {/* tpm arrive au format boxscore "faits-tentés" (ex: "2-4"), jamais un nombre simple
+                      comme pts/reb/ast : il faut extraire le premier nombre avant affichage. */}
+                  {boxscoreLoading ? (
+                    <><span style={statStyle(true, false)}>…</span><span style={statStyle(true, false)}>…</span><span style={statStyle(true, false)}>…</span><span style={statStyle(true, false)}>…</span></>
+                  ) : isDNP ? (
+                    <span style={{ gridColumn: 'span 4', fontSize: 10, color: 'var(--text-dim)', textAlign: 'right' }}>DNP</span>
+                  ) : hasReal ? (
+                    <>
+                      <span style={statStyle(false, true)}>{real.stats.pts}</span>
+                      <span style={statStyle(true,  false)}>{real.stats.reb}</span>
+                      <span style={statStyle(true,  false)}>{real.stats.ast}</span>
+                      <span style={statStyle(true,  false)}>{real.stats.tpm != null ? String(real.stats.tpm).split('-')[0] : '—'}</span>
+                    </>
+                  ) : (
+                    <><span style={statStyle(true, false)}>—</span><span style={statStyle(true, false)}>—</span><span style={statStyle(true, false)}>—</span><span style={statStyle(true, false)}>—</span></>
+                  )}
                 </>
-              ) : (
-                <><span style={statStyle(true, false)}>—</span><span style={statStyle(true, false)}>—</span><span style={statStyle(true, false)}>—</span><span style={statStyle(true, false)}>—</span></>
               )}
             </div>
             {isExpanded && est && (() => {
@@ -2807,7 +2848,11 @@ function OddsCard({ odds, home, away, league, homePlayers, awayPlayers, onRefres
   const tot = odds?.markets?.totals;
   const ew  = odds?.markets?.earlywin;
   const spread = odds?.markets?.spread;
-  const availBks = BK_ORDER.filter(bk => h2h?.bookmakers?.[bk] || tot?.bookmakers?.[bk] || spread?.bookmakers?.[bk]);
+  // Total équipe (28 août 2026) — même structure que tot (bookmakers/line/over/under), mais un
+  // objet distinct par équipe. Suivi near-miss uniquement côté backend pour l'instant (pas
+  // d'alerte), affiché ici en lecture seule comme les autres marchés.
+  const teamTotal = odds?.markets?.teamTotals?.[showHome ? 'home' : 'away'];
+  const availBks = BK_ORDER.filter(bk => h2h?.bookmakers?.[bk] || tot?.bookmakers?.[bk] || spread?.bookmakers?.[bk] || odds?.markets?.teamTotals?.home?.bookmakers?.[bk] || odds?.markets?.teamTotals?.away?.bookmakers?.[bk]);
 
   // Edge Unibet/Betclic vs Pinnacle (25 juin 2026) — h2h?.fairProb / tot?.fairProb / h?.edgeHome
   // etc. lus plus bas dans OddsCell n'étaient en fait jamais assignés nulle part (vérifié) ; calculé
@@ -2822,7 +2867,7 @@ function OddsCard({ odds, home, away, league, homePlayers, awayPlayers, onRefres
   // Pour EL : si l'onglet actif n'a pas de données scrappées, basculer sur Joueurs
   useEffect(() => {
     if (!isEL) return;
-    if ((tab === 'all' || tab === 'points') && availBks.length === 0) setTab('joueurs');
+    if ((tab === 'all' || tab === 'points' || tab === 'teamtotal') && availBks.length === 0) setTab('joueurs');
   }, [availBks.length]);
 
   if (!odds?.found && !isEL) return null;
@@ -2834,7 +2879,7 @@ function OddsCard({ odds, home, away, league, homePlayers, awayPlayers, onRefres
   const ch = { fontSize: 9, fontWeight: 700, textTransform: 'uppercase', color: 'var(--text-dim)', textAlign: 'center', letterSpacing: '0.05em' };
   const sep = { borderLeft: '1px solid var(--border)', height: '70%', alignSelf: 'center' };
 
-  const TABS = [{ id: 'all', label: 'Résultat' }, { id: 'points', label: 'Points' }, { id: 'joueurs', label: 'Joueurs' }];
+  const TABS = [{ id: 'all', label: 'Résultat' }, { id: 'points', label: 'Total points' }, { id: 'teamtotal', label: 'Total équipe' }, { id: 'joueurs', label: 'Joueurs' }];
 
   const tabStyle = (id) => ({
     padding: '0.25rem 0.75rem', borderRadius: 5, border: '1px solid', cursor: 'pointer',
@@ -2892,7 +2937,7 @@ function OddsCard({ odds, home, away, league, homePlayers, awayPlayers, onRefres
                 background: 'var(--bg-card, #11141c)', border: '1px solid var(--border)', borderRadius: 8,
                 padding: '0.6rem 0.65rem', boxShadow: '0 8px 24px rgba(0,0,0,0.4)',
               }}>
-                <OddsLegendCard tab={tab} />
+                <OddsLegendCard tab={tab} isWNBA={league === 'wnba'} />
               </div>,
               document.body
             )}
@@ -2902,7 +2947,7 @@ function OddsCard({ odds, home, away, league, homePlayers, awayPlayers, onRefres
               {lastRefreshed.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
             </div>
           )}
-          {tab === 'joueurs' && (
+          {(tab === 'joueurs' || tab === 'teamtotal') && (
             <div style={{ display: 'flex', gap: '0.3rem' }}>
               {[{ isHome: true, team: home }, { isHome: false, team: away }].map(({ isHome, team }) => (
                 <button key={team.short} onClick={() => { setShowHome(isHome); onTeamChange?.(isHome); }} style={{
@@ -2926,7 +2971,7 @@ function OddsCard({ odds, home, away, league, homePlayers, awayPlayers, onRefres
           <div style={{ ...ch, paddingLeft: '0.7cm' }}><span style={{ color: 'var(--text)' }}>{away.short}</span> <span style={{ fontWeight: 400, marginLeft: '0.2cm' }}>ext.</span></div>
         </div>
       )}
-      {tab === 'points' && (
+      {(tab === 'points' || tab === 'teamtotal') && (
         <div style={{ display: 'grid', gridTemplateColumns: COLS_TOT, gap: '0 0.25rem', paddingBottom: '0.35rem', borderBottom: '1px solid var(--border)', marginBottom: '0.2rem' }}>
           <div />
           <div style={ch}>Total</div>
@@ -3108,7 +3153,7 @@ function OddsCard({ odds, home, away, league, homePlayers, awayPlayers, onRefres
       {tab !== 'joueurs' && availBks.map(bk => {
         const isPinnacle = bk === 'pinnacle';
         const h = h2h?.bookmakers?.[bk];
-        const t = tot?.bookmakers?.[bk];
+        const t = tab === 'teamtotal' ? teamTotal?.bookmakers?.[bk] : tot?.bookmakers?.[bk];
         const gridCols = tab === 'all' ? COLS_H2H : COLS_TOT;
         return (
           <div key={bk} style={{
@@ -3199,6 +3244,31 @@ function OddsCard({ odds, home, away, league, homePlayers, awayPlayers, onRefres
       {tab === 'points' && gameTotalEstimate && fixture && (
         <GameTotalWidget estimate={gameTotalEstimate} fixture={fixture} tot={tot} edgePopupKey={edgePopupKey} setEdgePopupKey={setEdgePopupKey} edgePopupRef={edgePopupRef} />
       )}
+
+      {/* Total équipe (28 août 2026) — version compacte du widget "Modèle O/U" ci-dessus, un seul
+          bookmaker de référence (pas de comparaison Pinnacle, ce marché n'est pas chez eux). */}
+      {tab === 'teamtotal' && gameTotalEstimate && (() => {
+        const ttEst = showHome ? gameTotalEstimate.homeTeamTotal : gameTotalEstimate.awayTeamTotal;
+        if (!ttEst) return null;
+        const edge = +((ttEst.estimated - ttEst.line) / ttEst.line * 100).toFixed(1);
+        const isOver = edge >= 0;
+        const bestP = Math.max(ttEst.pOver, ttEst.pUnder);
+        const edgeColor = isOver ? '#4ade80' : '#f87171';
+        const edgeBg = isOver ? 'rgba(74,222,128,0.12)' : 'rgba(248,113,113,0.12)';
+        return (
+          <div style={{ borderTop: '1px solid var(--border)', marginTop: '0.3rem', paddingTop: 'calc(0.3rem + 0.1cm)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem' }}>
+            <span style={{ fontSize: 10, fontWeight: 400, color: 'var(--text-dim)' }}>Modèle O/U équipe</span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <span style={{ fontSize: 10, fontWeight: 600 }}>{ttEst.estimated}</span>
+              <span style={{ fontSize: 8, color: 'var(--text-dim)' }}>vs {ttEst.line}</span>
+              <span style={{ fontSize: 9, fontWeight: 800, padding: '1px 5px', borderRadius: 4, background: edgeBg, color: edgeColor, border: `1px solid ${isOver ? 'rgba(74,222,128,0.3)' : 'rgba(248,113,113,0.3)'}` }}>
+                {isOver ? '▲' : '▼'} {Math.abs(edge)}%
+              </span>
+              <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-dim)' }}>{Math.round(bestP)}%</span>
+            </div>
+          </div>
+        );
+      })()}
 
     </div>
   );
@@ -3735,6 +3805,10 @@ export default function BasketballDetailPage() {
     const bks = bballOdds?.markets?.totals?.bookmakers ?? {};
     const refBk = ['unibet', 'betclic'].find(b => bks[b]?.line);
     const refTotal = refBk ? bks[refBk].line : null;
+    // Total équipe (28 août 2026) — même appel, lignes en plus si le marché a été scrapé.
+    const ttBks = bballOdds?.markets?.teamTotals ?? {};
+    const homeTeamTotalLine = ttBks.home?.bookmakers?.unibet?.line ?? ttBks.home?.bookmakers?.betclic?.line ?? null;
+    const awayTeamTotalLine = ttBks.away?.bookmakers?.unibet?.line ?? ttBks.away?.bookmakers?.betclic?.line ?? null;
     if (refTotal) {
       fetch('/api/basketball/total', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -3743,6 +3817,7 @@ export default function BasketballDetailPage() {
           gameDate: fixture.date, round: fixture.round, league: fixture.league, refTotal,
           awayTeamKey: isEuro ? fixture.away.id : fixture.away.short,
           homePlayers: patchedHomePlayers, awayPlayers: patchedAwayPlayers,
+          homeTeamTotalLine, awayTeamTotalLine,
         }),
       }).then(r => r.json()).then(d => setGameTotalEstimate(d?.error ? null : { ...d, refBk })).catch(() => setGameTotalEstimate(null));
     } else {

@@ -542,10 +542,16 @@ function computeEstimate(player, isHome, oppGames, myGames, gamelogs, oppAbbr, g
     const ftAttn  = 1 + (ftRate.val  - 1) * 0.5;
     // Si le gamelog contient déjà des matchs PO, l'EWA reflète l'intensité playoffs → neutralise playoff.val
     const playoffAdj = hasPOData ? 1.0 : playoff.val;
+    // Fix 27 août 2026 — tsAttn/volAttn/ftAttn (efficacité au tir, volume de tirs, lancers-francs)
+    // sont des signaux de SCORING, sans lien de causalité établi avec rebonds/passes/3pts. Ils
+    // étaient pourtant inclus dans sharedMult et donc appliqués tels quels aux 4 stats — une
+    // joueuse en série chaude au tir voyait ses projections reb/ast/tpm gonflées sans raison. Isolés
+    // dans scoringAttn, appliqué désormais uniquement à rawMult (points). Les plafonds adjMultReb/
+    // Ast/Tpm ci-dessous restent inchangés (garde-fou déjà en place, pas retiré par ce fix).
     const sharedMult = paceDamped * rest.val * density.val * loc.val * vegas.val
-                  * blowout.val * injRet.val * roleNormPO
-                  * tsAttn * volAttn * ftAttn * playoffAdj * series.val;
-    const rawMult    = def.val    * sharedMult * h2hCapped;
+                  * blowout.val * injRet.val * roleNormPO * playoffAdj * series.val;
+    const scoringAttn = tsAttn * volAttn * ftAttn;
+    const rawMult    = def.val    * sharedMult * scoringAttn * h2hCapped;
     const rawMultReb = defReb.val * sharedMult * h2hRebCapped;
     const rawMultAst = defAst.val * sharedMult * h2hAstCapped;
     const rawMultTpm = defTpm.val * sharedMult * h2hTpmCapped;
@@ -570,10 +576,19 @@ function computeEstimate(player, isHome, oppGames, myGames, gamelogs, oppAbbr, g
     h2hAstCapped = Math.min(1.08, Math.max(0.92, h2hAst.val));
     h2hTpmCapped = Math.min(1.08, Math.max(0.92, h2hTpm.val));
     const streakCapped = Math.min(1.06, Math.max(0.94, streak.val));
+    // Fix 27 août 2026 — streakCapped (série chaude/froide AU SCORING, getStreakFactor calculé
+    // exclusivement sur s.pts) et tsF/shotVol/ftRate (efficacité au tir, volume de tirs, lancers-
+    // francs) sont des signaux 100% liés aux points, sans lien de causalité avec rebonds/passes/
+    // 3pts. Ils étaient pourtant dans sharedMult et donc appliqués tels quels aux 4 stats — une
+    // joueuse en série chaude au tir voyait ses projections reb/ast/tpm gonflées sans raison réelle
+    // (cause plausible du plafond réel des taux de réussite reb/ast/tpm observé en near-miss, très
+    // en dessous de pts). Isolés dans scoringMult, appliqué désormais uniquement à rawMult (points).
+    // Les plafonds adjMultReb/Ast/Tpm ci-dessous restent inchangés (garde-fou déjà en place, pas
+    // retiré par ce fix — juste la cause qu'ils compensaient qui est maintenant traitée à la racine).
     const sharedMult = pace.val * rest.val * density.val * loc.val * vegas.val
-                  * blowout.val * injRet.val * streakCapped
-                  * tsF.val * shotVol.val * ftRate.val;
-    const rawMult    = def.val    * sharedMult * h2hCapped;
+                  * blowout.val * injRet.val;
+    const scoringMult = streakCapped * tsF.val * shotVol.val * ftRate.val;
+    const rawMult    = def.val    * sharedMult * scoringMult * h2hCapped;
     const rawMultReb = defReb.val * sharedMult * h2hRebCapped;
     const rawMultAst = defAst.val * sharedMult * h2hAstCapped;
     const rawMultTpm = defTpm.val * sharedMult * h2hTpmCapped;

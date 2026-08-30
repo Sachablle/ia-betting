@@ -5,7 +5,7 @@
   "scripts": {
     "start": "UV_THREADPOOL_SIZE=16 node server.js",
     "predev": "lsof -ti:3001 | xargs kill -9 2>/dev/null || true",
-    "dev": "UV_THREADPOOL_SIZE=16 node --watch server.js"
+    "dev": "UV_THREADPOOL_SIZE=16 node --watch-path=server.js --watch-path=telegram.js --watch-path=compute.js --watch-path=computeFootball.js --watch-path=computeOutrights.js server.js"
   },
   "dependencies": {
     "cors": "^2.8.5",

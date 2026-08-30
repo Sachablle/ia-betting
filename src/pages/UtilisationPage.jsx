@@ -328,6 +328,21 @@ export default function UtilisationPage() {
             </div>
           </div>
         </div>
+
+        <div className="util-subsection">
+          <h3 className="util-subsection-title">Pause manuelle API-Football / API-Basketball + réveil automatique (30 août 2026)</h3>
+          <p className="util-intro">
+            Sur le Dashboard, la case <strong>API-Football</strong> (blessures/xG, 5 grands championnats + coupes d'Europe) et la case <strong>API-Basketball</strong> (rosters/gamelogs/défense par poste, ACB/LNB/BBL/Lega A uniquement — NBA/WNBA passent par ESPN, EuroLeague par Bzzoiro, jamais concernées) ont chacune un bouton ⏸/▶ pour couper temporairement la récupération de données neuves quand le quota journalier est sous tension.
+          </p>
+          <table className="util-table">
+            <tbody>
+              <tr><td><strong>Pendant la pause</strong></td><td>Le cycle de calcul (toutes les 20 min) continue de tourner normalement — rien n'est jamais bloqué ni vide. Chaque point de cache accepte les données même expirées tant que la pause dure (aucune limite de durée), aussi bien pour le cycle automatique que pour les pages que tu ouvres toi-même.</td></tr>
+              <tr><td><strong>Réveil automatique</strong></td><td>Une pause n'est jamais indéfinie : toutes les <strong>6h</strong> (foot) / <strong>2h</strong> (basket), le backend se redépause tout seul, lance un vrai cycle de récupération, puis se repause — sans aucune action nécessaire. Le compte à rebours affiché ("Dernier cycle - Xh") repart à zéro à ce moment-là.</td></tr>
+              <tr><td><strong>Jauge de progression</strong></td><td>Visible pause ou pas, comptée par match traité dans la fenêtre du cycle (pas par requête HTTP — un total qui grandirait en cours de route serait illisible). Dégradé rouge→jaune→vert selon le taux de complétion, reste affichée figée sur le dernier résultat connu pendant la pause.</td></tr>
+              <tr><td><strong>Contrôle manuel</strong></td><td>Le bouton ⏸/▶ reste prioritaire à tout moment, indépendamment du réveil automatique.</td></tr>
+            </tbody>
+          </table>
+        </div>
       </Accordion>
 
       {/* ── AFFICHAGE BASKETBALL ── */}
@@ -642,27 +657,27 @@ export default function UtilisationPage() {
         </div>
       </Accordion>}
 
-      {isBasket && <Accordion title="Alertes — Total O/U, Résultat équipe & Écart H2H (NBA / WNBA / ACB / BBL / Lega A)">
+      {isBasket && <Accordion title="Alertes — Total O/U & Résultat équipe (NBA / WNBA / ACB / BBL / Lega A)">
         <p className="util-intro">
-          Trois types d'alertes générées automatiquement en <strong>arrière-plan toutes les 20 min</strong> — comme les props, aucune action nécessaire. <strong>LNB non couverte</strong> (alertes désactivées pour cette ligue).
+          Deux types d'alertes générées automatiquement en <strong>arrière-plan toutes les 20 min</strong> — comme les props, aucune action nécessaire. <strong>LNB non couverte</strong> (alertes désactivées pour cette ligue). Un 3e marché, <strong>Écart H2H</strong> (handicap), a existé jusqu'au <strong>27 août 2026</strong> — retiré entièrement du projet ce jour-là (demande explicite), avec le mécanisme de corrélation Résultat↔Écart qui allait avec. L'historique des 14 paris déjà réglés sur ce marché reste visible dans Backtesting/Suivi Bankroll, seule la génération de nouvelles alertes a été coupée.
         </p>
 
         <div className="util-subsection">
           <h3 className="util-subsection-title">Vue d'ensemble</h3>
           <table className="util-table">
-            <thead><tr><th></th><th>Total O/U</th><th>Résultat équipe</th><th>Écart H2H (Handicap)</th></tr></thead>
+            <thead><tr><th></th><th>Total O/U</th><th>Résultat équipe</th></tr></thead>
             <tbody>
-              <tr><td><strong>Ce que ça prédit</strong></td><td>Points cumulés du match (Over/Under une ligne)</td><td>Quelle équipe gagne</td><td>Si le favori couvre l'écart de points (ligne handicap)</td></tr>
-              <tr><td><strong>Seuil de confiance</strong></td><td>74% (jamais affiché au-dessus de 88%) — recalibré 21 août</td><td>71% — recalibré 21 août</td><td>62% — recalibré 21 août</td></tr>
-              <tr><td><strong>Modèle</strong></td><td>Pace, momentum, repos, densité, playoffs, ancrage historique (40% modèle / 60% moyenne réelle des 2 équipes), pénalité absence titulaire clé (8 juillet 2026)</td><td>Force nette (pts marqués − encaissés), <strong>ancrage saison (9 juillet 2026)</strong> : 40% forme récente (EWA 8 matchs) / 60% moyenne nette de la saison, repos, avantage terrain (+2.5 pts), pénalité blessure clé, playoffs</td><td>Réutilise <code>marginExpected</code>/écart-type du modèle Résultat ci-contre, évalue la probabilité de couvrir la ligne bookmaker via une distribution Student-t (<code>computeSpreadCoverProb</code>)</td></tr>
-              <tr><td><strong>Cote minimum</strong></td><td>1.60 (Unibet/Betclic)</td><td>1.50 (Unibet/Betclic) — baissé de 1.60 le 25 août</td><td>1.60 (Unibet/Betclic)</td></tr>
-              <tr><td><strong>Garde-fou spécifique</strong></td><td>Bloqué (Over ET Under) si joueur clé (≥15 pts/match) Q/GTD, peu importe la distance au match (8 juillet 2026)</td><td>Bloqué <strong>uniquement côté équipe concernée</strong> si un joueur clé (≥15 pts/match) est Q/GTD — asymétrique depuis le 20 août 2026, l'adversaire reste alerté normalement</td><td>Mêmes sécurités que Résultat (même calcul, blocage asymétrique inclus). Ligne alternative si la plus équilibrée ne suffit pas (même principe que les props, voir plus bas)</td></tr>
-              <tr><td><strong>1 alerte par match ?</strong></td><td>Oui</td><td>Oui (mathématiquement, dom + ext ne peuvent pas dépasser 71% en même temps, la somme des deux valant 100%)</td><td>Oui par côté (dom/ext) — signalé si le Résultat est déjà accepté dans le même sens (corrélation)</td></tr>
+              <tr><td><strong>Ce que ça prédit</strong></td><td>Points cumulés du match (Over/Under une ligne)</td><td>Quelle équipe gagne</td></tr>
+              <tr><td><strong>Seuil de confiance</strong></td><td>74% (jamais affiché au-dessus de 88%) — recalibré 21 août</td><td>71% — recalibré 21 août</td></tr>
+              <tr><td><strong>Modèle</strong></td><td>Pace, momentum, repos, densité, playoffs, ancrage historique (40% modèle / 60% moyenne réelle des 2 équipes), pénalité absence titulaire clé (8 juillet 2026)</td><td>Force nette (pts marqués − encaissés), <strong>ancrage saison (9 juillet 2026)</strong> : 40% forme récente (EWA 8 matchs) / 60% moyenne nette de la saison, repos, avantage terrain (+2.5 pts), pénalité blessure clé, playoffs</td></tr>
+              <tr><td><strong>Cote minimum</strong></td><td>1.60 (Unibet/Betclic)</td><td>1.50 (Unibet/Betclic) — baissé de 1.60 le 25 août. <strong>WNBA : 1.20</strong> depuis le 27 août (seul marché avec un historique validé, 91,7% sur 12 cas, ROI +19,9% réel) — NBA/EU restent à 1.50</td></tr>
+              <tr><td><strong>Garde-fou spécifique</strong></td><td>Bloqué (Over ET Under) si joueur clé (≥15 pts/match) Q/GTD, peu importe la distance au match (8 juillet 2026)</td><td>Bloqué <strong>uniquement côté équipe concernée</strong> si un joueur clé (≥15 pts/match) est Q/GTD — asymétrique depuis le 20 août 2026, l'adversaire reste alerté normalement</td></tr>
+              <tr><td><strong>1 alerte par match ?</strong></td><td>Oui</td><td>Oui (mathématiquement, dom + ext ne peuvent pas dépasser 71% en même temps, la somme des deux valant 100%)</td></tr>
             </tbody>
           </table>
           <div style={{ border: '1px solid rgba(74,222,128,0.35)', background: 'rgba(74,222,128,0.06)', borderRadius: 8, padding: '0.75rem 0.9rem', margin: '0.6rem 0' }}>
             <p className="util-intro" style={{ margin: 0 }}>
-              ✅ <strong>Recalibrés le 21 août 2026</strong> sur l'historique near-miss complet depuis le 24 juillet (seul suivi disponible pour ces 3 marchés — ~3,5 semaines, échantillon plus jeune et plus fragile que les props, 45-80 candidats résolus selon le marché). <strong>Résultat</strong> : signal très stable de 68% à 74% (winrate 94-100%, ROI +16 à +23%), 71% retenu (était 75%, jamais vraiment ajusté depuis sa création). <strong>Total O/U</strong> : signal non monotone — positif à 74-80%, négatif juste au-dessus (80-86%) — 74% capture le pic sans redescendre dans la zone perdante (était 80%). <strong>Écart H2H</strong> : le seuil précédent (75%) n'a <strong>jamais été atteint une seule fois</strong> sur 80 candidats (max observé 71,7%) — ce marché n'avait donc jamais généré la moindre alerte, même schéma que le plancher points WNBA avant le 21 août. Signal positif dès 62% (+9% ROI, n=23), retenu tel quel malgré un échantillon encore modeste — à revoir avec plus de données.
+              ✅ <strong>Recalibrés le 21 août 2026</strong> sur l'historique near-miss complet depuis le 24 juillet (échantillon jeune, 45-80 candidats résolus selon le marché). <strong>Résultat</strong> : signal très stable de 68% à 74% (winrate 94-100%, ROI +16 à +23%), 71% retenu (était 75%, jamais vraiment ajusté depuis sa création). <strong>Total O/U</strong> : signal non monotone — positif à 74-80%, négatif juste au-dessus (80-86%) — 74% capture le pic sans redescendre dans la zone perdante (était 80%).
             </p>
           </div>
         </div>
@@ -670,21 +685,14 @@ export default function UtilisationPage() {
         <div className="util-subsection">
           <h3 className="util-subsection-title">Alertes conditionnées aux compos RotoWire, plus de cutoff fixe (16 juillet 2026)</h3>
           <p className="util-intro">
-            NBA/WNBA n'évaluaient un match pour alerte (props, Résultat, Écart H2H) que s'il était programmé dans les 36h — un cutoff fixe qui laissait passer des matchs encore loin dans le temps, où les infos blessures/effectif sont par nature volatiles et changent plusieurs fois avant le coup d'envoi. Cas réel : Chicago Sky vs LA Sparks, alerte Résultat à 82,4% générée à -28h, retombée à 68,7% une heure plus tard après l'annonce de 3 absences côté Chicago d'un coup. Le cutoff 36h est remplacé par une condition sur la <strong>disponibilité des compos RotoWire</strong> pour les deux équipes (typiquement publiées 1 à 3h avant le coup d'envoi) — un match reste ignoré tant que RotoWire n'a pas encore posté sa page. Filet de sécurité : si RotoWire est indisponible (panne, pas juste "pas encore posté"), le système ne bloque pas toute la génération d'alertes, il retombe sur l'ancien cutoff 36h pour ce cycle.
-          </p>
-        </div>
-
-        <div className="util-subsection">
-          <h3 className="util-subsection-title">Corrélation Résultat / Écart H2H (16 juillet 2026)</h3>
-          <p className="util-intro">
-            Une victoire nette et une couverture de petit handicap sur la même équipe/match sont quasiment le même pari : si l'équipe gagne confortablement, les deux passent ensemble ; sinon les deux ratent ensemble — accepter les deux double l'exposition sur un seul edge plutôt que de diversifier. Un avertissement "⚠ Corrélée" s'affiche désormais sur les deux cartes dès qu'elles coexistent, même toutes les deux encore en attente (avant ce fix, l'avertissement ne se déclenchait qu'une fois l'une des deux déjà acceptée). Ne bloque rien, juste un signal — à l'utilisateur de garder celle avec la meilleure valeur espérée (proba × cote), pas forcément la plus grosse cote ou la plus grosse proba.
+            NBA/WNBA n'évaluaient un match pour alerte (props, Résultat) que s'il était programmé dans les 36h — un cutoff fixe qui laissait passer des matchs encore loin dans le temps, où les infos blessures/effectif sont par nature volatiles et changent plusieurs fois avant le coup d'envoi. Cas réel : Chicago Sky vs LA Sparks, alerte Résultat à 82,4% générée à -28h, retombée à 68,7% une heure plus tard après l'annonce de 3 absences côté Chicago d'un coup. Le cutoff 36h est remplacé par une condition sur la <strong>disponibilité des compos RotoWire</strong> pour les deux équipes (typiquement publiées 1 à 3h avant le coup d'envoi) — un match reste ignoré tant que RotoWire n'a pas encore posté sa page. Filet de sécurité : si RotoWire est indisponible (panne, pas juste "pas encore posté"), le système ne bloque pas toute la génération d'alertes, il retombe sur l'ancien cutoff 36h pour ce cycle.
           </p>
         </div>
 
         <div className="util-subsection">
           <h3 className="util-subsection-title">Notifications Telegram (16 juillet 2026)</h3>
           <p className="util-intro">
-            Chaque nouvelle alerte qualifiée (les 11 types confondus : props, Total, Résultat, Écart H2H, value vs Pinnacle, BTTS, O/U foot, 1X2, double chance) déclenche automatiquement un message Telegram avec deux boutons <strong>✅ Accepter</strong> / <strong>❌ Rejeter</strong>, sans avoir besoin d'ouvrir le site. Un clic sur le téléphone est traité côté serveur exactement comme un clic sur le site : l'alerte acceptée est enregistrée immédiatement (le Backtesting la voit sans attendre que le site soit rouvert), et le site la fait disparaître de "Pending" au prochain chargement/synchronisation. La cote/bookmaker choisis à l'acceptation sont la meilleure cote disponible au moment de l'envoi (pas de choix multi-bookmaker possible depuis Telegram, contrairement au site) — la mise n'est jamais définie automatiquement, elle reste à ajouter manuellement via le badge "+ mise" de la page Running, comme pour toute alerte acceptée depuis le site.<br/><br/>
+            Chaque nouvelle alerte qualifiée déclenche automatiquement un message Telegram avec deux boutons <strong>✅ Accepter</strong> / <strong>❌ Rejeter</strong>, sans avoir besoin d'ouvrir le site. Un clic sur le téléphone est traité côté serveur exactement comme un clic sur le site : l'alerte acceptée est enregistrée immédiatement (le Backtesting la voit sans attendre que le site soit rouvert), et le site la fait disparaître de "Pending" au prochain chargement/synchronisation. La cote/bookmaker choisis à l'acceptation sont la meilleure cote disponible au moment de l'envoi (pas de choix multi-bookmaker possible depuis Telegram, contrairement au site) — la mise n'est jamais définie automatiquement, elle reste à ajouter manuellement via le badge "+ mise" de la page Running, comme pour toute alerte acceptée depuis le site.<br/><br/>
             Fonctionne uniquement quand le backend tourne en local (pas sur Render/Vercel) — nécessite un tunnel Cloudflare pour exposer le backend en HTTPS public (Telegram ne peut pas joindre <code>localhost</code>) et un ordinateur allumé/connecté. Aucune donnée de mise ni bankroll n'est jamais transmise à Telegram.
           </p>
         </div>
@@ -718,16 +726,16 @@ export default function UtilisationPage() {
         </div>
 
         <div className="util-subsection">
-          <h3 className="util-subsection-title">Uniformisation des sécurités Résultat / Total / Écart H2H (20 août 2026)</h3>
+          <h3 className="util-subsection-title">Uniformisation des sécurités Résultat / Total (20 août 2026)</h3>
           <p className="util-intro">
-            Jusqu'ici, les trois marchés géraient les statuts blessure de façon incohérente : Résultat/Écart H2H bloquaient tout le match dès qu'un <strong>titulaire top-5 minutes</strong> était Q/GTD (peu importe son volume de scoring), alors que Total utilisait déjà le seuil <strong>≥15 pts/match</strong> peu importe le rôle dans la rotation. Un pivot défensif à 8 pts/match bloquait donc Résultat/Écart sans raison réelle, pendant qu'un 6e homme à 18 pts/match en sortie de banc pouvait rester invisible du gate. Les deux points suivants uniformisent les trois marchés sur le même principe.
+            Jusqu'ici, les deux marchés géraient les statuts blessure de façon incohérente : Résultat bloquait tout le match dès qu'un <strong>titulaire top-5 minutes</strong> était Q/GTD (peu importe son volume de scoring), alors que Total utilisait déjà le seuil <strong>≥15 pts/match</strong> peu importe le rôle dans la rotation. Un pivot défensif à 8 pts/match bloquait donc Résultat sans raison réelle, pendant qu'un 6e homme à 18 pts/match en sortie de banc pouvait rester invisible du gate. Les deux points suivants uniformisent les deux marchés sur le même principe (un 3e marché, Écart H2H, existait aussi à l'époque de ce fix — retiré du projet depuis le 27 août 2026, voir plus haut).
           </p>
 
           <h4 style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)', margin: '1rem 0 0.6rem' }}>Ce qui s'affiche dans l'app (légende "?" de chaque onglet)</h4>
           <div className="util-cards">
             <div className="util-card">
               <div className="util-card-header"><span className="util-card-name">Résultat</span></div>
-              <p className="util-card-desc">🚨 Alerte si probabilité ≥ 71% + cote ≥ 1.50 (baissé de 1.60 le 25 août — 1.60 combiné à 71% ne laissait jamais passer la moindre alerte, cf. section dédiée plus haut)</p>
+              <p className="util-card-desc">🚨 Alerte si probabilité ≥ 71% + cote ≥ 1.50 (baissé de 1.60 le 25 août — 1.60 combiné à 71% ne laissait jamais passer la moindre alerte, cf. section dédiée plus haut). <strong>WNBA : cote ≥ 1.20</strong> depuis le 27 août (seul marché avec un historique validé assez solide, 91,7% sur 12 cas, ROI +19,9% réel) — NBA/EU restent à 1.50.</p>
               <p className="util-card-desc">🔐 Sécurités :<br/>1. Joueur clé (≥15 pts/match) Out depuis ≤3j : −40% au rating de son équipe.<br/>2. Joueur clé (≥15 pts/match) Q/GTD : les alertes sont bloquées uniquement sur son équipe (l'adversaire reste alerté normalement).</p>
               <p className="util-card-desc">✅ Une fois les compositions officielles connues, les sécurités sont levées.</p>
             </div>
@@ -737,18 +745,12 @@ export default function UtilisationPage() {
               <p className="util-card-desc">🔐 Sécurités :<br/>1. Joueur clé (≥15 pts/match) Out depuis ≤3j : −40% au rating de son équipe.<br/>2. Joueur clé (≥15 pts/match) Q/GTD : les alertes sont bloquées (Over et Under).</p>
               <p className="util-card-desc">✅ Une fois les compositions officielles connues, les sécurités sont levées.</p>
             </div>
-            <div className="util-card">
-              <div className="util-card-header"><span className="util-card-name">Écart H2H</span></div>
-              <p className="util-card-desc">🚨 Alerte si probabilité ≥ 62% + cote ≥ 1.60</p>
-              <p className="util-card-desc">🔐 Sécurités :<br/>1. Joueur clé (≥15 pts/match) Out confirmé depuis ≤3j : −40% au rating de son équipe.<br/>2. Joueur clé (≥15 pts/match) Q/GTD : les alertes sont bloquées uniquement sur son équipe (l'adversaire reste alerté normalement).</p>
-              <p className="util-card-desc">✅ Une fois les compositions officielles connues, les sécurités sont levées.</p>
-            </div>
           </div>
 
           <table className="util-table">
             <tbody>
-              <tr><td><strong>1. Seuil "joueur clé" unifié</strong></td><td>Les trois marchés utilisent désormais <strong>≥15 pts/match</strong> (même seuil que la pénalité Out confirmé) — Résultat/Écart H2H abandonnent l'ancien critère "titulaire top-5 minutes".</td></tr>
-              <tr><td><strong>2. Gate Résultat/Écart devenu asymétrique</strong></td><td>Un joueur clé Q/GTD dans une équipe ne bloque plus que les alertes <strong>sur cette équipe</strong> — l'adversaire reste alerté normalement. Raisonnement : si le joueur clé finit par ne pas jouer, les chances de l'adversaire ne font que s'améliorer par rapport à ce que le modèle calcule aujourd'hui (qui suppose encore l'équipe au complet tant que rien n'est confirmé Out) — bloquer ce sens-là coûtait un edge réel pour rien. Total reste un blocage total du match (Over et Under) : pas de "côté" à exempter sur un marché combiné.</td></tr>
+              <tr><td><strong>1. Seuil "joueur clé" unifié</strong></td><td>Les deux marchés utilisent désormais <strong>≥15 pts/match</strong> (même seuil que la pénalité Out confirmé) — Résultat abandonne l'ancien critère "titulaire top-5 minutes".</td></tr>
+              <tr><td><strong>2. Gate Résultat devenu asymétrique</strong></td><td>Un joueur clé Q/GTD dans une équipe ne bloque plus que les alertes <strong>sur cette équipe</strong> — l'adversaire reste alerté normalement. Raisonnement : si le joueur clé finit par ne pas jouer, les chances de l'adversaire ne font que s'améliorer par rapport à ce que le modèle calcule aujourd'hui (qui suppose encore l'équipe au complet tant que rien n'est confirmé Out) — bloquer ce sens-là coûtait un edge réel pour rien. Total reste un blocage total du match (Over et Under) : pas de "côté" à exempter sur un marché combiné.</td></tr>
               <tr><td><strong>3. Pénalité Out confirmé limitée aux absences récentes</strong></td><td>Le fix du 8 juillet (absences saison entière exclues) est généralisé : la pénalité de 40% ne s'applique plus que si le joueur a joué son <strong>dernier match il y a 3 jours ou moins</strong> avant le match évalué. Au-delà, son absence est jugée déjà reflétée dans la forme récente de l'équipe (moyenne pondérée sur les derniers matchs) — la garder aurait double-compté, de plus en plus à mesure que l'absence s'étire. Une absence "depuis le début de la saison" (8 juillet) est par construction un écart de jours qui dépasse largement 3, donc couverte automatiquement sans traitement à part.</td></tr>
             </tbody>
           </table>
@@ -760,7 +762,7 @@ export default function UtilisationPage() {
         <div className="util-subsection">
           <h3 className="util-subsection-title">Page du match = alerte : même calcul (22 juin 2026)</h3>
           <p className="util-intro">
-            Les widgets "Modèle O/U" et "Modèle 1X2" de la page du match appellent désormais les <strong>mêmes fonctions serveur</strong> que les alertes (<code>/api/basketball/total</code>, <code>/api/basketball/result</code>) — le % affiché sur la page est donc garanti identique à celui de l'alerte. Avant le 22 juin, le Total O/U avait un calcul local séparé côté page qui pouvait légèrement diverger du serveur (corrigé) ; le Résultat équipe était déjà unifié depuis le 19 juin. (Le marché Écart H2H, qui était unifié de la même façon, a été retiré du projet le 27 août 2026.)
+            Les widgets "Modèle O/U" et "Modèle 1X2" de la page du match appellent désormais les <strong>mêmes fonctions serveur</strong> que les alertes (<code>/api/basketball/total</code>, <code>/api/basketball/result</code>) — le % affiché sur la page est donc garanti identique à celui de l'alerte. Avant le 22 juin, le Total O/U avait un calcul local séparé côté page qui pouvait légèrement diverger du serveur (corrigé) ; le Résultat équipe était déjà unifié depuis le 19 juin.
           </p>
         </div>
 
@@ -774,7 +776,7 @@ export default function UtilisationPage() {
         <div className="util-subsection">
           <h3 className="util-subsection-title">Stockage et affichage</h3>
           <p className="util-intro">
-            Total O/U : localStorage <code>nba_game_total_alerts</code>, badge OVER (vert) / UNDER (rouge). Résultat équipe : localStorage <code>basketball_result_alerts</code> — remplace l'ancien système EarlyWin (jamais réellement branché aux alertes). Écart H2H : localStorage <code>basketball_spread_alerts</code>. Les trois apparaissent dans l'onglet Alertes (pending), puis dans Running une fois acceptées, sous forme de groupe compact par match.
+            Total O/U : localStorage <code>nba_game_total_alerts</code>, badge OVER (vert) / UNDER (rouge). Résultat équipe : localStorage <code>basketball_result_alerts</code> — remplace l'ancien système EarlyWin (jamais réellement branché aux alertes). Les deux apparaissent dans l'onglet Alertes (pending), puis dans Running une fois acceptées, sous forme de groupe compact par match.
           </p>
         </div>
       </Accordion>}
@@ -995,7 +997,7 @@ export default function UtilisationPage() {
             <thead><tr><th>Alerte</th><th>Calcul</th><th>Seuil</th><th>Cote min</th></tr></thead>
             <tbody>
               <tr><td><strong>BTTS</strong></td><td>Grille jointe Dixon-Coles — somme des cases i≥1 et j≥1</td><td>≥ 70%</td><td>1,60</td></tr>
-              <tr><td><strong>Over/Under</strong></td><td>Ligne 2.5 testée d'abord, repli sur 1.5</td><td>≥ 70%</td><td>1,60</td></tr>
+              <tr><td><strong>Over/Under</strong></td><td>Ligne 2.5 testée d'abord, repli sur 1.5</td><td>≥ 65%</td><td>1,30</td></tr>
               <tr><td><strong>Résultat (1X2)</strong></td><td>Même grille — domicile/nul/extérieur traités comme 3 paris oui/non indépendants</td><td>≥ 70% par issue</td><td>1,50</td></tr>
               <tr><td><strong>DC &amp; BTTS</strong> (29 juin 2026)</td><td><code>computeDCBTTSProbs</code> — même grille, somme des cases où DC ET BTTS sont vérifiés (3 combinaisons : 1X/X2/12)</td><td>≥ 50%</td><td>1,45</td></tr>
               <tr><td><strong>DC &amp; Over 1,5</strong> (29 juin 2026)</td><td><code>computeDCOverProbs</code> — même grille, somme des cases où DC ET total &gt; 1,5 buts</td><td>≥ 55%</td><td>1,45</td></tr>

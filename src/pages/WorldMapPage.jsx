@@ -336,16 +336,20 @@ function Panel({ country, onClose, statsLeague, setStatsLeague }) {
       if (l === 'wnba') return cachedFetch('/api/wnba/scoreboard', 20_000).then(d=>{const s=splitGames(d.games||[]);return{l,...s};});
       if (l === 'euroleague') return cachedFetch('/api/euroleague/scoreboard', 20_000).then(d=>{const s=splitGames(d.games||[]);return{l,...s};});
       // 5 grands championnats — football-data.org (même source/même id `fd_<id>` que MatchDetailPage
-      // via useFootballFixtures, cf. src/utils/useFootballFixtures.js). /api/fd/matches ne renvoie que
-      // les matchs SCHEDULED (à venir) ; /api/fd/results (16 août 2026, jusque-là utilisé uniquement
-      // pour le règlement des alertes) apporte les scores finaux — fusionnés ici pour que l'onglet
-      // "Terminés" ne reste plus vide pour ces 5 ligues comme avant.
+      // via useFootballFixtures, cf. src/utils/useFootballFixtures.js). /api/fd/results (16 août 2026,
+      // jusque-là utilisé uniquement pour le règlement des alertes) apporte les scores finaux —
+      // fusionnés ici pour que l'onglet "Terminés" ne reste plus vide pour ces 5 ligues comme avant.
+      // Fix 29 août 2026 : /api/fd/matches renvoie désormais aussi les matchs récemment terminés
+      // (fix "Match introuvable" sur la fiche match) — `f.status !== 'STATUS_FINAL'` exclut ces
+      // entrées ici pour ne pas les compter deux fois (déjà couvertes par `dr.matches` ci-dessous) ni
+      // les afficher à tort dans l'onglet "À venir" (le hardcode `status:'STATUS_SCHEDULED'`
+      // précédent ignorait le vrai statut renvoyé par le backend).
       if (FOOTBALL_LEAGUES.has(l) && l !== 'cdm' && l !== 'bresil' && !EU_CUP_LEAGUES.includes(l)) return Promise.all([
         cachedFetch('/api/fd/matches', 30_000),
         cachedFetch('/api/fd/results', 30_000),
       ]).then(([dm, dr])=>{
-        const scheduled=(dm.matches||[]).filter(f=>f.league===l).map(f=>({
-          id:`fd_${f.id}`,date:f.date,status:'STATUS_SCHEDULED',round:f.round,
+        const scheduled=(dm.matches||[]).filter(f=>f.league===l && f.status!=='STATUS_FINAL').map(f=>({
+          id:`fd_${f.id}`,date:f.date,status:f.status||'STATUS_SCHEDULED',round:f.round,
           home:{name:f.home?.name,short:f.home?.short,logo:f.home?.logoId,score:null},
           away:{name:f.away?.name,short:f.away?.short,logo:f.away?.logoId,score:null},
         }));

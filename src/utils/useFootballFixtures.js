@@ -90,7 +90,12 @@ function mapFdMatch(m) {
     league: m.league,
     round: m.round || '',
     date: m.date,
-    status: 'STATUS_SCHEDULED',
+    // Auparavant toujours 'STATUS_SCHEDULED' en dur — /api/fd/matches ne renvoyait jamais que des
+    // matchs à venir, donc c'était toujours vrai. Fix 29 août 2026 : la route inclut désormais aussi
+    // les matchs récemment terminés (fixe "Match introuvable" sur la fiche match), avec leur vrai
+    // statut (`STATUS_IN_PROGRESS`/`STATUS_FINAL`) — il faut le lire au lieu de l'écraser, sinon un
+    // match terminé s'affiche encore comme "à venir".
+    status: m.status || 'STATUS_SCHEDULED',
     venue: { name: 'À définir', city: '', capacity: 0 },
     weather: { icon: '⚽', temp: 0, condition: '—', wind: 0, humidity: 0 },
     home: mapFdTeam(m.home),

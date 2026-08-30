@@ -5,6 +5,7 @@
 const SYNC_KEYS = new Set([
   'nba_prop_alerts',
   'nba_game_total_alerts',
+  'basketball_teamtotal_alerts',
   'fb_btts_alerts',
   'fb_total_alerts',
   'fb_result_alerts',

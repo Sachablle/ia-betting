@@ -1,5 +1,16 @@
 import { useNavigate } from 'react-router-dom';
-import { cachedFetch } from '../utils/fetchCache';
+import { cachedFetch, invalidateCache } from '../utils/fetchCache';
+
+// Fix 28 août 2026 — cachedFetch garde la fiche match en cache 5 min (projections-snapshot). Si la
+// fiche (ou un widget qui la précharge) a été consultée dans les 5 min précédant une alerte,
+// cliquer dessus depuis la carte affichait encore l'ancien % jusqu'à un vrai rechargement de page —
+// le calcul avait pourtant déjà changé côté backend (même cycle que l'alerte). Invalidé juste avant
+// de naviguer pour forcer une donnée fraîche à l'arrivée sur la fiche.
+const _gotoFbMatch = (navigate, fixtureId) => {
+  if (!fixtureId) return;
+  invalidateCache(`/api/football/projections-snapshot/${fixtureId}`);
+  navigate(`/football/${fixtureId}`);
+};
 
 const _prefetchedFb = new Set();
 function _prefetchFbMatch(alert) {
@@ -46,7 +57,7 @@ export function BTTSAlertCard({ alert, onAccept, onReject, onDismiss }) {
     <div
       className="bet-card"
       style={{ position: 'relative', '--league-accent': '#10b981', borderColor: 'rgba(16,185,129,0.25)', cursor: alert.fixtureId ? 'pointer' : 'default' }}
-      onClick={() => { if (alert.fixtureId) navigate(`/football/${alert.fixtureId}`); }}
+      onClick={() => _gotoFbMatch(navigate, alert.fixtureId)}
       onMouseEnter={alert.fixtureId ? () => _prefetchFbMatch(alert) : undefined}
     >
       {isPending
@@ -131,7 +142,7 @@ export function FootballTotalCard({ alert, onAccept, onReject, onDismiss }) {
     <div
       className="bet-card"
       style={{ position: 'relative', '--league-accent': '#10b981', borderColor: 'rgba(16,185,129,0.25)', cursor: alert.fixtureId ? 'pointer' : 'default' }}
-      onClick={() => { if (alert.fixtureId) navigate(`/football/${alert.fixtureId}`); }}
+      onClick={() => _gotoFbMatch(navigate, alert.fixtureId)}
       onMouseEnter={alert.fixtureId ? () => _prefetchFbMatch(alert) : undefined}
     >
       {isPending
@@ -228,7 +239,7 @@ export function FootballResultCard({ alert, onAccept, onReject, onDismiss }) {
     <div
       className="bet-card"
       style={{ position: 'relative', '--league-accent': '#10b981', borderColor: 'rgba(16,185,129,0.25)', cursor: alert.fixtureId ? 'pointer' : 'default' }}
-      onClick={() => { if (alert.fixtureId) navigate(`/football/${alert.fixtureId}`); }}
+      onClick={() => _gotoFbMatch(navigate, alert.fixtureId)}
       onMouseEnter={alert.fixtureId ? () => _prefetchFbMatch(alert) : undefined}
     >
       {isPending
@@ -333,7 +344,7 @@ export function PinnacleEdgeCard({ alert, onAccept, onReject, onDismiss }) {
     <div
       className="bet-card"
       style={{ position: 'relative', '--league-accent': accent, borderColor: 'rgba(34,211,238,0.25)', cursor: alert.fixtureId ? 'pointer' : 'default' }}
-      onClick={() => { if (alert.fixtureId) navigate(`/football/${alert.fixtureId}`); }}
+      onClick={() => _gotoFbMatch(navigate, alert.fixtureId)}
       onMouseEnter={alert.fixtureId ? () => _prefetchFbMatch(alert) : undefined}
     >
       {isPending
@@ -438,7 +449,7 @@ function DCBaseCard({ alert, suffix, onAccept, onReject, onDismiss }) {
     <div
       className="bet-card"
       style={{ position: 'relative', '--league-accent': DC_ACCENT, borderColor: 'rgba(245,158,11,0.25)', cursor: alert.fixtureId ? 'pointer' : 'default' }}
-      onClick={() => { if (alert.fixtureId) navigate(`/football/${alert.fixtureId}`); }}
+      onClick={() => _gotoFbMatch(navigate, alert.fixtureId)}
       onMouseEnter={alert.fixtureId ? () => _prefetchFbMatch(alert) : undefined}
     >
       {isPending
@@ -623,7 +634,7 @@ export function FootballGroupCard({ group, onAccept, onReject, onDismissAll }) {
     <div
       className="bet-card"
       style={{ position: 'relative', cursor: fixtureId ? 'pointer' : 'default', '--league-accent': '#10b981', borderColor: 'rgba(16,185,129,0.35)' }}
-      onClick={() => { if (fixtureId) navigate(`/football/${fixtureId}`); }}
+      onClick={() => _gotoFbMatch(navigate, fixtureId)}
       onMouseEnter={fixtureId ? () => { import('../pages/MatchDetailPage').catch(()=>{}); cachedFetch('/api/odds',30_000).catch(()=>{}); } : undefined}
     >
       {/* Dismiss all */}

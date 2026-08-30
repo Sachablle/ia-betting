@@ -14,70 +14,152 @@ import { setItem as cloudSet } from '../utils/cloudStorage';
 const FINAL_STATUSES = new Set(['STATUS_FULL_TIME', 'STATUS_FINAL', 'STATUS_FT', 'STATUS_AFTER_EXTRA_TIME', 'STATUS_AFTER_PENALTIES']);
 
 // ── ESPN team lookup (name → { league, id }) ──────────────────────────────────
+// Fix 28 août 2026 — la moitié des clubs des 5 championnats renvoyaient "Indisponible" en
+// Compositions malgré des effectifs ESPN valides (vérifié en direct via l'API ESPN : PSG/Lille
+// renvoient bien 26-28 joueurs) : la clé de recherche était `fixture.home.name`/`away.name`
+// (nom EXACT football-data.org, ex. "Lille OSC", "Paris Saint-Germain FC") alors que ce dictionnaire
+// n'avait que des noms raccourcis/différents ("LOSC Lille", "Paris Saint-Germain") — recherche stricte
+// par égalité, aucun rapprochement flou. Reconstruit intégralement à partir des vraies listes
+// football-data.org (`/api/football/standings/:league`) et ESPN (`/apis/site/v2/sports/soccer/{lg}/teams`)
+// des 5 championnats, clé = nom EXACT football-data.org — les anciennes clés courtes sont gardées en
+// plus (harmless) au cas où une autre source utiliserait un nom raccourci.
 const ESPN_FOOTBALL = {
-  'Paris Saint-Germain':    { league: 'fra.1', id: 160   },
-  'Olympique de Marseille': { league: 'fra.1', id: 176   },
-  'Olympique Lyonnais':     { league: 'fra.1', id: 167   },
-  'AS Monaco':              { league: 'fra.1', id: 174   },
-  'LOSC Lille':             { league: 'fra.1', id: 166   },
-  'Stade Rennais':          { league: 'fra.1', id: 169   },
-  'OGC Nice':               { league: 'fra.1', id: 2502  },
-  'RC Lens':                { league: 'fra.1', id: 175   },
-  'Stade Brestois':         { league: 'fra.1', id: 6997  },
-  'RC Strasbourg':          { league: 'fra.1', id: 180   },
-  'FC Nantes':              { league: 'fra.1', id: 165   },
-  'Toulouse FC':            { league: 'fra.1', id: 179   },
-  'AJ Auxerre':             { league: 'fra.1', id: 172   },
-  'Angers SCO':             { league: 'fra.1', id: 7868  },
-  'Le Havre AC':            { league: 'fra.1', id: 3236  },
-  'Manchester City':        { league: 'eng.1', id: 382   },
-  'Arsenal':                { league: 'eng.1', id: 359   },
-  'Chelsea':                { league: 'eng.1', id: 363   },
-  'Liverpool':              { league: 'eng.1', id: 364   },
-  'Tottenham Hotspur':      { league: 'eng.1', id: 367   },
-  'Newcastle United':       { league: 'eng.1', id: 361   },
-  'Manchester United':      { league: 'eng.1', id: 360   },
-  'Aston Villa':            { league: 'eng.1', id: 362   },
-  'Brighton & Hove Albion': { league: 'eng.1', id: 331   },
-  'West Ham United':        { league: 'eng.1', id: 371   },
-  'Wolverhampton Wanderers':{ league: 'eng.1', id: 380   },
-  'Crystal Palace':         { league: 'eng.1', id: 384   },
-  'Nottingham Forest':      { league: 'eng.1', id: 393   },
-  'Brentford':              { league: 'eng.1', id: 337   },
-  'Fulham':                 { league: 'eng.1', id: 370   },
-  'Everton':                { league: 'eng.1', id: 368   },
-  'AFC Bournemouth':        { league: 'eng.1', id: 349   },
-  'Real Madrid':            { league: 'esp.1', id: 86    },
-  'FC Barcelona':           { league: 'esp.1', id: 83    },
-  'Atlético de Madrid':     { league: 'esp.1', id: 1068  },
-  'Athletic Club':          { league: 'esp.1', id: 93    },
-  'Villarreal CF':          { league: 'esp.1', id: 102   },
-  'Real Sociedad':          { league: 'esp.1', id: 89    },
-  'Real Betis':             { league: 'esp.1', id: 244   },
-  'Sevilla FC':             { league: 'esp.1', id: 243   },
-  'Celta Vigo':             { league: 'esp.1', id: 85    },
-  'Girona FC':              { league: 'esp.1', id: 9812  },
-  'Valencia CF':            { league: 'esp.1', id: 94    },
-  'Bayern München':         { league: 'ger.1', id: 132   },
-  'FC Bayern München':      { league: 'ger.1', id: 132   },
-  'Bayer Leverkusen':       { league: 'ger.1', id: 131   },
-  'Bayer 04 Leverkusen':    { league: 'ger.1', id: 131   },
-  'Borussia Dortmund':      { league: 'ger.1', id: 124   },
-  'RB Leipzig':             { league: 'ger.1', id: 11420 },
-  'Eintracht Frankfurt':    { league: 'ger.1', id: 125   },
-  'VfB Stuttgart':          { league: 'ger.1', id: 134   },
-  'VfL Wolfsburg':          { league: 'ger.1', id: 138   },
-  'Werder Bremen':          { league: 'ger.1', id: 137   },
-  'SC Freiburg':            { league: 'ger.1', id: 126   },
-  'Inter Milan':            { league: 'ita.1', id: 110   },
-  'SSC Napoli':             { league: 'ita.1', id: 114   },
-  'Atalanta BC':            { league: 'ita.1', id: 105   },
-  'Juventus':               { league: 'ita.1', id: 111   },
-  'Juventus FC':            { league: 'ita.1', id: 111   },
-  'AC Milan':               { league: 'ita.1', id: 103   },
-  'AS Roma':                { league: 'ita.1', id: 104   },
-  'SS Lazio':               { league: 'ita.1', id: 112   },
-  'ACF Fiorentina':         { league: 'ita.1', id: 109   },
+  // Ligue 1
+  'Olympique de Marseille': { league: 'fra.1', id: 176 },
+  'Racing Club de Lens': { league: 'fra.1', id: 175 },
+  'RC Lens': { league: 'fra.1', id: 175 },
+  'Lille OSC': { league: 'fra.1', id: 166 },
+  'LOSC Lille': { league: 'fra.1', id: 166 },
+  'Olympique Lyonnais': { league: 'fra.1', id: 167 },
+  'AS Monaco FC': { league: 'fra.1', id: 174 },
+  'AS Monaco': { league: 'fra.1', id: 174 },
+  'Le Mans FC': { league: 'fra.1', id: 2697 },
+  'Paris Saint-Germain FC': { league: 'fra.1', id: 160 },
+  'Paris Saint-Germain': { league: 'fra.1', id: 160 },
+  'Stade Brestois 29': { league: 'fra.1', id: 6997 },
+  'Stade Brestois': { league: 'fra.1', id: 6997 },
+  'Stade Rennais FC 1901': { league: 'fra.1', id: 169 },
+  'Stade Rennais': { league: 'fra.1', id: 169 },
+  'ES Troyes AC': { league: 'fra.1', id: 170 },
+  'FC Lorient': { league: 'fra.1', id: 273 },
+  'OGC Nice': { league: 'fra.1', id: 2502 },
+  'Paris FC': { league: 'fra.1', id: 6851 },
+  'Le Havre AC': { league: 'fra.1', id: 3236 },
+  'Angers SCO': { league: 'fra.1', id: 7868 },
+  'Toulouse FC': { league: 'fra.1', id: 179 },
+  'AJ Auxerre': { league: 'fra.1', id: 172 },
+  'RC Strasbourg Alsace': { league: 'fra.1', id: 180 },
+  'RC Strasbourg': { league: 'fra.1', id: 180 },
+  'FC Nantes': { league: 'fra.1', id: 165 },
+  // Premier League
+  'Brighton & Hove Albion FC': { league: 'eng.1', id: 331 },
+  'Brighton & Hove Albion': { league: 'eng.1', id: 331 },
+  'Arsenal FC': { league: 'eng.1', id: 359 },
+  'Arsenal': { league: 'eng.1', id: 359 },
+  'Brentford FC': { league: 'eng.1', id: 337 },
+  'Brentford': { league: 'eng.1', id: 337 },
+  'Everton FC': { league: 'eng.1', id: 368 },
+  'Everton': { league: 'eng.1', id: 368 },
+  'Hull City AFC': { league: 'eng.1', id: 306 },
+  'Chelsea FC': { league: 'eng.1', id: 363 },
+  'Chelsea': { league: 'eng.1', id: 363 },
+  'Ipswich Town FC': { league: 'eng.1', id: 373 },
+  'Manchester City FC': { league: 'eng.1', id: 382 },
+  'Manchester City': { league: 'eng.1', id: 382 },
+  'Leeds United FC': { league: 'eng.1', id: 357 },
+  'Liverpool FC': { league: 'eng.1', id: 364 },
+  'Liverpool': { league: 'eng.1', id: 364 },
+  'Newcastle United FC': { league: 'eng.1', id: 361 },
+  'Newcastle United': { league: 'eng.1', id: 361 },
+  'Fulham FC': { league: 'eng.1', id: 370 },
+  'Fulham': { league: 'eng.1', id: 370 },
+  'AFC Bournemouth': { league: 'eng.1', id: 349 },
+  'Sunderland AFC': { league: 'eng.1', id: 366 },
+  'Nottingham Forest FC': { league: 'eng.1', id: 393 },
+  'Nottingham Forest': { league: 'eng.1', id: 393 },
+  'Crystal Palace FC': { league: 'eng.1', id: 384 },
+  'Crystal Palace': { league: 'eng.1', id: 384 },
+  'Manchester United FC': { league: 'eng.1', id: 360 },
+  'Manchester United': { league: 'eng.1', id: 360 },
+  'Coventry City FC': { league: 'eng.1', id: 388 },
+  'Tottenham Hotspur FC': { league: 'eng.1', id: 367 },
+  'Tottenham Hotspur': { league: 'eng.1', id: 367 },
+  'Aston Villa FC': { league: 'eng.1', id: 362 },
+  'Aston Villa': { league: 'eng.1', id: 362 },
+  'Wolverhampton Wanderers': { league: 'eng.1', id: 380 },
+  // La Liga
+  'FC Barcelona': { league: 'esp.1', id: 83 },
+  'Real Madrid CF': { league: 'esp.1', id: 86 },
+  'Real Madrid': { league: 'esp.1', id: 86 },
+  'Sevilla FC': { league: 'esp.1', id: 243 },
+  'Real Betis Balompié': { league: 'esp.1', id: 244 },
+  'Real Betis': { league: 'esp.1', id: 244 },
+  'Deportivo Alavés': { league: 'esp.1', id: 96 },
+  'Club Atlético de Madrid': { league: 'esp.1', id: 1068 },
+  'Atlético de Madrid': { league: 'esp.1', id: 1068 },
+  'CA Osasuna': { league: 'esp.1', id: 97 },
+  'RCD Espanyol de Barcelona': { league: 'esp.1', id: 88 },
+  'Getafe CF': { league: 'esp.1', id: 2922 },
+  'Villarreal CF': { league: 'esp.1', id: 102 },
+  'RC Deportivo La Coruña': { league: 'esp.1', id: 90 },
+  'Real Racing Club de Santander': { league: 'esp.1', id: 87 },
+  'Rayo Vallecano de Madrid': { league: 'esp.1', id: 101 },
+  'RC Celta de Vigo': { league: 'esp.1', id: 85 },
+  'Celta Vigo': { league: 'esp.1', id: 85 },
+  'Valencia CF': { league: 'esp.1', id: 94 },
+  'Málaga CF': { league: 'esp.1', id: 99 },
+  'Levante UD': { league: 'esp.1', id: 1538 },
+  'Elche CF': { league: 'esp.1', id: 3751 },
+  'Athletic Club': { league: 'esp.1', id: 93 },
+  'Real Sociedad de Fútbol': { league: 'esp.1', id: 89 },
+  'Real Sociedad': { league: 'esp.1', id: 89 },
+  'Girona FC': { league: 'esp.1', id: 9812 },
+  // Bundesliga
+  '1. FC Köln': { league: 'ger.1', id: 122 },
+  '1. FC Union Berlin': { league: 'ger.1', id: 598 },
+  '1. FSV Mainz 05': { league: 'ger.1', id: 2950 },
+  'TSG 1899 Hoffenheim': { league: 'ger.1', id: 7911 },
+  'Bayer 04 Leverkusen': { league: 'ger.1', id: 131 },
+  'Bayer Leverkusen': { league: 'ger.1', id: 131 },
+  'FC Bayern München': { league: 'ger.1', id: 132 },
+  'Bayern München': { league: 'ger.1', id: 132 },
+  'Borussia Mönchengladbach': { league: 'ger.1', id: 268 },
+  'Borussia Dortmund': { league: 'ger.1', id: 124 },
+  'Eintracht Frankfurt': { league: 'ger.1', id: 125 },
+  'FC Augsburg': { league: 'ger.1', id: 3841 },
+  'FC Schalke 04': { league: 'ger.1', id: 133 },
+  'Hamburger SV': { league: 'ger.1', id: 127 },
+  'RB Leipzig': { league: 'ger.1', id: 11420 },
+  'SC Freiburg': { league: 'ger.1', id: 126 },
+  'SC Paderborn 07': { league: 'ger.1', id: 3307 },
+  'SV 07 Elversberg': { league: 'ger.1', id: 10388 },
+  'VfB Stuttgart': { league: 'ger.1', id: 134 },
+  'SV Werder Bremen': { league: 'ger.1', id: 137 },
+  'Werder Bremen': { league: 'ger.1', id: 137 },
+  'VfL Wolfsburg': { league: 'ger.1', id: 138 },
+  // Serie A
+  'AS Roma': { league: 'ita.1', id: 104 },
+  'FC Internazionale Milano': { league: 'ita.1', id: 110 },
+  'Inter Milan': { league: 'ita.1', id: 110 },
+  'SSC Napoli': { league: 'ita.1', id: 114 },
+  'US Lecce': { league: 'ita.1', id: 113 },
+  'AC Milan': { league: 'ita.1', id: 103 },
+  'Atalanta BC': { league: 'ita.1', id: 105 },
+  'Cagliari Calcio': { league: 'ita.1', id: 2925 },
+  'Juventus FC': { league: 'ita.1', id: 111 },
+  'Juventus': { league: 'ita.1', id: 111 },
+  'SS Lazio': { league: 'ita.1', id: 112 },
+  'Como 1907': { league: 'ita.1', id: 2572 },
+  'Udinese Calcio': { league: 'ita.1', id: 118 },
+  'US Sassuolo Calcio': { league: 'ita.1', id: 3997 },
+  'Torino FC': { league: 'ita.1', id: 239 },
+  'Bologna FC 1909': { league: 'ita.1', id: 107 },
+  'Frosinone Calcio': { league: 'ita.1', id: 4057 },
+  'Parma Calcio 1913': { league: 'ita.1', id: 115 },
+  'Genoa CFC': { league: 'ita.1', id: 3263 },
+  'Venezia FC': { league: 'ita.1', id: 17530 },
+  'AC Monza': { league: 'ita.1', id: 4007 },
+  'ACF Fiorentina': { league: 'ita.1', id: 109 },
 };
 
 // ── Modèle BTTS ──────────────────────────────────────────────────────────────
@@ -650,7 +732,7 @@ function FootballOddsBox({ markets, bttsResult, home, away, frozen, onRefresh, r
               <br /><br />
               <b style={{ color: '#00ff80' }}>BTTS Oui</b> : alerte si probabilité ≥ 70% · cote ≥ 1,60.
               <br />
-              <b style={{ color: '#00ff80' }}>Total Over/Under</b> : alerte si probabilité ≥ 70% (ligne 2,5, sinon 1,5) · cote ≥ 1,60.
+              <b style={{ color: '#00ff80' }}>Total Over/Under</b> : alerte si probabilité ≥ 65% (ligne 2,5, sinon 1,5) · cote ≥ 1,30.
               <br />
               <b style={{ color: '#00ff80' }}>Résultat 1X2</b> : alerte si probabilité ≥ 70% sur une issue (domicile/nul/extérieur), chacune traitée indépendamment — au plus une alerte par match · cote ≥ 1,50.
               <br />
@@ -1049,6 +1131,10 @@ const BRESIL_TEAM_ALIASES = {
   salzbourg: 'salzburg',
   bologne: 'bologna',
   brightonhove: 'brighton',
+  // Ajout 29 août 2026 — miroir de la même correction côté backend (server.js, COUNTRY_ALIASES),
+  // cas réel : "Odds N/D" Levante-Real Betis malgré des cotes Unibet bien scrapées ("Betis Séville").
+  betissevilla: 'betis',
+  realbetisbalompie: 'betis',
 };
 
 function findInTable(table, name) {
@@ -1195,18 +1281,31 @@ function LineupBuilder({ home, away, homeForm, awayForm, setHomeForm, setAwayFor
 
 // ── Roster Panel ──────────────────────────────────────────────────────────────
 
-const STARTER_THRESHOLD = 10;
+// Seuil "titulaire" relatif au nombre de matchs déjà joués par l'équipe cette saison (28 août
+// 2026, fix) — un seuil absolu (10 titularisations) ne pouvait jamais se déclencher en tout début de
+// saison (journée 1-2 : personne n'a encore 10 titularisations), affichant tout le monde en
+// "Remplaçants" sans aucun "Titulaires". `maxStarts` (le max de titularisations dans l'effectif) sert
+// de proxy pour le nombre de matchs déjà joués — un joueur qui a débuté au moins la moitié de ces
+// matchs compte comme titulaire. Dès 1 seul match joué (maxStarts=1), le seuil vaut 1 : exactement
+// les 11 joueurs qui ont débuté le dernier match ressortent comme titulaires, comportement identique
+// à l'ancien seuil fixe une fois la saison bien avancée (maxStarts=20 → seuil=10).
+const STARTER_RATIO = 0.5;
+
+// Libellé complet des postes ESPN (G/D/M/F) — affiché en tooltip sur l'abréviation.
+const POSITION_LABELS = { G: 'Gardien', D: 'Défenseur', M: 'Milieu', F: 'Attaquant' };
 
 function RosterColumn({ team, players, names, side, loading, onAssign }) {
   function handleClick(p) {
     onAssign(side, p.shortName || p.name);
   }
 
+  const maxStarts = Math.max(1, ...(players || []).map(p => p.gamesStarted || 0));
+  const starterThreshold = Math.max(1, Math.ceil(maxStarts * STARTER_RATIO));
   const starters = (players || [])
-    .filter(p => p.gamesStarted >= STARTER_THRESHOLD)
+    .filter(p => p.gamesStarted >= starterThreshold)
     .sort((a, b) => b.gamesStarted - a.gamesStarted);
   const bench = (players || [])
-    .filter(p => p.gamesStarted < STARTER_THRESHOLD)
+    .filter(p => p.gamesStarted < starterThreshold)
     .sort((a, b) => b.appearances - a.appearances);
 
   return (
@@ -1229,7 +1328,7 @@ function RosterColumn({ team, players, names, side, loading, onAssign }) {
                     <button key={p.id}
                       className={`rp-player-btn ${isUsed ? 'rp-used' : ''} ${p.injury ? 'rp-injured' : ''}`}
                       onClick={() => handleClick(p)} title={p.injury || undefined}>
-                      <span className="rp-pos-tag">{p.position}</span>
+                      <span className="rp-pos-tag" title={POSITION_LABELS[p.position] || undefined}>{p.position}</span>
                       <span className="rp-num">{p.jerseyNumber ?? '—'}</span>
                       <span className="rp-pname">{display}</span>
                       {p.injury && <span className="rp-inj">🤕</span>}
@@ -1248,7 +1347,7 @@ function RosterColumn({ team, players, names, side, loading, onAssign }) {
                     <button key={p.id}
                       className={`rp-player-btn ${isUsed ? 'rp-used' : ''} ${p.injury ? 'rp-injured' : ''}`}
                       onClick={() => handleClick(p)} title={p.injury || undefined}>
-                      <span className="rp-pos-tag">{p.position}</span>
+                      <span className="rp-pos-tag" title={POSITION_LABELS[p.position] || undefined}>{p.position}</span>
                       <span className="rp-num">{p.jerseyNumber ?? '—'}</span>
                       <span className="rp-pname">{display}</span>
                       {p.injury && <span className="rp-inj">🤕</span>}
@@ -1349,6 +1448,7 @@ export default function MatchDetailPage() {
   const [awayNames, setAwayNames] = useState(Array(11).fill(''));
   const [homePlayers, setHomePlayers] = useState(null);
   const [awayPlayers, setAwayPlayers] = useState(null);
+  const rosterFetchedForRef = useRef(null); // fixture.id déjà fetché — voir effet Compositions plus bas
   const [rosterLoading, setRosterLoading] = useState(false);
   const [matchOdds, setMatchOdds] = useState(null);
   const [matchOddsFrozen, setMatchOddsFrozen] = useState(false);
@@ -1481,8 +1581,27 @@ export default function MatchDetailPage() {
     fetchXGStats(fixture.away.name, setLiveAwayStats);
   }, [fixture?.id]);
 
+  // Fix 28 août 2026, 2 bugs sur cet effet :
+  // 1) dépendance `fixture?.id` manquante à l'origine — `showLineup` vaut déjà `true` par défaut au
+  //    montage, donc l'effet ne se déclenchait qu'une fois, au tout premier rendu, AVANT que `fixture`
+  //    (chargé de façon async) ne soit disponible : la garde `!fixture` sortait alors immédiatement et
+  //    ne se redéclenchait jamais, laissant "Indisponible" affiché en permanence.
+  // 2) une fois `fixture?.id` ajouté aux deps, la garde `homePlayers !== null` (censée éviter un
+  //    refetch en boucle) bloquait aussi le refetch LÉGITIME lors d'un changement de match réel —
+  //    naviguer vers un autre match via la flèche ▾ change `fixture.id` sans démonter le composant,
+  //    `homePlayers` restait donc peuplé avec l'effectif du match PRÉCÉDENT et l'effet se voyait
+  //    bloqué par sa propre garde. Remplacé par un ref `rosterFetchedForRef` qui retient le dernier
+  //    `fixture.id` réellement fetché — comparaison indépendante de l'état `homePlayers`, don ne se
+  //    fait plus tromper par des données périmées. Le reset de `homePlayers`/`awayPlayers`/
+  //    `homeNames`/`awayNames` a lieu ICI, dans le même passage d'effet, avant le fetch — pas dans un
+  //    effet séparé (un 1er essai avec 2 effets distincts ne fonctionnait pas : React n'exécute un
+  //    effet que si SES PROPRES dépendances ont changé, un reset d'état déclenché par un autre effet
+  //    ne relance pas celui-ci une 2e fois dans le même cycle).
   useEffect(() => {
-    if (!fixture || !showLineup || homePlayers !== null) return;
+    if (!fixture || !showLineup || rosterFetchedForRef.current === fixture.id) return;
+    rosterFetchedForRef.current = fixture.id;
+    setHomePlayers(null); setAwayPlayers(null);
+    setHomeNames(Array(11).fill('')); setAwayNames(Array(11).fill(''));
     setRosterLoading(true);
     async function fetchOne(name, setter) {
       if (fixture.league === 'cdm') {
@@ -1503,7 +1622,7 @@ export default function MatchDetailPage() {
       fetchOne(fixture.home.name, setHomePlayers),
       fetchOne(fixture.away.name, setAwayPlayers),
     ]).finally(() => setRosterLoading(false));
-  }, [showLineup]);
+  }, [showLineup, fixture?.id]);
 
   const league = fixture ? getLeagueById(fixture.league) : null;
   const { home, away, venue, weather, round } = fixture || {};

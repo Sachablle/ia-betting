@@ -1,9 +1,11 @@
 import { useState, useEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
 import { BBALL_FIXTURES } from '../utils/basketball';
-import { syncBackgroundAlerts, syncSettlements, syncGameTotalAlerts, syncBballPinnacleAlerts, syncBasketballResultAlerts, syncOddsDrift, syncFootballAlerts, resolveCompletedFootballAlerts, postAcceptedAlertReliably, persistAlertsKey, FB_DC_BTTS_KEY, FB_DC_OU_KEY, syncTelegramActions } from '../utils/syncAlerts';
-import { setItem as cloudSet } from '../utils/cloudStorage';
-import { cachedFetch } from '../utils/fetchCache';
+import { syncBackgroundAlerts, syncSettlements, syncGameTotalAlerts, syncTeamTotalAlerts, syncBballPinnacleAlerts, syncBasketballResultAlerts, syncOddsDrift, syncFootballAlerts, resolveCompletedFootballAlerts, postAcceptedAlertReliably, persistAlertsKey, FB_DC_BTTS_KEY, FB_DC_OU_KEY, syncTelegramActions, TEAM_TOTAL_KEY } from '../utils/syncAlerts';
+import { setItem as cloudSet, waitForInitialCloudSync } from '../utils/cloudStorage';
+import { cachedFetch, invalidateCache } from '../utils/fetchCache';
+import { StakeCalculatorWidget, NearMissPanelWidget, buildPendingItems } from '../components/PendingAlertWidgets';
 
 const ALERT_KEY      = 'nba_prop_alerts';
 const HISTORY_KEY    = 'nba_bet_history';
@@ -14,7 +16,7 @@ const FB_BTTS_KEY    = 'fb_btts_alerts';
 const FB_TOTAL_KEY   = 'fb_total_alerts';
 const FB_RESULT_KEY  = 'fb_result_alerts';
 const FB_PINNACLE_KEY = 'fb_pinnacle_alerts';
-const STAT_LABEL     = { pts: 'Pts', reb: 'Reb', ast: 'Ast', total: 'Total', btts: 'BTTS', result: 'Résultat', pinnacle_edge: 'Pinnacle', dc_btts: 'DC+BTTS', dc_ou: 'DC+1.5' };
+const STAT_LABEL     = { pts: 'Pts', reb: 'Reb', ast: 'Ast', total: 'Total', team_total: 'Total équipe', btts: 'BTTS', result: 'Résultat', pinnacle_edge: 'Pinnacle', dc_btts: 'DC+BTTS', dc_ou: 'DC+1.5' };
 
 // Ligues football — affichées dans les mêmes "MatchGroup" compacts que le basket
 const EU_CUP_LEAGUES = ['europa', 'conference', 'champions'];
@@ -133,6 +135,32 @@ function totalAlertToGroup(a) {
       acceptedUnibetOdds: a.acceptedUnibetOdds ?? null,
       acceptedBetclicOdds: a.acceptedBetclicOdds ?? null,
       acceptedWinamaxOdds: a.acceptedWinamaxOdds ?? null,
+      stakeAmount: a.stakeAmount ?? null,
+    }],
+    maxProb: a.prob || 0, ids: [a.id],
+    status: a.status || 'pending', acceptedAt: a.acceptedAt || 0,
+    acceptedBookmaker: a.acceptedBookmaker || null,
+    probDropWarning: a.probDropWarning || false, currentProbability: a.currentProbability ?? null,
+  };
+}
+
+// Convertit une alerte Total équipe (PlaceBetPage / TEAM_TOTAL_KEY, 28 août 2026) en objet "groupe"
+// — même principe que totalAlertToGroup, mais `player` porte le nom de l'équipe visée (a.team) pour
+// distinguer les 2 alertes possibles sur un même match (home_over ET away_under par ex.).
+function teamTotalAlertToGroup(a) {
+  return {
+    key: `teamtotal__${a.id}`, type: 'team_total',
+    player: a.team || a.teamShort || 'Total équipe', team: a.side || null, fixture: `${a.home} vs ${a.away}`,
+    fixtureDate: a.date, homeTeam: a.home || null, awayTeam: a.away || null,
+    homeShort: a.homeShort || null, awayShort: a.awayShort || null,
+    eventId: a.eventId || null, league: a.league || 'nba',
+    stats: [{
+      stat: 'team_total', direction: a.direction, line: a.line,
+      estimate: a.estimated, probability: a.prob,
+      unibetOdds: a.unibetOdds, betclicOdds: a.betclicOdds, winamaxOdds: null,
+      acceptedUnibetOdds: a.acceptedUnibetOdds ?? null,
+      acceptedBetclicOdds: a.acceptedBetclicOdds ?? null,
+      acceptedWinamaxOdds: null,
       stakeAmount: a.stakeAmount ?? null,
     }],
     maxProb: a.prob || 0, ids: [a.id],
@@ -273,13 +301,12 @@ function groupByMatch(acceptedGroups) {
   const pairCounts = {};
   for (const grp of groups) pairCounts[grp.pairKey] = (pairCounts[grp.pairKey] || 0) + 1;
   for (const grp of groups) grp.showDate = pairCounts[grp.pairKey] > 1;
-  // Trie par sport (foot d'abord, basket ensuite), puis par date dans chaque groupe.
-  return groups.sort((a, b) => {
-    const aFoot = FB_LEAGUES.has(a.league) ? 0 : 1;
-    const bFoot = FB_LEAGUES.has(b.league) ? 0 : 1;
-    if (aFoot !== bFoot) return aFoot - bFoot;
-    return new Date(a.fixtureDate) - new Date(b.fixtureDate);
-  });
+  // Trie uniquement par date (plus proche au plus loin), tous sports mélangés — demande explicite
+  // du 28 août 2026 (avant : foot d'abord, basket ensuite, ce qui pouvait afficher un match basket
+  // dans 3h après tous les matchs foot du jour, même un foot dans 2 jours). La distinction FOOT/
+  // BASKET reste visible par match via le liseret coloré (vert/orange, `sportBorder` ci-dessous),
+  // pas par un regroupement dans l'ordre d'affichage.
+  return groups.sort((a, b) => new Date(a.fixtureDate) - new Date(b.fixtureDate));
 }
 
 // ── Hook scores live ──────────────────────────────────────────────────────────
@@ -327,6 +354,27 @@ function useLiveScores(matchGroups) {
             const games = d?.matches || [];
             for (const m of matches) {
               const gid = String(m.eventId || '').replace(prefix, '');
+              const g = games.find(g => String(g.id) === gid);
+              if (g) result[m.matchKey] = {
+                homeScore: g.home?.score ?? null,
+                awayScore: g.away?.score ?? null,
+                homeLogo: g.home?.logoId || null,
+                awayLogo: g.away?.logoId || null,
+                status: g.status,
+                statusDetail: g.round || '',
+              };
+            }
+            continue;
+          }
+          // Brasileirão : live scores + crests via /api/fd/bresil (28 août 2026 — jusqu'ici absorbé
+          // à tort par le "skip" générique juste en dessous, pensé pour les 5 grands championnats qui
+          // eux n'ont réellement aucune source live ; Brasileirão en a une depuis le 17 juillet 2026,
+          // cf. resolveCompletedFootballAlerts côté syncAlerts.js qui l'utilise déjà pour le règlement).
+          if (league === 'bresil') {
+            const d = await fetch('/api/fd/bresil').then(r => r.ok ? r.json() : null).catch(() => null);
+            const games = d?.matches || [];
+            for (const m of matches) {
+              const gid = String(m.eventId || '').replace('fdbr_', '');
               const g = games.find(g => String(g.id) === gid);
               if (g) result[m.matchKey] = {
                 homeScore: g.home?.score ?? null,
@@ -485,7 +533,15 @@ function AlertCard({ group, playerStats, onDismiss, onEditStake }) {
 
   const goToMatch = () => {
     if (FB_LEAGUES.has(group.league)) {
-      if (group.eventId) navigate(`/football/${group.eventId}`);
+      if (group.eventId) {
+        // Fix 28 août 2026 — cachedFetch garde la fiche match en cache 5 min (projections-snapshot).
+        // Si la fiche (ou un widget qui la précharge, ex: Dashboard) a été consultée dans les 5 min
+        // précédant cette alerte, cliquer dessus affichait encore l'ancien % jusqu'à un vrai rechargement
+        // de page — le calcul avait pourtant déjà changé côté backend (même cycle que l'alerte). On
+        // invalide juste avant de naviguer pour forcer une vraie donnée fraîche à l'arrivée.
+        invalidateCache(`/api/football/projections-snapshot/${group.eventId}`);
+        navigate(`/football/${group.eventId}`);
+      }
       return;
     }
     const EU = ['acb','lnb','bbl','legaa'];
@@ -615,11 +671,19 @@ function AlertCard({ group, playerStats, onDismiss, onEditStake }) {
 // Logo équipe avec fallback initiales
 function TeamLogo({ logo, short, name, size = 40, league = 'nba' }) {
   const [err, setErr] = useState(false);
-  const normS = normShort(short).toLowerCase();
+  // Fix 29 août 2026 — `normShort`/ESPN_NORM (SA→SAS, NY→NYK, GS→GSW, NO→NOP, UT→UTA, LA→LAC) et le
+  // sous-chemin /scoreboard/ sont pensés pour le NBA (vérifié en direct : nba/500/scoreboard/nyk.png
+  // répond 200) — appliqués tels quels à la WNBA, ils cassaient des logos qui marchaient déjà tout
+  // seuls : nba/500/scoreboard/ n'existe pas côté WNBA (404 systématique), et le code brut à 2 lettres
+  // suffit (wnba/500/ny.png, wnba/500/chi.png, wnba/500/la.png tous vérifiés 200 sans transformation).
+  // Signalé par l'utilisateur — alerte New York Liberty sans logo.
+  const normS = league === 'wnba' ? (short || '').toLowerCase() : normShort(short).toLowerCase();
   const fallback = normS ? (
     ['acb','lnb','bbl','legaa','euroleague'].includes(league) || FB_LEAGUES.has(league)
       ? null
-      : `https://a.espncdn.com/i/teamlogos/${league === 'wnba' ? 'wnba' : 'nba'}/500/scoreboard/${normS}.png`
+      : league === 'wnba'
+        ? `https://a.espncdn.com/i/teamlogos/wnba/500/${normS}.png`
+        : `https://a.espncdn.com/i/teamlogos/nba/500/scoreboard/${normS}.png`
   ) : null;
   const src = logo || fallback;
   const initials = (short || name || '?').slice(0, 3).toUpperCase();
@@ -667,14 +731,14 @@ function MatchGroup({ match, scoreData, liveStats, onDismiss, onEditStake }) {
           onMouseEnter={() => _prefetchMatchData(league, homeTeam, awayTeam)}
           style={{ width: '100%', display: 'flex', alignItems: 'center', gap: '0.6rem', padding: '0.5rem 0.75rem', background: 'none', border: 'none', cursor: 'pointer' }}
         >
-          <TeamLogo logo={scoreData?.homeLogo} short={normShort(homeShort)} name={homeTeam} size={28} league={league} />
+          <TeamLogo logo={scoreData?.homeLogo} short={league === 'wnba' ? homeShort : normShort(homeShort)} name={homeTeam} size={28} league={league} />
           <span style={{ fontSize: 11, fontWeight: 700, color: '#fff' }}>{homeShort || homeTeam}</span>
           <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
             <span style={{ fontSize: 9, fontWeight: 700, color: '#60a5fa', background: 'rgba(96,165,250,0.12)', borderRadius: 3, padding: '1px 5px' }}>{leagueLabel}</span>
             <span style={{ fontSize: 10, color: 'var(--text-dim)' }}>{matchDatePrefix}{matchTime}</span>
           </div>
           <span style={{ fontSize: 11, fontWeight: 700, color: '#fff' }}>{awayShort || awayTeam}</span>
-          <TeamLogo logo={scoreData?.awayLogo} short={normShort(awayShort)} name={awayTeam} size={28} league={league} />
+          <TeamLogo logo={scoreData?.awayLogo} short={league === 'wnba' ? awayShort : normShort(awayShort)} name={awayTeam} size={28} league={league} />
           <span style={{ fontSize: 9, color: 'var(--text-dim)', marginLeft: 4, flexShrink: 0 }}>{alerts.length}</span>
           <svg style={{ transform: open ? 'rotate(180deg)' : 'none', transition: 'transform 0.2s', color: 'var(--text-dim)', flexShrink: 0 }} width="10" height="10" viewBox="0 0 12 12" fill="none">
             <path d="M2.5 4.5L6 8L9.5 4.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
@@ -694,7 +758,7 @@ function MatchGroup({ match, scoreData, liveStats, onDismiss, onEditStake }) {
     <div style={{ borderRadius: 12, border: `1px solid ${sportBorder}`, overflow: 'hidden', background: sportBg }}>
       <div style={{ position: 'relative', display: 'flex', alignItems: 'center', padding: '1rem', borderBottom: '1px solid rgba(255,255,255,0.06)', minHeight: 110 }}>
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.3rem', flex: 1 }}>
-          <TeamLogo logo={scoreData?.homeLogo} short={normShort(homeShort)} name={homeTeam} size={44} />
+          <TeamLogo logo={scoreData?.homeLogo} short={league === 'wnba' ? homeShort : normShort(homeShort)} name={homeTeam} size={44} league={league} />
           <span style={{ fontSize: 10, fontWeight: 700 }}>{homeShort || homeTeam}</span>
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '1.1rem', minWidth: 90, flexShrink: 0 }}>
@@ -709,7 +773,7 @@ function MatchGroup({ match, scoreData, liveStats, onDismiss, onEditStake }) {
           <MatchStatusBadge scoreData={scoreData} />
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.3rem', flex: 1 }}>
-          <TeamLogo logo={scoreData?.awayLogo} short={normShort(awayShort)} name={awayTeam} size={44} />
+          <TeamLogo logo={scoreData?.awayLogo} short={league === 'wnba' ? awayShort : normShort(awayShort)} name={awayTeam} size={44} league={league} />
           <span style={{ fontSize: 10, fontWeight: 700 }}>{awayShort || awayTeam}</span>
         </div>
         <span style={{ position: 'absolute', right: 10, top: 8, fontSize: 9, color: 'var(--text-dim)' }}>{alerts.length} pari{alerts.length > 1 ? 's' : ''}</span>
@@ -728,6 +792,9 @@ export default function RunningPage() {
   });
   const [rawTotalAlerts, setRawTotalAlerts] = useState(() => {
     try { return JSON.parse(localStorage.getItem(GAME_TOTAL_KEY) || '[]'); } catch { return []; }
+  });
+  const [rawTeamTotalAlerts, setRawTeamTotalAlerts] = useState(() => {
+    try { return JSON.parse(localStorage.getItem(TEAM_TOTAL_KEY) || '[]'); } catch { return []; }
   });
   const [rawResultAlerts, setRawResultAlerts] = useState(() => {
     try { return JSON.parse(localStorage.getItem(BASKETBALL_RESULT_KEY) || '[]'); } catch { return []; }
@@ -761,6 +828,7 @@ export default function RunningPage() {
     const reloadFromStorage = () => {
       try { setRawAlerts(JSON.parse(localStorage.getItem(ALERT_KEY) || '[]')); } catch {}
       try { setRawTotalAlerts(JSON.parse(localStorage.getItem(GAME_TOTAL_KEY) || '[]')); } catch {}
+      try { setRawTeamTotalAlerts(JSON.parse(localStorage.getItem(TEAM_TOTAL_KEY) || '[]')); } catch {}
       try { setRawResultAlerts(JSON.parse(localStorage.getItem(BASKETBALL_RESULT_KEY) || '[]')); } catch {}
       try { setBballPinnacleAlerts(JSON.parse(localStorage.getItem(BBALL_PINNACLE_KEY) || '[]')); } catch {}
     };
@@ -780,16 +848,53 @@ export default function RunningPage() {
     window.addEventListener('fb_dc_btts_alerts_updated', reloadFootball);
     window.addEventListener('fb_dc_ou_alerts_updated', reloadFootball);
     window.addEventListener('bball_pinnacle_alerts_updated', reloadFromStorage);
-    syncBackgroundAlerts().then(reloadFromStorage);
-    syncGameTotalAlerts().then(reloadFromStorage);
-    syncBasketballResultAlerts().then(reloadFromStorage);
-    syncBballPinnacleAlerts().then(reloadFromStorage);
-    syncOddsDrift().then(reloadFromStorage);
-    syncFootballAlerts().then(reloadFootball);
-    syncTelegramActions().then(reloadFromStorage);
+    // Fix 28 août 2026 — même race que PlaceBetPage.jsx (cf. commentaire détaillé là-bas) : ces
+    // syncXxx() lisent le localStorage courant et réécrivent le cloud (cloudSet). Lancés au montage
+    // avant que le loadFromCloud() de App.jsx n'ait fini, ils fusionnaient depuis un localStorage
+    // encore vide/périmé et effaçaient une alerte pending pourtant fraîche côté cloud. Attendre la
+    // 1ère synchro cloud avant ce premier lot (le timer 2min plus bas n'a pas ce risque, le cloud
+    // aura déjà synchronisé au moins une fois d'ici là).
+    (async () => {
+      await waitForInitialCloudSync();
+      syncBackgroundAlerts().then(reloadFromStorage);
+      syncGameTotalAlerts().then(reloadFromStorage);
+      syncTeamTotalAlerts().then(reloadFromStorage);
+      syncBasketballResultAlerts().then(reloadFromStorage);
+      syncBballPinnacleAlerts().then(reloadFromStorage);
+      syncOddsDrift().then(reloadFromStorage);
+      syncFootballAlerts().then(reloadFootball);
+      syncTelegramActions().then(reloadFromStorage);
+      // Filet de rattrapage : renvoie au backend les alertes accepted qui n'auraient pas
+      // été synchronisées (POST raté à l'acceptation) — sinon elles ne sont jamais settle.
+      try {
+        const existing = JSON.parse(localStorage.getItem(ALERT_KEY) || '[]');
+        existing.filter(a => a.status === 'accepted').forEach(a => postAcceptedAlertReliably(a));
+      } catch {}
+      syncSettlements().then(reloadFromStorage);
+
+      // Règlement BTTS/O-U football (CDM uniquement, cf. resolveCompletedFootballAlerts)
+      try {
+        const btts = JSON.parse(localStorage.getItem(FB_BTTS_KEY) || '[]');
+        resolveCompletedFootballAlerts(btts, alerts => { persistAlertsKey(FB_BTTS_KEY, alerts); setBttsAlerts(alerts); });
+        const fbTotal = JSON.parse(localStorage.getItem(FB_TOTAL_KEY) || '[]');
+        resolveCompletedFootballAlerts(fbTotal, alerts => { persistAlertsKey(FB_TOTAL_KEY, alerts); setFbTotalAlerts(alerts); });
+        const fbResult = JSON.parse(localStorage.getItem(FB_RESULT_KEY) || '[]');
+        resolveCompletedFootballAlerts(fbResult, alerts => { persistAlertsKey(FB_RESULT_KEY, alerts); setFbResultAlerts(alerts); });
+        const fbPinnacle = JSON.parse(localStorage.getItem(FB_PINNACLE_KEY) || '[]');
+        resolveCompletedFootballAlerts(fbPinnacle, alerts => { persistAlertsKey(FB_PINNACLE_KEY, alerts); setFbPinnacleAlerts(alerts); });
+        const dcBtts = JSON.parse(localStorage.getItem(FB_DC_BTTS_KEY) || '[]');
+        resolveCompletedFootballAlerts(dcBtts, alerts => { persistAlertsKey(FB_DC_BTTS_KEY, alerts); setDcBttsAlerts(alerts); });
+        const dcOu = JSON.parse(localStorage.getItem(FB_DC_OU_KEY) || '[]');
+        resolveCompletedFootballAlerts(dcOu, alerts => { persistAlertsKey(FB_DC_OU_KEY, alerts); setDcOuAlerts(alerts); });
+      } catch {}
+      // basketball_pinnacle_edge (WNBA) se règle côté serveur (runAutoSettle, totalsToCheck) — pas
+      // de résolution client séparée nécessaire, syncSettlements() ci-dessus suffit (BBALL_PINNACLE_KEY
+      // est dans SETTLEABLE_KEYS).
+    })();
     const syncTimer = setInterval(() => {
       syncBackgroundAlerts().then(reloadFromStorage);
       syncGameTotalAlerts().then(reloadFromStorage);
+      syncTeamTotalAlerts().then(reloadFromStorage);
       syncBasketballResultAlerts().then(reloadFromStorage);
       syncBballPinnacleAlerts().then(reloadFromStorage);
       syncOddsDrift().then(reloadFromStorage);
@@ -802,33 +907,6 @@ export default function RunningPage() {
       // double-pari du 8 août (project_accept_alert_restart_race_aout8).
       syncSettlements().then(reloadFromStorage);
     }, 2 * 60 * 1000);
-
-    // Filet de rattrapage : renvoie au backend les alertes accepted qui n'auraient pas
-    // été synchronisées (POST raté à l'acceptation) — sinon elles ne sont jamais settle.
-    try {
-      const existing = JSON.parse(localStorage.getItem(ALERT_KEY) || '[]');
-      existing.filter(a => a.status === 'accepted').forEach(a => postAcceptedAlertReliably(a));
-    } catch {}
-    syncSettlements().then(reloadFromStorage);
-
-    // Règlement BTTS/O-U football (CDM uniquement, cf. resolveCompletedFootballAlerts)
-    try {
-      const btts = JSON.parse(localStorage.getItem(FB_BTTS_KEY) || '[]');
-      resolveCompletedFootballAlerts(btts, alerts => { persistAlertsKey(FB_BTTS_KEY, alerts); setBttsAlerts(alerts); });
-      const fbTotal = JSON.parse(localStorage.getItem(FB_TOTAL_KEY) || '[]');
-      resolveCompletedFootballAlerts(fbTotal, alerts => { persistAlertsKey(FB_TOTAL_KEY, alerts); setFbTotalAlerts(alerts); });
-      const fbResult = JSON.parse(localStorage.getItem(FB_RESULT_KEY) || '[]');
-      resolveCompletedFootballAlerts(fbResult, alerts => { persistAlertsKey(FB_RESULT_KEY, alerts); setFbResultAlerts(alerts); });
-      const fbPinnacle = JSON.parse(localStorage.getItem(FB_PINNACLE_KEY) || '[]');
-      resolveCompletedFootballAlerts(fbPinnacle, alerts => { persistAlertsKey(FB_PINNACLE_KEY, alerts); setFbPinnacleAlerts(alerts); });
-      const dcBtts = JSON.parse(localStorage.getItem(FB_DC_BTTS_KEY) || '[]');
-      resolveCompletedFootballAlerts(dcBtts, alerts => { persistAlertsKey(FB_DC_BTTS_KEY, alerts); setDcBttsAlerts(alerts); });
-      const dcOu = JSON.parse(localStorage.getItem(FB_DC_OU_KEY) || '[]');
-      resolveCompletedFootballAlerts(dcOu, alerts => { persistAlertsKey(FB_DC_OU_KEY, alerts); setDcOuAlerts(alerts); });
-    } catch {}
-    // basketball_pinnacle_edge (WNBA) se règle côté serveur (runAutoSettle, totalsToCheck) — pas
-    // de résolution client séparée nécessaire, syncSettlements() ci-dessus suffit (BBALL_PINNACLE_KEY
-    // est dans SETTLEABLE_KEYS).
 
     // syncTelegramActions() d'abord (18 juillet 2026) — sans ça, un SSE déclenché par un accept/reject
     // Telegram ne faisait que relire le localStorage tel quel (déjà périmé), au lieu d'aller chercher
@@ -853,6 +931,7 @@ export default function RunningPage() {
   const groups = groupAlerts(rawAlerts);
   const acceptedGroups = groups.filter(g => g.status === 'accepted');
   const acceptedTotalGroups = rawTotalAlerts.filter(a => a.status === 'accepted').map(totalAlertToGroup);
+  const acceptedTeamTotalGroups = rawTeamTotalAlerts.filter(a => a.status === 'accepted').map(teamTotalAlertToGroup);
   const acceptedResultGroups = rawResultAlerts.filter(a => a.status === 'accepted').map(resultAlertToGroup);
   const acceptedBballPinnacle = bballPinnacleAlerts.filter(a => a.status === 'accepted').map(bballPinnacleAlertToGroup);
   const acceptedBtts = bttsAlerts.filter(a => a.status === 'accepted');
@@ -863,7 +942,7 @@ export default function RunningPage() {
   const acceptedDcBtts = dedupFootballDC(dcBttsAlerts.filter(a => a.status === 'accepted'));
   const acceptedDcOu   = dedupFootballDC(dcOuAlerts.filter(a => a.status === 'accepted'));
   const footballGroups = [...acceptedBtts.map(footballAlertToGroup), ...acceptedFbTotal.map(footballAlertToGroup), ...acceptedFbResult.map(footballAlertToGroup), ...acceptedFbPinnacle.map(footballAlertToGroup), ...acceptedDcBtts.map(footballAlertToGroup), ...acceptedDcOu.map(footballAlertToGroup)];
-  const allAcceptedGroups = [...acceptedGroups, ...acceptedTotalGroups, ...acceptedResultGroups, ...acceptedBballPinnacle, ...footballGroups];
+  const allAcceptedGroups = [...acceptedGroups, ...acceptedTotalGroups, ...acceptedTeamTotalGroups, ...acceptedResultGroups, ...acceptedBballPinnacle, ...footballGroups];
   const matchGroups = groupByMatch(allAcceptedGroups);
   const liveStats = useLiveBoxscore(acceptedGroups);
   const { scores: scoreData, loaded: scoresLoaded } = useLiveScores(matchGroups);
@@ -886,6 +965,13 @@ export default function RunningPage() {
       const updated = rawTotalAlerts.map(a => idSet.has(a.id) ? { ...a, status: 'void' } : a);
       try { persistAlertsKey(GAME_TOTAL_KEY, updated); } catch {}
       setRawTotalAlerts(updated);
+      return;
+    }
+    if (group?.type === 'team_total') {
+      const idSet = new Set(ids);
+      const updated = rawTeamTotalAlerts.map(a => idSet.has(a.id) ? { ...a, status: 'void' } : a);
+      try { persistAlertsKey(TEAM_TOTAL_KEY, updated); } catch {}
+      setRawTeamTotalAlerts(updated);
       return;
     }
     if (group?.type === 'basketball_result') {
@@ -951,6 +1037,11 @@ export default function RunningPage() {
       const updated = rawTotalAlerts.map(patch);
       try { persistAlertsKey(GAME_TOTAL_KEY, updated); } catch {}
       setRawTotalAlerts(updated); postIfNeeded(updated); return;
+    }
+    if (group?.type === 'team_total') {
+      const updated = rawTeamTotalAlerts.map(patch);
+      try { persistAlertsKey(TEAM_TOTAL_KEY, updated); } catch {}
+      setRawTeamTotalAlerts(updated); postIfNeeded(updated); return;
     }
     if (group?.type === 'basketball_result') {
       const updated = rawResultAlerts.map(patch);
@@ -1036,6 +1127,17 @@ export default function RunningPage() {
 
   const total = allAcceptedGroups.length;
 
+  // Kelly & near-miss consultables depuis Running aussi (28 août 2026, demande explicite) — mêmes
+  // widgets que PlaceBetPage, réutilisés via PendingAlertWidgets.jsx plutôt que dupliqués. Même
+  // position exacte que sur la page Alertes (bottom:20/right:20, défaut du composant) — pas de
+  // décalage : ces widgets ont un zIndex plus haut que la barre "matchs à venir" (voir
+  // PendingAlertWidgets.jsx), donc ils restent au-dessus au lieu d'être recouverts.
+  const allPendingItems = buildPendingItems({
+    rawAlerts, rawTotalAlerts, rawTeamTotalAlerts, rawResultAlerts,
+    bttsAlerts, fbTotalAlerts, fbResultAlerts, fbPinnacleAlerts, dcBttsAlerts, dcOuAlerts,
+    bballPinnacleAlerts,
+  });
+
   return (
     <div className="page placebet-page">
       {/* Header */}
@@ -1071,18 +1173,36 @@ export default function RunningPage() {
                 ))}
               </div>
             )}
-            {scheduledGroups.length > 0 && (
-              <div style={{ position: 'fixed', bottom: 24, left: 16, right: 24, zIndex: 200, display: 'flex', flexDirection: 'row', flexWrap: 'nowrap', overflowX: 'auto', gap: '0.4rem', paddingBottom: 4 }}>
+            {/* right:112 (au lieu de 24) + cartes légèrement réduites (300 au lieu de 340) — laisse
+                la place aux boutons Kelly/Near-miss (bottom:20, right:20-96) sans les recouvrir,
+                tout en gardant les 4 cartes visibles sur une seule ligne sans scroll (28 août 2026). */}
+            {/* Portail vers document.body (29 août 2026, fix "alerte badge présent mais invisible") —
+                sans lui, ce position:fixed était contenu par .page (transform résiduel de l'animation
+                d'entrée de page, matrix(1,0,0,1,0,0) ≠ none → nouveau bloc de contenant CSS pour tout
+                descendant fixed). Le bandeau s'ancrait alors sur la boîte de .page au lieu du vrai
+                viewport — invisible ou mal placé selon la hauteur du contenu au-dessus (piège déjà
+                documenté, feedback_fixed_position_transform_ancestor). Même pattern que les popups
+                légende ailleurs dans l'app (BasketballDetailPage.jsx). */}
+            {/* left:216 (200px sidebar .left-nav + 16px marge), pas 16 — le portail vers document.body
+                juste au-dessus ancre désormais ce fixed sur le VRAI viewport (fix "invisible" du 29
+                août), donc left:16 se comptait depuis le tout bord gauche de l'écran et passait sous
+                la sidebar au lieu de démarrer après elle (régression trouvée par l'utilisateur en
+                testant ce même fix). */}
+            {scheduledGroups.length > 0 && createPortal(
+              <div style={{ position: 'fixed', bottom: 24, left: 216, right: 112, zIndex: 200, display: 'flex', flexDirection: 'row', flexWrap: 'nowrap', overflowX: 'auto', gap: '0.4rem', paddingBottom: 4 }}>
                 {scheduledGroups.map(m => (
-                  <div key={m.matchKey} style={{ width: 340 }}>
+                  <div key={m.matchKey} style={{ width: 300 }}>
                     <MatchGroup match={m} scoreData={scoreData[m.matchKey] || null} liveStats={liveStats} onDismiss={dismiss} onEditStake={updateStake} />
                   </div>
                 ))}
-              </div>
+              </div>,
+              document.body
             )}
           </div>
         );
       })()}
+      <StakeCalculatorWidget items={allPendingItems} />
+      <NearMissPanelWidget />
     </div>
   );
 }

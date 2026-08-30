@@ -474,6 +474,26 @@ Demande explicite de l'utilisateur, exprimée avec insistance ("on va supprimer 
 
 ---
 
+## Session 30 août 2026 — Pause manuelle API-Football + API-Basketball avec réveil automatique
+
+Suite du bouton pause api-football du 28 août (voir session correspondante) : jauge de progression Dashboard fiabilisée + extension à API-Basketball + réveil automatique pour les deux.
+
+**Jauge de progression revue** : la 1ère version (29 août) comptait les appels HTTP individuels, `total` grandissant au fil des découvertes ("52/125 → 125/135 → 147/180" rapporté par l'utilisateur — illisible, donnait l'impression que la barre reculait). Remplacée par un comptage **par match** : `total` fixé une seule fois en tête de cycle (foot : `fbFixtures.length` ; basket : matchs EU à venir × 3, une passe par boucle props/Résultat/Total), `_fcpTick()`/`_bcpTick()` avance de 1 par match traité via `finally` (couvre tous les `continue`).
+
+**API-Basketball — extension du principe, architecture différente du foot** : `bballFetch` (api-sports.io) est le SEUL point d'entrée basket, partagé entre le cycle d'arrière-plan ET les pages de match ACB/LNB/BBL/Lega A que l'utilisateur ouvre lui-même (contrairement au foot où `footballApiFetch` n'est jamais appelé par les routes live). Gater `bballFetch` directement aurait cassé la navigation pendant la pause — rejeté explicitement par l'utilisateur ("la même chose qu'au foot" = jamais bloquer une page ouverte manuellement). Solution retenue : ~15 points de cache TTL (`euro_players_*`, `euro_gl_*`, `euro_sb_*`, `euro_standings_*`, `getEuroDefByPos` 24h, etc.) étendus en `Date.now()-ts < TTL || _basketballApiPaused` — cache expiré servi tant que la pause dure, aucune limite de durée. `bballFetch` reste gaté en dernier recours (throw si paused) pour le cas rare d'un cache jamais rempli. Fenêtre d'affichage "Dernier cycle - Xh" à **2h** pour le basket (6h pour le foot) — préférence explicite de l'utilisateur, pas calibrée sur un TTL précis.
+
+**2 bugs trouvés et corrigés en testant en direct** :
+1. **Course entre déclenchements simultanés** — `generateBackgroundAlertsGuarded()` a un garde-fou anti-chevauchement (`_bgAlertsInFlight`) : un 2e déclenchement (2 toggles quasi simultanés, ou un toggle pendant le cycle routine 20min déjà en cours) se termine INSTANTANÉMENT sans attendre le cycle réel — le `.finally()` du toggle remettait `cycleProgress.active` à false presque tout de suite, alors que le cycle réel continuait de tourner et consommer du quota (`_fcpTick`/`_bcpTick`, gatés sur `active`, devenaient des no-op pour le reste du cycle). Cas observé en direct : 5788 requêtes foot dépensées, jauge bloquée à 0/0. Fix : nouveau helper `_waitForBgAlertsCycle(reason)` — si un cycle est déjà en vol, ATTEND sa vraie fin (poll `_bgAlertsInFlight` toutes les 500ms) au lieu de considérer le no-op comme terminé. Remplace `generateBackgroundAlertsGuarded` aux 4 points d'appel concernés (2 toggles manuels + 2 auto-réveils).
+2. **Total à 0 au démarrage à froid (basket)** — le comptage upfront lisait `_euroCache[euro_sb_*]` qui peut être vide juste après un redémarrage backend (jamais visité). Fix : auto-fetch du scoreboard des 3 ligues EU avant de compter (aucun appel gaspillé, ces données sont de toute façon nécessaires à la suite du cycle).
+
+**Réveil automatique** (demande explicite, tranchée via question directe : "toujours automatique dès qu'on pause", pas d'interrupteur séparé) : une pause n'est plus jamais indéfinie. `setInterval` toutes les 10 min vérifie si `pausedAt` dépasse la fenêtre (6h foot / 2h basket) — si oui, redépause tout seul, lance un cycle via `_waitForBgAlertsCycle`, puis repause automatiquement (`pausedAt` remis à `Date.now()`, relance le compte à rebours). Le bouton manuel reste prioritaire à tout moment (peut forcer play/pause indépendamment du minuteur).
+
+**UI Dashboard** (`QuotasWidget`, `DashboardPage.jsx`) : bouton ⏸/▶ symétrique sur les deux cases (API-Football et API-Basketball) ; "Dernier cycle - Xh" en blanc pendant la pause ; barre de progression en dégradé rouge (<50%) / jaune (50-90%) / vert (≥90%), ratio "fait/total" en blanc à droite de la barre (layout resserré, une seule ligne) ; jauge visible même en pause (figée sur le dernier cycle connu, pas seulement pendant un cycle actif).
+
+**Documentation** : `UtilisationPage.jsx`, nouvelle sous-section "Pause manuelle API-Football / API-Basketball + réveil automatique" dans l'accordéon "Mise à jour des données". Profité du passage pour nettoyer les références obsolètes au marché **Écart H2H** (retiré le 27 août, cf. session précédente) qui traînaient encore dans l'accordéon "Alertes — Total O/U, Résultat équipe & Écart H2H" (renommé, titre/tableau/carte dédiée nettoyés, sous-section "Corrélation Résultat / Écart H2H" supprimée puisque le mécanisme n'existe plus en code).
+
+---
+
 ## Adding fixtures or leagues
 
 - **Football static data**: edit `src/utils/fixtures.js`. The `LEAGUES` array controls ordering and accent colors.

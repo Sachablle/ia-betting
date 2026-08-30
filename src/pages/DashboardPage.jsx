@@ -1,10 +1,11 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
-import { cachedFetch, getCached } from '../utils/fetchCache';
+import { cachedFetch, getCached, invalidateCache } from '../utils/fetchCache';
 
 const ALERT_KEY       = 'nba_prop_alerts';
 const GAME_TOTAL_KEY  = 'nba_game_total_alerts';
+const TEAM_TOTAL_KEY  = 'basketball_teamtotal_alerts';
 const FB_BTTS_KEY     = 'fb_btts_alerts';
 const FB_TOTAL_KEY    = 'fb_total_alerts';
 const FB_RESULT_KEY   = 'fb_result_alerts';
@@ -28,6 +29,10 @@ function betLabel(a) {
     case 'game_total': {
       const dir = a.direction === 'over' ? 'Over' : 'Under';
       return `${dir} ${a.line} Pts — ${a.homeShort ?? a.home} vs ${a.awayShort ?? a.away}`;
+    }
+    case 'team_total': {
+      const dir = a.direction === 'over' ? 'Over' : 'Under';
+      return `${dir} ${a.line} Pts — ${a.team ?? a.teamShort}`;
     }
     case 'basketball_result':
       return `Victoire ${a.teamShort ?? a.teamName}`;
@@ -74,6 +79,7 @@ function CountdownWidget() {
       let local = [];
       try { local = JSON.parse(localStorage.getItem(ALERT_KEY) || '[]'); } catch {}
       try { local = [...local, ...JSON.parse(localStorage.getItem(GAME_TOTAL_KEY) || '[]')]; } catch {}
+      try { local = [...local, ...JSON.parse(localStorage.getItem(TEAM_TOTAL_KEY) || '[]')]; } catch {}
       try { local = [...local, ...JSON.parse(localStorage.getItem(FB_BTTS_KEY) || '[]')]; } catch {}
       try { local = [...local, ...JSON.parse(localStorage.getItem(FB_TOTAL_KEY) || '[]')]; } catch {}
       try { local = [...local, ...JSON.parse(localStorage.getItem(FB_RESULT_KEY) || '[]')]; } catch {}
@@ -578,6 +584,26 @@ function QuotasWidget() {
 
   const q = health?.quotas;
 
+  // Poll rapide pendant qu'un cycle api-football/API-Basketball est en cours (29-30 août 2026, jauge
+  // de progression Dashboard) — 30s est trop lent pour donner l'impression d'une jauge qui se remplit
+  // en direct. Contourne le cache 12s de cachedFetch (fetch direct) le temps que le cycle tourne.
+  useEffect(() => {
+    if (!q?.footballApi?.cycleProgress?.active && !q?.basketballApi?.cycleProgress?.active) return;
+    const id = setInterval(() => {
+      fetch('/api/system/health').then(r => r.json()).then(setHealth).catch(() => {});
+    }, 2000);
+    return () => clearInterval(id);
+  }, [q?.footballApi?.cycleProgress?.active, q?.basketballApi?.cycleProgress?.active]);
+
+  // Tick local pour rafraîchir le compte à rebours "cache frais" (pausedAt + fenêtre) sans dépendre
+  // d'un nouveau fetch réseau à chaque seconde — juste re-render pour recalculer l'affichage.
+  const [, forceTick] = useState(0);
+  useEffect(() => {
+    if ((!q?.footballApi?.paused || !q?.footballApi?.pausedAt) && (!q?.basketballApi?.paused || !q?.basketballApi?.pausedAt)) return;
+    const id = setInterval(() => forceTick(t => t + 1), 30_000);
+    return () => clearInterval(id);
+  }, [q?.footballApi?.paused, q?.footballApi?.pausedAt, q?.basketballApi?.paused, q?.basketballApi?.pausedAt]);
+
   // Même code couleur que les anneaux "Taux de scraping" (cyan / bleu / violet par position)
   const POS_COLORS = ['#22d3ee', '#60a5fa', '#a78bfa'];
 
@@ -588,6 +614,56 @@ function QuotasWidget() {
   const footRem  = q?.footballApi?.remaining;
   const footLim  = q?.footballApi?.limit ?? 7500;
   const footBlocked = q?.footballApi?.blocked === true;
+  const footPaused = q?.footballApi?.paused === true;
+  const [toggling, setToggling] = useState(false);
+  // Indicateurs pause/reprise (29 août 2026, demande explicite) — compte à rebours "cache garanti
+  // frais" (6h, le plus court des TTL suivis côté backend) pendant une pause, jauge de progression
+  // réelle (total/done comptés côté backend, pas décoratifs) pendant un cycle déclenché par "play".
+  const footCycle = q?.footballApi?.cycleProgress;
+  const footPausedAt = q?.footballApi?.pausedAt;
+  const FOOT_CACHE_GUARD_MS = 6 * 3600_000;
+  const footCacheMsLeft = footPaused && footPausedAt ? Math.max(0, footPausedAt + FOOT_CACHE_GUARD_MS - Date.now()) : null;
+  const footCacheH = footCacheMsLeft != null ? Math.floor(footCacheMsLeft / 3600_000) : null;
+  const footCacheM = footCacheMsLeft != null ? Math.floor((footCacheMsLeft % 3600_000) / 60_000) : null;
+  // Affichée même en pause (30 août 2026, demande explicite) — reste figée sur le résultat du
+  // dernier cycle tant qu'un nouveau n'a pas démarré (_footballCycleProgress n'est remis à zéro
+  // qu'au moment du "play" suivant côté backend), pour garder trace de ce qui a été récupéré.
+  const footCyclePct = footCycle && footCycle.total > 0 ? Math.min(100, Math.round(footCycle.done / footCycle.total * 100)) : null;
+  // Dégradé rouge→jaune→vert selon le taux de complétion (30 août 2026, demande explicite) — plus
+  // la couleur active/pause du bloc au-dessus.
+  const footCycleColor = footCyclePct == null ? '#4ade80' : footCyclePct >= 90 ? '#4ade80' : footCyclePct >= 50 ? '#fbbf24' : '#f87171';
+  // Pause manuelle api-football (28 août 2026, demande explicite) — le xG coûte 18 requêtes/match
+  // (pas d'endpoint groupé chez api-sports.io), le quota journalier peut s'épuiser en quelques
+  // heures certains jours. Coupure décidée par l'utilisateur plutôt qu'un seuil automatique.
+  const toggleFootballApi = async () => {
+    setToggling(true);
+    try {
+      await fetch('/api/system/football-api-toggle', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ paused: !footPaused }) });
+      const fresh = await fetch('/api/system/health').then(r => r.json());
+      setHealth(fresh);
+    } catch {} finally { setToggling(false); }
+  };
+
+  // Pause manuelle API-Basketball (30 août 2026, demande explicite — même principe que le foot,
+  // fenêtre affichée 2h au lieu de 6h car demandée plus courte pour le basket).
+  const bballPaused = q?.basketballApi?.paused === true;
+  const [bballToggling, setBballToggling] = useState(false);
+  const bballCycle = q?.basketballApi?.cycleProgress;
+  const bballPausedAt = q?.basketballApi?.pausedAt;
+  const BBALL_CACHE_GUARD_MS = 2 * 3600_000;
+  const bballCacheMsLeft = bballPaused && bballPausedAt ? Math.max(0, bballPausedAt + BBALL_CACHE_GUARD_MS - Date.now()) : null;
+  const bballCacheH = bballCacheMsLeft != null ? Math.floor(bballCacheMsLeft / 3600_000) : null;
+  const bballCacheM = bballCacheMsLeft != null ? Math.floor((bballCacheMsLeft % 3600_000) / 60_000) : null;
+  const bballCyclePct = bballCycle && bballCycle.total > 0 ? Math.min(100, Math.round(bballCycle.done / bballCycle.total * 100)) : null;
+  const bballCycleColor = bballCyclePct == null ? '#4ade80' : bballCyclePct >= 90 ? '#4ade80' : bballCyclePct >= 50 ? '#fbbf24' : '#f87171';
+  const toggleBasketballApi = async () => {
+    setBballToggling(true);
+    try {
+      await fetch('/api/system/basketball-api-toggle', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ paused: !bballPaused }) });
+      const fresh = await fetch('/api/system/health').then(r => r.json());
+      setHealth(fresh);
+    } catch {} finally { setBballToggling(false); }
+  };
 
   const cards = [
     { label: 'football-data.org', rem: fdRem,    lim: fdLim,    period: 'requêtes /min'  },
@@ -609,8 +685,46 @@ function QuotasWidget() {
         {cards.map((c, i) => (
           <div key={c.label} style={{ display: 'flex', alignItems: 'stretch' }}>
             {i > 0 && <div style={{ width: 1, background: 'var(--border)', flexShrink: 0 }} />}
-            <div style={{ padding: '0.25rem 0.75rem', display: 'flex', flexDirection: 'column', justifyContent: 'center', minWidth: 130 }}>
-              <div style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: dim, marginBottom: '0.25rem' }}>{c.label}</div>
+            <div style={{ padding: (c.label === 'API-Football' || c.label === 'API-Basketball') ? '0.25rem 0.75rem 0' : '0.25rem 0.75rem', display: 'flex', flexDirection: 'column', justifyContent: 'center', minWidth: 130 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginBottom: '0.25rem' }}>
+                <span style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: dim }}>{c.label}</span>
+                {c.label === 'API-Football' && (
+                  <button
+                    onClick={toggleFootballApi}
+                    disabled={toggling}
+                    title={footPaused ? 'En pause — cliquer pour réactiver' : 'Active — cliquer pour mettre en pause'}
+                    style={{
+                      width: 14, height: 14, borderRadius: '50%', border: 'none', padding: 0,
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      background: footPaused ? 'rgba(248,113,113,0.18)' : 'rgba(74,222,128,0.18)',
+                      color: footPaused ? '#f87171' : '#4ade80',
+                      cursor: toggling ? 'default' : 'pointer', opacity: toggling ? 0.5 : 1, flexShrink: 0,
+                    }}
+                  >
+                    {footPaused
+                      ? <svg width="7" height="7" viewBox="0 0 10 10" fill="currentColor"><path d="M1 0.5 L9 5 L1 9.5 Z" /></svg>
+                      : <svg width="7" height="7" viewBox="0 0 10 10" fill="currentColor"><rect x="1" y="0.5" width="3" height="9" /><rect x="6" y="0.5" width="3" height="9" /></svg>}
+                  </button>
+                )}
+                {c.label === 'API-Basketball' && (
+                  <button
+                    onClick={toggleBasketballApi}
+                    disabled={bballToggling}
+                    title={bballPaused ? 'En pause — cliquer pour réactiver' : 'Active — cliquer pour mettre en pause'}
+                    style={{
+                      width: 14, height: 14, borderRadius: '50%', border: 'none', padding: 0,
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      background: bballPaused ? 'rgba(248,113,113,0.18)' : 'rgba(74,222,128,0.18)',
+                      color: bballPaused ? '#f87171' : '#4ade80',
+                      cursor: bballToggling ? 'default' : 'pointer', opacity: bballToggling ? 0.5 : 1, flexShrink: 0,
+                    }}
+                  >
+                    {bballPaused
+                      ? <svg width="7" height="7" viewBox="0 0 10 10" fill="currentColor"><path d="M1 0.5 L9 5 L1 9.5 Z" /></svg>
+                      : <svg width="7" height="7" viewBox="0 0 10 10" fill="currentColor"><rect x="1" y="0.5" width="3" height="9" /><rect x="6" y="0.5" width="3" height="9" /></svg>}
+                  </button>
+                )}
+              </div>
               {c.blocked ? (
                 <span style={{ fontSize: '0.8rem', fontWeight: 800, color: '#f87171', lineHeight: 1.2 }}>Quota épuisé</span>
               ) : (
@@ -622,6 +736,50 @@ function QuotasWidget() {
                 </div>
               )}
               <div style={{ fontSize: 9, color: dim, marginTop: '0.2rem' }}>{c.period}</div>
+              {c.label === 'API-Football' && ((footPaused && footCacheMsLeft != null) || footCyclePct != null) && (
+                <div style={{ marginTop: 'auto', paddingTop: '0.2rem' }}>
+                  {footPaused && footCacheMsLeft != null && (
+                    <div
+                      title="Réveil automatique toutes les 6h : le backend redépause seul le temps d'un cycle pour rafraîchir, puis se repause"
+                      style={{ fontSize: 7.5, fontWeight: 400, color: footCacheMsLeft > 0 ? '#fff' : '#fbbf24' }}
+                    >
+                      {footCacheMsLeft > 0 ? `Dernier cycle - ${footCacheH}h${String(footCacheM).padStart(2, '0')}` : 'cache possiblement périmé'}
+                    </div>
+                  )}
+                  {footCyclePct != null && (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 0 }}>
+                      <div style={{ flex: 1, height: 4, borderRadius: 2, background: 'rgba(255,255,255,0.08)', overflow: 'hidden' }}>
+                        <div style={{ height: '100%', width: `${footCyclePct}%`, background: footCycleColor, transition: 'width 0.4s ease, background 0.4s ease' }} />
+                      </div>
+                      <div style={{ fontSize: 8.5, fontWeight: 700, color: '#fff', fontVariantNumeric: 'tabular-nums', flexShrink: 0 }}>
+                        {footCycle.done}/{footCycle.total}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+              {c.label === 'API-Basketball' && ((bballPaused && bballCacheMsLeft != null) || bballCyclePct != null) && (
+                <div style={{ marginTop: 'auto', paddingTop: '0.2rem' }}>
+                  {bballPaused && bballCacheMsLeft != null && (
+                    <div
+                      title="Réveil automatique toutes les 2h : le backend redépause seul le temps d'un cycle pour rafraîchir, puis se repause"
+                      style={{ fontSize: 7.5, fontWeight: 400, color: bballCacheMsLeft > 0 ? '#fff' : '#fbbf24' }}
+                    >
+                      {bballCacheMsLeft > 0 ? `Dernier cycle - ${bballCacheH}h${String(bballCacheM).padStart(2, '0')}` : 'cache possiblement périmé'}
+                    </div>
+                  )}
+                  {bballCyclePct != null && (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 0 }}>
+                      <div style={{ flex: 1, height: 4, borderRadius: 2, background: 'rgba(255,255,255,0.08)', overflow: 'hidden' }}>
+                        <div style={{ height: '100%', width: `${bballCyclePct}%`, background: bballCycleColor, transition: 'width 0.4s ease, background 0.4s ease' }} />
+                      </div>
+                      <div style={{ fontSize: 8.5, fontWeight: 700, color: '#fff', fontVariantNumeric: 'tabular-nums', flexShrink: 0 }}>
+                        {bballCycle.done}/{bballCycle.total}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           </div>
         ))}
@@ -1162,6 +1320,10 @@ function UpcomingMatchesWidget() {
 
   const goToMatch = g => {
     if (g.sport === 'foot') {
+      // Fix 28 août 2026 — cachedFetch garde la fiche match en cache 5 min (projections-snapshot),
+      // ce widget étant justement celui qui la précharge le plus souvent. Invalidé avant de naviguer
+      // pour ne jamais montrer un % périmé (cf. bug signalé depuis une alerte Running).
+      invalidateCache(`/api/football/projections-snapshot/${g.id}`);
       navigate(`/football/${g.id}`);
     } else {
       const leagueParam = g.league !== 'nba' ? `?league=${g.league}` : '';
@@ -1231,7 +1393,7 @@ function UpcomingMatchesWidget() {
     // alertes actives sans pastille). Complétée avec tous les types d'alerte liés à un match
     // précis (fb_pinnacle_alerts/bball_pinnacle_alerts = value bet Pinnacle, fb_dc_btts/ou =
     // Double Chance) — voir src/utils/syncAlerts.js pour la liste faisant foi.
-    const KEYS = ['nba_prop_alerts','nba_game_total_alerts','basketball_result_alerts','basketball_spread_alerts','fb_btts_alerts','fb_total_alerts','fb_result_alerts','fb_pinnacle_alerts','fb_dc_btts_alerts','fb_dc_ou_alerts','bball_pinnacle_alerts','bball_pinnacle_props_alerts'];
+    const KEYS = ['nba_prop_alerts','nba_game_total_alerts','basketball_teamtotal_alerts','basketball_result_alerts','basketball_spread_alerts','fb_btts_alerts','fb_total_alerts','fb_result_alerts','fb_pinnacle_alerts','fb_dc_btts_alerts','fb_dc_ou_alerts','bball_pinnacle_alerts','bball_pinnacle_props_alerts'];
     for (const key of KEYS) {
       try {
         JSON.parse(localStorage.getItem(key)||'[]')
@@ -1384,6 +1546,7 @@ const PERIODS = [
 export default function DashboardPage() {
   const [alerts, setAlerts]           = useState([]);
   const [totalAlerts, setTotalAlerts] = useState([]);
+  const [teamTotalAlerts, setTeamTotalAlerts] = useState([]);
   const [resultAlerts, setResultAlerts] = useState([]);
   // Manquait ici (même gap que le badge nav et CountdownWidget) — 14 juillet 2026.
   const [spreadAlerts, setSpreadAlerts] = useState([]);
@@ -1403,6 +1566,8 @@ export default function DashboardPage() {
     catch { setAlerts([]); }
     try { setTotalAlerts((JSON.parse(localStorage.getItem(GAME_TOTAL_KEY) || '[]')).map(backfill)); }
     catch { setTotalAlerts([]); }
+    try { setTeamTotalAlerts((JSON.parse(localStorage.getItem(TEAM_TOTAL_KEY) || '[]')).map(backfill)); }
+    catch { setTeamTotalAlerts([]); }
     try { setResultAlerts(JSON.parse(localStorage.getItem(BBALL_RESULT_KEY) || '[]')); }
     catch { setResultAlerts([]); }
     try { setSpreadAlerts(JSON.parse(localStorage.getItem(BBALL_SPREAD_KEY) || '[]')); }
@@ -1438,6 +1603,7 @@ export default function DashboardPage() {
 
   const accepted        = dedupAlerts(alerts.filter(a => RESOLVED.includes(a.status)));
   const acceptedTotals  = totalAlerts.filter(a => RESOLVED.includes(a.status));
+  const acceptedTeamTotals = teamTotalAlerts.filter(a => RESOLVED.includes(a.status));
   // Pas de dedupAlerts ici : ces alertes n'ont pas de champ `player`, la clé de dédup collapserait
   // à tort plusieurs matchs/marchés différents ensemble.
   const acceptedFootball    = footballAlerts.filter(a => RESOLVED.includes(a.status));
@@ -1489,7 +1655,7 @@ export default function DashboardPage() {
             ))}
           </select>
         </div>
-        <AlertsChart accepted={[...accepted, ...acceptedTotals, ...acceptedFootball, ...acceptedBballResult, ...acceptedBballSpread]} days={period} />
+        <AlertsChart accepted={[...accepted, ...acceptedTotals, ...acceptedTeamTotals, ...acceptedFootball, ...acceptedBballResult, ...acceptedBballSpread]} days={period} />
       </div>
 
       {/* Grid 2 colonnes : chaque ligne partage la même hauteur */}

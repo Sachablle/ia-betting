@@ -151,6 +151,12 @@ const ALERT_TYPES = {
     odds: a => bestOdds([['unibet', a.unibetOdds], ['betclic', a.betclicOdds], ['winamax', a.winamaxOdds]]),
     buildAccepted: (a, bk, odds) => ({ ...propsAccepted(a, bk, odds, a.prob), acceptedOdds: odds ?? null }),
   },
+  team_total: {
+    dateField: 'date',
+    label: a => `🏀 <b>${leagueLabel(a)} Total équipe</b>\n${a.team} (${teamName(a, 'home')} vs ${teamName(a, 'away')}) — ${a.direction === 'over' ? '▲ Plus' : '▼ Moins'} de ${a.line}\nProbabilité : <b>${a.prob}%</b>`,
+    odds: a => bestOdds([['unibet', a.unibetOdds], ['betclic', a.betclicOdds]]),
+    buildAccepted: (a, bk, odds) => ({ ...propsAccepted(a, bk, odds, a.prob), acceptedOdds: odds ?? null }),
+  },
   basketball_result: {
     dateField: 'date',
     label: a => `🏆 <b>${leagueLabel(a)} Résultat</b>\n${teamName(a, 'home')} vs ${teamName(a, 'away')}\nVictoire ${teamName(a, a.direction)} — <b>${a.probability}%</b>${fmtOdds(a.bookmaker, a.odds) !== '—' ? ` · ${fmtOdds(a.bookmaker, a.odds)}` : ''}`,

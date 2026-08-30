@@ -87,6 +87,14 @@ function countAccepted(periodDays, sportFilter, typeFilter, model = 'new') {
       return true;
     });
 
+  const teamTotals = JSON.parse(localStorage.getItem('basketball_teamtotal_alerts') || '[]')
+    .filter(a => a.status === 'accepted' && inPeriod(a.date))
+    .filter(a => {
+      if (sportFilter !== 'all' && (a.league || 'nba') !== sportFilter) return false;
+      if (typeFilter !== 'all' && 'total' !== typeFilter) return false;
+      return true;
+    });
+
   const btts = JSON.parse(localStorage.getItem('fb_btts_alerts') || '[]')
     .filter(a => a.status === 'accepted' && inPeriod(a.fixtureDate))
     .filter(a => {
@@ -119,7 +127,7 @@ function countAccepted(periodDays, sportFilter, typeFilter, model = 'new') {
       return true;
     });
 
-  return props.length + totals.length + btts.length + fbTotals.length + fbResults.length + basketResults.length;
+  return props.length + totals.length + teamTotals.length + btts.length + fbTotals.length + fbResults.length + basketResults.length;
 }
 
 const DC_DIR = { '1x': '1X', 'x2': 'X2', '12': '12' };
@@ -156,6 +164,11 @@ function mapLedgerEntry(a) {
         label: `${shortTeamName(a.home) || a.homeShort} vs ${shortTeamName(a.away) || a.awayShort}`,
         sub: `${a.direction === 'over' ? '▲ Over' : '▼ Under'} ${a.line}`,
         actual: a.actualStat ?? a.actualTotal, line: a.line, direction: a.direction, league: a.league || 'nba' };
+    case 'team_total':
+      return { ...base, type: 'teamtotal', sport: a.league || 'nba',
+        label: `${a.team || a.teamShort} (${shortTeamName(a.home) || a.homeShort} vs ${shortTeamName(a.away) || a.awayShort})`,
+        sub: `${a.direction === 'over' ? '▲ Over' : '▼ Under'} ${a.line}`,
+        actual: a.actualStat, line: a.line, direction: a.direction, league: a.league || 'nba' };
     case 'basketball_result':
       return { ...base, type: 'result', sport: a.league || 'nba',
         label: `${shortTeamName(a.home) || a.homeShort} vs ${shortTeamName(a.away) || a.awayShort}`,
@@ -394,6 +407,7 @@ function byTypeStats(bets) {
     'Props Ast ▲': bets.filter(b => b.type === 'prop' && b.stat === 'ast' && b.direction === 'over'),
     'Props Ast ▼': bets.filter(b => b.type === 'prop' && b.stat === 'ast' && b.direction === 'under'),
     'Total O/U':   bets.filter(b => b.type === 'total'),
+    'Total équipe': bets.filter(b => b.type === 'teamtotal'),
     'BTTS':        bets.filter(b => b.type === 'btts'),
     'Résultat':    bets.filter(b => b.type === 'result'),
     'Écart':       bets.filter(b => b.type === 'spread'),
@@ -432,6 +446,7 @@ function categoryKey(b) {
     return `${grp} · ${(b.stat || '?').toUpperCase()}`;
   }
   if (b.type === 'total')  return b.sport === 'football' ? 'Foot · O/U' : `${(b.sport || '?').toUpperCase()} · O/U`;
+  if (b.type === 'teamtotal') return `${(b.sport || '?').toUpperCase()} · Total équipe`;
   if (b.type === 'btts')   return 'Foot · BTTS';
   if (b.type === 'result') return 'Foot · Résultat';
   if (b.type === 'spread') return `${(b.sport || '?').toUpperCase()} · Écart`;
@@ -587,7 +602,7 @@ function BankrollTracker() {
     <div style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 16, padding: '1.25rem 1.5rem', marginBottom: '1.5rem' }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '1rem', marginBottom: '1rem' }}>
         <div>
-          <span style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: '#3b82f6' }}>Suivi Bankroll</span>
+          <span style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: '#3b82f6' }}>Suivi Bankroll ({Math.round(state.startAmount)}€)</span>
           <div style={{ display: 'flex', alignItems: 'baseline', gap: '0.6rem', marginTop: '0.3rem' }}>
             <span style={{ fontSize: 30, fontWeight: 800, color: 'var(--text)', fontVariantNumeric: 'tabular-nums' }}>{bk.toFixed(0)}€</span>
             <span style={{ fontSize: 13, color: 'var(--text-dim)' }}>/ objectif {BANKROLL_TARGET.toLocaleString('fr-FR')}€</span>
@@ -1515,7 +1530,7 @@ export default function BacktestingPage() {
         </div>
         {/* Toggle modèle */}
         <div style={{ display: 'flex', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 12, padding: 3, gap: 2, alignSelf: 'flex-start', marginTop: '0.5rem' }}>
-          {[{ key: 'bk500', label: `BK ${Math.round(loadBankrollState().startAmount)}€`, sub: `depuis le ${new Date(loadBankrollState().startDate).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' })}`, color: '#4ade80' }, { key: 'new', label: 'Tous les paris', sub: 'historique complet', color: '#60a5fa' }].map(m => (
+          {[{ key: 'bk500', label: 'Bankroll', sub: `depuis le ${new Date(loadBankrollState().startDate).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' })}`, color: '#4ade80' }, { key: 'new', label: 'Tous les paris', sub: 'historique complet', color: '#60a5fa' }].map(m => (
             <button key={m.key} onClick={() => handleModelChange(m.key)} style={{
               background: model === m.key ? `${m.color}2e` : 'transparent',
               border: model === m.key ? `1px solid ${m.color}66` : '1px solid transparent',

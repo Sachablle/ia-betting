@@ -39,7 +39,7 @@ export function getRecommendedStake(bk) {
 // Alertes/paris localStorage réellement acceptés (en attente de résultat) — même liste de clés que
 // SYNC_KEYS (cloudStorage.js) moins les clés qui ne sont pas des tableaux d'alertes.
 const ALERT_STORAGE_KEYS = [
-  'nba_prop_alerts', 'nba_game_total_alerts',
+  'nba_prop_alerts', 'nba_game_total_alerts', 'basketball_teamtotal_alerts',
   'fb_btts_alerts', 'fb_total_alerts', 'fb_result_alerts', 'fb_dc_btts_alerts', 'fb_dc_ou_alerts',
   'basketball_result_alerts', 'basketball_spread_alerts',
   'fb_pinnacle_alerts', 'bball_pinnacle_alerts', 'bball_pinnacle_props_alerts',

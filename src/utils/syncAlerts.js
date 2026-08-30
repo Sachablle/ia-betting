@@ -27,6 +27,7 @@ export function persistAlertsKey(key, alerts) {
 const ALERT_KEY     = 'nba_prop_alerts';
 const HISTORY_KEY   = 'nba_bet_history';
 const GAME_TOTAL_KEY = 'nba_game_total_alerts';
+export const TEAM_TOTAL_KEY = 'basketball_teamtotal_alerts';
 const BASKETBALL_RESULT_KEY = 'basketball_result_alerts';
 const FB_BTTS_KEY   = 'fb_btts_alerts';
 const FB_TOTAL_KEY  = 'fb_total_alerts';
@@ -41,7 +42,7 @@ const PURGE_PLAYERS = ['Justin Bean', 'Jack Kayil', 'Leandro Bolmaro'];
 // quelle page. Boucle sur toutes les clés d'alertes connues (props, total, résultat équipe, foot)
 // pour que chaque type bénéficie du même règlement serveur — un seul endroit à étendre pour un
 // futur type d'alerte (22 juin 2026, avant ça seul ALERT_KEY/props était couvert ici).
-const SETTLEABLE_KEYS = [ALERT_KEY, GAME_TOTAL_KEY, BASKETBALL_RESULT_KEY, FB_BTTS_KEY, FB_TOTAL_KEY, FB_RESULT_KEY, FB_PINNACLE_KEY, BBALL_PINNACLE_KEY, FB_DC_BTTS_KEY, FB_DC_OU_KEY];
+const SETTLEABLE_KEYS = [ALERT_KEY, GAME_TOTAL_KEY, TEAM_TOTAL_KEY, BASKETBALL_RESULT_KEY, FB_BTTS_KEY, FB_TOTAL_KEY, FB_RESULT_KEY, FB_PINNACLE_KEY, BBALL_PINNACLE_KEY, FB_DC_BTTS_KEY, FB_DC_OU_KEY];
 
 const PENDING_SYNC_KEY = 'pending_alert_sync';
 const readPendingSync  = () => { try { return JSON.parse(localStorage.getItem(PENDING_SYNC_KEY) || '[]'); } catch { return []; } };
@@ -365,8 +366,15 @@ export async function syncBackgroundAlerts() {
           changed = true;
         }
       } else if (prev.status === 'accepted') {
-        // Même ID, cote/cut bougé
-        const lineShift = a.line != null && prev.line != null && Math.abs(a.line - prev.line) >= 0.5;
+        // Même ID, cote/cut bougé — comparé à la ligne du bookmaker RÉELLEMENT accepté, pas à la
+        // ligne de référence (souvent Unibet, cf. `a.line`). Fix 28 août 2026 (cas réel : Jackie
+        // Young pariée sur Betclic à 19.5 alors que la ligne de référence Unibet était 20.5 —
+        // corriger `prev.line` à la vraie ligne pariée se faisait aussitôt écraser par ce bloc, qui
+        // comparait à 20.5 et voyait ça comme un "shift" à rattraper). Repli sur `a.line` si le
+        // bookmaker accepté est inconnu ou absent de la ligne live (alerte pré-fix, ancien format).
+        const acceptedLineField = { unibet: 'unibetLine', betclic: 'betclicLine', winamax: 'winamaxLine' }[prev.acceptedBookmaker];
+        const liveAcceptedLine = (acceptedLineField && a[acceptedLineField] != null) ? a[acceptedLineField] : a.line;
+        const lineShift = liveAcceptedLine != null && prev.line != null && Math.abs(liveAcceptedLine - prev.line) >= 0.5;
         const ubShift   = a.unibetOdds  != null && prev.unibetOdds  != null && Math.abs(a.unibetOdds  - prev.unibetOdds)  >= 0.05;
         const bcShift   = a.betclicOdds != null && prev.betclicOdds != null && Math.abs(a.betclicOdds - prev.betclicOdds) >= 0.05;
         const wmShift   = a.winamaxOdds != null && prev.winamaxOdds != null && Math.abs(a.winamaxOdds - prev.winamaxOdds) >= 0.05;
@@ -388,7 +396,7 @@ export async function syncBackgroundAlerts() {
             ...prev,
             ...((lineShift || ubShift || bcShift || wmShift) ? {
               oddsAlert: {
-                lineFrom: prev.line, lineTo: lineShift ? a.line : null,
+                lineFrom: prev.line, lineTo: lineShift ? liveAcceptedLine : null,
                 ubFrom: prev.unibetOdds, ubTo: ubShift ? a.unibetOdds : null,
                 bcFrom: prev.betclicOdds, bcTo: bcShift ? a.betclicOdds : null,
                 wmFrom: prev.winamaxOdds, wmTo: wmShift ? a.winamaxOdds : null,
@@ -397,7 +405,7 @@ export async function syncBackgroundAlerts() {
             unibetOdds:  a.unibetOdds  ?? prev.unibetOdds,
             betclicOdds: a.betclicOdds ?? prev.betclicOdds,
             winamaxOdds: a.winamaxOdds ?? prev.winamaxOdds,
-            line: lineShift ? a.line : prev.line,
+            line: lineShift ? liveAcceptedLine : prev.line,
             probability: a.probability ?? prev.probability,
             rawProbability: a.rawProbability ?? prev.rawProbability ?? null,
             estimate:    a.estimate    ?? prev.estimate,
@@ -580,6 +588,72 @@ export async function syncGameTotalAlerts() {
 
     if (changed) {
       cloudSet(GAME_TOTAL_KEY, JSON.stringify(purged));
+      window.dispatchEvent(new Event('nba_alerts_updated'));
+    }
+  } catch {}
+}
+
+// Pont alertes "Total équipe" backend (team_total, NBA/WNBA/EU, 28 août 2026) → localStorage
+// basketball_teamtotal_alerts. Même principe que syncGameTotalAlerts ci-dessus, mais l'empreinte
+// doit aussi comparer `side` (home/away) — un même match peut avoir 2 alertes team_total distinctes
+// (une par équipe) contrairement à game_total qui n'en a qu'une.
+export async function syncTeamTotalAlerts() {
+  try {
+    const { alerts: bgAlerts } = await fetch('/api/nba/background-alerts').then(r => r.json());
+    if (!bgAlerts) return;
+    const ttAlerts = bgAlerts.filter(a => a.type === 'team_total' && a.prob > 0);
+
+    const existing = JSON.parse(localStorage.getItem(TEAM_TOTAL_KEY) || '[]');
+
+    const sameFixture = (a, b) => {
+      if (a.home !== b.home || a.away !== b.away || a.side !== b.side) return false;
+      const aT = new Date(a.date).getTime();
+      const bT = new Date(b.date).getTime();
+      if (isNaN(aT) || isNaN(bT)) return true;
+      return Math.abs(aT - bT) <= 36 * 3600_000;
+    };
+
+    let changed = false;
+    const result = [...existing];
+    ttAlerts.forEach(a => {
+      const idx = result.findIndex(p => p.id === a.id || sameFixture(p, a));
+      if (idx === -1) {
+        result.push({ ...a, savedAt: Date.now(), status: a.status || 'pending' });
+        changed = true;
+        return;
+      }
+      const prev = result[idx];
+      if ((prev.status || 'pending') !== 'pending') {
+        if (prev.status === 'accepted') {
+          const driftChanged = !!a.probDropWarning !== !!prev.probDropWarning || a.currentProbability !== prev.currentProbability;
+          if (driftChanged) {
+            result[idx] = { ...prev, probDropWarning: a.probDropWarning ?? false, currentProbability: a.probDropWarning ? a.currentProbability : null };
+            changed = true;
+          }
+        }
+        return;
+      }
+      if (prev.estimated !== a.estimated || prev.line !== a.line || prev.direction !== a.direction || prev.prob !== a.prob) {
+        result[idx] = {
+          ...prev,
+          estimated: a.estimated, line: a.line, direction: a.direction, prob: a.prob,
+          unibetOdds: a.unibetOdds ?? prev.unibetOdds,
+          betclicOdds: a.betclicOdds ?? prev.betclicOdds,
+        };
+        changed = true;
+      }
+    });
+
+    const ORPHAN_GRACE_MS = 25 * 60_000;
+    const purged = result.filter(a => {
+      if ((a.status || 'pending') !== 'pending') return true;
+      if (Date.now() - (a.savedAt || 0) < ORPHAN_GRACE_MS) return true;
+      return ttAlerts.some(p => p.id === a.id || sameFixture(p, a));
+    });
+    if (purged.length !== result.length) changed = true;
+
+    if (changed) {
+      cloudSet(TEAM_TOTAL_KEY, JSON.stringify(purged));
       window.dispatchEvent(new Event('nba_alerts_updated'));
     }
   } catch {}
@@ -893,8 +967,19 @@ export async function syncFootballAlerts() {
         }
       });
       const liveIds = new Set(totalAlerts.map(a => a.id));
+      // Les 2 lignes O/U (1.5 et 2.5) peuvent désormais alerter simultanément sur un même match
+      // (28 août 2026, cf. server.js) — l'id inclut la ligne (`${fixtureId}_total_${line}`), donc un
+      // simple Set liveIds ne suffit pas à décider si une ligne disparue est "juste ce cycle-ci" ou
+      // "vraiment abandonnée" : si le match est encore activement évalué ce cycle (au moins une ligne
+      // vivante dedans) mais qu'UNE ligne précise n'y est plus, c'est qu'elle est retombée sous le
+      // seuil — supersession réelle, purge immédiate sans attendre ORPHAN_GRACE_MS (cas réel signalé
+      // 28 août : São Paulo/RB Bragantino, "Plus de 1.5" ET "Moins de 2.5" affichées ensemble pendant
+      // la fenêtre de grâce). Si le fixture entier est absent ce cycle (panne/scrape raté), la grâce
+      // s'applique normalement — pas de faux positif sur un simple cycle manqué.
+      const liveFixtureIds = new Set(totalAlerts.map(a => a.fixtureId));
       const purged = result.filter(a => {
         if ((a.status || 'pending') !== 'pending') return true;
+        if (!liveIds.has(a.id) && liveFixtureIds.has(a.fixtureId)) return false;
         if (Date.now() - (a.savedAt || 0) < ORPHAN_GRACE_MS) return true;
         if (isCdmBeyondWindow(a)) return true;
         return liveIds.has(a.id);
@@ -1283,6 +1368,7 @@ const TELEGRAM_ACTIONS_TS_KEY = 'telegram_actions_last_ts';
 const TELEGRAM_TYPE_TO_KEY = {
   player_prop: ALERT_KEY,
   game_total: GAME_TOTAL_KEY,
+  team_total: TEAM_TOTAL_KEY,
   basketball_result: BASKETBALL_RESULT_KEY,
   basketball_pinnacle_edge: BBALL_PINNACLE_KEY,
   basketball_pinnacle_props: BBALL_PINNACLE_KEY,

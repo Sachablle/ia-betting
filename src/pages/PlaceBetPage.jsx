@@ -1,13 +1,17 @@
 import { useState, useEffect, useRef, Fragment } from 'react';
+import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
 import { BBALL_FIXTURES } from '../utils/basketball';
-import { syncBackgroundAlerts, syncGameTotalAlerts, syncBasketballResultAlerts, syncBballPinnacleAlerts, syncBballPinnaclePropsAlerts, loadBballPinnaclePropsAlerts, saveBballPinnaclePropsAlerts, syncOddsDrift, syncFootballAlerts, resolveCompletedFootballAlerts, postAcceptedAlertReliably, flushPendingAlertSync, persistAlertsKey, FB_DC_BTTS_KEY, FB_DC_OU_KEY, syncTelegramActions, syncOutrightAlerts, acceptOutrightAlert, rejectOutrightAlert, dismissOutrightAlert, OUTRIGHT_ALERTS_KEY } from '../utils/syncAlerts';
+import { syncBackgroundAlerts, syncGameTotalAlerts, syncTeamTotalAlerts, syncBasketballResultAlerts, syncBballPinnacleAlerts, syncBballPinnaclePropsAlerts, loadBballPinnaclePropsAlerts, saveBballPinnaclePropsAlerts, syncOddsDrift, syncFootballAlerts, resolveCompletedFootballAlerts, postAcceptedAlertReliably, flushPendingAlertSync, persistAlertsKey, FB_DC_BTTS_KEY, FB_DC_OU_KEY, syncTelegramActions, syncOutrightAlerts, acceptOutrightAlert, rejectOutrightAlert, dismissOutrightAlert, OUTRIGHT_ALERTS_KEY, TEAM_TOTAL_KEY } from '../utils/syncAlerts';
 import { BTTSAlertCard, FootballTotalCard, FootballResultCard, PinnacleEdgeCard, DCBTTSAlertCard, DCOUAlertCard, FootballGroupCard } from '../components/FootballAlertCards';
 import { OutrightModelCard, OutrightGapCard } from '../components/OutrightAlertCards';
-import { setItem as cloudSet } from '../utils/cloudStorage';
+import { FactorBar } from '../components/FactorBar';
+import { usePlayerNearMiss, PlayerStatBadge } from '../components/PlayerNearMissBadge';
+import { setItem as cloudSet, waitForInitialCloudSync } from '../utils/cloudStorage';
 import { cachedFetch } from '../utils/fetchCache';
 import { groupAlerts } from '../utils/groupAlerts';
-import { loadBankrollState, getRecommendedStake, getEngagedToday, BANKROLL_BRACKETS } from '../utils/bankroll';
+import { loadBankrollState, getRecommendedStake } from '../utils/bankroll';
+import { StakeCalculatorWidget, NearMissPanelWidget, buildPendingItems } from '../components/PendingAlertWidgets';
 
 // Mise engagée au moment de l'acceptation — mise pleine du palier courant, sans répartition
 // automatique entre plusieurs alertes du même jour (testé puis abandonné le 16 juillet 2026,
@@ -20,6 +24,13 @@ const HISTORY_KEY      = 'nba_bet_history';
 const GAME_TOTAL_KEY   = 'nba_game_total_alerts';
 const BASKETBALL_RESULT_KEY  = 'basketball_result_alerts';
 const BASKETBALL_RESULT_MIN_ODDS = 1.50; // cote mini — sous ce seuil, pas d'intérêt même à forte confiance
+// WNBA a son propre seuil, plus bas (1,20 côté backend, server.js `isWNBA ? 1.20 : RESULT_MIN_ODDS`,
+// `refreshOrDropPendingById` dans generateBackgroundAlerts) — jusqu'au 29 août 2026, cette page
+// appliquait le seuil 1,50 générique à TOUTES les ligues, y compris WNBA, alors que le backend avait
+// déjà validé et notifié (Telegram inclus) une alerte WNBA qualifiant à 1,20. Résultat : badge
+// "Alertes" à jour (compté ailleurs, sans ce filtre) mais carte invisible sur cette page — cas réel
+// New York Liberty vs Chicago Sky, cote 1,22, alerte reçue par Telegram mais absente de l'app.
+const BASKETBALL_RESULT_MIN_ODDS_WNBA = 1.20;
 const FB_BTTS_KEY      = 'fb_btts_alerts';
 const FB_TOTAL_KEY     = 'fb_total_alerts';
 const FB_RESULT_KEY    = 'fb_result_alerts';
@@ -553,9 +564,11 @@ function GameTotalCard({ alert, onAccept, onReject, onDismiss }) {
       </div>
 
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem', marginTop: '0.35rem', flexWrap: 'wrap' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', flexWrap: 'wrap' }}>
+          <ResultTeamLogo short={homeShort} name={home} league={league} />
           <span className="bc-team bc-team-home" style={{ flex: '0 1 auto' }}>{home || homeShort}</span>
           <span className="bc-vs">vs</span>
+          <ResultTeamLogo short={awayShort} name={away} league={league} />
           <span className="bc-team bc-team-away" style={{ flex: '0 1 auto' }}>{away || awayShort}</span>
         </div>
         <span style={{ fontSize: 10, color: 'var(--text-dim)', flexShrink: 0, whiteSpace: 'nowrap' }}>
@@ -578,6 +591,103 @@ function GameTotalCard({ alert, onAccept, onReject, onDismiss }) {
           ⚠ Corrélée — {keyPlayerMatchCorrelation.player} {keyPlayerMatchCorrelation.direction === 'over' ? '▲' : '▼'} {keyPlayerMatchCorrelation.line} pts {keyPlayerMatchCorrelation.status === 'accepted' ? 'déjà accepté' : 'aussi proposé'} ({keyPlayerMatchCorrelation.probability}%)
         </div>
       )}
+
+      <div className="bc-stats" style={{ margin: '0 0 0.35rem' }}>
+        <div className="bc-prob">
+          <div className="bc-prob-bar-track">
+            <div className="bc-prob-bar-fill" style={{ width: `${barPct}%`, background: '#60a5fa' }} />
+          </div>
+          <span className="bc-prob-pct" style={{ color: '#60a5fa', fontSize: 10 }}>{timeLabel}</span>
+        </div>
+      </div>
+
+      {(unibetOdds || betclicOdds) && (
+        <div style={{ display: 'flex', gap: '0.5rem' }}>
+          {[
+            { label: 'Unibet',  odds: unibetOdds,  color: '#1db954' },
+            { label: 'Betclic', odds: betclicOdds, color: '#e0292e' },
+          ].filter(b => b.odds).map(({ label, odds, color }) => (
+            <div key={label}
+              onClick={isPending ? e => { e.stopPropagation(); onAccept(id, label.toLowerCase(), odds); } : undefined}
+              style={{ flex: 1, textAlign: 'center', background: 'rgba(255,255,255,0.04)', borderRadius: 6, padding: '0.3rem', cursor: isPending ? 'pointer' : 'default', transition: 'background 0.15s' }}
+              onMouseEnter={isPending ? e => e.currentTarget.style.background = 'rgba(255,255,255,0.1)' : undefined}
+              onMouseLeave={isPending ? e => e.currentTarget.style.background = 'rgba(255,255,255,0.04)' : undefined}
+            >
+              <div style={{ fontSize: 9, color: 'var(--text-dim)', marginBottom: 2 }}>{label}</div>
+              <div style={{ fontSize: 13, fontWeight: 700, color, fontVariantNumeric: 'tabular-nums' }}>{odds.toFixed(2)}</div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Total équipe (28 août 2026) — même carte que GameTotalCard, mais porte sur UNE équipe (a.side)
+// plutôt que le total combiné : nom de l'équipe visée mis en avant au lieu de "home vs away" nu.
+function TeamTotalCard({ alert, onAccept, onReject, onDismiss }) {
+  const { id, home, away, homeShort, awayShort, date, estimated, line, direction, prob, status, league, unibetOdds, betclicOdds, eventId, side, team, teamShort } = alert;
+  const navigate   = useNavigate();
+  const isPending  = status === 'pending';
+  const isAccepted = status === 'accepted';
+  const fixtureId   = eventId ?? id?.split('_teamtotal_')[0] ?? null;
+  const leagueParam = league && league !== 'nba' ? `?league=${league}` : '';
+  const isOver      = direction === 'over';
+  const accent     = isOver ? '#4ade80' : '#f87171';
+  const leagueLabel = totalLeagueLabel(league);
+
+  const now      = Date.now();
+  const msLeft   = new Date(date).getTime() - now;
+  const hoursLeft = msLeft / 3_600_000;
+  const daysLeft  = Math.floor(hoursLeft / 24);
+  const hRem      = Math.floor(hoursLeft % 24);
+  const mRem      = Math.floor((msLeft % 3_600_000) / 60_000);
+  const timeLabel = msLeft <= 0 ? 'Imminent' : daysLeft > 0 ? `${daysLeft}j ${hRem}h` : hoursLeft >= 1 ? `${Math.floor(hoursLeft)}h ${mRem}m` : `${mRem}m`;
+  const barPct    = Math.min(Math.max(msLeft / (7 * 24 * 3_600_000) * 100, 0), 100);
+
+  return (
+    <div
+      className="bet-card"
+      style={{ position: 'relative', '--league-accent': '#f47c20', borderColor: 'rgba(244,124,32,0.3)', cursor: fixtureId ? 'pointer' : 'default' }}
+      onClick={() => fixtureId && navigate(`/basketball/${fixtureId}${leagueParam}`)}
+      onMouseEnter={() => _prefetchBballCard(home, away, league)}
+    >
+      {isPending
+        ? <button onClick={e => { e.stopPropagation(); onReject(id); }} style={{ position: 'absolute', top: 8, right: 10, background: 'none', border: 'none', cursor: 'pointer', padding: 0, lineHeight: 1 }}><svg width="14" height="14" viewBox="0 0 18 18" fill="none"><circle cx="9" cy="9" r="7.5" stroke="#ef4444" strokeWidth="1.5"/><path d="M6 6l6 6M12 6l-6 6" stroke="#ef4444" strokeWidth="1.75" strokeLinecap="round"/></svg></button>
+        : <button onClick={e => { e.stopPropagation(); onDismiss(id); }} style={{ position: 'absolute', top: 8, right: 10, background: 'none', border: 'none', color: 'var(--text-dim)', cursor: 'pointer', fontSize: 16, lineHeight: 1, padding: 0 }}>×</button>
+      }
+      <div className="bc-header">
+        <span className="bc-flag">🏀</span>
+        <span className="bc-league">{leagueLabel} · Total équipe</span>
+        <div style={{ marginLeft: 'auto', marginRight: 24, display: 'flex', alignItems: 'center', gap: 6 }}>
+          {prob != null && <span className={`bc-edge-badge ${prob >= 90 ? 'high' : 'mid'}`}>{prob}%</span>}
+          {!isPending && (
+            <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 10, color: isAccepted ? '#4ade80' : '#f87171', background: isAccepted ? 'rgba(74,222,128,0.12)' : 'rgba(248,113,113,0.1)' }}>
+              {isAccepted ? '✓ Accepté' : '✗ Rejeté'}
+            </span>
+          )}
+        </div>
+      </div>
+
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem', marginTop: '0.35rem', flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', flexWrap: 'wrap' }}>
+          <ResultTeamLogo short={side === 'home' ? homeShort : awayShort} name={team} league={league} size={20} />
+          <span className="bc-team" style={{ flex: '0 1 auto', color: '#fff', fontWeight: 700 }}>{team || (side === 'home' ? (home || homeShort) : (away || awayShort))}</span>
+          <span style={{ fontSize: 10, color: 'var(--text-dim)' }}>({home || homeShort} vs {away || awayShort})</span>
+        </div>
+        <span style={{ fontSize: 10, color: 'var(--text-dim)', flexShrink: 0, whiteSpace: 'nowrap' }}>
+          {new Date(date).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
+        </span>
+      </div>
+
+      <div style={{ margin: '0.3rem 0', display: 'flex', alignItems: 'center', gap: 6 }}>
+        <span style={{ fontSize: 12, fontWeight: 700, color: accent, background: isOver ? 'rgba(74,222,128,0.1)' : 'rgba(248,113,113,0.1)', padding: '0.25rem 0.5rem', borderRadius: 6, whiteSpace: 'nowrap' }}>
+          {isOver ? '▲ Over' : '▼ Under'} {line}
+        </span>
+        <span style={{ marginLeft: 'auto', fontSize: 10, color: 'var(--text-dim)', flexShrink: 0, whiteSpace: 'nowrap' }}>
+          modèle <b style={{ color: 'var(--text)' }}>{estimated}</b>
+        </span>
+      </div>
 
       <div className="bc-stats" style={{ margin: '0 0 0.35rem' }}>
         <div className="bc-prob">
@@ -658,9 +768,11 @@ function BasketballPinnacleEdgeCard({ alert, onAccept, onReject, onDismiss }) {
       </div>
 
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem', marginTop: '0.35rem', flexWrap: 'wrap' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', flexWrap: 'wrap' }}>
+          <ResultTeamLogo short={homeShort} name={home} league={league} />
           <span className="bc-team bc-team-home" style={{ flex: '0 1 auto' }}>{home || homeShort}</span>
           <span className="bc-vs">vs</span>
+          <ResultTeamLogo short={awayShort} name={away} league={league} />
           <span className="bc-team bc-team-away" style={{ flex: '0 1 auto' }}>{away || awayShort}</span>
         </div>
         <span style={{ fontSize: 10, color: 'var(--text-dim)', flexShrink: 0, whiteSpace: 'nowrap' }}>
@@ -760,9 +872,11 @@ function BasketballPinnaclePropsCard({ alert, onAccept, onReject, onDismiss }) {
         )}
       </div>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem', marginTop: '0.35rem', flexWrap: 'wrap' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', flexWrap: 'wrap' }}>
+          <ResultTeamLogo short={homeShort} name={home} league={league} />
           <span className="bc-team bc-team-home" style={{ flex: '0 1 auto' }}>{home || homeShort}</span>
           <span className="bc-vs">vs</span>
+          <ResultTeamLogo short={awayShort} name={away} league={league} />
           <span className="bc-team bc-team-away" style={{ flex: '0 1 auto' }}>{away || awayShort}</span>
         </div>
         <span style={{ fontSize: 10, color: 'var(--text-dim)', flexShrink: 0, whiteSpace: 'nowrap' }}>
@@ -806,6 +920,32 @@ function BasketballPinnaclePropsCard({ alert, onAccept, onReject, onDismiss }) {
   );
 }
 
+// Logo équipe partagé par toutes les cartes basket de cette page (29 août 2026, demande explicite —
+// carte Résultat sans logo signalée par l'utilisateur, cas réel New York Liberty ; étendu le même jour
+// à GameTotalCard/TeamTotalCard/BasketballPinnacleEdgeCard/BasketballPinnaclePropsCard, aucune n'en
+// avait jamais eu). NBA/WNBA seulement (EU/euroleague n'ont pas de logo devinable depuis l'abréviation
+// seule) — même CDN ESPN que RunningPage.jsx, avec le même correctif : la WNBA n'a pas de sous-chemin
+// /scoreboard/ (404 vérifié en direct), le code brut à 2 lettres suffit sans transformation. Déclaration
+// `function` — hoisted, utilisable par les composants définis plus haut dans ce fichier sans déplacer.
+function ResultTeamLogo({ short, name, league, size = 22 }) {
+  const [err, setErr] = useState(false);
+  const code = (short || '').toLowerCase();
+  const src = code
+    ? league === 'wnba'
+      ? `https://a.espncdn.com/i/teamlogos/wnba/500/${code}.png`
+      : `https://a.espncdn.com/i/teamlogos/nba/500/scoreboard/${code}.png`
+    : null;
+  const initials = (short || name || '?').slice(0, 3).toUpperCase();
+  if (!src || err) {
+    return (
+      <div style={{ width: size, height: size, borderRadius: '50%', background: 'rgba(255,255,255,0.07)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: size * 0.32, fontWeight: 800, color: 'var(--text-dim)', flexShrink: 0 }}>
+        {initials}
+      </div>
+    );
+  }
+  return <img src={src} alt={short} onError={() => setErr(true)} style={{ width: size, height: size, objectFit: 'contain', borderRadius: '50%', flexShrink: 0 }} />;
+}
+
 function BasketballResultCard({ alert, onAccept, onReject, onDismiss }) {
   const { id, home, away, homeShort, awayShort, date, teamName, teamShort, probability, edge, odds, bookmaker, status, league, eventId, matchCorrelation, keyPlayerMatchCorrelation, opposingPositionWarning } = alert;
   const navigate   = useNavigate();
@@ -847,9 +987,11 @@ function BasketballResultCard({ alert, onAccept, onReject, onDismiss }) {
         </div>
       </div>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem', marginTop: '0.35rem', flexWrap: 'wrap' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', flexWrap: 'wrap' }}>
+          <ResultTeamLogo short={homeShort} name={home} league={league} />
           <span className="bc-team bc-team-home" style={{ flex: '0 1 auto' }}>{home || homeShort}</span>
           <span className="bc-vs">vs</span>
+          <ResultTeamLogo short={awayShort} name={away} league={league} />
           <span className="bc-team bc-team-away" style={{ flex: '0 1 auto' }}>{away || awayShort}</span>
         </div>
         <span style={{ fontSize: 10, color: 'var(--text-dim)', flexShrink: 0, whiteSpace: 'nowrap' }}>
@@ -966,6 +1108,10 @@ function PropAlertCard({ group, onDismiss, onAccept, onReject }) {
   const { player, fixtureDate, stats, maxProb, ids, status, injury, league, playerIsQ, teamHasQ } = group;
   const leagueLabel = league === 'wnba' ? 'WNBA Props' : league === 'euroleague' ? 'EL Props' : league === 'acb' ? 'ACB Props' : league === 'bbl' ? 'BBL Props' : league === 'legaa' ? 'Lega A Props' : league === 'lnb' ? 'LNB Props' : 'NBA Props';
   const navigate = useNavigate();
+  // Historique near-miss de CETTE joueuse (29 août 2026) — combien de fois elle a passé sa ligne
+  // par le passé, par stat. Petit badge ✔ discret à côté de chaque stat, pas une recommandation.
+  const playerHistory = usePlayerNearMiss(player, league);
+  const playerByStat = playerHistory[player]?.byStat;
 
   const goToMatch = (e) => {
     e?.stopPropagation();
@@ -988,6 +1134,10 @@ function PropAlertCard({ group, onDismiss, onAccept, onReject }) {
   const primaryStat = stats[0];
   const primaryIsOver = primaryStat?.direction === 'over';
   const barColor  = primaryIsOver ? '#4ade80' : '#f87171';
+  // Détail de la barre "% du plafond" (28 août 2026, demande explicite) — les facteurs sont figés
+  // au moment où l'alerte est sortie (même snapshot que estimate/deviation), pas recalculés en
+  // direct comme sur la fiche match. Un stat à la fois déplié, par carte.
+  const [expandedFactorStat, setExpandedFactorStat] = useState(null);
 
   return (
     <div className="bet-card" style={{ position: 'relative', cursor: 'pointer', '--league-accent': '#f47c20', borderColor: 'rgba(244,124,32,0.3)' }} onClick={goToMatch} onMouseEnter={() => _prefetchBballCard(group.homeTeam, group.awayTeam, group.league)}>
@@ -1033,7 +1183,7 @@ function PropAlertCard({ group, onDismiss, onAccept, onReject }) {
         </span>
       </div>
 
-      {stats.map(({ stat, direction, line, estimate, unibetOdds, betclicOdds, winamaxOdds, oddsAlert, obsolete, teammateOverlap, oppQSamePosition, deviation, deviationCap, floorTest, keyPlayerMatchCorrelation }) => {
+      {stats.map(({ stat, direction, line, unibetLine, betclicLine, winamaxLine, estimate, unibetOdds, betclicOdds, winamaxOdds, oddsAlert, obsolete, teammateOverlap, oppQSamePosition, deviation, deviationCap, factors, floorTest, keyPlayerMatchCorrelation }) => {
         const isO = direction === 'over';
         const clr = isO ? '#4ade80' : '#f87171';
         const bg  = isO ? 'rgba(74,222,128,0.06)' : 'rgba(248,113,113,0.06)';
@@ -1056,8 +1206,9 @@ function PropAlertCard({ group, onDismiss, onAccept, onReject }) {
                 <span title={`Un marché équipe (${keyPlayerMatchCorrelation.type === 'basketball_result' ? 'Résultat' : 'Total'}) de ce match est aussi en cours — sa perf en points influence directement le score final. Pas un edge indépendant.`} style={{ fontSize: 9, fontWeight: 800, padding: '2px 6px', borderRadius: 4, background: 'rgba(251,191,36,0.15)', color: '#fbbf24', border: '1px solid rgba(251,191,36,0.5)', flexShrink: 0 }}>⚠ Corrélée — marché équipe</span>
               )}
               {estimate != null && (
-                <span style={{ marginLeft: 'auto', fontSize: 10, color: 'var(--text-dim)', flexShrink: 0 }}>
+                <span style={{ marginLeft: 'auto', fontSize: 10, color: 'var(--text-dim)', flexShrink: 0, display: 'flex', alignItems: 'center', gap: 5 }}>
                   proj <b style={{ color: 'var(--text)' }}>{estimate.toFixed(1)}</b>
+                  <PlayerStatBadge stat={stat} direction={direction} byStat={playerByStat} />
                 </span>
               )}
             </div>
@@ -1070,15 +1221,36 @@ function PropAlertCard({ group, onDismiss, onAccept, onReject }) {
             {deviation != null && deviationCap > 0 && (() => {
               const ratio = Math.min(1, deviation / deviationCap);
               const gaugeColor = ratio > 0.66 ? '#f87171' : ratio > 0.33 ? '#fbbf24' : '#4ade80';
+              const hasFactors = factors?.length > 0;
+              const isExpanded = expandedFactorStat === stat;
               return (
-                <div title="À quel point la projection s'écarte de la forme brute du joueur (redistribution + ajustement matchup cumulés) — plus la barre est proche du bout, plus le pari empile d'hypothèses au lieu de reposer sur une performance solide" style={{ display: 'flex', alignItems: 'center', gap: 6, margin: '0 0 0.3rem' }}>
-                  <div style={{ flex: '0 0 54px', height: 5, borderRadius: 3, background: 'rgba(148,163,184,0.2)', overflow: 'hidden' }}>
-                    <div style={{ width: `${ratio * 100}%`, height: '100%', background: gaugeColor, borderRadius: 3 }} />
+                <>
+                  <div
+                    title={hasFactors ? 'Cliquer pour voir le détail des facteurs' : "À quel point la projection s'écarte de la forme brute du joueur (redistribution + ajustement matchup cumulés) — plus la barre est proche du bout, plus le pari empile d'hypothèses au lieu de reposer sur une performance solide"}
+                    onClick={hasFactors ? e => { e.stopPropagation(); setExpandedFactorStat(isExpanded ? null : stat); } : undefined}
+                    style={{ display: 'flex', alignItems: 'center', gap: 6, margin: '0 0 0.3rem', cursor: hasFactors ? 'pointer' : 'default' }}
+                  >
+                    <div style={{ flex: '0 0 54px', height: 5, borderRadius: 3, background: 'rgba(148,163,184,0.2)', overflow: 'hidden' }}>
+                      <div style={{ width: `${ratio * 100}%`, height: '100%', background: gaugeColor, borderRadius: 3 }} />
+                    </div>
+                    <span style={{ fontSize: 9, color: 'var(--text-dim)' }}>
+                      {Math.round(deviation * 100)}%/{Math.round(deviationCap * 100)}% du plafond
+                    </span>
+                    {hasFactors && (
+                      <svg width="8" height="8" viewBox="0 0 12 12" fill="none" style={{ transform: isExpanded ? 'rotate(180deg)' : 'none', transition: 'transform 0.15s', flexShrink: 0 }}>
+                        <path d="M2.5 4.5L6 8L9.5 4.5" stroke="var(--text-dim)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                      </svg>
+                    )}
                   </div>
-                  <span style={{ fontSize: 9, color: 'var(--text-dim)' }}>
-                    {Math.round(deviation * 100)}%/{Math.round(deviationCap * 100)}% du plafond
-                  </span>
-                </div>
+                  {isExpanded && hasFactors && (
+                    <div onClick={e => e.stopPropagation()} style={{ margin: '-0.1rem 0 0.4rem', padding: '0.4rem 0.5rem', background: 'rgba(255,255,255,0.03)', borderRadius: 6 }}>
+                      <div style={{ fontSize: 8, color: 'var(--text-dim)', marginBottom: 4 }}>Facteurs figés au moment de l'alerte — pas recalculés en direct.</div>
+                      {factors.filter(f => Math.abs(f.val - 1) >= 0.01).map(f => (
+                        <FactorBar key={f.name} name={f.name} val={f.val} desc={f.desc} />
+                      ))}
+                    </div>
+                  )}
+                </>
               );
             })()}
             <div className="bc-stats" style={{ margin: '0 0 0.3rem' }}>
@@ -1089,22 +1261,32 @@ function PropAlertCard({ group, onDismiss, onAccept, onReject }) {
                 <span className="bc-prob-pct" style={{ color: '#60a5fa', fontSize: 10 }}>{timeLabel}</span>
               </div>
             </div>
-            {/* Cotes séparées — cliquer = accepter */}
+            {/* Cotes séparées — cliquer = accepter. Chaque bookmaker affiche SA propre ligne quand
+                elle diffère de la ligne de référence (28 août 2026, demande explicite — cas réel :
+                Unibet 20.5/1.65 vs Betclic 19.5/1.72, cliquer sur Betclic pariait en réalité une
+                ligne différente de celle affichée en haut de carte, jamais visible avant ce fix). */}
             {(unibetOdds || betclicOdds) && (
               <div style={{ display: 'flex', gap: '0.5rem' }}>
-                {[{ label: 'Unibet', odds: unibetOdds, color: '#1db954' }, { label: 'Betclic', odds: betclicOdds, color: '#e0292e' }]
+                {[
+                  { label: 'Unibet', odds: unibetOdds, color: '#1db954', bkLine: unibetLine },
+                  { label: 'Betclic', odds: betclicOdds, color: '#e0292e', bkLine: betclicLine },
+                ]
                   .filter(b => b.odds)
-                  .map(({ label, odds, color }) => (
-                    <div key={label}
-                      onClick={isPending ? e => { e.stopPropagation(); onAccept(ids, label.toLowerCase(), odds); } : undefined}
-                      style={{ flex: 1, textAlign: 'center', background: 'rgba(255,255,255,0.04)', borderRadius: 6, padding: '0.3rem', cursor: isPending ? 'pointer' : 'default', transition: 'background 0.15s' }}
-                      onMouseEnter={isPending ? e => e.currentTarget.style.background = 'rgba(255,255,255,0.1)' : undefined}
-                      onMouseLeave={isPending ? e => e.currentTarget.style.background = 'rgba(255,255,255,0.04)' : undefined}
-                    >
-                      <div style={{ fontSize: 9, color: 'var(--text-dim)', marginBottom: 2 }}>{label}</div>
-                      <div style={{ fontSize: 13, fontWeight: 700, color, fontVariantNumeric: 'tabular-nums' }}>{odds.toFixed(2)}</div>
-                    </div>
-                  ))}
+                  .map(({ label, odds, color, bkLine }) => {
+                    const lineDiffers = bkLine != null && line != null && bkLine !== line;
+                    return (
+                      <div key={label}
+                        onClick={isPending ? e => { e.stopPropagation(); onAccept(ids, label.toLowerCase(), odds, bkLine ?? line); } : undefined}
+                        title={lineDiffers ? `Ligne ${label} : ${isO ? '▲ Over' : '▼ Under'} ${bkLine} (différente de la ligne de référence ${line})` : undefined}
+                        style={{ flex: 1, textAlign: 'center', background: 'rgba(255,255,255,0.04)', borderRadius: 6, padding: '0.3rem', cursor: isPending ? 'pointer' : 'default', transition: 'background 0.15s' }}
+                        onMouseEnter={isPending ? e => e.currentTarget.style.background = 'rgba(255,255,255,0.1)' : undefined}
+                        onMouseLeave={isPending ? e => e.currentTarget.style.background = 'rgba(255,255,255,0.04)' : undefined}
+                      >
+                        <div style={{ fontSize: 9, color: 'var(--text-dim)', marginBottom: 2 }}>{label}{lineDiffers && <span style={{ color: '#fbbf24', fontWeight: 700 }}> · {bkLine}</span>}</div>
+                        <div style={{ fontSize: 13, fontWeight: 700, color, fontVariantNumeric: 'tabular-nums' }}>{odds.toFixed(2)}</div>
+                      </div>
+                    );
+                  })}
               </div>
             )}
             {deviation != null && deviationCap > 0 && (
@@ -1260,191 +1442,6 @@ function RunningSection({ dated, liveStats, donutTotal, onDismissGroup, onDismis
   );
 }
 
-// Calculateur de mise multi-alertes (1er août 2026) — outil manuel, PAS une répartition
-// automatique : contrairement à la tentative du 16 juillet (abandonnée, cf. bankroll.js), ici
-// on ne cherche jamais à deviner si une alerte va sortir plus tard dans la journée — l'outil ne
-// regarde que les alertes déjà affichées à l'instant où on l'ouvre, et propose une répartition du
-// budget du jour RESTANT entre elles, pondérée par l'edge de chacune (proba×cote-1). Rien n'est
-// écrit automatiquement sur les alertes — juste un chiffre suggéré, la mise réelle continue de se
-// figer normalement à l'acceptation (stakeAtAccept).
-function extractProbOdds(item) {
-  const bestOdds = (...odds) => {
-    const valid = odds.filter(o => typeof o === 'number' && o > 1);
-    return valid.length ? Math.max(...valid) : null;
-  };
-  if (item.type === 'prop') {
-    const g = item.data;
-    const stats = g?.stats || [];
-    if (!stats.length) return null;
-    const top = stats.reduce((best, s) => (s.probability > (best?.probability ?? -1) ? s : best), null);
-    if (!top) return null;
-    const odds = bestOdds(top.unibetOdds, top.betclicOdds, top.winamaxOdds);
-    if (top.probability == null || !odds) return null;
-    return { label: `${g.player} · ${top.stat?.toUpperCase()} ${top.direction === 'over' ? '+' : '-'}${top.line}`, probability: top.probability, odds };
-  }
-  if (item.type === 'fbgroup') {
-    const alerts = item.data?.alerts?.filter(a => a.status === 'pending') || [];
-    if (!alerts.length) return null;
-    const top = alerts.reduce((best, a) => (a.probability > (best?.probability ?? -1) ? a : best), null);
-    const odds = bestOdds(top?.unibetOdds, top?.betclicOdds, top?.winamaxOdds);
-    if (!top || top.probability == null || !odds) return null;
-    return { label: `${top.home || top.homeShort} vs ${top.away || top.awayShort} · ${top.stat || top.type}`, probability: top.probability, odds };
-  }
-  if (item.type === 'fbsingle' || item.type === 'basketresult') {
-    const a = item.data;
-    const probability = a.probability;
-    const odds = a.odds ?? bestOdds(a.unibetOdds, a.betclicOdds, a.winamaxOdds);
-    if (probability == null || !odds) return null;
-    const label = a.teamName || a.teamShort ? `${a.home || a.homeShort} vs ${a.away || a.awayShort} · ${a.teamShort || a.teamName}`
-      : `${a.home || a.homeShort} vs ${a.away || a.awayShort}`;
-    return { label, probability, odds };
-  }
-  if (item.type === 'total' || item.type === 'bballpinnacle' || item.type === 'bballpinnacleprops') {
-    const a = item.data;
-    const probability = a.prob;
-    const odds = bestOdds(a.unibetOdds, a.betclicOdds, a.winamaxOdds);
-    if (probability == null || !odds) return null;
-    return { label: `${a.home || a.homeShort} vs ${a.away || a.awayShort} · ${a.player ? a.player : (a.direction === 'over' ? 'Over' : 'Under') + ' ' + (a.line ?? '')}`, probability, odds };
-  }
-  // outright : pari saison entière, pas une décision "aujourd'hui" — hors périmètre de cet outil
-  return null;
-}
-
-function StakeCalculatorWidget({ items }) {
-  const [open, setOpen] = useState(false);
-  // Décalage de palier (1er août 2026) — permet de simuler le calcul sur un palier plus prudent
-  // (ou plus agressif) que le bankroll réel actuel, sans toucher au bankroll réellement suivi
-  // (Suivi Bankroll, BacktestingPage.jsx) — purement une hypothèse pour CE calcul, remise à zéro
-  // à chaque fermeture du panneau.
-  const [bracketOffset, setBracketOffset] = useState(0);
-  if (!open) {
-    return (
-      <button
-        onClick={() => setOpen(true)}
-        title="Calculateur de mise — plusieurs alertes en même temps"
-        style={{ position: 'fixed', bottom: 20, right: 20, zIndex: 40, width: 32, height: 32, borderRadius: '50%', border: '1px solid rgba(96,165,250,0.4)', background: '#1a2332', color: '#60a5fa', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', boxShadow: '0 4px 16px rgba(0,0,0,0.4)' }}
-      >
-        <svg width="13" height="12" viewBox="0 0 20 18" fill="none">
-          <rect x="1" y="10" width="4" height="7" rx="1" stroke="currentColor" strokeWidth="1.3"/>
-          <rect x="8" y="4" width="4" height="13" rx="1" stroke="currentColor" strokeWidth="1.3"/>
-          <rect x="15" y="7" width="4" height="10" rx="1" stroke="currentColor" strokeWidth="1.3"/>
-        </svg>
-      </button>
-    );
-  }
-
-  const bk = loadBankrollState().current;
-  let realIdx = 0;
-  BANKROLL_BRACKETS.forEach((b, i) => { if (bk >= b.min) realIdx = i; });
-  const effIdx = Math.min(BANKROLL_BRACKETS.length - 1, Math.max(0, realIdx + bracketOffset));
-  const effBracket = BANKROLL_BRACKETS[effIdx];
-  const dailyBudget = effBracket.stake ?? Math.round(bk * 0.05);
-  const engaged = getEngagedToday().total;
-  const remaining = Math.max(0, dailyBudget - engaged);
-
-  // Pondération par fraction de Kelly (pas par edge brut) — corrige un vrai défaut signalé par
-  // l'utilisateur : quand plusieurs alertes affichent la même probabilité (ex: 65%, plafond de
-  // sécurité sanityMax), pondérer par edge seul revient à juste miser plus gros sur la cote la plus
-  // haute, sans tenir compte que ça veut aussi dire perdre plus si le pari rate. Kelly f=(bp-q)/b
-  // (b=cote-1) modère naturellement les grosses cotes — même classement qu'avec l'edge, écart moins
-  // extrême. Demi-Kelly (×0.5) : nos probabilités affichées ne sont jamais parfaitement calibrées
-  // (cf. suivi near-miss), Kelly plein suppose une proba exacte et sur-mise si elle est fausse.
-  const KELLY_FRACTION = 0.5;
-  // Plafond de concentration (24 août 2026) — sans lui, un edge nettement supérieur (ex: +15% vs
-  // +3%) peut recevoir ~80% du budget du jour : si CE pari précis rate pendant que l'autre gagne,
-  // la perte nette dépasse largement ce que le gain de l'autre compense (cas réel signalé par
-  // l'utilisateur : Collier perd + Atlanta gagne → -50,70€ sans plafond, sur seulement 75€ de
-  // budget). Le Kelly atténué suppose des probas parfaitement calibrées, ce qui n'est jamais vrai
-  // en pratique (cf. suivi near-miss) — un plafond dur limite l'impact d'une erreur de calibration
-  // sur un seul pari, au prix d'un edge théorique légèrement sous-optimal. Non calibré (v1, choix
-  // raisonné avec l'utilisateur) : 60% garde un net avantage au meilleur edge sans qu'un seul pari
-  // puisse représenter plus de 3/5 du risque du jour.
-  const CONCENTRATION_CAP = 0.6;
-  const rows = items
-    .map(item => {
-      const ext = extractProbOdds(item);
-      if (!ext) return null;
-      const p = ext.probability / 100;
-      const b = ext.odds - 1;
-      const edge = p * ext.odds - 1;
-      const kelly = Math.max(0, (p - (1 - p) / b)) * KELLY_FRACTION;
-      return { key: item.key, ...ext, edge, kelly };
-    })
-    .filter(r => r && r.kelly > 0)
-    .sort((a, b) => b.kelly - a.kelly);
-
-  // Répartition en cascade : tout pari qui dépasserait le plafond est fixé dessus, le reste du
-  // budget est réparti au prorata du Kelly restant parmi les paris non plafonnés — répété jusqu'à
-  // stabilisation (nécessaire si plusieurs paris à fort edge dépassent le plafond tour à tour).
-  const capAmount = remaining * CONCENTRATION_CAP;
-  const stakeByKey = {};
-  let pool = remaining;
-  let active = rows;
-  while (active.length) {
-    const totalW = active.reduce((s, r) => s + r.kelly, 0);
-    if (totalW <= 0) break;
-    const overCap = active.filter(r => pool * (r.kelly / totalW) > capAmount + 1e-9);
-    if (!overCap.length) {
-      active.forEach(r => { stakeByKey[r.key] = pool * (r.kelly / totalW); });
-      break;
-    }
-    overCap.forEach(r => { stakeByKey[r.key] = capAmount; pool -= capAmount; });
-    active = active.filter(r => stakeByKey[r.key] == null);
-  }
-  const withStake = rows.map(r => ({ ...r, stake: Math.round((stakeByKey[r.key] ?? 0) / 5) * 5 }));
-
-  return (
-    <div style={{ position: 'fixed', bottom: 20, right: 20, zIndex: 40, width: 340, maxHeight: '70vh', overflowY: 'auto', background: '#0f1620', border: '1px solid rgba(96,165,250,0.3)', borderRadius: 12, boxShadow: '0 8px 32px rgba(0,0,0,0.5)', padding: '0.9rem' }}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.6rem' }}>
-        <span style={{ fontSize: 13, fontWeight: 700, color: '#60a5fa', display: 'flex', alignItems: 'center', gap: 6 }}>
-          <svg width="14" height="13" viewBox="0 0 20 18" fill="none" style={{ flexShrink: 0 }}>
-            <rect x="1" y="10" width="4" height="7" rx="1" stroke="currentColor" strokeWidth="1.6"/>
-            <rect x="8" y="4" width="4" height="13" rx="1" stroke="currentColor" strokeWidth="1.6"/>
-            <rect x="15" y="7" width="4" height="10" rx="1" stroke="currentColor" strokeWidth="1.6"/>
-          </svg>
-          Répartition des mises
-        </span>
-        <button onClick={() => setOpen(false)} style={{ background: 'none', border: 'none', color: 'var(--text-dim)', cursor: 'pointer', fontSize: 16, lineHeight: 1 }}>×</button>
-      </div>
-      <div style={{ fontSize: 10, color: 'var(--text-dim)', marginBottom: '0.4rem', lineHeight: 1.5 }}>
-        Budget du jour <b style={{ color: 'var(--text)' }}>{dailyBudget}€</b> · déjà engagé <b style={{ color: 'var(--text)' }}>{engaged}€</b> · restant <b style={{ color: remaining > 0 ? '#4ade80' : '#f87171' }}>{remaining}€</b>
-      </div>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: '0.6rem' }}>
-        <span style={{ fontSize: 9, color: 'var(--text-dim)' }}>Palier utilisé :</span>
-        <button onClick={() => setBracketOffset(o => Math.max(o - 1, -realIdx))} disabled={effIdx === 0} title="Palier plus prudent" style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 4, color: effIdx === 0 ? 'var(--text-dim)' : 'var(--text)', cursor: effIdx === 0 ? 'default' : 'pointer', fontSize: 11, padding: '1px 6px', opacity: effIdx === 0 ? 0.4 : 1 }}>‹</button>
-        <span style={{ fontSize: 10, color: bracketOffset !== 0 ? '#fbbf24' : 'var(--text)', fontWeight: 600 }}>
-          {effBracket.min}€+{bracketOffset !== 0 ? ' (simulé)' : ''}
-        </span>
-        <button onClick={() => setBracketOffset(o => Math.min(o + 1, BANKROLL_BRACKETS.length - 1 - realIdx))} disabled={effIdx === BANKROLL_BRACKETS.length - 1} title="Palier plus agressif" style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 4, color: effIdx === BANKROLL_BRACKETS.length - 1 ? 'var(--text-dim)' : 'var(--text)', cursor: effIdx === BANKROLL_BRACKETS.length - 1 ? 'default' : 'pointer', fontSize: 11, padding: '1px 6px', opacity: effIdx === BANKROLL_BRACKETS.length - 1 ? 0.4 : 1 }}>›</button>
-        {bracketOffset !== 0 && (
-          <button onClick={() => setBracketOffset(0)} style={{ fontSize: 9, color: '#60a5fa', background: 'none', border: 'none', cursor: 'pointer', marginLeft: 2 }}>↺ réel</button>
-        )}
-      </div>
-      {rows.length === 0 && (
-        <p style={{ fontSize: 11, color: 'var(--text-dim)' }}>Aucune alerte avec cote et probabilité exploitables en ce moment.</p>
-      )}
-      {rows.length > 0 && remaining <= 0 && (
-        <p style={{ fontSize: 11, color: '#f87171', marginBottom: '0.5rem' }}>Budget du jour déjà atteint — mise suggérée à 0€ pour toutes.</p>
-      )}
-      {withStake.map(r => (
-        <div key={r.key} style={{ padding: '0.4rem 0', borderTop: '1px solid rgba(255,255,255,0.06)' }}>
-          <div style={{ fontSize: 11, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.label}</div>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginTop: 2 }}>
-            <span style={{ fontSize: 10, color: 'var(--text-dim)' }}>{r.probability}% · cote {r.odds.toFixed(2)} · edge {(r.edge * 100).toFixed(1)}%</span>
-            <span style={{ fontSize: 13, fontWeight: 700, color: '#4ade80' }}>{r.stake}€</span>
-          </div>
-        </div>
-      ))}
-      {withStake.length > 0 && (
-        <div style={{ marginTop: '0.5rem', paddingTop: '0.5rem', borderTop: '1px solid rgba(255,255,255,0.1)', display: 'flex', justifyContent: 'space-between', fontSize: 11 }}>
-          <span style={{ color: 'var(--text-dim)' }}>Total suggéré</span>
-          <span style={{ fontWeight: 700, color: 'var(--text)' }}>{withStake.reduce((s, r) => s + r.stake, 0)}€</span>
-        </div>
-      )}
-    </div>
-  );
-}
-
 export default function PlaceBetPage() {
   const [rawAlerts, setRawAlerts] = useState(() => {
     try {
@@ -1457,6 +1454,7 @@ export default function PlaceBetPage() {
     } catch { return []; }
   });
   const [rawTotalAlerts, setRawTotalAlerts]     = useState([]);
+  const [rawTeamTotalAlerts, setRawTeamTotalAlerts] = useState([]);
   const [bballPinnacleAlerts, setBballPinnacleAlerts] = useState([]);
   const [bballPinnaclePropsAlerts, setBballPinnaclePropsAlerts] = useState([]);
   const [rawResultAlerts, setRawResultAlerts]   = useState([]);
@@ -2076,6 +2074,61 @@ export default function PlaceBetPage() {
     notify();
   };
 
+  // Total équipe (28 août 2026) — mêmes fonctions que Total O/U ci-dessus, sans le fallback client
+  // resolveCompletedTotalAlerts (le règlement backend runAutoSettle suffit, cf. team_total settlement
+  // dans server.js — juste ~2h de latence après la fin du match plutôt qu'un règlement anticipé).
+  const saveTeamTotalAlerts = (alerts) => {
+    try { persistAlertsKey(TEAM_TOTAL_KEY, alerts); } catch {}
+    setRawTeamTotalAlerts([...alerts]);
+  };
+
+  const loadTeamTotalAlerts = () => {
+    try {
+      const raw = JSON.parse(localStorage.getItem(TEAM_TOTAL_KEY) || '[]');
+      const now = Date.now();
+      const cutoff7d = now - 7 * 24 * 3600 * 1000;
+      const valid = raw.filter(a => {
+        const matchTime = new Date(a.date).getTime();
+        if (isNaN(matchTime)) return false;
+        const status = a.status || 'pending';
+        if (['won', 'lost', 'accepted', 'rejected'].includes(status)) return matchTime > cutoff7d;
+        return matchTime > now;
+      });
+      if (valid.length !== raw.length) persistAlertsKey(TEAM_TOTAL_KEY, valid);
+      setRawTeamTotalAlerts(valid);
+    } catch { setRawTeamTotalAlerts([]); }
+  };
+
+  const updateTeamTotalStatus = (id, status, bk = null, odds = null) => {
+    const now = Date.now();
+    const updated = rawTeamTotalAlerts.map(a => a.id === id ? {
+      ...a, status,
+      ...(status === 'accepted' && !a.acceptedAt ? {
+        acceptedAt: now,
+        acceptedProbability: a.prob,
+        acceptedBookmaker:   bk ?? null,
+        acceptedOdds:        odds ?? null,
+        acceptedUnibetOdds:  bk === 'unibet'  ? (odds ?? a.unibetOdds)  : null,
+        acceptedBetclicOdds: bk === 'betclic' ? (odds ?? a.betclicOdds) : null,
+        stakeAmount: stakeAtAccept(),
+      } : {})
+    } : a);
+    try { persistAlertsKey(TEAM_TOTAL_KEY, updated); } catch {}
+    setRawTeamTotalAlerts(updated);
+    if (status === 'accepted') {
+      const a = updated.find(x => x.id === id);
+      if (a) postAcceptedAlertReliably({ ...a, fixtureDate: a.date });
+    }
+    notify();
+  };
+
+  const dismissTeamTotal = (id) => {
+    const updated = rawTeamTotalAlerts.filter(a => a.id !== id);
+    try { persistAlertsKey(TEAM_TOTAL_KEY, updated); } catch {}
+    setRawTeamTotalAlerts(updated);
+    notify();
+  };
+
   const saveBballPinnacleAlerts = (alerts) => {
     try { persistAlertsKey(BBALL_PINNACLE_KEY, alerts); } catch {}
     setBballPinnacleAlerts([...alerts]);
@@ -2187,7 +2240,8 @@ export default function PlaceBetPage() {
         const status = a.status || 'pending';
         if (status === 'won' || status === 'lost') return matchTime > cutoff7d;
         if (status === 'accepted' || status === 'rejected') return matchTime > cutoff7d;
-        if (status === 'pending' && (a.odds ?? 0) < BASKETBALL_RESULT_MIN_ODDS) return false;
+        const minOdds = a.league === 'wnba' ? BASKETBALL_RESULT_MIN_ODDS_WNBA : BASKETBALL_RESULT_MIN_ODDS;
+        if (status === 'pending' && (a.odds ?? 0) < minOdds) return false;
         return matchTime > now;
       });
       if (valid.length !== raw.length) persistAlertsKey(BASKETBALL_RESULT_KEY, valid);
@@ -2230,6 +2284,7 @@ export default function PlaceBetPage() {
     } catch {}
     loadAlerts();
     loadTotalAlerts();
+    loadTeamTotalAlerts();
     loadResultAlerts();
     loadBttsAlerts();
     loadFbTotalAlerts();
@@ -2239,36 +2294,52 @@ export default function PlaceBetPage() {
     loadDcOuAlerts();
     loadBballPinnacleAlerts();
     fetchBackgroundAlerts();
-    syncGameTotalAlerts();
-    syncBasketballResultAlerts();
-    syncBballPinnacleAlerts();
-    syncBballPinnaclePropsAlerts();
-    loadBballPinnaclePropsAlertsState();
-    syncFootballAlerts();
     loadOutrightAlerts();
-    syncOutrightAlerts().then(loadOutrightAlerts);
-    syncTelegramActions();
-    syncOddsDrift().then(loadAlerts);
-    applySettlements();
-    // Sync initiale : remonte toutes les alertes accepted du localStorage vers le backend
-    try {
-      const existing = JSON.parse(localStorage.getItem(ALERT_KEY) || '[]');
-      existing.filter(a => a.status === 'accepted').forEach(a => postAcceptedAlertReliably(a));
-      // game_total et basketball_result stockent la date dans `date` (pas fixtureDate) — normaliser avant envoi
-      [GAME_TOTAL_KEY, BASKETBALL_RESULT_KEY].forEach(key => {
-        const stored = JSON.parse(localStorage.getItem(key) || '[]');
-        stored.filter(a => a.status === 'accepted').forEach(a => postAcceptedAlertReliably({ ...a, fixtureDate: a.fixtureDate || a.date }));
-      });
-      [FB_BTTS_KEY, FB_TOTAL_KEY, FB_RESULT_KEY, FB_PINNACLE_KEY, BBALL_PINNACLE_KEY, FB_DC_BTTS_KEY, FB_DC_OU_KEY].forEach(key => {
-        const fbExisting = JSON.parse(localStorage.getItem(key) || '[]');
-        fbExisting.filter(a => ['accepted', 'won', 'lost'].includes(a.status)).forEach(a => postAcceptedAlertReliably(a));
-        fbExisting.filter(a => ['won', 'lost'].includes(a.status)).forEach(a =>
-          fetch('/api/settlements', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: a.id, status: a.status, settledAt: a.settledAt || Date.now() }) }).catch(() => {})
-        );
-      });
-    } catch {}
+    loadBballPinnaclePropsAlertsState();
+    // Fix 28 août 2026 — ces syncXxx() fusionnent le localStorage courant avec le modèle backend
+    // puis réécrivent la clé cloud (cloudSet). Lancés immédiatement au montage, ils tournaient en
+    // parallèle du loadFromCloud() de App.jsx (pas encore résolu) : sur une page fraîchement
+    // chargée, `existing` lu depuis localStorage était donc vide/périmé, et la fusion réécrivait le
+    // cloud avec un tableau tronqué — une alerte pending pourtant fraîchement postée par un autre
+    // onglet/appel serveur pouvait ainsi être écrasée en quelques secondes (cas réel : alerte
+    // Résultat WNBA Washington réinjectée manuellement côté serveur, effacée par ce point d'entrée
+    // avant même d'avoir pu s'afficher). `waitForInitialCloudSync()` (déjà utilisé par
+    // BacktestingPage.jsx) fait attendre la toute première synchro cloud avant de lancer ces
+    // fusions — le reste de la page (loadXxx ci-dessus) reste immédiat, corrigé de toute façon dès
+    // que 'nba_alerts_updated' se déclenche.
+    (async () => {
+      await waitForInitialCloudSync();
+      syncGameTotalAlerts();
+      syncTeamTotalAlerts();
+      syncBasketballResultAlerts();
+      syncBballPinnacleAlerts();
+      syncBballPinnaclePropsAlerts();
+      syncFootballAlerts();
+      syncOutrightAlerts().then(loadOutrightAlerts);
+      syncTelegramActions();
+      syncOddsDrift().then(loadAlerts);
+      applySettlements();
+      // Sync initiale : remonte toutes les alertes accepted du localStorage vers le backend
+      try {
+        const existing = JSON.parse(localStorage.getItem(ALERT_KEY) || '[]');
+        existing.filter(a => a.status === 'accepted').forEach(a => postAcceptedAlertReliably(a));
+        // game_total et basketball_result stockent la date dans `date` (pas fixtureDate) — normaliser avant envoi
+        [GAME_TOTAL_KEY, TEAM_TOTAL_KEY, BASKETBALL_RESULT_KEY].forEach(key => {
+          const stored = JSON.parse(localStorage.getItem(key) || '[]');
+          stored.filter(a => a.status === 'accepted').forEach(a => postAcceptedAlertReliably({ ...a, fixtureDate: a.fixtureDate || a.date }));
+        });
+        [FB_BTTS_KEY, FB_TOTAL_KEY, FB_RESULT_KEY, FB_PINNACLE_KEY, BBALL_PINNACLE_KEY, FB_DC_BTTS_KEY, FB_DC_OU_KEY].forEach(key => {
+          const fbExisting = JSON.parse(localStorage.getItem(key) || '[]');
+          fbExisting.filter(a => ['accepted', 'won', 'lost'].includes(a.status)).forEach(a => postAcceptedAlertReliably(a));
+          fbExisting.filter(a => ['won', 'lost'].includes(a.status)).forEach(a =>
+            fetch('/api/settlements', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: a.id, status: a.status, settledAt: a.settledAt || Date.now() }) }).catch(() => {})
+          );
+        });
+      } catch {}
+    })();
     window.addEventListener('nba_alerts_updated', loadAlerts);
     window.addEventListener('nba_alerts_updated', loadTotalAlerts);
+    window.addEventListener('nba_alerts_updated', loadTeamTotalAlerts);
     window.addEventListener('nba_alerts_updated', loadResultAlerts);
     window.addEventListener('fb_btts_alerts_updated', loadBttsAlerts);
     window.addEventListener('fb_total_alerts_updated', loadFbTotalAlerts);
@@ -2286,7 +2357,7 @@ export default function PlaceBetPage() {
     // accept/reject Telegram est traité ; on va chercher la nouvelle action puis on recharge tout.
     const onTelegramSync = () => {
       syncTelegramActions().then(() => {
-        loadAlerts(); loadTotalAlerts(); loadResultAlerts();
+        loadAlerts(); loadTotalAlerts(); loadTeamTotalAlerts(); loadResultAlerts();
         loadBttsAlerts(); loadFbTotalAlerts(); loadFbResultAlerts(); loadFbPinnacleAlerts();
         loadDcBttsAlerts(); loadDcOuAlerts(); loadBballPinnacleAlerts(); loadBballPinnaclePropsAlertsState();
       });
@@ -2301,13 +2372,14 @@ export default function PlaceBetPage() {
     // page, jamais pendant qu'elle reste ouverte : trou réel qui a causé un risque de double-pari le
     // 8 août (voir mémoire project_accept_alert_restart_race_aout8). Même filet que
     // postAcceptedAlertReliably, juste rejoué à chaque cycle au lieu d'une seule fois au montage.
-    const timer = setInterval(() => { loadAlerts(); loadTotalAlerts(); loadResultAlerts(); fetchBackgroundAlerts(); syncGameTotalAlerts(); syncBasketballResultAlerts(); syncBballPinnacleAlerts(); syncBballPinnaclePropsAlerts(); syncFootballAlerts(); syncOutrightAlerts().then(loadOutrightAlerts); syncTelegramActions(); syncOddsDrift().then(loadAlerts); applySettlements(); flushPendingAlertSync(); }, 2 * 60 * 1000);
+    const timer = setInterval(() => { loadAlerts(); loadTotalAlerts(); loadTeamTotalAlerts(); loadResultAlerts(); fetchBackgroundAlerts(); syncGameTotalAlerts(); syncTeamTotalAlerts(); syncBasketballResultAlerts(); syncBballPinnacleAlerts(); syncBballPinnaclePropsAlerts(); syncFootballAlerts(); syncOutrightAlerts().then(loadOutrightAlerts); syncTelegramActions(); syncOddsDrift().then(loadAlerts); applySettlements(); flushPendingAlertSync(); }, 2 * 60 * 1000);
     // Aussi au retour sur la page (changement d'onglet / navigation)
     const onVisible = () => { if (document.visibilityState === 'visible') fetchBackgroundAlerts(); };
     document.addEventListener('visibilitychange', onVisible);
     return () => {
       window.removeEventListener('nba_alerts_updated', loadAlerts);
       window.removeEventListener('nba_alerts_updated', loadTotalAlerts);
+      window.removeEventListener('nba_alerts_updated', loadTeamTotalAlerts);
       window.removeEventListener('nba_alerts_updated', loadResultAlerts);
       document.removeEventListener('visibilitychange', onVisible);
       window.removeEventListener('fb_btts_alerts_updated', loadBttsAlerts);
@@ -2326,7 +2398,7 @@ export default function PlaceBetPage() {
 
   const notify = () => window.dispatchEvent(new Event('nba_alerts_updated'));
 
-  const updateStatus = (ids, status, bk = null, odds = null) => {
+  const updateStatus = (ids, status, bk = null, odds = null, bkLine = null) => {
     const idSet = new Set(ids);
     const groupKeys = new Set(
       rawAlerts.filter(a => idSet.has(a.id)).map(a => {
@@ -2343,6 +2415,11 @@ export default function PlaceBetPage() {
         acceptedBetclicOdds: bk === 'betclic' ? (odds ?? a.betclicOdds) : (bk ? null : a.betclicOdds ?? null),
         acceptedWinamaxOdds: bk === 'winamax' ? (odds ?? a.winamaxOdds) : (bk ? null : a.winamaxOdds ?? null),
         stakeAmount: stakeAtAccept(),
+        // Ligne réellement pariée (28 août 2026) — un bookmaker peut offrir une ligne différente de
+        // la ligne de référence affichée en haut de carte (cas réel Jackie Young : Unibet 20.5,
+        // Betclic 19.5 au même prix) ; sans ça `a.line` (la référence) restait figé comme "la" ligne
+        // du pari alors que le clic portait sur celle, différente, du bookmaker choisi.
+        ...(bkLine != null ? { line: bkLine } : {}),
       } : {}) };
       if (idSet.has(a.id)) return { ...a, ...patch };
       const dateKey = new Date(a.fixtureDate).toISOString().slice(0, 10);
@@ -2428,6 +2505,8 @@ export default function PlaceBetPage() {
   const liveStats = useLiveBoxscore(acceptedGroups);
   const pendingTotalAlerts    = rawTotalAlerts.filter(a => a.status === 'pending');
   const acceptedTotalAlerts   = rawTotalAlerts.filter(a => a.status === 'accepted').sort((a, b) => (b.acceptedAt || 0) - (a.acceptedAt || 0));
+  const pendingTeamTotalAlerts  = rawTeamTotalAlerts.filter(a => a.status === 'pending');
+  const acceptedTeamTotalAlerts = rawTeamTotalAlerts.filter(a => a.status === 'accepted').sort((a, b) => (b.acceptedAt || 0) - (a.acceptedAt || 0));
   const pendingResultAlerts  = rawResultAlerts.filter(a => a.status === 'pending');
   const acceptedResultAlerts = rawResultAlerts.filter(a => a.status === 'accepted');
   // Grouper toutes les alertes foot (pending + accepted) par fixtureId — une carte par match
@@ -2480,30 +2559,26 @@ export default function PlaceBetPage() {
     alerts.forEach(a => handleFootballReject(a));
   };
 
-  // Liste unifiée triée par date (foot + basket mélangés)
-  const allPendingItems = [
-    ...pendingGroups.map(g => ({ type: 'prop',     key: g.key,  date: g.fixtureDate,  data: g })),
-    ...pendingTotalAlerts.map(a => ({ type: 'total',    key: a.id,   date: a.fixtureDate,  data: a })),
-    ...pendingResultAlerts.map(a => ({ type: 'basketresult', key: a.id, date: a.date,      data: a })),
-    ...footballGroups.map(g => ({ type: 'fbgroup', key: g.fixtureId, date: g.fixtureDate, data: g })),
-    ...footballSingleAlerts.map(a => ({ type: 'fbsingle', key: a.id, date: a.fixtureDate, data: a })),
-    ...bballPinnacleAlerts.filter(a => a.status === 'pending').map(a => ({ type: 'bballpinnacle', key: a.id, date: a.date, data: a })),
-    ...bballPinnaclePropsAlerts.filter(a => a.status === 'pending').map(a => ({ type: 'bballpinnacleprops', key: a.id, date: a.date, data: a })),
-    // Outrights n'ont pas de fixtureDate (pari saison entière) — triés par date de génération
-    // (savedAt) plutôt que d'atterrir systématiquement en tête via un fallback epoch 0.
-    ...outrightAlerts.filter(a => a.status === 'pending').map(a => ({ type: 'outright', key: a.id, date: a.savedAt, data: a })),
-  ].sort((a, b) => new Date(a.date || 0) - new Date(b.date || 0));
+  // Liste unifiée triée par date (foot + basket mélangés) — logique de regroupement partagée avec
+  // RunningPage via buildPendingItems (PendingAlertWidgets.jsx), pour ne pas la dupliquer.
+  const allPendingItems = buildPendingItems({
+    rawAlerts, rawTotalAlerts, rawTeamTotalAlerts, rawResultAlerts,
+    bttsAlerts, fbTotalAlerts, fbResultAlerts, fbPinnacleAlerts, dcBttsAlerts, dcOuAlerts,
+    bballPinnacleAlerts, bballPinnaclePropsAlerts, outrightAlerts,
+  });
   const wonTotalAlerts      = rawTotalAlerts.filter(a => a.status === 'won').sort((a, b) => (b.acceptedAt || 0) - (a.acceptedAt || 0));
   const lostTotalAlerts     = rawTotalAlerts.filter(a => a.status === 'lost').sort((a, b) => (b.acceptedAt || 0) - (a.acceptedAt || 0));
+  const wonTeamTotalAlerts  = rawTeamTotalAlerts.filter(a => a.status === 'won').sort((a, b) => (b.acceptedAt || 0) - (a.acceptedAt || 0));
+  const lostTeamTotalAlerts = rawTeamTotalAlerts.filter(a => a.status === 'lost').sort((a, b) => (b.acceptedAt || 0) - (a.acceptedAt || 0));
   const rejectedGroups = groups.filter(g => g.status === 'rejected');
   const allResultGroups = groupResultAlerts(rawAlerts).filter(g => !hiddenKeys.has(g.key));
   const wonGroups      = allResultGroups.filter(g => g.results.some(r => r.status === 'won') && g.results.every(r => r.status !== 'lost'));
   const lostGroups     = allResultGroups.filter(g => g.results.some(r => r.status === 'lost') && g.results.every(r => r.status !== 'won'));
   const mixedGroups    = allResultGroups.filter(g => g.results.some(r => r.status === 'won') && g.results.some(r => r.status === 'lost'));
-  const wonCount       = wonGroups.length + mixedGroups.length + wonTotalAlerts.length;
-  const lostCount      = lostGroups.length + mixedGroups.length + lostTotalAlerts.length;
-  const hasResults     = allResultGroups.length > 0 || wonTotalAlerts.length > 0 || lostTotalAlerts.length > 0;
-  const hasHistory     = historyExists || acceptedGroups.length > 0 || acceptedTotalAlerts.length > 0 || acceptedResultAlerts.length > 0 || hasResults;
+  const wonCount       = wonGroups.length + mixedGroups.length + wonTotalAlerts.length + wonTeamTotalAlerts.length;
+  const lostCount      = lostGroups.length + mixedGroups.length + lostTotalAlerts.length + lostTeamTotalAlerts.length;
+  const hasResults     = allResultGroups.length > 0 || wonTotalAlerts.length > 0 || lostTotalAlerts.length > 0 || wonTeamTotalAlerts.length > 0 || lostTeamTotalAlerts.length > 0;
+  const hasHistory     = historyExists || acceptedGroups.length > 0 || acceptedTotalAlerts.length > 0 || acceptedTeamTotalAlerts.length > 0 || acceptedResultAlerts.length > 0 || hasResults;
 
   const togglePanel = (panel) => setOpenPanel(p => p === panel ? null : panel);
 
@@ -2524,8 +2599,9 @@ export default function PlaceBetPage() {
     </button>
   );
 
-  const donutTotal = acceptedGroups.length + acceptedTotalAlerts.length;
+  const donutTotal = acceptedGroups.length + acceptedTotalAlerts.length + acceptedTeamTotalAlerts.length;
   const voidTotalAlerts = rawTotalAlerts.filter(a => a.status === 'void').sort((a, b) => (b.acceptedAt || 0) - (a.acceptedAt || 0));
+  const voidTeamTotalAlerts = rawTeamTotalAlerts.filter(a => a.status === 'void').sort((a, b) => (b.acceptedAt || 0) - (a.acceptedAt || 0));
 
   const clearPending = () => {
     const kept = rawAlerts.filter(a => a.status !== 'pending');
@@ -2534,6 +2610,9 @@ export default function PlaceBetPage() {
     const keptTotals = rawTotalAlerts.filter(a => a.status !== 'pending');
     try { persistAlertsKey(GAME_TOTAL_KEY, keptTotals); } catch {}
     setRawTotalAlerts(keptTotals);
+    const keptTeamTotals = rawTeamTotalAlerts.filter(a => a.status !== 'pending');
+    try { persistAlertsKey(TEAM_TOTAL_KEY, keptTeamTotals); } catch {}
+    setRawTeamTotalAlerts(keptTeamTotals);
     const keptResult = rawResultAlerts.filter(a => a.status !== 'pending');
     try { persistAlertsKey(BASKETBALL_RESULT_KEY, keptResult); } catch {}
     setRawResultAlerts(keptResult);
@@ -2543,7 +2622,7 @@ export default function PlaceBetPage() {
   return (
     <div className="page placebet-page">
 
-      {(pendingGroups.length > 0 || pendingTotalAlerts.length > 0) && (
+      {(pendingGroups.length > 0 || pendingTotalAlerts.length > 0 || pendingTeamTotalAlerts.length > 0) && (
         <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '0.75rem' }}>
           <button
             onClick={clearPending}
@@ -2573,8 +2652,9 @@ export default function PlaceBetPage() {
       {allPendingItems.length > 0 && (
         <div className="bet-grid">
           {allPendingItems.map(item => {
-            if (item.type === 'prop')     return <PropAlertCard key={item.key} group={item.data} onDismiss={dismiss} onAccept={(ids, bk, odds) => updateStatus(ids, 'accepted', bk, odds)} onReject={ids => updateStatus(ids, 'rejected')} />;
+            if (item.type === 'prop')     return <PropAlertCard key={item.key} group={item.data} onDismiss={dismiss} onAccept={(ids, bk, odds, bkLine) => updateStatus(ids, 'accepted', bk, odds, bkLine)} onReject={ids => updateStatus(ids, 'rejected')} />;
             if (item.type === 'total')    return <GameTotalCard key={item.key} alert={item.data} onAccept={(id, bk, odds) => updateTotalStatus(id, 'accepted', bk, odds)} onReject={id => updateTotalStatus(id, 'rejected')} onDismiss={dismissTotal} />;
+            if (item.type === 'teamtotal') return <TeamTotalCard key={item.key} alert={item.data} onAccept={(id, bk, odds) => updateTeamTotalStatus(id, 'accepted', bk, odds)} onReject={id => updateTeamTotalStatus(id, 'rejected')} onDismiss={dismissTeamTotal} />;
             if (item.type === 'basketresult') return <BasketballResultCard key={item.key} alert={item.data} onAccept={id => updateResultStatus(id, 'accepted')} onReject={id => updateResultStatus(id, 'rejected')} onDismiss={dismissResult} />;
             if (item.type === 'fbgroup') return <FootballGroupCard key={item.key} group={item.data} onAccept={handleFootballAccept} onReject={handleFootballReject} onDismissAll={handleFootballDismissAll} />;
             if (item.type === 'fbsingle') {
@@ -2595,6 +2675,7 @@ export default function PlaceBetPage() {
       )}
 
       <StakeCalculatorWidget items={allPendingItems} />
+      <NearMissPanelWidget />
     </div>
   );
 }

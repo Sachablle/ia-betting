@@ -55,6 +55,9 @@ const FOOTBALL_TOPSCORERS_CACHE_FILE = join(CACHE_DIR, 'football_topscorers.json
 const EURO_BASKET_LEADERS_CACHE_FILE = join(CACHE_DIR, 'euro_basket_leaders.json');
 const ESPN_PLAYERS_CACHE_FILE   = join(CACHE_DIR, 'espn_players_cache.json');
 const UB_MATCH_URL_CACHE_FILE   = join(CACHE_DIR, 'unibet_match_urls.json');
+const EURO_DEFBYPOS_CACHE_FILE  = join(CACHE_DIR, 'euro_defbypos.json');
+const EURO_PLAYERS_CACHE_FILE   = join(CACHE_DIR, 'euro_players.json');
+const EURO_GAMELOG_CACHE_FILE   = join(CACHE_DIR, 'euro_gamelog.json');
 
 // Cache persistant gamelogs — survit aux redémarrages, jamais remplacé par moins de données
 let _glPersist = {};
@@ -332,6 +335,13 @@ const BRESIL_TEAM_ALIASES = {
   salzbourg: 'salzburg',              // "Salzbourg" (Betclic, traduction FR) vs "Salzburg" (Pinnacle), même schéma qu'Augsbourg
   bologne: 'bologna',                 // "Bologne" (Betclic, traduction FR) vs "Bologna" (Pinnacle/FD)
   brightonhove: 'brighton',           // "Brighton Hove" (Betclic) vs "Brighton" (Pinnacle)
+  // Ajout 29 août 2026 (signalé par l'utilisateur, "Odds N/D" Levante-Real Betis malgré des cotes
+  // Unibet bien scrapées) — "Betis Séville" (bookmakers, traduction FR utilisant la ville plutôt que
+  // l'épithète du club) vs "Real Betis Balompié" (FD, nom officiel complet) : aucun des deux n'est
+  // une sous-chaîne de l'autre. Clé côté bookmaker déjà passée par l'alias mot-à-mot "seville"→
+  // "sevilla" ci-dessus (ligne ~315, pensé pour Sevilla FC) avant concaténation — d'où "betissevilla".
+  betissevilla: 'betis',
+  realbetisbalompie: 'betis',
 };
 
 // Normalisation/fuzzy-matching de noms d'équipes — utilisé pour fusionner les cotes
@@ -411,6 +421,7 @@ async function _footballApiFetchRaw(url) {
   } finally { footballApiRelease(); }
 }
 async function footballApiFetch(url, attempt = 0) {
+  if (_footballApiPaused) throw new Error('football-api paused (pause manuelle)');
   try {
     return await _footballApiFetchRaw(url);
   } catch (e) {
@@ -659,7 +670,14 @@ const EU_CLUB_AVG_GOALS = 1.30; // buts/équipe/match attendus, valeur de dépar
 // Fallback si le pool d'équipes programmées n'a pas assez de stats valides (mécanisme identique à CDM_AVG_GF/GA)
 const EU_CLUB_AVG_GF = 1.45;
 const EU_CLUB_AVG_GA = 1.15;
-const _euClubFormCache = {}; // `${teamApiId}_${season}` → { data: {gf, ga, games}, ts }
+// Persisté sur disque (29 août 2026) — même correctif déjà fait pour fetchTeamRecentXG (5 grands
+// championnats, FB_XG_CACHE_FILE) : un cache uniquement en mémoire est vidé à chaque redémarrage
+// backend (fréquent en dev, `--watch`), forçant un refetch complet peu importe le TTL par ailleurs
+// correct — identifié comme le principal contributeur restant à l'écart de quota basket/foot.
+const EU_CLUB_FORM_CACHE_FILE = join(CACHE_DIR, 'eu_club_form.json');
+let _euClubFormCache = {}; // `${teamApiId}_${season}` → { data: {gf, ga, games}, ts }
+try { if (existsSync(EU_CLUB_FORM_CACHE_FILE)) _euClubFormCache = JSON.parse(readFileSync(EU_CLUB_FORM_CACHE_FILE, 'utf8')); } catch {}
+const _saveEuClubFormCache = () => { try { writeFileSync(EU_CLUB_FORM_CACHE_FILE, JSON.stringify(_euClubFormCache), 'utf8'); } catch {} };
 async function fetchClubRecentForm(teamApiId, season) {
   const cacheKey = `${teamApiId}_${season}`;
   const cached = _euClubFormCache[cacheKey];
@@ -683,6 +701,7 @@ async function fetchClubRecentForm(teamApiId, season) {
     if (counted < 3) return null;
     const data = { gf, ga, games: counted };
     _euClubFormCache[cacheKey] = { data, ts: Date.now() };
+    _saveEuClubFormCache();
     return data;
   } catch { return null; }
 }
@@ -691,7 +710,11 @@ async function fetchClubRecentForm(teamApiId, season) {
 // grands championnats) mais sans filtre `league=`, pour la même raison que fetchClubRecentForm
 // ci-dessus (les clubs Europa/Conference n'ont pas assez de matchs DANS cette compétition cette
 // saison pour un calcul fiable). Alimente le panneau "Statistiques saison" de MatchDetailPage.jsx.
-const _euClubXGCache = {}; // `${teamApiId}_${season}` → { data, ts }
+// Persisté sur disque (29 août 2026) — même correctif que fetchClubRecentForm ci-dessus.
+const EU_CLUB_XG_CACHE_FILE = join(CACHE_DIR, 'eu_club_xg.json');
+let _euClubXGCache = {}; // `${teamApiId}_${season}` → { data, ts }
+try { if (existsSync(EU_CLUB_XG_CACHE_FILE)) _euClubXGCache = JSON.parse(readFileSync(EU_CLUB_XG_CACHE_FILE, 'utf8')); } catch {}
+const _saveEuClubXGCache = () => { try { writeFileSync(EU_CLUB_XG_CACHE_FILE, JSON.stringify(_euClubXGCache), 'utf8'); } catch {} };
 async function fetchClubRecentXG(teamApiId, season) {
   const cacheKey = `${teamApiId}_${season}`;
   const cached = _euClubXGCache[cacheKey];
@@ -730,6 +753,7 @@ async function fetchClubRecentXG(teamApiId, season) {
       shotsPerGame: shots / counted, shotsOnTarget: shotsOnTarget / counted, possession: possession / counted,
     };
     _euClubXGCache[cacheKey] = { data, ts: Date.now() };
+    _saveEuClubXGCache();
     return data;
   } catch { return null; }
 }
@@ -794,7 +818,21 @@ function freezeCdmPoolAvg(fixtureId, avgGF, avgGA) {
   return frozen;
 }
 const FB_BTTS_ALERT_PROB   = 0.70;
-const FB_OU_ALERT_PROB     = 0.70;
+// Redescendu à 65% le 27 août 2026 (même soirée) — le relevé à 80% ci-dessus reposait sur un
+// calcul sans filtre de cote réellement pariable : en exigeant la vraie cote minimum du marché
+// (FB_OU_ALERT_MIN_ODDS_TOTAL, 1.20 depuis ce fix), 80% ne produisait tout simplement JAMAIS
+// d'alerte réelle sur tout l'historique (28 juil-26 août), et 70%+ donnait un taux de réussite
+// catastrophique (16,7% sur 6 cas). La vraie zone qui tient — y compris testée sur données
+// jamais vues (validation temporelle, pas juste l'historique complet) — est ≥65% : 60,3% de
+// réussite (n=58), et sur un split chronologique 51,7% (1ère moitié) → 69,0% (2ème moitié,
+// jamais vue) — ne s'effondre pas, contrairement à 80% qui n'a jamais pu être testé faute de
+// candidats. Classé "en observation" (moins de certitude que Résultat WNBA), pas "confirmé".
+const FB_OU_ALERT_PROB     = 0.65;
+// Baissé de 1.60 (partagé avec BTTS, resté à 1.60, aucune preuve pour lui) — 1.20 essayé d'abord
+// (58 candidats, 60,3% de réussite) mais ROI réel négatif (-15,6%, cotes trop courtes pour
+// compenser les pertes). 1.30 retenu à la place : quasi le même taux de réussite (60,0%, n=25)
+// mais ROI bien meilleur (-2,8%) — vrai compromis, pas juste une préférence de confort sur la cote.
+const FB_OU_ALERT_MIN_ODDS_TOTAL = 1.30;
 const FB_RESULT_ALERT_PROB = 0.70; // par issue (home/draw/away) — chaque issue est un pari oui/non indépendant
 const FB_RESULT_MAX_PROB   = 0.80; // plafond de confiance 1X2 — le modèle Poisson sur stats qualifs/amicaux surestime les favoris
 const FB_BTTS_OU_MIN_ODDS  = 1.60; // cote mini BTTS/O-U (unibet/betclic — winamax exclu)
@@ -882,10 +920,16 @@ app.get('/api/fd/matches', async (req, res) => {
       // un match qui passait en direct disparaissait donc de la liste et affichait "Match
       // introuvable" pile pendant qu'on voulait le suivre (cas réel : Atletico Madrid-Villarreal).
       // Vérifié en direct : FD accepte les statuts en liste séparée par virgules dans un seul
-      // appel, aucun coût de quota supplémentaire. Toujours aucun FINISHED/POSTPONED/CANCELLED —
-      // /api/fd/results reste la seule source pour les matchs terminés (réglé exprès, cf. commentaire
-      // plus haut sur la séparation des deux routes).
-      const matchesRes = await fdGet(`/competitions/${league.code}/matches?status=SCHEDULED,IN_PLAY,PAUSED`);
+      // appel, aucun coût de quota supplémentaire.
+      // Fix 29 août 2026 — même souci pour un match TERMINÉ (demande explicite : "je veux brancher
+      // pour que tout ce qu'on avait en pré-match s'affiche même sur le match terminé"). FINISHED
+      // ajouté au filtre + fenêtre dateFrom/dateTo bornée (même convention que _getFdLeaguesResults
+      // : -2j) pour ne récupérer que les matchs RÉCEMMENT terminés, pas tout l'historique de la
+      // saison (qui écraserait le slice(0,5) "prochains matchs" avec de vieux matchs joués il y a
+      // des mois, en plus d'un payload inutilement lourd). Coût quota inchangé (toujours 1 requête).
+      const dateFrom = new Date(Date.now() - 2 * 86400_000).toISOString().slice(0, 10);
+      const dateTo   = new Date(Date.now() + 45 * 86400_000).toISOString().slice(0, 10);
+      const matchesRes = await fdGet(`/competitions/${league.code}/matches?status=SCHEDULED,IN_PLAY,PAUSED,FINISHED&dateFrom=${dateFrom}&dateTo=${dateTo}`);
       await new Promise(r => setTimeout(r, 600));
       const standingsRes = await fdGet(`/competitions/${league.code}/standings`);
       await new Promise(r => setTimeout(r, 600));
@@ -922,10 +966,18 @@ app.get('/api/fd/matches', async (req, res) => {
         goalsFor: s.goalsFor, goalsAgainst: s.goalsAgainst,
         form: (s.form || '').split('').filter(c => 'WDL'.includes(c)).slice(-5),
       }));
-      _fdRemainingFixturesCache[league.key] = (matchesRes.matches || []).map(m => ({
+      // FINISHED exclu de ce cache (29 août 2026) — matchesRes contient désormais aussi les matchs
+      // récemment terminés (cf. fetch ci-dessus), mais le "calendrier restant" pour les outrights ne
+      // doit jamais inclure un match déjà joué.
+      const notFinishedFd = (matchesRes.matches || []).filter(m => m.status !== 'FINISHED' && m.status !== 'AWARDED');
+      _fdRemainingFixturesCache[league.key] = notFinishedFd.map(m => ({
         id: String(m.id), date: m.utcDate, matchday: m.matchday,
         homeTeamId: m.homeTeam.id, homeTeamName: m.homeTeam.name,
         awayTeamId: m.awayTeam.id, awayTeamName: m.awayTeam.name,
+        // Ajouté 27 août 2026 — nécessaire pour exclure les matchs déjà en direct du moteur
+        // d'alertes (cf. filtre dans la boucle fbFixtures). Champ additif, n'affecte aucun
+        // consommateur existant de ce cache (outrights) qui ne lit pas cette clé.
+        status: m.status,
       }));
       // Sauvegarde par ligue, pas seulement à la fin des 5 (28 juillet 2026) — la boucle FD peut
       // s'interrompre en cours de route (429, 10 req/min très serré) ; sans ça, un cycle interrompu
@@ -935,8 +987,24 @@ app.get('/api/fd/matches', async (req, res) => {
       _saveFdRemainingFixtures();
       _saveFdSeasonInfo();
 
-      // 5 prochains matchs
-      const upcoming = (matchesRes.matches || []).slice(0, 5);
+      // 5 prochains matchs + matchs récemment terminés (29 août 2026, demande explicite — "je veux
+      // brancher pour que tout ce qu'on avait en pré-match s'affiche même sur le match terminé").
+      // "5 prochains" reste calculé sur notFinishedFd uniquement (comportement inchangé — le widget
+      // dédié "5 prochains matchs" ne doit jamais se faire polluer par un match déjà joué) ; les
+      // matchs FINISHED des dernières 48h (même fenêtre que la CDM, /api/fd/worldcup) sont ajoutés
+      // À CÔTÉ, pas à la place — ils restent cliquables sans jamais pousser un vrai match à venir
+      // hors du top 5.
+      const FD_STATUS_MAP_MATCHES = {
+        SCHEDULED: 'STATUS_SCHEDULED', TIMED: 'STATUS_SCHEDULED',
+        IN_PLAY: 'STATUS_IN_PROGRESS', PAUSED: 'STATUS_IN_PROGRESS',
+        FINISHED: 'STATUS_FINAL', AWARDED: 'STATUS_FINAL',
+      };
+      const FD_KEEP_FINISHED_MS = 48 * 3600_000;
+      const recentFinishedFd = (matchesRes.matches || []).filter(m =>
+        (m.status === 'FINISHED' || m.status === 'AWARDED') &&
+        (Date.now() - new Date(m.utcDate).getTime()) < FD_KEEP_FINISHED_MS
+      );
+      const upcoming = [...recentFinishedFd, ...notFinishedFd.slice(0, 5)];
       for (const m of upcoming) {
         const hId = m.homeTeam.id;
         const aId = m.awayTeam.id;
@@ -945,11 +1013,12 @@ app.get('/api/fd/matches', async (req, res) => {
           league:  league.key,
           round:   m.matchday ? `Journée ${m.matchday}` : '',
           date:    m.utcDate,
+          status:  FD_STATUS_MAP_MATCHES[m.status] || 'STATUS_SCHEDULED',
           venue:   null,
           weather: null,
           isLive:  true,
-          home: { id: hId, name: m.homeTeam.name, short: m.homeTeam.tla || abbrev(m.homeTeam.name), logoId: m.homeTeam.crest, upcoming: [], ...(statsMap[hId] || {}) },
-          away: { id: aId, name: m.awayTeam.name, short: m.awayTeam.tla || abbrev(m.awayTeam.name), logoId: m.awayTeam.crest, upcoming: [], ...(statsMap[aId] || {}) },
+          home: { id: hId, name: m.homeTeam.name, short: m.homeTeam.tla || abbrev(m.homeTeam.name), logoId: m.homeTeam.crest, score: m.score?.fullTime?.home ?? null, upcoming: [], ...(statsMap[hId] || {}) },
+          away: { id: aId, name: m.awayTeam.name, short: m.awayTeam.tla || abbrev(m.awayTeam.name), logoId: m.awayTeam.crest, score: m.score?.fullTime?.away ?? null, upcoming: [], ...(statsMap[aId] || {}) },
           h2h:     [],
           markets: {},
         });
@@ -1090,19 +1159,33 @@ async function _getBresilMatches() {
       };
     }
 
+    // Fix 27 août 2026 — football-data.org renvoie parfois, sur cette compétition précise, un
+    // champ `status` corrompu contenant la date/heure du match ("2026-08-29 21:30:00Z") au lieu
+    // de l'enum attendu (SCHEDULED/FINISHED/...) — bug constaté côté FD lui-même (vérifié via un
+    // appel direct hors backend, même résultat), pas une régression de ce code. Conséquence
+    // silencieuse : `FD_STATUS_MAP_BRESIL[m.status]` ne matchait jamais rien, donc TOUS les
+    // matchs Brésil étaient filtrés → "Aucun match dans les prochaines 30h" affiché en permanence
+    // même un jour de plusieurs matchs programmés. Filet de sécurité : si `m.status` ne matche
+    // aucune valeur connue, déduire le statut depuis le score (rempli = terminé, sinon programmé)
+    // plutôt que de perdre le match entier.
+    const inferBresilStatus = m => {
+      const mapped = FD_STATUS_MAP_BRESIL[m.status];
+      if (mapped) return mapped;
+      return (m.score?.fullTime?.home != null && m.score?.fullTime?.away != null) ? 'STATUS_FINAL' : 'STATUS_SCHEDULED';
+    };
     const KEEP_MS = 48 * 3600_000;
     const now = Date.now();
     const relevant = (matchesRes.matches || [])
       .filter(m => {
-        const mapped = FD_STATUS_MAP_BRESIL[m.status];
-        if (!mapped) return false; // POSTPONED, CANCELLED, SUSPENDED
-        if (mapped === 'STATUS_FINAL') return (now - new Date(m.utcDate).getTime()) < KEEP_MS;
+        const status = ['POSTPONED', 'CANCELLED', 'SUSPENDED'].includes(m.status) ? null : inferBresilStatus(m);
+        if (!status) return false;
+        if (status === 'STATUS_FINAL') return (now - new Date(m.utcDate).getTime()) < KEEP_MS;
         return true;
       })
       .slice(0, 15);
     const allMatches = relevant.map(m => {
       const hId = m.homeTeam.id, aId = m.awayTeam.id;
-      const status = FD_STATUS_MAP_BRESIL[m.status] || 'STATUS_SCHEDULED';
+      const status = inferBresilStatus(m);
       const ftHome = m.score?.fullTime?.home ?? null;
       const ftAway = m.score?.fullTime?.away ?? null;
       return {
@@ -1694,7 +1777,13 @@ async function _refreshOddsCacheInner() {
     // `frozen:true` (réservé au vrai coup d'envoi passé, sinon la carte afficherait à tort "cotes
     // pré-match" pour un simple trou de scraping sur un match qui n'a même pas commencé).
     for (const m of allMatches) m._lastSeenAt = now;
-    const FROZEN_RETENTION_MS = 3 * 60 * 60 * 1000; // 3h
+    // 3h → 48h (29 août 2026, demande explicite — "comme le basket, que le dernier cycle se fige
+    // pour qu'on ait accès à l'historique des cotes après le match"). Depuis le fix "Match
+    // introuvable" du même jour, un match terminé reste consultable jusqu'à 48h (même fenêtre que
+    // la CDM) — mais ses cotes gelées disparaissaient au bout de 3h seulement, laissant la fiche
+    // afficher "Odds N/D" bien avant que le match ne redevienne lui-même introuvable. Alignées sur
+    // la même fenêtre pour que les deux durées de vie coïncident.
+    const FROZEN_RETENTION_MS = 48 * 60 * 60 * 1000; // 48h
     for (const prev of prevMatches) {
       const stillThere = allMatches.some(m => fuzzy(m.homeTeam, prev.homeTeam) && fuzzy(m.awayTeam, prev.awayTeam));
       if (stillThere) continue;
@@ -1937,6 +2026,7 @@ const _ubMatchUrlCache = {};   // { `${league}_${normHome}_${normAway}` → matc
 try { if (existsSync(UB_MATCH_URL_CACHE_FILE)) Object.assign(_ubMatchUrlCache, JSON.parse(readFileSync(UB_MATCH_URL_CACHE_FILE, 'utf8'))); } catch {}
 const _saveUbMatchUrlCache = () => { try { writeFileSync(UB_MATCH_URL_CACHE_FILE, JSON.stringify(_ubMatchUrlCache), 'utf8'); } catch {} };
 const CACHE_6H      = 6 * 60 * 60 * 1000;
+const CACHE_24H      = 24 * 60 * 60 * 1000;
 // Charge les rosters NBA/WNBA depuis le disque dès que _espnCache + CACHE_6H sont disponibles
 _loadEspnPlayersFromDisk();
 const CACHE_30MIN   = 30 * 60 * 1000;
@@ -4196,7 +4286,7 @@ function extractAcbStatCard(chunks, cardKeyword) {
 }
 
 app.get('/api/acb/standings', async (req, res) => {
-  if (_acbStandingsCache.data && Date.now() - _acbStandingsCache.ts < ACB_CACHE_MS)
+  if (_acbStandingsCache.data && (Date.now() - _acbStandingsCache.ts < ACB_CACHE_MS || _basketballApiPaused))
     return res.json(_acbStandingsCache.data);
   try {
     const cfg = EURO_LEAGUES.acb;
@@ -4692,6 +4782,39 @@ function getArenaCity(venueName) {
 
 const _euroCache = {};
 
+// Persistance disque de certaines entrées de _euroCache par préfixe (29 août 2026) — _euroCache dans
+// son ensemble reste NON persisté (scoreboards/lives n'ont pas de sens réutilisés après un
+// redémarrage), mais les entrées coûteuses à recalculer ET valides plusieurs heures le sont
+// explicitement, une par une, pour qu'un redémarrage backend (fréquent en dev avec `node --watch`)
+// n'annule pas le bénéfice de leur TTL en forçant un refetch complet à chaque fois.
+function _makeEuroCachePersist(prefix, file) {
+  try {
+    if (existsSync(file)) {
+      const parsed = JSON.parse(readFileSync(file, 'utf8'));
+      for (const [k, v] of Object.entries(parsed || {})) {
+        if (k.startsWith(prefix)) _euroCache[k] = v;
+      }
+    }
+  } catch {}
+  return () => {
+    try {
+      const toSave = {};
+      for (const [k, v] of Object.entries(_euroCache)) {
+        if (k.startsWith(prefix)) toSave[k] = v;
+      }
+      writeFileSync(file, JSON.stringify(toSave), 'utf8');
+    } catch {}
+  };
+}
+// `euro_defbypos_*` — suite au fix du cache 6h→24h dans getEuroDefByPos, ce calcul coûte ~800-900
+// appels api-sports.io à froid par ligue.
+const _saveEuroDefByPosCache = _makeEuroCachePersist('euro_defbypos_', EURO_DEFBYPOS_CACHE_FILE);
+// `euro_players_*` (effectif+gamelogs d'une équipe) et `euro_gl_*` (gamelog d'un seul joueur) — coût
+// ~2-40 appels par entrée selon la ligue, jusqu'ici perdu à chaque redémarrage malgré un cache 6h par
+// ailleurs correct.
+const _saveEuroPlayersCache   = _makeEuroCachePersist('euro_players_', EURO_PLAYERS_CACHE_FILE);
+const _saveEuroGamelogCache   = _makeEuroCachePersist('euro_gl_',      EURO_GAMELOG_CACHE_FILE);
+
 // Cache id joueur ACB → prénom/nom, alimenté par /api/euro/acb/players/:teamId — permet de
 // reconstruire le slug acb.com (prenom-nom-id) dans /playergamelog sans repasser par le roster
 const _acbPlayerNames = {};
@@ -4705,6 +4828,11 @@ function bballRelease() {
   if (_bballQueue.length > 0) _bballQueue.shift()();
 }
 async function _bballFetchRaw(path) {
+  // Pause manuelle (30 août 2026) — filet de sécurité pour le cas rare d'un cache jamais rempli
+  // (tous les points de lecture du cache basket EU acceptent déjà le cache expiré pendant la pause,
+  // donc ce throw n'est atteint qu'en vrai cache-miss). Voir commentaire complet sur
+  // _basketballApiPaused plus bas dans le fichier.
+  if (_basketballApiPaused) throw new Error('basketball-api paused (pause manuelle)');
   if (_bballActive >= 5) await new Promise(res => _bballQueue.push(res));
   _bballActive++;
   try {
@@ -4743,7 +4871,7 @@ async function getEuroGamesMap(league) {
   const cfg = EURO_LEAGUES[league];
   const ck = `euro_games_map_${league}`;
   const hit = _euroCache[ck];
-  if (hit && Date.now() - hit.ts < CACHE_6H) return hit.data;
+  if (hit && (Date.now() - hit.ts < CACHE_6H || _basketballApiPaused)) return hit.data;
   if (_euroGamesMapInflight[league]) return _euroGamesMapInflight[league];
   const p = (async () => {
     const d = await bballFetch(`/games?league=${cfg.id}&season=${cfg.gamesSeason || cfg.season}`);
@@ -4834,7 +4962,7 @@ app.get('/api/euro/:league/scoreboard', async (req, res) => {
   const ck = `euro_sb_${req.params.league}`;
   const hit = _euroCache[ck];
   const hasLive = hit?.data?.games?.some(g => g.status === 'STATUS_IN_PROGRESS');
-  if (hit && Date.now() - hit.ts < (hasLive ? 30_000 : CACHE_5MIN)) return res.json(hit.data);
+  if (hit && (Date.now() - hit.ts < (hasLive ? 30_000 : CACHE_5MIN) || _basketballApiPaused)) return res.json(hit.data);
   try {
     const d = await bballFetch(`/games?league=${cfg.id}&season=${cfg.gamesSeason || cfg.season}`);
     const now = Date.now();
@@ -4913,6 +5041,16 @@ app.get('/api/euro/:league/scoreboard', async (req, res) => {
       const finished = games.filter(g => g.status === 'STATUS_FINAL');
       for (const g of finished) {
         try {
+          // Fix 29 août 2026 — la vérification "compo déjà sauvegardée pour ce match" se faisait
+          // AVANT de fetcher le box-score, ce qui n'empêchait rien : le `bballFetch` du box-score
+          // (1 appel) tournait quand même à chaque cycle pour un match déjà couvert, indéfiniment
+          // (ce cache — `finished` reste dans la fenêtre 48h du scoreboard). Inactif tant qu'aucun
+          // match EU n'est terminé, mais devient un vrai gaspillage récurrent dès la reprise de saison.
+          const bothSaved = [g.home.id, g.away.id].every(teamId => {
+            const existing = _euroLineups[`${league}_${teamId}`];
+            return existing?.date && new Date(existing.date).getTime() === new Date(g.date).getTime();
+          });
+          if (bothSaved) continue;
           const bs = await bballFetch(`/games/statistics/players?id=${g.id}`);
           for (const [teamId, isHome] of [[g.home.id, true], [g.away.id, false]]) {
             const key = `${league}_${teamId}`;
@@ -4947,7 +5085,7 @@ app.get('/api/euro/:league/game/:gameId', async (req, res) => {
   const { gameId } = req.params;
   const ck = `euro_game_${gameId}`;
   const hit = _euroCache[ck];
-  if (hit && Date.now() - hit.ts < CACHE_5MIN) return res.json(hit.data);
+  if (hit && (Date.now() - hit.ts < CACHE_5MIN || _basketballApiPaused)) return res.json(hit.data);
   try {
     const d = await bballFetch(`/games?id=${gameId}`);
     const g = d.response?.[0];
@@ -4974,9 +5112,19 @@ app.get('/api/euro/:league/roster/byname/:teamName', async (req, res) => {
   const cfg = EURO_LEAGUES[league];
   if (!cfg) return res.status(404).json({ error: 'Unknown league' });
   const name = decodeURIComponent(teamName);
+  // Cache résolution nom→id (30 août 2026) — identité d'équipe stable, sert surtout à survivre à la
+  // pause manuelle sur ce point de recherche qui n'avait aucun cache jusqu'ici.
+  const teamIdCk = `euro_teamid_${league}_${name}`;
+  const teamIdHit = _euroCache[teamIdCk];
   try {
-    const td = await bballFetch(`/teams?league=${cfg.id}&season=${cfg.season}&search=${encodeURIComponent(name.split(' ')[0])}`);
-    const team = (td.response || []).find(t => t.name === name) || (td.response || [])[0];
+    let team;
+    if (teamIdHit && (Date.now() - teamIdHit.ts < CACHE_24H || _basketballApiPaused)) {
+      team = teamIdHit.data;
+    } else {
+      const td = await bballFetch(`/teams?league=${cfg.id}&season=${cfg.season}&search=${encodeURIComponent(name.split(' ')[0])}`);
+      team = (td.response || []).find(t => t.name === name) || (td.response || [])[0];
+      if (team) _euroCache[teamIdCk] = { data: team, ts: Date.now() };
+    }
     if (!team) return res.status(404).json({ error: `Team not found: ${name}` });
     const ac = new AbortController();
     const timer = setTimeout(() => ac.abort(), 20000);
@@ -4994,7 +5142,7 @@ app.get('/api/euro/:league/players/:teamId', async (req, res) => {
   if (!cfg) return res.status(404).json({ error: 'Unknown league' });
   const ck = `euro_players_${league}_${teamId}`;
   const hit = _euroCache[ck];
-  if (!req.query.refresh && hit && hit.data?.players?.length > 0 && Date.now() - hit.ts < CACHE_6H) return res.json(hit.data);
+  if (!req.query.refresh && hit && hit.data?.players?.length > 0 && (Date.now() - hit.ts < CACHE_6H || _basketballApiPaused)) return res.json(hit.data);
   // Assure que le scoreboard est chargé (nécessaire pour l'auto-exclusion par gamelog)
   if (!_euroCache[`euro_sb_${league}`]) {
     try { await fetch(`http://localhost:${process.env.PORT || 3001}/api/euro/${league}/scoreboard`, { signal: AbortSignal.timeout(8000) }); } catch {}
@@ -5036,7 +5184,7 @@ app.get('/api/euro/:league/players/:teamId', async (req, res) => {
       }));
       players.sort((a,b)=>(b.stats?.pts??-1)-(a.stats?.pts??-1));
       const result = { teamId, players };
-      if (players.length >= 1) _euroCache[ck] = { data: result, ts: Date.now() };
+      if (players.length >= 1) { _euroCache[ck] = { data: result, ts: Date.now() }; _saveEuroPlayersCache(); }
       return res.json(result);
     }
     // Roster + gamelogs depuis api-sports.io (LNB / BBL / Lega A)
@@ -5097,7 +5245,7 @@ app.get('/api/euro/:league/players/:teamId', async (req, res) => {
       }
     } catch {}
     const result = { teamId, players };
-    if (players.length >= 1) _euroCache[ck] = { data: result, ts: Date.now() };
+    if (players.length >= 1) { _euroCache[ck] = { data: result, ts: Date.now() }; _saveEuroPlayersCache(); }
     res.json(result);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -5110,7 +5258,7 @@ app.get('/api/euro/:league/lineups/:gameId', async (req, res) => {
   if (!EURO_LEAGUES[league]) return res.status(404).json({ error: 'Unknown league' });
   const ck = `euro_lineups_${gameId}`;
   const hit = _euroCache[ck];
-  if (hit && Date.now() - hit.ts < 10 * 60_000) return res.json(hit.data);
+  if (hit && (Date.now() - hit.ts < 10 * 60_000 || _basketballApiPaused)) return res.json(hit.data);
   try {
     const gamesMap = await getEuroGamesMap(league);
     const meta = gamesMap.get(Number(gameId));
@@ -5136,7 +5284,7 @@ app.get('/api/euro/:league/playergamelog/:playerId', async (req, res) => {
   if (!EURO_LEAGUES[req.params.league]) return res.status(404).json({ error: 'Unknown league' });
   const ck = `euro_gl_${playerId}`;
   const hit = _euroCache[ck];
-  if (hit && Date.now() - hit.ts < CACHE_6H) return res.json(hit.data);
+  if (hit && (Date.now() - hit.ts < CACHE_6H || _basketballApiPaused)) return res.json(hit.data);
   if (req.params.league === 'acb') {
     try {
       const info = _acbPlayerNames[playerId];
@@ -5172,6 +5320,7 @@ app.get('/api/euro/:league/playergamelog/:playerId', async (req, res) => {
       });
       const result = { playerId, games };
       _euroCache[ck] = { data: result, ts: Date.now() };
+      _saveEuroGamelogCache();
       return res.json(result);
     } catch (err) {
       return res.status(500).json({ error: err.message });
@@ -5181,6 +5330,7 @@ app.get('/api/euro/:league/playergamelog/:playerId', async (req, res) => {
     const games = (await bballPlayerGamelog(req.params.league, playerId)).slice(0, 20);
     const result = { playerId, games };
     _euroCache[ck] = { data: result, ts: Date.now() };
+    _saveEuroGamelogCache();
     res.json(result);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -5210,7 +5360,7 @@ app.get('/api/euro/:league/teamschedule/:teamId', async (req, res) => {
   if (!cfg) return res.status(404).json({ error: 'Unknown league' });
   const ck = `euro_sched_${league}_${teamId}`;
   const hit = _euroCache[ck];
-  if (hit && Date.now() - hit.ts < CACHE_6H) return res.json(hit.data);
+  if (hit && (Date.now() - hit.ts < CACHE_6H || _basketballApiPaused)) return res.json(hit.data);
   try {
     const d = await bballFetch(`/games?league=${cfg.id}&season=${cfg.gamesSeason || cfg.season}&team=${teamId}`);
     const games = (d.response || [])
@@ -5244,7 +5394,7 @@ app.get('/api/euro/:league/boxscore', async (req, res) => {
   if (!EURO_LEAGUES[league] || !date || !home || !away) return res.status(400).json({ error: 'league, date, home, away requis' });
   const ck = `euro_bs_${league}_${date}_${home}_${away}`;
   const hit = _euroCache[ck];
-  if (hit && Date.now() - hit.ts < CACHE_5MIN) return res.json(hit.data);
+  if (hit && (Date.now() - hit.ts < CACHE_5MIN || _basketballApiPaused)) return res.json(hit.data);
   try {
     const gamesMap = await getEuroGamesMap(league);
     const dt = new Date(date).getTime();
@@ -5407,7 +5557,11 @@ app.get('/api/euro/:league/projectedlineup', async (req, res) => {
 
   const ck = `euro_proj_${league}_${home}_${away}_${date.slice(0, 10)}`;
   const hit = _euroCache[ck];
-  if (hit && Date.now() - hit.ts < 15 * 60_000) return res.json(hit.data);
+  // 15min → 6h (29 août 2026) — une composition PROBABLE ici est déduite de l'historique de
+  // titularisations récentes (pas une vraie compo confirmée pré-match), elle ne change pas d'un
+  // quart d'heure à l'autre. Coût élevé par cache-miss (jusqu'à 2 rosters + ~36 gamelogs), TTL
+  // désormais aligné sur les routes voisines (/players/:teamId, /playergamelog/:playerId = 6h).
+  if (hit && (Date.now() - hit.ts < CACHE_6H || _basketballApiPaused)) return res.json(hit.data);
 
   const homeShort = normShort(home);
   const awayShort = normShort(away);
@@ -5569,7 +5723,7 @@ app.get('/api/euro/:league/h2h/:homeId/:awayId', async (req, res) => {
   if (!cfg) return res.status(404).json({ error: 'Unknown league' });
   const ck = `euro_h2h_${league}_${homeId}_${awayId}`;
   const hit = _euroCache[ck];
-  if (hit && Date.now() - hit.ts < CACHE_6H) return res.json(hit.data);
+  if (hit && (Date.now() - hit.ts < CACHE_6H || _basketballApiPaused)) return res.json(hit.data);
   try {
     const [cur, prev] = await Promise.all([
       bballFetch(`/games?h2h=${homeId}-${awayId}&league=${cfg.id}&season=${cfg.season}`),
@@ -5601,7 +5755,7 @@ app.get('/api/euro/:league/standings', async (req, res) => {
   if (!cfg) return res.status(404).json({ error: 'Unknown league' });
   const ck = `euro_standings_${req.params.league}`;
   const hit = _euroCache[ck];
-  if (hit && Date.now() - hit.ts < CACHE_6H) return res.json(hit.data);
+  if (hit && (Date.now() - hit.ts < CACHE_6H || _basketballApiPaused)) return res.json(hit.data);
   try {
     const seasonCurrent = isEuroBasketSeasonCurrent(req.params.league);
     const d = await bballFetch(`/standings?league=${cfg.id}&season=${cfg.season}`);
@@ -5664,7 +5818,7 @@ app.get('/api/euro/:league/leaders', async (req, res) => {
   if (!isEuroBasketSeasonCurrent(league)) return res.json({ pts: [], reb: [], ast: [], tpm: [] });
 
   const hit = _euroBasketLeadersCache[league];
-  if (hit && Date.now() - hit.ts < CACHE_6H) return res.json(hit.data);
+  if (hit && (Date.now() - hit.ts < CACHE_6H || _basketballApiPaused)) return res.json(hit.data);
 
   try {
     const td = await bballFetch(`/teams?league=${cfg.id}&season=${cfg.season}`);
@@ -6040,7 +6194,7 @@ app.post('/api/basketball/result', async (req, res) => {
 // pour que le widget "Modèle O/U" de la page détail affiche exactement le même chiffre que
 // l'alerte (remplace l'ancien calcul local computeGameTotal du frontend, 22 juin 2026).
 app.post('/api/basketball/total', async (req, res) => {
-  const { homeGames, awayGames, gameDate, round, league, refTotal, awayTeamKey, homePlayers, awayPlayers } = req.body || {};
+  const { homeGames, awayGames, gameDate, round, league, refTotal, awayTeamKey, homePlayers, awayPlayers, homeTeamTotalLine, awayTeamTotalLine } = req.body || {};
   if (!homeGames?.length || !awayGames?.length || !gameDate || !refTotal) return res.status(400).json({ error: 'homeGames/awayGames/gameDate/refTotal requis' });
 
   const isWNBA = league === 'wnba';
@@ -6069,10 +6223,34 @@ app.post('/api/basketball/total', async (req, res) => {
 
   const full = computeGameTotalFull({ homeGames, awayGames, avgPtsAllowed, ouBaseline, gameDate, round: round || '', refTotal, isWNBA, h2hGames, homeOutPenalty, awayOutPenalty });
   if (!full) return res.json({ error: 'insufficient data' });
+
+  // Total équipe (28 août 2026) — même widget d'affichage que le total combiné, réutilise
+  // homeExpected/awayExpected déjà calculés par computeGameTotalFull (pas de 2e appel), std propre
+  // à chaque équipe (calcTeamPtsStdBg). Optionnel : seulement si une ligne bookmaker a été trouvée
+  // côté frontend pour ce marché (peut être absent, marché encore expérimental/pas toujours scrapé).
+  let homeTeamTotal = null, awayTeamTotal = null;
+  if (homeTeamTotalLine != null) {
+    const stdH = calcTeamPtsStdBg(homeGames);
+    const pOverH = 1 - tCDF4((homeTeamTotalLine - full.homeExpected) / stdH);
+    homeTeamTotal = {
+      line: homeTeamTotalLine, estimated: +full.homeExpected.toFixed(1),
+      pOver: +Math.min(MAX_TOTAL_P, pOverH).toFixed(3) * 100, pUnder: +Math.min(MAX_TOTAL_P, 1 - pOverH).toFixed(3) * 100,
+    };
+  }
+  if (awayTeamTotalLine != null) {
+    const stdA = calcTeamPtsStdBg(awayGames);
+    const pOverA = 1 - tCDF4((awayTeamTotalLine - full.awayExpected) / stdA);
+    awayTeamTotal = {
+      line: awayTeamTotalLine, estimated: +full.awayExpected.toFixed(1),
+      pOver: +Math.min(MAX_TOTAL_P, pOverA).toFixed(3) * 100, pUnder: +Math.min(MAX_TOTAL_P, 1 - pOverA).toFixed(3) * 100,
+    };
+  }
+
   res.json({
     estimated: full.estimated, refTotal: full.refTotal, edge: full.edge, direction: full.direction, std: full.std,
     pOver: +(full.pOver * 100).toFixed(1), pUnder: +(full.pUnder * 100).toFixed(1),
     homeExpected: full.homeExpected, awayExpected: full.awayExpected, details: full.details,
+    ...(homeTeamTotal ? { homeTeamTotal } : {}), ...(awayTeamTotal ? { awayTeamTotal } : {}),
   });
 });
 
@@ -6129,6 +6307,14 @@ async function _refreshBasketballOdds(home, away, league, cacheKey, cached, matc
   if (ubData?.totals) {
     markets.totals = markets.totals || { bookmakers: {} };
     markets.totals.bookmakers.unibet = ubData.totals;
+  }
+  if (ubData?.homeTeamTotal) {
+    markets.teamTotals = markets.teamTotals || { home: { bookmakers: {} }, away: { bookmakers: {} } };
+    markets.teamTotals.home.bookmakers.unibet = ubData.homeTeamTotal;
+  }
+  if (ubData?.awayTeamTotal) {
+    markets.teamTotals = markets.teamTotals || { home: { bookmakers: {} }, away: { bookmakers: {} } };
+    markets.teamTotals.away.bookmakers.unibet = ubData.awayTeamTotal;
   }
   if (ubData?.spread) {
     markets.spread = markets.spread || { bookmakers: {} };
@@ -6205,6 +6391,14 @@ async function _refreshBasketballOdds(home, away, league, cacheKey, cached, matc
   if (bcDetails?.totals) {
     markets.totals = markets.totals || { bookmakers: {} };
     markets.totals.bookmakers.betclic = bcDetails.totals;
+  }
+  if (bcDetails?.homeTeamTotal) {
+    markets.teamTotals = markets.teamTotals || { home: { bookmakers: {} }, away: { bookmakers: {} } };
+    markets.teamTotals.home.bookmakers.betclic = bcDetails.homeTeamTotal;
+  }
+  if (bcDetails?.awayTeamTotal) {
+    markets.teamTotals = markets.teamTotals || { home: { bookmakers: {} }, away: { bookmakers: {} } };
+    markets.teamTotals.away.bookmakers.betclic = bcDetails.awayTeamTotal;
   }
   if (bcDetails?.spread) {
     markets.spread = markets.spread || { bookmakers: {} };
@@ -6428,7 +6622,42 @@ async function fetchBetclicMatchDetails(home, away, league = 'nba') {
     }
   }
 
-  if (!totalMk && !earlywin && !Object.keys(players).length) return null;
+  // 4c. Total de points par équipe (28 août 2026) — marché "Nombre total de points - {Équipe}",
+  // un market distinct par équipe (même structure que le total combiné). Suivi near-miss
+  // uniquement pour l'instant (pas d'alerte) — objectif : vérifier si ce marché est fiable
+  // avant de l'ajouter aux alertes.
+  let homeTeamTotal = null, awayTeamTotal = null;
+  const normStrTT = s => (s || '').toLowerCase().replace(/[^a-z]/g, '');
+  const ttHomeKey = normStrTT(lwrdBc(home));
+  const ttAwayKey = normStrTT(lwrdBc(away));
+  const teamTotalMks = mkList.filter(mk => mk.name && mk.name.startsWith('Nombre total de points - '));
+  for (const mk of teamTotalMks) {
+    const suffix = mk.name.replace('Nombre total de points - ', '');
+    const isHomeMk = normStrTT(suffix).includes(ttHomeKey);
+    const isAwayMk = normStrTT(suffix).includes(ttAwayKey);
+    if (!isHomeMk && !isAwayMk) continue;
+    const lineMap = {};
+    for (const row of mk.selectionMatrix || []) {
+      for (const s of row.selections || []) {
+        const sel = s.selectionOneof?.selection ?? s;
+        if (!sel.name || !sel.odds) continue;
+        const lineM = sel.name.match(/[\d,]+/);
+        if (!lineM) continue;
+        const line = parseFloat(lineM[0].replace(',', '.'));
+        const isOver = /^\+/.test(sel.name);
+        if (!lineMap[line]) lineMap[line] = {};
+        if (isOver) lineMap[line].over = sel.odds;
+        else lineMap[line].under = sel.odds;
+      }
+    }
+    const cands = Object.entries(lineMap).filter(([, v]) => v.over && v.under).map(([l, v]) => ({ line: parseFloat(l), ...v }));
+    if (!cands.length) continue;
+    const pickBestTT = cs => cs.reduce((best, c) => Math.abs(1/c.over - 1/c.under) < Math.abs(1/best.over - 1/best.under) ? c : best, cs[0]);
+    if (isHomeMk) homeTeamTotal = pickBestTT(cands);
+    else awayTeamTotal = pickBestTT(cands);
+  }
+
+  if (!totalMk && !earlywin && !Object.keys(players).length && !homeTeamTotal && !awayTeamTotal) return null;
 
   // 6. Extract over/under lines from selectionMatrix
   let totals = null;
@@ -6507,6 +6736,8 @@ async function fetchBetclicMatchDetails(home, away, league = 'nba') {
 
   return {
     ...(totals ? { totals } : {}),
+    ...(homeTeamTotal ? { homeTeamTotal } : {}),
+    ...(awayTeamTotal ? { awayTeamTotal } : {}),
     ...(spread ? { spread } : {}),
     ...(spreadAllLines ? { spreadAllLines } : {}),
     ...(earlywin ? { earlywin } : {}),
@@ -6631,6 +6862,41 @@ async function fetchUnibetBasketData(home, away, league = 'nba') {
       const best = cands.reduce((b, c) => Math.abs(1/c.over - 1/c.under) < Math.abs(1/b.over - 1/b.under) ? c : b);
       result.totals = best;
     }
+  }
+
+  // 5a. Total de points par équipe (28 août 2026) — groupe "Plus / Moins Points - Equipe - Match",
+  // même principe que les props joueurs (un market par équipe, description = nom d'équipe) mais
+  // avec plusieurs lignes par équipe (ladder, comme le total combiné) — donc collecte TOUTES les
+  // entrées par équipe plutôt qu'une seule comme PROP_GROUPS. Suivi near-miss uniquement pour
+  // l'instant (pas d'alerte).
+  const teamTotalGroup = gm.find(g => g.description?.startsWith('Plus / Moins Points - Equipe'));
+  if (teamTotalGroup) {
+    const ttHomeKeyUB = isEuroLeague ? teamSlug(home).slice(0, 6) : norm(lwrd(home));
+    const ttAwayKeyUB = isEuroLeague ? teamSlug(away).slice(0, 6) : norm(lwrd(away));
+    const homeLines = {}, awayLines = {};
+    for (const mk of teamTotalGroup.markets || []) {
+      const mkName = norm(mk.description || '');
+      const isHomeMk = mkName.includes(ttHomeKeyUB);
+      const isAwayMk = mkName.includes(ttAwayKeyUB);
+      if (!isHomeMk && !isAwayMk) continue;
+      const overOut  = mk.outcomes?.find(o => o.description?.startsWith('Plus'));
+      const underOut = mk.outcomes?.find(o => o.description?.startsWith('Moins'));
+      if (!overOut || !underOut) continue;
+      const lineM = overOut.description.match(/[\d,.]+/);
+      if (!lineM) continue;
+      const line = parseFloat(lineM[0].replace(',', '.'));
+      const over = price(overOut.price), under = price(underOut.price);
+      if (!over || !under) continue;
+      (isHomeMk ? homeLines : awayLines)[line] = { line, over, under };
+    }
+    const pickBestTT = obj => {
+      const cands = Object.values(obj);
+      if (!cands.length) return null;
+      return cands.reduce((b, c) => Math.abs(1/c.over - 1/c.under) < Math.abs(1/b.over - 1/b.under) ? c : b);
+    };
+    const homeBest = pickBestTT(homeLines), awayBest = pickBestTT(awayLines);
+    if (homeBest) result.homeTeamTotal = homeBest;
+    if (awayBest) result.awayTeamTotal = awayBest;
   }
 
   // 5b. Handicap / Écart de points (9 juillet 2026) — Unibet expose un champ "spread" numérique
@@ -10767,6 +11033,80 @@ async function _checkTelegramHealth() {
 // Quotas API — mis à jour à chaque appel réel (pas depuis le cache)
 let _basketballApiQuota = { remaining: null, limit: null, ts: null }; // API-Basketball (7500/jour)
 let _footballApiQuota = { remaining: null, limit: null, ts: null }; // api-football (22 juillet 2026, 7500/jour plan Pro)
+// Pause manuelle api-football (28 août 2026, demande explicite utilisateur — quota journalier
+// épuisé en ~4h certains jours, le xG à lui seul coûte 18 requêtes/match). Bouton Dashboard plutôt
+// qu'une coupure automatique par seuil : l'utilisateur juge lui-même quand couper (ex. laisser
+// tourner pendant les 5 grands championnats, couper pendant les qualifs de coupes d'Europe). Ne
+// touche jamais la clé elle-même — dégrade exactement comme si FOOTBALL_API_KEY était absente
+// (fallback buts bruts, pas de pénalité blessure, pas de snapshot), donc zéro risque de casser un
+// appelant qui ne vérifie pas explicitement ce flag.
+const FOOTBALL_API_PAUSED_FILE = join(CACHE_DIR, 'football_api_paused.json');
+let _footballApiPaused = false;
+// `pausedAt` (29 août 2026, demande explicite — indicateurs Dashboard) — sert au frontend pour
+// afficher un compte à rebours "cache garanti frais jusqu'à environ..." depuis l'instant où la pause
+// a été activée (fenêtre 6h, le plus court des TTL suivis : injuries=6h, xG=24h — approximation
+// volontairement prudente, pas une garantie exacte par entrée).
+let _footballApiPausedAt = null;
+try {
+  if (existsSync(FOOTBALL_API_PAUSED_FILE)) {
+    const parsed = JSON.parse(readFileSync(FOOTBALL_API_PAUSED_FILE, 'utf8'));
+    _footballApiPaused = parsed?.paused === true;
+    _footballApiPausedAt = parsed?.pausedAt ?? null;
+  }
+} catch {}
+function _saveFootballApiPaused() { try { writeFileSync(FOOTBALL_API_PAUSED_FILE, JSON.stringify({ paused: _footballApiPaused, pausedAt: _footballApiPausedAt }), 'utf8'); } catch {} }
+
+// Suivi de progression d'un cycle football déclenché manuellement (29 août 2026, demande explicite
+// — jauge de progression Dashboard au clic "play"). Revu le 30 août 2026 : la 1ère version comptait
+// les appels HTTP individuels avec un `total` qui grandissait au fil des découvertes (dernier
+// `games` connu, ajusté à chaque call) — en pratique le total gonflait de façon visible et illisible
+// pendant tout le cycle (ex. 52/125 → 125/135 → 147/180 rapporté par l'utilisateur), donnant
+// l'impression que la barre recule sans arrêt. Remplacé par un comptage PAR FIXTURE : `total` =
+// nombre de matchs à traiter (`fbFixtures.length`), connu d'un coup dès que la liste de fixtures du
+// cycle est construite (avant la boucle qui fait les appels api-football), donc stable du début à la
+// fin — `done` avance de 1 par fixture traité (`_fcpTick()`, un seul point d'appel, en fin de boucle
+// via `finally`, succès ou échec confondus). Moins précis au sens "requêtes HTTP réelles" mais
+// beaucoup plus lisible, et gratuit à calculer (fbFixtures vient de sources déjà en cache, aucun
+// appel supplémentaire).
+let _footballCycleProgress = { active: false, total: 0, done: 0, startedAt: null };
+function _fcpSetTotal(n) { if (_footballCycleProgress.active) _footballCycleProgress.total = n; }
+function _fcpTick() { if (_footballCycleProgress.active) _footballCycleProgress.done++; }
+
+// Pause manuelle API-Basketball (api-sports.io, 30 août 2026, demande explicite — même principe que
+// la pause football ci-dessus). Différence structurelle importante par rapport au foot : côté foot,
+// footballApiFetch n'est JAMAIS appelé par les routes que l'utilisateur consulte en direct (scores/
+// cotes/calendriers viennent de football-data.org + scraping Betclic/Pinnacle, systèmes séparés) —
+// le calcul du modèle continue de tourner à chaque cycle de 20 min, pause ou pas, juste avec des
+// données un peu moins fraîches. Côté basket, bballFetch (api-sports.io) est le SEUL point d'entrée,
+// partagé entre le cycle d'arrière-plan (props/Résultat/Total EU) ET les pages de match ACB/BBL/
+// LegaA que l'utilisateur ouvre lui-même. Pour reproduire le même comportement ("le modèle continue
+// de tourner avec le cache, seule la récupération de données NEUVES s'arrête") sans jamais bloquer
+// une page ouverte manuellement, la pause ne gate pas `bballFetch` lui-même : elle étend chacun des
+// points de cache TTL existants (`hit && Date.now()-hit.ts < CACHE_XH`) pour accepter le cache même
+// expiré tant que la pause est active (`|| _basketballApiPaused`) — donc aucun nouvel appel réseau,
+// mais les données déjà en mémoire (même vieilles) continuent d'être utilisées et recalculées à
+// chaque cycle, exactement comme le foot. Seul un point jamais mis en cache une seule fois (vrai
+// cache-miss) n'a pas de repli possible, même limite que le foot sur un fixture jamais vu.
+const BASKETBALL_API_PAUSED_FILE = join(CACHE_DIR, 'basketball_api_paused.json');
+let _basketballApiPaused = false;
+let _basketballApiPausedAt = null;
+try {
+  if (existsSync(BASKETBALL_API_PAUSED_FILE)) {
+    const parsed = JSON.parse(readFileSync(BASKETBALL_API_PAUSED_FILE, 'utf8'));
+    _basketballApiPaused = parsed?.paused === true;
+    _basketballApiPausedAt = parsed?.pausedAt ?? null;
+  }
+} catch {}
+function _saveBasketballApiPaused() { try { writeFileSync(BASKETBALL_API_PAUSED_FILE, JSON.stringify({ paused: _basketballApiPaused, pausedAt: _basketballApiPausedAt }), 'utf8'); } catch {} }
+
+// Jauge de progression basket (30 août 2026) — même principe que _footballCycleProgress (comptage
+// par match, total fixé une fois pour toutes au début du cycle EU). `total` = nb de matchs EU à venir
+// (acb/bbl/legaa) × 3 passes (props + Résultat + Total, 3 boucles séparées contrairement au foot qui
+// n'en a qu'une) — `done` avance de 1 à chaque match traité par n'importe laquelle des 3 boucles.
+let _basketballCycleProgress = { active: false, total: 0, done: 0, startedAt: null };
+function _bcpSetTotal(n) { if (_basketballCycleProgress.active) _basketballCycleProgress.total = n; }
+function _bcpTick() { if (_basketballCycleProgress.active) _basketballCycleProgress.done++; }
+
 let _fdQuota = { remaining: null, limit: 10, ts: null }; // football-data.org (10/min)
 
 function _captureBasketballApiQuota(resp) {
@@ -10910,10 +11250,32 @@ function _saveNearMiss() {
 // Cote ajoutée le 28 juillet 2026 — sans elle on peut juger la calibration (le % annoncé est-il
 // juste) mais pas la rentabilité (% réel × cote). Les deux analyses seront à distinguer clairement
 // au bilan : "le % est-il bon" vs "est-ce rentable au % réel obtenu".
-function _logNearMissCandidate({ gameId, league, player, stat, direction, line, probability, floor, unibetOdds, betclicOdds, estimate }) {
+// Fix 29 août 2026, demande explicite — avant ce fix, une fois un candidat loggé une 1ère fois
+// (même id = même match+joueuse+stat+direction+ligne), tous les cycles suivants (toutes les 20min,
+// parfois sur plusieurs jours avant le match) étaient ignorés purement et simplement : la probabilité
+// gelée dans l'archive était celle de la toute PREMIÈRE fois vue, souvent calculée tôt avec moins
+// d'infos disponibles (blessures pas encore connues, forme pas encore à jour) — pas celle, plus
+// fiable, du dernier cycle juste avant le match, qui est ce sur quoi une vraie alerte se serait basée.
+// Le candidat reste le même (même id, même joueuse/match/stat suivis), seule sa probabilité (et les
+// champs qui en dépendent) se met à jour à chaque cycle tant que le match n'a pas eu lieu — la
+// dernière valeur avant le coup d'envoi est celle qui compte pour juger la calibration du modèle.
+// Garde-fou : un candidat déjà réglé (`status` 'won'/'lost'/'void') n'est JAMAIS modifié rétroactivement,
+// seuls les candidats encore 'pending' (match pas encore joué) sont mis à jour.
+function _logNearMissCandidate({ gameId, league, player, stat, direction, line, probability, floor, unibetOdds, betclicOdds, estimate, tags }) {
   const id = `${gameId}_${player}_${stat}_${direction}_${line}`;
-  if (_nearMissCandidates.some(c => c.id === id)) return; // déjà loggé ce cycle/les précédents
-  _nearMissCandidates.push({ id, gameId, league, player, stat, direction, line, probability: +(probability * 100).toFixed(1), floor: +(floor * 100).toFixed(1), unibetOdds: unibetOdds ?? null, betclicOdds: betclicOdds ?? null, estimate: estimate ?? null, status: 'pending', savedAt: Date.now() });
+  const existing = _nearMissCandidates.find(c => c.id === id);
+  if (existing) {
+    if (existing.status === 'pending') {
+      existing.probability = +(probability * 100).toFixed(1);
+      existing.floor = +(floor * 100).toFixed(1);
+      existing.unibetOdds = unibetOdds ?? null;
+      existing.betclicOdds = betclicOdds ?? null;
+      existing.estimate = estimate ?? null;
+      if (tags?.length) existing.tags = tags;
+    }
+    return;
+  }
+  _nearMissCandidates.push({ id, gameId, league, player, stat, direction, line, probability: +(probability * 100).toFixed(1), floor: +(floor * 100).toFixed(1), unibetOdds: unibetOdds ?? null, betclicOdds: betclicOdds ?? null, estimate: estimate ?? null, ...(tags?.length ? { tags } : {}), status: 'pending', savedAt: Date.now() });
 }
 async function _resolveNearMissCandidates() {
   const base = `http://localhost:${process.env.PORT || 3001}`;
@@ -11165,6 +11527,59 @@ app.get('/api/analysis/near-miss', (req, res) => {
   res.json({ rows, count: rows.length });
 });
 
+// Historique near-miss PAR JOUEUSE (29 août 2026, demande explicite) — le nom du joueur et le
+// résultat réel (`actualStat`) sont déjà présents sur chaque ligne de `_nearMissCandidates` depuis le
+// début (aucune nouvelle collecte nécessaire), juste jamais filtrés/regroupés par joueur jusqu'ici —
+// le panneau near-miss existant agrège TOUJOURS tous les joueurs ensemble par stat. Répond à "combien
+// de fois CETTE joueuse a passé sa ligne, par rapport à la proba annoncée à chaque fois" — utile pour
+// juger la fiabilité du modèle sur une joueuse précise, pas juste sur la stat en général.
+// `players` accepte un ou plusieurs noms séparés par des virgules (fiche match : tout l'effectif d'un
+// coup) — retourne une clé par joueur, chacune découpée par stat (pts/reb/ast/tpm).
+app.get('/api/analysis/near-miss-player', (req, res) => {
+  const namesParam = req.query.players || req.query.player;
+  if (!namesParam) return res.status(400).json({ error: 'players (ou player) requis' });
+  const names = namesParam.split(',').map(s => s.trim()).filter(Boolean);
+  const { league } = req.query;
+  const days = Math.min(parseInt(req.query.days) || 90, 90);
+  const cutoff = Date.now() - days * 86400_000;
+  const STATS = ['pts', 'reb', 'ast', 'tpm'];
+  // Fix 29 août 2026, demande explicite — avant ce fix, "9/17" mélangeait les candidats Over ET
+  // Under d'une même stat, alors que chaque alerte réelle ne concerne qu'UN sens précis (ex: "Under
+  // 15,5 pts"). Un "9/17" mélangé ne répond ni à "l'Under a-t-il gagné 9 fois" ni à rien d'exploitable
+  // pour juger CETTE alerte précise — juste "le modèle a eu raison 9 fois sur 17 candidats, tous sens
+  // confondus". `_statsFor` calcule maintenant un sous-total séparé par sens (over/under) EN PLUS
+  // du total mélangé (`combined`, gardé pour compat/vue d'ensemble) — les appelants qui connaissent
+  // le sens de l'alerte (carte, roster) doivent utiliser `byStat[stat][direction]`, pas `combined`.
+  const _statsFor = rows => {
+    if (!rows.length) return null;
+    const wins = rows.filter(r => r.status === 'won').length;
+    const winRate = +((100 * wins) / rows.length).toFixed(1);
+    const avgProbability = +(rows.reduce((s, r) => s + r.probability, 0) / rows.length).toFixed(1);
+    const [ciLow, ciHigh] = _wilsonInterval(wins, rows.length);
+    const recent = rows.slice().sort((a, b) => b.savedAt - a.savedAt).slice(0, 15)
+      .map(r => ({ date: r.savedAt, line: r.line, direction: r.direction, probability: r.probability, status: r.status, actualStat: r.actualStat ?? null }));
+    return { n: rows.length, wins, losses: rows.length - wins, winRate, winRateCI95: [ciLow, ciHigh], avgProbability, recent };
+  };
+  const result = {};
+  for (const name of names) {
+    let rows = _nearMissCandidates.filter(r => r.savedAt > cutoff && r.player === name);
+    if (league) rows = rows.filter(r => r.league === league);
+    const resolved = rows.filter(r => r.status === 'won' || r.status === 'lost');
+    const byStat = {};
+    for (const stat of STATS) {
+      const statRows = resolved.filter(r => r.stat === stat);
+      if (!statRows.length) { byStat[stat] = null; continue; }
+      byStat[stat] = {
+        combined: _statsFor(statRows),
+        over: _statsFor(statRows.filter(r => r.direction === 'over')),
+        under: _statsFor(statRows.filter(r => r.direction === 'under')),
+      };
+    }
+    result[name] = { byStat, totalResolved: resolved.length };
+  }
+  res.json({ players: result });
+});
+
 // Même suivi que ci-dessus, étendu au foot (BTTS/Total/Résultat) le 19 juillet 2026 — demande
 // explicite de l'utilisateur d'avoir la même analyse de calibration sur les deux sports.
 const NEAR_MISS_FOOT_FILE = join(CACHE_DIR, 'near_miss_football.json');
@@ -11176,10 +11591,10 @@ function _saveNearMissFootball() {
   try { writeFileSync(NEAR_MISS_FOOT_FILE, JSON.stringify({ rows: _nearMissFootball }), 'utf8'); } catch {}
 }
 // Filtre de bande retiré le 28 juillet 2026 — voir commentaire détaillé sur _logNearMissCandidate.
-function _logFootballNearMiss({ fixtureId, league, market, direction, line, probability, floor, unibetOdds, betclicOdds }) {
+function _logFootballNearMiss({ fixtureId, league, market, direction, line, probability, floor, unibetOdds, betclicOdds, tags }) {
   const id = `${fixtureId}_${market}_${direction}_${line ?? ''}`;
   if (_nearMissFootball.some(c => c.id === id)) return;
-  _nearMissFootball.push({ id, fixtureId, league, market, direction, line: line ?? null, probability: +(probability * 100).toFixed(1), floor: +(floor * 100).toFixed(1), unibetOdds: unibetOdds ?? null, betclicOdds: betclicOdds ?? null, status: 'pending', savedAt: Date.now() });
+  _nearMissFootball.push({ id, fixtureId, league, market, direction, line: line ?? null, probability: +(probability * 100).toFixed(1), floor: +(floor * 100).toFixed(1), unibetOdds: unibetOdds ?? null, betclicOdds: betclicOdds ?? null, ...(tags?.length ? { tags } : {}), status: 'pending', savedAt: Date.now() });
 }
 // 21 juillet 2026 — le 'fd' (5 grands championnats) pointait vers /api/fd/matches, qui interroge
 // FD avec ?status=SCHEDULED et ne renvoie donc JAMAIS de match terminé (même bug racine que le
@@ -11301,6 +11716,17 @@ async function _resolveBasketMarketNearMiss() {
         const oppScore  = c.direction === 'home' ? as : hs;
         cleared = (teamScore - oppScore) + c.line > 0;
       }
+      // Fix 28 août 2026 — bug trouvé par un audit externe : team_total (ajouté le 27 août, direction
+      // au format `home_over`/`home_under`/`away_over`/`away_under`) ne matchait AUCUNE des branches
+      // ci-dessus → `cleared` restait undefined → c.status retombait systématiquement sur 'lost' à
+      // chaque résolution, peu importe le vrai score. Corrompait la calibration de ce marché depuis
+      // sa création, avant même la première vraie résolution.
+      else if (c.market === 'team_total') {
+        const [side, dir] = c.direction.split('_');
+        const teamScore = side === 'home' ? hs : as;
+        cleared = dir === 'over' ? teamScore > c.line : teamScore < c.line;
+      }
+      if (cleared == null) continue; // marché inconnu — ne jamais statuer au hasard, on réessaiera au prochain cycle
       c.status = cleared ? 'won' : 'lost';
     } catch {}
   }
@@ -11313,6 +11739,281 @@ app.get('/api/analysis/near-miss-basket-markets', (req, res) => {
   const cutoff = Date.now() - days * 86400_000;
   const rows = _nearMissBasketMkt.filter(r => r.savedAt > cutoff);
   res.json({ rows, count: rows.length });
+});
+
+// Calculateur générique de seuil optimal (28 août 2026) — un seul outil réutilisé par les 3 logs
+// near-miss (props, foot, marchés basket), plutôt qu'un système par marché comme les tests de
+// plancher WNBA existants (_checkWnbaRebFloorTestRollback et voisins, qui restent en place tels
+// quels — pas remplacés, ce calculateur est un outil d'ANALYSE ponctuelle, pas un mécanisme de
+// test/rollback automatique). Ne modifie aucun seuil réel : lecture seule, calcule juste ce que
+// donnerait un seuil candidat sur l'historique déjà loggé.
+//
+// Méthode volontairement alignée sur l'audit fait à la main le 27 août 2026 (session near-miss) :
+// - calibration par tranche de 10pts (proba annoncée vs taux de réussite réel)
+// - ROI réel par tranche, calculé sur la MEILLEURE cote unibet/betclic réellement disponible pour
+//   CE candidat (jamais une cote inventée) — c'est ce point précis qui avait été oublié au début
+//   de l'audit manuel et qui donnait des courbes trompeuses tant qu'il n'était pas appliqué.
+// - seuil recommandé = celui qui maximise le ROI cumulé (candidats à proba >= seuil), uniquement
+//   parmi les seuils qui atteignent >=30 candidats AVEC cote réellement disponible (pas juste 30
+//   candidats au total — un seuil avec 40 candidats mais seulement 5 avec une cote connue n'est pas
+//   fiable). Aucune recommandation renvoyée si aucun seuil n'atteint ce plancher.
+// Intervalle de confiance de Wilson (95%) sur un taux de réussite — plus fiable qu'un simple ±
+// normal quand n est petit ou que le taux est proche de 0/100% (exactement notre cas : beaucoup de
+// tranches n'ont que 20-30 candidats). Sert à répondre à la question soulevée le 28 août : "+19,1%
+// ROI sur n=21, est-ce du vrai signal ou du bruit ?" — la borne basse de l'intervalle donne une
+// réponse chiffrée plutôt qu'une impression.
+function _wilsonInterval(wins, n) {
+  if (!n) return [0, 0];
+  const z = 1.96; // 95%
+  const p = wins / n;
+  const denom = 1 + (z * z) / n;
+  const center = p + (z * z) / (2 * n);
+  const margin = z * Math.sqrt((p * (1 - p)) / n + (z * z) / (4 * n * n));
+  return [Math.max(0, +((100 * (center - margin) / denom)).toFixed(1)), Math.min(100, +((100 * (center + margin) / denom)).toFixed(1))];
+}
+
+// Candidats de cote minimum testés dans la recherche croisée — mêmes paliers pratiques utilisés
+// pendant l'audit manuel du 27 août (1.20/1.30 se sont révélés être LA différence sur Résultat WNBA
+// et Total buts foot), étendus à une plage réaliste plutôt que de se limiter aux deux déjà trouvées.
+const THRESHOLD_OPT_MIN_ODDS_GRID = [0, 1.10, 1.20, 1.30, 1.40, 1.50, 1.60, 1.80, 2.00, 2.50];
+
+// Cote minimum RÉELLEMENT programmée pour l'envoi de l'alerte, par marché (28 août 2026, demande
+// explicite) — jusqu'ici la colonne "Cote" du panneau near-miss affichait la cote issue de la
+// recherche croisée `combos` (celle qui maximise le ROI historique dans les données disponibles),
+// qui peut différer de la vraie cote plancher utilisée en production. Valeurs dupliquées ici depuis
+// les constantes réelles (FB_RESULT_MIN_ODDS, etc.) à des fins d'affichage uniquement — si l'une de
+// ces constantes change, penser à mettre celle-ci à jour en même temps (pas de source unique
+// possible ici : certaines des constantes réelles sont des `const` locales à
+// generateBackgroundAlerts(), hors de portée de cette fonction).
+function _configuredMinOddsFor(source, league, market, stat) {
+  if (source === 'props') return 1.60; // capOdds/hasValidOverOdds — ladder NBA/WNBA/EU
+  if (source === 'football') {
+    if (market === 'result') return FB_RESULT_MIN_ODDS;   // 1.50
+    if (market === 'btts') return FB_BTTS_OU_MIN_ODDS;     // 1.60
+    if (market === 'total') return FB_OU_ALERT_MIN_ODDS_TOTAL; // 1.30 — distinct de BTTS depuis le fix du 27 juin
+    if (market === 'dc_ou' || market === 'dc_btts') return FB_DC_MIN_ODDS; // 1.45
+    return null;
+  }
+  if (source === 'basket-markets') {
+    if (market === 'result') return league === 'wnba' ? 1.20 : 1.50; // WNBA_RESULT_MIN_ODDS vs RESULT_MIN_ODDS (generateBackgroundAlerts, locales)
+    if (market === 'total' || market === 'team_total') return 1.60;  // game_total / team_total
+    return null;
+  }
+  return null;
+}
+
+// Calculateur générique de seuil optimal (28 août 2026, étendu le même soir après un audit externe
+// qui a trouvé 3 vraies limites — voir commentaires "Fix 28 août" ci-dessous) — un seul outil
+// réutilisé par les 3 logs near-miss (props, foot, marchés basket), plutôt qu'un système par marché
+// comme les tests de plancher WNBA existants (_checkWnbaRebFloorTestRollback et voisins, qui
+// restent en place tels quels — pas remplacés, ce calculateur est un outil d'ANALYSE ponctuelle,
+// pas un mécanisme de test/rollback automatique). Ne modifie aucun seuil réel : lecture seule.
+//
+// - `buckets` : calibration par tranche de 10pts (proba annoncée vs taux de réussite réel), affichage
+//   brut sans filtre de cote — sert à voir la forme générale de la courbe, pas à décider un seuil.
+// - `bestCombos` : Fix "grille grossière" + "pas de recherche croisée" (28 août) — recherche
+//   conjointe seuil de probabilité (pas de 5pts, pas de 10) × cote minimum (grille ci-dessus),
+//   plutôt qu'un seul axe à la fois. C'est cette combinaison, pas la proba seule, qui avait fait
+//   toute la différence sur Résultat WNBA et Total buts foot pendant l'audit manuel.
+// - chaque combo retenu inclut son intervalle de confiance à 95% (Wilson) sur le taux de réussite —
+//   fix "aucune incertitude reportée" (28 août). Trié par ROI (conforme à la demande d'origine du
+//   27 août), mais la borne basse de l'intervalle est TOUJOURS affichée à côté pour juger si le
+//   nombre est solide ou si le sample est encore trop mince pour y croire.
+// knownFloorPct (28 août 2026, demande explicite) — pour les props WNBA pts/reb/ast/tpm, le log
+// near-miss ne contient QUE des candidats sous le plancher d'alerte déjà actif (bande
+// [plancher-20, plancher), par design — voir NEAR_MISS_BAND). La recherche croisée `combos`
+// ci-dessous ne peut donc structurellement jamais recommander un seuil proche du vrai plancher réel
+// (WNBA_ALERT_FLOOR) : elle ne voit tout simplement aucune donnée au-dessus. Plutôt que d'afficher un
+// "seuil recommandé" toujours trompeur (toujours sous le vrai plancher), l'appelant passe ici le
+// plancher réel déjà actif — la fonction calcule alors le win%/n/roi de la tranche de 10pts
+// immédiatement sous CE plancher (au lieu d'une recherche du "meilleur" seuil), pour juger si le
+// plancher actuel est bien placé plutôt que d'en suggérer un autre.
+// Calibration isotonique (PAVA — Pool Adjacent Violators Algorithm), 29 août 2026, demande
+// explicite de l'utilisateur après discussion. Sert à répondre à "quand le modèle annonce X%, quel
+// est le VRAI taux de réussite observé ?" sans découper arbitrairement en tranches de 10pts (déjà
+// fait par `buckets` ci-dessus) — trouve les paliers optimaux directement dans les données, en ne
+// forçant qu'une seule contrainte : la courbe ne peut jamais redescendre quand la probabilité
+// annoncée augmente (hypothèse minimale pour un modèle globalement correct mais mal calibré).
+// Empile les candidats triés par proba croissante ; dès qu'un point/bloc a un taux de réussite
+// inférieur à celui du bloc précédent (violation de la monotonie), les deux sont fusionnés (moyenne
+// pondérée) — répété jusqu'à ce que toute la pile soit croissante. Résultat : des blocs de largeur
+// variable, fins là où les données abondent, larges là où elles sont rares — pas un simple recalcul
+// des `buckets` fixes existants.
+function _isotonicCalibrate(rows) {
+  const sorted = rows.slice().sort((a, b) => a.probability - b.probability);
+  const stack = [];
+  for (const r of sorted) {
+    stack.push({ n: 1, wins: r.status === 'won' ? 1 : 0, minP: r.probability, maxP: r.probability, rate: r.status === 'won' ? 1 : 0 });
+    while (stack.length > 1 && stack[stack.length - 2].rate > stack[stack.length - 1].rate + 1e-12) {
+      const top = stack.pop();
+      const prev = stack.pop();
+      const n = prev.n + top.n, wins = prev.wins + top.wins;
+      stack.push({ n, wins, minP: prev.minP, maxP: top.maxP, rate: wins / n });
+    }
+  }
+  return stack; // blocs ordonnés par proba croissante, taux non-décroissant
+}
+
+// Taux calibré moyen pour un ensemble de candidats — recherche, pour chaque candidat, le bloc
+// isotonique dont il fait partie (ou le plus proche si en dehors de la plage observée), puis moyenne.
+function _calibratedRateFor(blocks, candidates) {
+  if (!blocks.length || !candidates.length) return null;
+  const rateAt = p => {
+    for (const b of blocks) if (p >= b.minP && p <= b.maxP) return b.rate;
+    return p < blocks[0].minP ? blocks[0].rate : blocks[blocks.length - 1].rate;
+  };
+  const sum = candidates.reduce((s, r) => s + rateAt(r.probability), 0);
+  return +((100 * sum) / candidates.length).toFixed(1);
+}
+
+function _analyzeThresholdRows(rows, fixedMinOdds = null, knownFloorPct = null) {
+  const resolved = rows.filter(r => r.status === 'won' || r.status === 'lost');
+  const calibrationBlocks = _isotonicCalibrate(resolved);
+  const bestOdds = r => Math.max(r.unibetOdds || 0, r.betclicOdds || 0) || null;
+  // Si l'appelant impose déjà une cote minimum (paramètre ?minOdds=, filtré en amont dans `rows`),
+  // ne fait pas varier ce 2e axe dans la recherche croisée — le réduire à cette seule valeur, sinon
+  // les "combos" à minOdds plus bas afficheraient un chiffre trompeur (les lignes sont déjà toutes
+  // filtrées à fixedMinOdds en amont, donc un minOdds=1.10 affiché ici ne voudrait rien dire de réel).
+  const minOddsGrid = fixedMinOdds != null ? [fixedMinOdds] : THRESHOLD_OPT_MIN_ODDS_GRID;
+
+  const buckets = [];
+  for (let lo = 0; lo < 100; lo += 10) {
+    const hi = lo + 10;
+    const inBucket = resolved.filter(r => r.probability >= lo && r.probability < hi);
+    const withOdds = inBucket.filter(r => bestOdds(r) != null);
+    const wins = inBucket.filter(r => r.status === 'won').length;
+    let roi = null;
+    if (withOdds.length) {
+      const profit = withOdds.reduce((s, r) => s + (r.status === 'won' ? (bestOdds(r) - 1) : -1), 0);
+      roi = +((100 * profit) / withOdds.length).toFixed(1);
+    }
+    buckets.push({
+      range: [lo, hi], n: inBucket.length,
+      avgProbAnnounced: inBucket.length ? +(inBucket.reduce((s, r) => s + r.probability, 0) / inBucket.length).toFixed(1) : null,
+      winRate: inBucket.length ? +((100 * wins) / inBucket.length).toFixed(1) : null,
+      nWithOdds: withOdds.length, roi,
+    });
+  }
+
+  const MIN_N_WITH_ODDS = 30;
+  const combos = [];
+  for (let thresh = 50; thresh <= 95; thresh += 5) {
+    for (const minOdds of minOddsGrid) {
+      const candidates = resolved.filter(r => r.probability >= thresh && (minOdds === 0 || bestOdds(r) != null && bestOdds(r) >= minOdds));
+      if (candidates.length < MIN_N_WITH_ODDS) continue;
+      const wins = candidates.filter(r => r.status === 'won').length;
+      const profit = candidates.reduce((s, r) => s + (r.status === 'won' ? (bestOdds(r) - 1) : -1), 0);
+      const roi = +((100 * profit) / candidates.length).toFixed(1);
+      const winRate = +((100 * wins) / candidates.length).toFixed(1);
+      const [ciLow, ciHigh] = _wilsonInterval(wins, candidates.length);
+      combos.push({ threshold: thresh, minOdds, n: candidates.length, wins, losses: candidates.length - wins, winRate, winRateCI95: [ciLow, ciHigh], roi, calibratedWinRate: _calibratedRateFor(calibrationBlocks, candidates) });
+    }
+  }
+  // thresholdCombos (29 août 2026, demande explicite) — tous les seuils testés (50 à 95, pas de 5),
+  // SANS le filtre "≥30 cas" appliqué à `combos` ci-dessus. Fix le jour même : le sélecteur de seuil
+  // manuel doit pouvoir afficher un seuil choisi même avec peu de cas (comme le sélecteur de cote,
+  // qui n'a jamais eu ce garde-fou — l'utilisateur explore volontairement, ce n'est pas une
+  // recommandation automatique où la fiabilité minimale importe). Sans ça, sélectionner un seuil trop
+  // rare retombait silencieusement sur l'agrégat par défaut tout en affichant l'étiquette du seuil
+  // choisi — incohérence trouvée en testant la combinaison seuil+cote.
+  const thresholdCombos = [];
+  for (let thresh = 50; thresh <= 95; thresh += 5) {
+    const candidates = resolved.filter(r => r.probability >= thresh && (minOddsGrid[0] === 0 || bestOdds(r) != null && bestOdds(r) >= minOddsGrid[0]));
+    const wins = candidates.filter(r => r.status === 'won').length;
+    const roi = candidates.length ? +((100 * candidates.reduce((s, r) => s + (r.status === 'won' ? (bestOdds(r) - 1) : -1), 0)) / candidates.length).toFixed(1) : null;
+    const winRate = candidates.length ? +((100 * wins) / candidates.length).toFixed(1) : null;
+    const [ciLow, ciHigh] = _wilsonInterval(wins, candidates.length);
+    thresholdCombos.push({ threshold: thresh, minOdds: minOddsGrid[0], n: candidates.length, wins, losses: candidates.length - wins, winRate, winRateCI95: candidates.length ? [ciLow, ciHigh] : null, roi, calibratedWinRate: _calibratedRateFor(calibrationBlocks, candidates) });
+  }
+  combos.sort((a, b) => b.roi - a.roi);
+  const recommendedThreshold = combos[0] || null;
+  const topCombos = combos.slice(0, 8);
+
+  let activeFloorStats = null;
+  if (knownFloorPct != null) {
+    const lo = knownFloorPct - 10, hi = knownFloorPct;
+    const candidates = resolved.filter(r => r.probability >= lo && r.probability < hi && (fixedMinOdds == null || (bestOdds(r) != null && bestOdds(r) >= fixedMinOdds)));
+    const wins = candidates.filter(r => r.status === 'won').length;
+    const roi = candidates.length ? +((100 * candidates.reduce((s, r) => s + (r.status === 'won' ? (bestOdds(r) - 1) : -1), 0)) / candidates.length).toFixed(1) : null;
+    const winRate = candidates.length ? +((100 * wins) / candidates.length).toFixed(1) : null;
+    const [ciLow, ciHigh] = _wilsonInterval(wins, candidates.length);
+    activeFloorStats = { threshold: knownFloorPct, band: [lo, hi], n: candidates.length, wins, losses: candidates.length - wins, winRate, winRateCI95: candidates.length ? [ciLow, ciHigh] : null, roi, minOdds: fixedMinOdds ?? 0, calibratedWinRate: _calibratedRateFor(calibrationBlocks, candidates) };
+  }
+
+  // oddsBuckets (28 août 2026, demande explicite) — découpage par tranche de cote de 0,10 (1,10 à
+  // 5,00), sur les candidats qui passent déjà le seuil de probabilité recommandé. Sert à l'exploration
+  // interactive côté carte near-miss (survol/clic sur la cote) : contrairement à `combos`, qui ne
+  // teste que des planchers "≥X" sur une grille fixe, ceci répond à "et SI je jouais QUE la tranche
+  // 1,10-1,20 ?" — question différente, à cote choisie plutôt qu'à cote minimum.
+  const oddsThreshold = knownFloorPct != null ? knownFloorPct - 10 : (recommendedThreshold?.threshold ?? 50);
+  const buildOddsBuckets = threshold => {
+    const candidates = resolved.filter(r => r.probability >= threshold);
+    const result = [];
+    for (let lo = 1.10; lo < 5.00 + 1e-9; lo = +(lo + 0.10).toFixed(2)) {
+      const hi = +(lo + 0.10).toFixed(2);
+      const inBucket = candidates.filter(r => { const o = bestOdds(r); return o != null && o >= lo && o < hi; });
+      const wins = inBucket.filter(r => r.status === 'won').length;
+      const roi = inBucket.length ? +((100 * inBucket.reduce((s, r) => s + (r.status === 'won' ? (bestOdds(r) - 1) : -1), 0)) / inBucket.length).toFixed(1) : null;
+      const winRate = inBucket.length ? +((100 * wins) / inBucket.length).toFixed(1) : null;
+      const [ciLow, ciHigh] = _wilsonInterval(wins, inBucket.length);
+      result.push({ lo: +lo.toFixed(2), hi, n: inBucket.length, wins, losses: inBucket.length - wins, winRate, winRateCI95: inBucket.length ? [ciLow, ciHigh] : null, roi, calibratedWinRate: _calibratedRateFor(calibrationBlocks, inBucket) });
+    }
+    return result;
+  };
+  const oddsBuckets = buildOddsBuckets(oddsThreshold);
+  // oddsBucketsByThreshold (29 août 2026, demande explicite) — même découpage par tranche de cote,
+  // mais recalculé pour CHAQUE seuil du sélecteur (50 à 95, pas de 5) plutôt qu'un seul (le seuil par
+  // défaut). Permet au picker seuil + picker cote de vraiment se COMBINER côté frontend (choisir 70%
+  // ET 1,30-1,40 en même temps) au lieu d'ignorer silencieusement le seuil choisi dès qu'une tranche
+  // de cote est sélectionnée — clé = seuil (string, car clé d'objet JS), valeur = mêmes buckets que
+  // ci-dessus mais filtrés sur ce seuil précis. Coût négligeable (mêmes données, juste reparcourues
+  // ~10 fois de plus — quelques centaines de lignes near-miss, pas un souci de perf ici).
+  const oddsBucketsByThreshold = {};
+  for (let t = 50; t <= 95; t += 5) oddsBucketsByThreshold[t] = buildOddsBuckets(t);
+
+  return { buckets, recommendedThreshold, activeFloorStats, topCombos, thresholdCombos, oddsBuckets, oddsBucketsThreshold: oddsThreshold, oddsBucketsByThreshold, totalResolved: resolved.length, minNWithOddsRequired: MIN_N_WITH_ODDS };
+}
+
+app.get('/api/analysis/threshold-optimizer', (req, res) => {
+  const { source, league, market, stat, direction, days } = req.query;
+  const tagsFilter = (req.query.tags || '').split(',').filter(Boolean);
+  const excludeTagsFilter = (req.query.excludeTags || '').split(',').filter(Boolean);
+  // minOdds (28 août 2026, ajouté après un premier test) — sans ça l'outil ne pouvait pas retrouver
+  // les résultats de l'audit manuel de ce soir sur Résultat WNBA / Total buts foot, où la vraie
+  // découverte était la COMBINAISON seuil de probabilité + cote minimum, pas la probabilité seule
+  // (un candidat à proba 90% coté 1,05 n'est structurellement pas la même chose qu'à 1,50 — la
+  // cote la plus basse dispo n'écarte aucun candidat par défaut, minOdds=0 reproduit l'ancien
+  // comportement).
+  const minOdds = parseFloat(req.query.minOdds) || 0;
+  if (!['props', 'football', 'basket-markets'].includes(source)) {
+    return res.status(400).json({ error: "source requis : 'props' | 'football' | 'basket-markets'" });
+  }
+  const cutoff = Date.now() - Math.min(parseInt(days) || 90, 90) * 86400_000;
+  const raw = source === 'props' ? _nearMissCandidates : source === 'football' ? _nearMissFootball : _nearMissBasketMkt;
+
+  let rows = raw.filter(r => r.savedAt > cutoff);
+  if (league) rows = rows.filter(r => r.league === league);
+  if (market && source !== 'props') rows = rows.filter(r => r.market === market);
+  if (stat && source === 'props') rows = rows.filter(r => r.stat === stat);
+  if (direction) rows = rows.filter(r => r.direction === direction);
+  if (tagsFilter.length) rows = rows.filter(r => tagsFilter.every(t => (r.tags || []).includes(t)));
+  if (excludeTagsFilter.length) rows = rows.filter(r => !excludeTagsFilter.some(t => (r.tags || []).includes(t)));
+  if (minOdds > 0) rows = rows.filter(r => Math.max(r.unibetOdds || 0, r.betclicOdds || 0) >= minOdds);
+
+  // knownFloorPct : uniquement props WNBA pts/reb/ast/tpm — seul cas où un plancher d'alerte réel
+  // est déjà actif ET où le log near-miss est structurellement bridé sous ce plancher (voir le
+  // commentaire sur _analyzeThresholdRows). Les autres marchés (foot, basket-markets, props NBA/EU)
+  // n'ont pas cette contrainte, `knownFloorPct` reste null pour eux — comportement inchangé.
+  const knownFloorPct = (source === 'props' && league === 'wnba' && WNBA_ALERT_FLOOR[stat] != null)
+    ? Math.round(WNBA_ALERT_FLOOR[stat] * 100) : null;
+  // Cote mini réellement programmée pour l'envoi de l'alerte (28 août 2026, demande explicite) —
+  // par défaut (sans ?minOdds= manuel), on n'ouvre plus la recherche croisée sur toute la grille de
+  // cotes : on force la vraie valeur de production, pour que la colonne "Cote" du panneau reflète ce
+  // qui est effectivement utilisé, pas la cote qui aurait maximisé le ROI historique dans les données.
+  const configuredMinOdds = _configuredMinOddsFor(source, league, market, stat);
+  const effectiveMinOdds = minOdds > 0 ? minOdds : configuredMinOdds;
+  const result = _analyzeThresholdRows(rows, effectiveMinOdds > 0 ? effectiveMinOdds : null, knownFloorPct);
+  res.json({ source, filters: { league: league || null, market: market || null, stat: stat || null, direction: direction || null, tags: tagsFilter, excludeTags: excludeTagsFilter, minOdds: minOdds || null }, configuredMinOdds, ...result });
 });
 
 // Lines snapshot — lignes bookmaker pré-match persistées sur disque
@@ -11807,7 +12508,13 @@ const MAX_TOTAL_P = 0.88;      // un total ne peut jamais être "certain" à 93%
 const Q_STATUSES_TOTAL = ['Questionable', 'GTD', 'Game Time Decision', 'Doubtful', 'Day-To-Day'];
 // Constantes partagées generateBackgroundAlerts() + /api/basketball/total (NBA réutilise NBA_REF_BG,
 // EU réutilise EU_LEAGUE_CONST_BG — déjà module-level, pas besoin de les dupliquer ici)
-const WNBA_TOTAL_LEAGUE_AVG = 85.5;  // pts/équipe WNBA (recalibré 15 juin, ~14 matchs/équipe)
+// Recalibré 27 août 2026 — figée depuis le 15 juin (85.5), jamais remise à jour depuis malgré ~2,5
+// mois et de nombreux matchs supplémentaires. Vraie moyenne ligue vérifiée en direct (ESPN
+// standings, moyenne des avgPointsFor sur les 15 équipes) : 87.3. Sert d'ancre unique pour le
+// facteur défensif de CHAQUE équipe dans computeGameTotalFull (homeDefAllowed / avgPtsAllowed) —
+// un écart figé biaise toutes les équipes dans le même sens simultanément. À recalibrer à nouveau
+// périodiquement (pas de mécanisme de mise à jour automatique comme la CDM côté foot).
+const WNBA_TOTAL_LEAGUE_AVG = 87.3;  // pts/équipe WNBA
 const NBA_TOTAL_GAME_AVG    = 229.0;
 const WNBA_TOTAL_GAME_AVG   = 171.0; // recalibré 15 juin (était 174.0)
 const EU_GAME_TOTAL_AVG     = { acb: 166.0, bbl: 164.0, legaa: 160.0 };
@@ -11829,6 +12536,16 @@ function getPlayoffFactorTotalBg(round) {
 
 function calcGameTotalStdBg(games, fallback = 12) {
   const vals = (games || []).map(g => g.ptsScored + g.ptsAllowed).filter(v => v > 0);
+  if (vals.length < 3) return fallback;
+  const mean = vals.reduce((s, v) => s + v, 0) / vals.length;
+  return Math.sqrt(vals.reduce((s, v) => s + (v - mean) ** 2, 0) / vals.length);
+}
+
+// Variance du score d'UNE seule équipe (28 août 2026, marché "Total équipe") — même principe que
+// calcGameTotalStdBg mais sur son propre ptsScored, pas la somme des deux équipes (variance plus
+// faible que le total combiné, deux équipes n'étant pas parfaitement corrélées).
+function calcTeamPtsStdBg(games, fallback = 9) {
+  const vals = (games || []).map(g => g.ptsScored).filter(v => v > 0);
   if (vals.length < 3) return fallback;
   const mean = vals.reduce((s, v) => s + v, 0) / vals.length;
   return Math.sqrt(vals.reduce((s, v) => s + (v - mean) ** 2, 0) / vals.length);
@@ -11995,10 +12712,14 @@ const RESULT_ALERT_PROB     = 0.71;
 // puis Chicago Sky -5.5 accepté sur le même match — Sky a fini par perdre de 19 pts, pari perdu).
 // `opposingPositionWarning` (plus bas dans generateBackgroundAlerts) ne faisait que SIGNALER ce
 // cas sans jamais l'empêcher. Ce garde-fou relève le seuil (+OPPOSING_PROB_MARGIN) requis pour
-// qu'une nouvelle alerte soit émise si elle s'oppose à une position déjà acceptée — scopé aux
-// marchés équipe basket (Résultat/Total, PAS le foot), et à l'opposition DIRECTE sur le même
-// marché (home vs away, over vs under) — pas de croisement entre marchés différents. Écart H2H
-// retiré du projet le 27 août 2026 (marché supprimé). Non calibré (v1).
+// qu'une nouvelle alerte soit émise si elle s'oppose à une position déjà acceptée — marchés équipe
+// basket (Résultat/Total) et à l'opposition DIRECTE sur le même marché (home vs away, over vs
+// under) — pas de croisement entre marchés différents. Écart H2H retiré du projet le 27 août 2026
+// (marché supprimé). Étendu au Total buts foot le 28 août 2026 (cas réel : São Paulo/RB Bragantino,
+// "Moins de 2.5" accepté puis "Plus de 1.5" sorti sur un cycle suivant) — le foot évalue maintenant
+// les 2 lignes O/U (1.5 et 2.5) au lieu d'une seule, ce même garde-fou s'applique donc aussi entre
+// les deux lignes d'un même match dans un même cycle (cf. bloc Over/Under plus haut). BTTS non
+// concerné (une seule direction possible, jamais d'opposition). Non calibré (v1).
 const OPPOSING_PROB_MARGIN = 0.05;
 function hasOpposingAcceptedTeamMarket(type, eventId, direction) {
   return _acceptedAlerts.some(a => a.type === type && a.eventId === eventId && a.direction !== direction);
@@ -12645,7 +13366,7 @@ async function bgFetchEUGamelog(playerId, league, base) {
     assists:  g.assists  ?? g.ast ?? 0,
     tpm:      parseTpmMade(g.tpm),
   }));
-  if (hit && Date.now() - hit.ts < CACHE_6H) return normalize(hit.data.games || []);
+  if (hit && (Date.now() - hit.ts < CACHE_6H || _basketballApiPaused)) return normalize(hit.data.games || []);
   try {
     const ac = new AbortController(); setTimeout(() => ac.abort(), 10000);
     const resp = await fetch(`${base}/api/euro/${league}/playergamelog/${playerId}`, { signal: ac.signal });
@@ -12654,6 +13375,7 @@ async function bgFetchEUGamelog(playerId, league, base) {
     const games = normalize(json.games || []);
     const best = _updateGlCache(`eu_${playerId}`, games);
     _euroCache[ck] = { data: { ...json, games: best }, ts: Date.now() };
+    _saveEuroGamelogCache();
     return best;
   } catch { return normalize(_glPersist[`eu_${playerId}`]?.games || []); }
 }
@@ -12672,7 +13394,14 @@ async function getEuroDefByPos(league) {
   if (!cfg) return { teamDefByPosById: {}, leagueAvg: {} };
   const cacheKey = `euro_defbypos_${league}`;
   const cached = _euroCache[cacheKey];
-  if (cached && Date.now() - cached.ts < CACHE_6H) return cached.data;
+  // 6h → 24h (29 août 2026, demande explicite — quota api-sports.io basketball menacé de dépassement
+  // à mesure que les ligues EU redémarrent leur saison). Ce calcul parcourt tout le roster + gamelog
+  // de CHAQUE équipe de la ligue (~800-900 appels à froid, cf. commentaire à son site d'appel) — à 6h,
+  // 4 cycles/jour × 1 ligue ≈ 3200-3600 appels/jour ; avec les 4 ligues EU actives simultanément, ça
+  // dépasse largement le plafond 7500/jour à lui seul. La défense par poste n'a pas besoin d'être aussi
+  // fraîche : les stats défensives d'une équipe ne bougent pas significativement en quelques heures,
+  // un recalcul par jour suffit largement (mêmes cibles qu'un cache de classement/leaders).
+  if (cached && (Date.now() - cached.ts < CACHE_24H || _basketballApiPaused)) return cached.data;
 
   const td = await bballFetch(`/teams?league=${cfg.id}&season=${cfg.season}`).catch(() => null);
   const teams = (td?.response || []).filter(t => t?.id && t?.name);
@@ -12725,6 +13454,7 @@ async function getEuroDefByPos(league) {
 
   const data = { teamDefByPosById, leagueAvg };
   _euroCache[cacheKey] = { data, ts: Date.now() };
+  _saveEuroDefByPosCache();
   return data;
 }
 
@@ -13009,6 +13739,14 @@ async function runEUPropsAlerts(newAlerts, PORT) {
               // chuter la projection, l'avantage ne se justifiait pas pour un Under.
               const _euDir = pOver >= pUnder ? 'over' : 'under';
               const floor = (_euConsistent && _euDir === 'over') ? 0.75 : ((_euIsStarter ? ALERT_FLOOR[stat] : ALERT_FLOOR_BENCH[stat]) || 0.85);
+              // Ajouté 27 août 2026 — les props EU (ACB/BBL/Lega A) n'avaient jusqu'ici AUCUN suivi
+              // near-miss, contrairement à NBA/WNBA (mêmes stats pts/reb/ast/tpm) — trou repéré en
+              // vérifiant la couverture de tous les marchés, comblé avant la reprise BBL (31 août).
+              _logNearMissCandidate({ gameId: game.id, league, player: rosterP.name, stat,
+                direction: _euDir, line: refLine.line, probability: Math.max(pOver, pUnder), floor,
+                unibetOdds: _euDir === 'over' ? (ubLine?.over ?? null) : (ubLine?.under ?? null),
+                betclicOdds: _euDir === 'over' ? (bcLine?.over ?? null) : (bcLine?.under ?? null), estimate: estVal,
+                tags: redistFactor > 1.01 ? ['teammate_out_redist'] : [] });
               const _euSeasonAvg = rosterP.stats?.[stat];
               // Moyenne "effective" mélangeant saison + forme récente (10 derniers matchs, shrinkage
               // par confiance) — cf. blendedSeasonAvgEU, 15 juil. 2026. N'affecte que ce garde-fou de
@@ -13074,6 +13812,7 @@ async function runEUPropsAlerts(newAlerts, PORT) {
             }
           }
         } catch { /* skip game */ }
+        finally { _bcpTick(); }
       }
     } catch { /* skip league */ }
   }
@@ -14046,6 +14785,22 @@ async function generateBackgroundAlertsGuarded(reason) {
   finally { _bgAlertsInFlight = false; }
 }
 
+// Fix 30 août 2026 — bug trouvé en testant les jauges foot/basket : quand un toggle "play" arrive
+// pendant qu'un cycle est DÉJÀ en cours (routine 20min, ou l'autre toggle déclenché quasi en même
+// temps), generateBackgroundAlertsGuarded() ci-dessus se termine immédiatement (garde-fou anti-
+// chevauchement) SANS attendre la fin du cycle réellement en cours — le `.finally()` du toggle
+// remettait alors `cycleProgress.active` à false quasi instantanément, alors que le cycle réel
+// continuait de tourner et de consommer du quota juste en dessous (`_fcpSetTotal`/`_fcpTick` sont
+// gatés sur `active`, donc devenaient des no-op pour le reste du cycle réel — jauge bloquée à 0/0
+// malgré un vrai quota dépensé, cas observé en direct : 5788 requêtes foot consommées, jauge à 0/0).
+// Ce helper attend la VRAIE fin du cycle en cours au lieu de considérer le no-op comme terminé.
+async function _waitForBgAlertsCycle(reason) {
+  if (_bgAlertsInFlight) {
+    while (_bgAlertsInFlight) await new Promise(r => setTimeout(r, 500));
+  } else {
+    await generateBackgroundAlertsGuarded(reason);
+  }
+}
 async function generateBackgroundAlerts() {
   _bgLastRun = Date.now();
   _bgLog = ['started'];
@@ -14385,7 +15140,8 @@ async function generateBackgroundAlerts() {
                 direction: _nmDir,
                 line: refLine.line, probability: Math.max(disp?.pOver ?? pOver, disp?.pUnder ?? pUnder), floor: _frozenFloor,
                 unibetOdds: _nmDir === 'over' ? (refLine.over ?? null) : (refLine.under ?? null),
-                betclicOdds: _nmDir === 'over' ? (bcLine?.over ?? null) : (bcLine?.under ?? null), estimate: estVal }); }
+                betclicOdds: _nmDir === 'over' ? (bcLine?.over ?? null) : (bcLine?.under ?? null), estimate: estVal,
+                tags: ['frozen_snapshot', ...(redistFactor > 1.01 ? ['teammate_out_redist'] : [])] }); }
               // Marge moyenne saison ↔ ligne + minimum de volume TPM — étendu de la WNBA à la NBA le 22 juin 2026
               const _frozenMarginOverOk  = _frozenMarginAvg == null || _frozenMarginAvg >= refLine.line + SEASON_MARGIN[stat];
               const _frozenMarginUnderOk = _frozenMarginAvg == null || _frozenMarginAvg <= refLine.line - SEASON_MARGIN[stat];
@@ -14463,6 +15219,10 @@ async function generateBackgroundAlerts() {
               ast:  estimate.ast,
               tpm:  estimate.tpm,
               deviation: estimate.deviation,
+              // Facteurs du modèle (28 août 2026) — figés au même moment que le reste du post-it, pour
+              // afficher le détail de la barre "% du plafond" directement sur la carte d'alerte (jusqu'ici
+              // seule la fiche match les affichait, recalculés en direct). Demande explicite utilisateur.
+              factors: estimate.factors ?? null,
               _lastGame: lastGameStr, // date du dernier match de série → permet de détecter quand recalculer
               _redistFactor: redistFactor,
             };
@@ -14533,12 +15293,13 @@ async function generateBackgroundAlerts() {
               ...(playerIsQ ? { playerIsQ: true } : {}),
               ...(oppBlock ? { oppQSamePosition: true } : {}),
               deviation, deviationCap: 0.30,
+              factors: estimate.factors ?? null,
               savedAt:      Date.now(),
             };
             // Bloquer Under si L2 propres (min≥15) sont toutes > ligne (joueur en feu)
             // Save prob dans snapshot NBA
             if (!_projectionsSnapshot[game.id]) _projectionsSnapshot[game.id] = {};
-            const _sn = _projectionsSnapshot[game.id][String(player.id)] || { name: player.name, team: isHome ? game.home.short : game.away.short, pts: estimate.pts, reb: estimate.reb, ast: estimate.ast, tpm: estimate.tpm, deviation: estimate.deviation };
+            const _sn = _projectionsSnapshot[game.id][String(player.id)] || { name: player.name, team: isHome ? game.home.short : game.away.short, pts: estimate.pts, reb: estimate.reb, ast: estimate.ast, tpm: estimate.tpm, deviation: estimate.deviation, factors: estimate.factors ?? null };
             if (!_sn.probs) _sn.probs = {};
             _sn.probs[stat] = { pOver: +((disp?.pOver ?? pOver)).toFixed(3), pUnder: +((disp?.pUnder ?? pUnder)).toFixed(3), line: refLine.line, ubOver: refLine.over??null, bcOver: bcLine?.over??null, wmOver: wmLine?.over??null, ubUnder: refLine.under??null, bcUnder: bcLine?.under??null, wmUnder: wmLine?.under??null };
             _projectionsSnapshot[game.id][String(player.id)] = _sn;
@@ -14557,7 +15318,8 @@ async function generateBackgroundAlerts() {
               direction: _nmDir,
               line: refLine.line, probability: Math.max(disp?.pOver ?? pOver, disp?.pUnder ?? pUnder), floor: _nbaFloor,
               unibetOdds: _nmDir === 'over' ? (refLine.over ?? null) : (refLine.under ?? null),
-              betclicOdds: _nmDir === 'over' ? (bcLine?.over ?? null) : (bcLine?.under ?? null), estimate: estVal }); }
+              betclicOdds: _nmDir === 'over' ? (bcLine?.over ?? null) : (bcLine?.under ?? null), estimate: estVal,
+              tags: redistFactor > 1.01 ? ['teammate_out_redist'] : [] }); }
             // Moyenne "effective" mélangeant saison + forme récente — cf. blendedSeasonAvg (compute.js), 15 juil. 2026
             const _nbaMarginAvg = blendedSeasonAvg(gamelog, stat, seasonAvgStat);
             // Marge moyenne saison ↔ ligne + minimum de volume TPM — étendu de la WNBA à la NBA le 22 juin 2026
@@ -14874,7 +15636,7 @@ async function generateBackgroundAlerts() {
                     if (!snap.probs) snap.probs = {};
                     snap.probs[stat] = { pOver: +((disp?.pOver ?? pOver)).toFixed(3), pUnder: +((disp?.pUnder ?? pUnder)).toFixed(3), line: refLine.line, ubOver: refLine.over??null, bcOver: bcLine?.over??null, wmOver: wmLine?.over??null, ubUnder: refLine.under??null, bcUnder: bcLine?.under??null, wmUnder: wmLine?.under??null };
                   }
-                  const base = { type:'player_prop', league:'wnba', eventId:game.id, home:game.home.name, away:game.away.name, homeShort:game.home.short, awayShort:game.away.short, homeTeam:game.home.name, awayTeam:game.away.name, player:player.name, team:isHome?game.home.short:game.away.short, fixture:`${game.home.short} vs ${game.away.short}`, round:'', fixtureDate:game.date, stat, line:refLine.line, estimate:estVal, pinnacleOdds:null, injury:player.injury||null, ...(teamQNamesWNBA?.length?{teamHasQ:teamQNamesWNBA}:{}), ...(playerIsQWNBA?{playerIsQ:true}:{}), ...(oppBlockW?{oppQSamePosition:true}:{}), deviation: snap.deviation?.[stat] ?? 0, deviationCap: 0.30, savedAt:Date.now() };
+                  const base = { type:'player_prop', league:'wnba', eventId:game.id, home:game.home.name, away:game.away.name, homeShort:game.home.short, awayShort:game.away.short, homeTeam:game.home.name, awayTeam:game.away.name, player:player.name, team:isHome?game.home.short:game.away.short, fixture:`${game.home.short} vs ${game.away.short}`, round:'', fixtureDate:game.date, stat, line:refLine.line, estimate:estVal, pinnacleOdds:null, injury:player.injury||null, ...(teamQNamesWNBA?.length?{teamHasQ:teamQNamesWNBA}:{}), ...(playerIsQWNBA?{playerIsQ:true}:{}), ...(oppBlockW?{oppQSamePosition:true}:{}), deviation: snap.deviation?.[stat] ?? 0, deviationCap: 0.30, factors: snap.factors ?? null, savedAt:Date.now() };
                   const _wnbaFrozenStarter = myStartersWNBA.has(String(player.id));
                   // Plancher abaissé à 72% si la joueuse est "spécialiste" de cette stat — voir
                   // isConsistentStat (compute.js). Restreint à Over le 24 août 2026 — la régularité
@@ -14894,7 +15656,8 @@ async function generateBackgroundAlerts() {
                     direction: _nmDir,
                     line: refLine.line, probability: Math.max(disp?.pOver ?? pOver, disp?.pUnder ?? pUnder), floor: _wnbaFrozenFloor,
                     unibetOdds: _nmDir === 'over' ? (refLine.over ?? null) : (refLine.under ?? null),
-                    betclicOdds: _nmDir === 'over' ? (bcLine?.over ?? null) : (bcLine?.under ?? null), estimate: estVal }); }
+                    betclicOdds: _nmDir === 'over' ? (bcLine?.over ?? null) : (bcLine?.under ?? null), estimate: estVal,
+                    tags: ['frozen_snapshot', ...(redistFactorWNBA > 1.01 ? ['teammate_out_redist'] : [])] }); }
                   const _wnbaFrozenMarginOverOk  = _wnbaFrozenMarginAvg == null || _wnbaFrozenMarginAvg >= refLine.line + WNBA_SEASON_MARGIN[stat];
                   const _wnbaFrozenMarginUnderOk = _wnbaFrozenMarginAvg == null || _wnbaFrozenMarginAvg <= refLine.line - WNBA_SEASON_MARGIN[stat];
                   const _wnbaFrozenTpmVolOk = stat !== 'tpm' || (_wnbaFrozenSeasonAvg??0) >= WNBA_TPM_MIN_SEASON_AVG;
@@ -14971,6 +15734,7 @@ async function generateBackgroundAlerts() {
               ast:  estimate.ast,
               tpm:  estimate.tpm,
               deviation: estimate.deviation,
+              factors: estimate.factors ?? null,
               _lastGame: lastGlDate,
               _redistFactor: redistFactorWNBA,
             };
@@ -15046,6 +15810,7 @@ async function generateBackgroundAlerts() {
               ...(playerIsQWNBA ? { playerIsQ: true } : {}),
               ...(oppBlockW2 ? { oppQSamePosition: true } : {}),
               deviation, deviationCap: 0.30,
+              factors: estimate.factors ?? null,
               savedAt:      Date.now(),
             };
             // Bloquer Under si L2 propres (min≥15) sont toutes > ligne (joueur en feu)
@@ -15066,7 +15831,8 @@ async function generateBackgroundAlerts() {
               direction: _nmDir,
               line: refLine.line, probability: Math.max(disp?.pOver ?? pOver, disp?.pUnder ?? pUnder), floor: alertFloor,
               unibetOdds: _nmDir === 'over' ? (refLine.over ?? null) : (refLine.under ?? null),
-              betclicOdds: _nmDir === 'over' ? (bcLine?.over ?? null) : (bcLine?.under ?? null), estimate: estVal }); }
+              betclicOdds: _nmDir === 'over' ? (bcLine?.over ?? null) : (bcLine?.under ?? null), estimate: estVal,
+              tags: redistFactorWNBA > 1.01 ? ['teammate_out_redist'] : [] }); }
             _bgLog.push(`wnba dbg ${player.name} ${stat}: est=${estVal?.toFixed(1)} line=${refLine.line} std=${std?.toFixed(1)} pOver=${Math.round(rawPOver*100)}% pUnder=${Math.round(rawPUnder*100)}% adj=${minVarianceAdj}`);
             const _wnbaMarginOverOk  = _wnbaMarginAvg == null || _wnbaMarginAvg >= refLine.line + WNBA_SEASON_MARGIN[stat];
             const _wnbaMarginUnderOk = _wnbaMarginAvg == null || _wnbaMarginAvg <= refLine.line - WNBA_SEASON_MARGIN[stat];
@@ -15234,7 +16000,73 @@ async function generateBackgroundAlerts() {
           const bestP = Math.max(full.pOver ?? 0, full.pUnder ?? 0);
           const direction = full.direction;
           _logBasketMarketNearMiss({ gameId: game.id, league: leagueKey, market: 'total', direction, line, probability: bestP, floor: TOTAL_ALERT_PROB,
-            unibetOdds: bks.unibet?.[direction] ?? null, betclicOdds: bks.betclic?.[direction] ?? null });
+            unibetOdds: bks.unibet?.[direction] ?? null, betclicOdds: bks.betclic?.[direction] ?? null,
+            tags: (homeOutPenalty || awayOutPenalty) ? ['key_player_out_penalty'] : [] });
+
+          // Total équipe (28 août 2026, alertes réelles activées le 28 août 2026 sur demande
+          // explicite — AVANT tout recul near-miss, faute de données : seuil/cote repris tels quels
+          // de Total O/U classique (TOTAL_ALERT_PROB 74%, cote mini 1.60), à revoir dès qu'un vrai
+          // échantillon team_total existe). Réutilise homeExpected/awayExpected déjà calculés par
+          // computeGameTotalFull (aucune duplication de la pipeline pace/repos/densité/playoffs) ;
+          // std propre à chaque équipe (calcTeamPtsStdBg, sa propre variance de scoring, pas celle
+          // du total combiné). Gate joueur clé Q/GTD asymétrique — même principe que Résultat/Écart
+          // H2H (20 août 2026) : un joueur clé absent chez une équipe ne bloque que les alertes SUR
+          // cette équipe, pas sur l'adversaire.
+          {
+            const ttBk = oddsData?.markets?.teamTotals || {};
+            const homeTTBk = ttBk.home?.bookmakers || {};
+            const awayTTBk = ttBk.away?.bookmakers || {};
+            const homeTTLine = homeTTBk.unibet?.line ?? homeTTBk.betclic?.line ?? null;
+            const awayTTLine = awayTTBk.unibet?.line ?? awayTTBk.betclic?.line ?? null;
+            const homeHasKeyQ = homePlayers.some(p => (p.stats?.pts ?? 0) >= 15 && Q_STATUSES_TOTAL.includes(p.injury));
+            const awayHasKeyQ = awayPlayers.some(p => (p.stats?.pts ?? 0) >= 15 && Q_STATUSES_TOTAL.includes(p.injury));
+            const emitTeamTotal = (side, line, expected, std, hasKeyQ, ttBkSide, outPenalty) => {
+              const pOver = 1 - tCDF4((line - expected) / std);
+              const dir = pOver >= 0.5 ? 'over' : 'under';
+              const prob = Math.min(MAX_TOTAL_P, dir === 'over' ? pOver : 1 - pOver);
+              _logBasketMarketNearMiss({ gameId: game.id, league: leagueKey, market: 'team_total', direction: `${side}_${dir}`, line, probability: prob, floor: TOTAL_ALERT_PROB,
+                unibetOdds: ttBkSide.unibet?.[dir] ?? null, betclicOdds: ttBkSide.betclic?.[dir] ?? null,
+                tags: outPenalty ? ['key_player_out_penalty'] : [] });
+
+              const alertId = `${game.id}_${leagueKey}_teamtotal_${side}`;
+              const dirOdds = Math.max(ttBkSide.unibet?.[dir] ?? 0, ttBkSide.betclic?.[dir] ?? 0);
+              const oddsStillOk = dirOdds >= 1.60;
+              const refreshUpdate = { prob: +(prob * 100).toFixed(1), direction: dir, estimated: +expected.toFixed(1) };
+              if (prob < TOTAL_ALERT_PROB) {
+                _bgLog.push(`${leagueKey} teamtotal skip ${game.home.short}v${game.away.short} (${side}): prob ${(prob*100).toFixed(1)}% < ${TOTAL_ALERT_PROB*100}%`);
+                refreshOrDropPendingById(newAlerts, alertId, refreshUpdate.prob, oddsStillOk, refreshUpdate, `${(prob*100).toFixed(1)}%`);
+                return;
+              }
+              if (hasKeyQ) {
+                _bgLog.push(`${leagueKey} teamtotal skip ${game.home.short}v${game.away.short} (${side}): key player Q/GTD`);
+                refreshOrDropPendingById(newAlerts, alertId, refreshUpdate.prob, oddsStillOk, refreshUpdate, `${(prob*100).toFixed(1)}% (joueur clé Q)`);
+                return;
+              }
+              if (!oddsStillOk) {
+                _bgLog.push(`${leagueKey} teamtotal skip ${game.home.short}v${game.away.short} (${side}): odds ${dirOdds} < 1.60`);
+                refreshOrDropPendingById(newAlerts, alertId, refreshUpdate.prob, false, {}, null);
+                return;
+              }
+              if (newAlerts.find(a => a.id === alertId)) return;
+              newAlerts.push({
+                id: alertId, type: 'team_total', league: leagueKey, eventId: game.id,
+                side, team: side === 'home' ? game.home.name : game.away.name,
+                teamShort: side === 'home' ? game.home.short : game.away.short,
+                home: game.home.name, away: game.away.name,
+                homeShort: game.home.short, awayShort: game.away.short,
+                date: game.date,
+                estimated: +expected.toFixed(1), line, direction: dir,
+                prob: +(prob * 100).toFixed(1),
+                unibetOdds: ttBkSide.unibet?.[dir] ?? null,
+                betclicOdds: ttBkSide.betclic?.[dir] ?? null,
+                savedAt: Date.now(),
+              });
+              _bgLog.push(`${leagueKey} teamtotal ALERT: ${game.home.short}v${game.away.short} (${side}) est=${expected.toFixed(1)} line=${line} → ${dir} (prob ${(prob*100).toFixed(1)}%)`);
+            };
+            if (homeTTLine != null) emitTeamTotal('home', homeTTLine, full.homeExpected, calcTeamPtsStdBg(homeSched), homeHasKeyQ, homeTTBk, homeOutPenalty);
+            if (awayTTLine != null) emitTeamTotal('away', awayTTLine, full.awayExpected, calcTeamPtsStdBg(awaySched), awayHasKeyQ, awayTTBk, awayOutPenalty);
+          }
+
           const dirOdds = Math.max(bks.unibet?.[direction] ?? 0, bks.betclic?.[direction] ?? 0); // winamax exclu depuis le 22 juin (cf. props)
           const oddsStillOk = dirOdds >= 1.60;
           const alertId   = `${game.id}_${leagueKey}_total`;
@@ -15453,6 +16285,38 @@ async function generateBackgroundAlerts() {
       }
     } catch { /* EL scoreboard unavailable */ }
 
+    // Jauge de progression basket Dashboard (30 août 2026) — total fixé une fois pour toutes ici,
+    // sur les matchs EU réellement programmés dans les 3 ligues (acb/bbl/legaa) × 3 (props + Résultat
+    // + Total, 3 boucles séparées contrairement au foot qui n'en a qu'une) — voir commentaire complet
+    // sur _basketballCycleProgress plus haut dans le fichier.
+    // Fix démarrage à froid (30 août 2026) : `_euroCache[euro_sb_*]` peut être vide juste après un
+    // redémarrage backend (jamais encore visité), donnant un total=0 même s'il y a de vrais matchs —
+    // même auto-fetch que celui déjà utilisé par runEUPropsAlerts() juste plus bas, appelé ici aussi
+    // pour que le comptage voie les vraies données (aucun appel gaspillé : ces données sont de toute
+    // façon nécessaires à la suite du cycle).
+    for (const _bcpLg of ['acb', 'bbl', 'legaa']) {
+      if (!_euroCache[`euro_sb_${_bcpLg}`]?.data) {
+        try { await fetch(`http://localhost:${process.env.PORT || 3001}/api/euro/${_bcpLg}/scoreboard`, { signal: AbortSignal.timeout(12000) }); } catch {}
+      }
+    }
+    {
+      const _bcpCountUpcoming = lg => {
+        const games = _euroCache[`euro_sb_${lg}`]?.data?.games || [];
+        const pairKey = g => [g.home?.name, g.away?.name].sort().join('__');
+        const live = new Set(games.filter(g => g.status === 'STATUS_IN_PROGRESS').map(pairKey));
+        const seen = new Set();
+        let n = 0;
+        for (const g of games.filter(g => g.status === 'STATUS_SCHEDULED' && g.home?.id && g.away?.id)) {
+          const k = pairKey(g);
+          if (live.has(k) || seen.has(k)) continue;
+          seen.add(k); n++;
+        }
+        return n;
+      };
+      const totalEuGames = ['acb', 'bbl', 'legaa'].reduce((s, lg) => s + _bcpCountUpcoming(lg), 0);
+      _bcpSetTotal(totalEuGames * 3);
+    }
+
     // 4a. EU leagues — Props joueurs (moteur computeEUEstimate)
     await runEUPropsAlerts(newAlerts, process.env.PORT || 3001);
 
@@ -15483,6 +16347,7 @@ async function generateBackgroundAlerts() {
           if (!euResultEarliestByPair[k] || new Date(g.date) < new Date(euResultEarliestByPair[k].date)) euResultEarliestByPair[k] = g;
         }
         for (const g of Object.values(euResultEarliestByPair)) {
+          try {
           // Bug corrigé le 22 juin 2026 : cette clé ne correspondait jamais à celle écrite par
           // /api/basketball/odds (`bball_odds_${league}_${home}_${away}`, pas de préfixe "eu",
           // pas de lowercase) — le Résultat EU ne trouvait donc jamais de cotes h2h, peu importe
@@ -15540,9 +16405,11 @@ async function generateBackgroundAlerts() {
           if (!result) continue;
           _bgLog.push(`${euLeague} result dbg ${g.home.short}v${g.away.short}: pHome=${(result.pHome*100).toFixed(1)}% pAway=${(result.pAway*100).toFixed(1)}% margin=${result.marginExpected} outPen=${homeOutPenalty.toFixed(1)}/${awayOutPenalty.toFixed(1)}`);
           _logBasketMarketNearMiss({ gameId: g.id, league: euLeague, market: 'result', direction: 'home', line: null, probability: result.pHome, floor: RESULT_ALERT_PROB,
-            unibetOdds: h2hBks.unibet?.home ?? null, betclicOdds: h2hBks.betclic?.home ?? null });
+            unibetOdds: h2hBks.unibet?.home ?? null, betclicOdds: h2hBks.betclic?.home ?? null,
+            tags: [...(homeOutPenalty ? ['key_player_out_penalty'] : []), ...(homeHasKeyQEU ? ['key_player_q'] : [])] });
           _logBasketMarketNearMiss({ gameId: g.id, league: euLeague, market: 'result', direction: 'away', line: null, probability: result.pAway, floor: RESULT_ALERT_PROB,
-            unibetOdds: h2hBks.unibet?.away ?? null, betclicOdds: h2hBks.betclic?.away ?? null });
+            unibetOdds: h2hBks.unibet?.away ?? null, betclicOdds: h2hBks.betclic?.away ?? null,
+            tags: [...(awayOutPenalty ? ['key_player_out_penalty'] : []), ...(awayHasKeyQEU ? ['key_player_q'] : [])] });
 
           const resultCreatedSidesEU = new Set();
           for (const [bk, h] of Object.entries(h2hBks).filter(([bk]) => bk !== 'winamax')) { // winamax exclu depuis le 22 juin
@@ -15613,6 +16480,7 @@ async function generateBackgroundAlerts() {
               _bgLog.push(`${euLeague} pinnacle edge (h2h): ${g.home.short}v${g.away.short} ${dir} edge=${Math.round(edge * 100)}% (${bestBk})`);
             }
           }
+          } catch { /* skip game */ } finally { _bcpTick(); }
         }
       } catch { /* skip */ }
     }
@@ -15691,9 +16559,11 @@ async function generateBackgroundAlerts() {
             if (!result) continue;
             _bgLog.push(`${leagueKey} result dbg ${g.home.short}v${g.away.short}: pHome=${(result.pHome*100).toFixed(1)}% pAway=${(result.pAway*100).toFixed(1)}% margin=${result.marginExpected} outPen=${homeOutPenalty.toFixed(1)}/${awayOutPenalty.toFixed(1)}`);
             _logBasketMarketNearMiss({ gameId: g.id, league: leagueKey, market: 'result', direction: 'home', line: null, probability: result.pHome, floor: RESULT_ALERT_PROB,
-              unibetOdds: h2hBks.unibet?.home ?? null, betclicOdds: h2hBks.betclic?.home ?? null });
+              unibetOdds: h2hBks.unibet?.home ?? null, betclicOdds: h2hBks.betclic?.home ?? null,
+              tags: [...(homeOutPenalty ? ['key_player_out_penalty'] : []), ...(homeHasKeyQ ? ['key_player_q'] : [])] });
             _logBasketMarketNearMiss({ gameId: g.id, league: leagueKey, market: 'result', direction: 'away', line: null, probability: result.pAway, floor: RESULT_ALERT_PROB,
-              unibetOdds: h2hBks.unibet?.away ?? null, betclicOdds: h2hBks.betclic?.away ?? null });
+              unibetOdds: h2hBks.unibet?.away ?? null, betclicOdds: h2hBks.betclic?.away ?? null,
+              tags: [...(awayOutPenalty ? ['key_player_out_penalty'] : []), ...(awayHasKeyQ ? ['key_player_q'] : [])] });
 
             const resultCreatedSides = new Set();
             for (const [bk, h] of Object.entries(h2hBks).filter(([bk]) => bk !== 'winamax')) { // winamax exclu depuis le 22 juin
@@ -15704,7 +16574,12 @@ async function generateBackgroundAlerts() {
                 const resultRequiredProb = RESULT_ALERT_PROB + (hasOpposingAcceptedTeamMarket('basketball_result', g.id, side) ? OPPOSING_PROB_MARGIN : 0);
                 if (prob < resultRequiredProb) continue;
                 const odds = h[side];
-                if (!odds || odds < RESULT_MIN_ODDS) continue;
+                // Baissé à 1.20 pour la WNBA uniquement le 27 août 2026 — seul marché validé ce
+                // soir avec cote réellement pariable ET taux de réussite robuste (91,7% sur 12 cas,
+                // confirmé hors-échantillon, +19,9% ROI réel). NBA (hors-saison, aucune donnée) et
+                // EU (ligne 15580, séparée) restent à 1.50 — pas de preuve équivalente pour elles.
+                const resultMinOdds = isWNBA ? 1.20 : RESULT_MIN_ODDS;
+                if (!odds || odds < resultMinOdds) continue;
                 const vig  = 1 / h.home + 1 / h.away;
                 const fair = (1 / odds) / vig;
                 const edge = +((prob - fair) * 100).toFixed(1);
@@ -15731,7 +16606,7 @@ async function generateBackgroundAlerts() {
               const bestOdds = Object.entries(h2hBks).filter(([bk]) => bk !== 'winamax' && h2hBks[bk]?.home && h2hBks[bk]?.away)
                 .reduce((max, [, h]) => Math.max(max, h[side] || 0), 0);
               const gatedRes = (side === 'home' && homeHasKeyQ) || (side === 'away' && awayHasKeyQ);
-              refreshOrDropPendingById(newAlerts, `${g.id}_${leagueKey}_result_${side}`, +(prob * 100).toFixed(1), !gatedRes && prob >= RESULT_ALERT_PROB && bestOdds >= RESULT_MIN_ODDS,
+              refreshOrDropPendingById(newAlerts, `${g.id}_${leagueKey}_result_${side}`, +(prob * 100).toFixed(1), !gatedRes && prob >= RESULT_ALERT_PROB && bestOdds >= (isWNBA ? 1.20 : RESULT_MIN_ODDS),
                 { probability: +(prob * 100).toFixed(1), margin: result.marginExpected }, `${(prob*100).toFixed(1)}%`);
             }
 
@@ -15871,7 +16746,66 @@ async function generateBackgroundAlerts() {
             const bestP = Math.max(full.pOver ?? 0, full.pUnder ?? 0);
             const direction = full.direction;
             _logBasketMarketNearMiss({ gameId: g.id, league: euLeague, market: 'total', direction, line, probability: bestP, floor: TOTAL_ALERT_PROB,
-              unibetOdds: bks.unibet?.[direction] ?? null, betclicOdds: bks.betclic?.[direction] ?? null });
+              unibetOdds: bks.unibet?.[direction] ?? null, betclicOdds: bks.betclic?.[direction] ?? null,
+              tags: (homeOutPenalty || awayOutPenalty) ? ['key_player_out_penalty'] : [] });
+
+            // Total équipe (28 août 2026, alertes réelles activées le 28 août 2026 — voir commentaire
+            // détaillé sur le bloc jumeau NBA/WNBA plus haut, même principe, mêmes fonctions/seuils).
+            {
+              const ttBk = oddsData?.markets?.teamTotals || {};
+              const homeTTBk = ttBk.home?.bookmakers || {};
+              const awayTTBk = ttBk.away?.bookmakers || {};
+              const homeTTLine = homeTTBk.unibet?.line ?? homeTTBk.betclic?.line ?? null;
+              const awayTTLine = awayTTBk.unibet?.line ?? awayTTBk.betclic?.line ?? null;
+              const homeHasKeyQ = homePlayers.some(p => (p.stats?.pts ?? 0) >= 15 && Q_STATUSES_TOTAL.includes(p.injury));
+              const awayHasKeyQ = awayPlayers.some(p => (p.stats?.pts ?? 0) >= 15 && Q_STATUSES_TOTAL.includes(p.injury));
+              const emitTeamTotalEU = (side, line, expected, std, hasKeyQ, ttBkSide, outPenalty) => {
+                const pOver = 1 - tCDF4((line - expected) / std);
+                const dir = pOver >= 0.5 ? 'over' : 'under';
+                const prob = Math.min(MAX_TOTAL_P, dir === 'over' ? pOver : 1 - pOver);
+                _logBasketMarketNearMiss({ gameId: g.id, league: euLeague, market: 'team_total', direction: `${side}_${dir}`, line, probability: prob, floor: TOTAL_ALERT_PROB,
+                  unibetOdds: ttBkSide.unibet?.[dir] ?? null, betclicOdds: ttBkSide.betclic?.[dir] ?? null,
+                  tags: outPenalty ? ['key_player_out_penalty'] : [] });
+
+                const alertId = `${g.id}_${euLeague}_teamtotal_${side}`;
+                const dirOdds = Math.max(ttBkSide.unibet?.[dir] ?? 0, ttBkSide.betclic?.[dir] ?? 0);
+                const oddsStillOk = dirOdds >= 1.60;
+                const refreshUpdate = { prob: +(prob * 100).toFixed(1), direction: dir, estimated: +expected.toFixed(1) };
+                if (prob < TOTAL_ALERT_PROB) {
+                  _bgLog.push(`${euLeague} teamtotal skip ${g.home.short}v${g.away.short} (${side}): prob ${(prob*100).toFixed(1)}% < ${TOTAL_ALERT_PROB*100}%`);
+                  refreshOrDropPendingById(newAlerts, alertId, refreshUpdate.prob, oddsStillOk, refreshUpdate, `${(prob*100).toFixed(1)}%`);
+                  return;
+                }
+                if (hasKeyQ) {
+                  _bgLog.push(`${euLeague} teamtotal skip ${g.home.short}v${g.away.short} (${side}): key player Q/GTD`);
+                  refreshOrDropPendingById(newAlerts, alertId, refreshUpdate.prob, oddsStillOk, refreshUpdate, `${(prob*100).toFixed(1)}% (joueur clé Q)`);
+                  return;
+                }
+                if (!oddsStillOk) {
+                  _bgLog.push(`${euLeague} teamtotal skip ${g.home.short}v${g.away.short} (${side}): odds ${dirOdds} < 1.60`);
+                  refreshOrDropPendingById(newAlerts, alertId, refreshUpdate.prob, false, {}, null);
+                  return;
+                }
+                if (newAlerts.find(a => a.id === alertId)) return;
+                newAlerts.push({
+                  id: alertId, type: 'team_total', league: euLeague, eventId: g.id,
+                  side, team: side === 'home' ? g.home.name : g.away.name,
+                  teamShort: side === 'home' ? g.home.short : g.away.short,
+                  home: g.home.name, away: g.away.name,
+                  homeShort: g.home.short, awayShort: g.away.short,
+                  date: g.date,
+                  estimated: +expected.toFixed(1), line, direction: dir,
+                  prob: +(prob * 100).toFixed(1),
+                  unibetOdds: ttBkSide.unibet?.[dir] ?? null,
+                  betclicOdds: ttBkSide.betclic?.[dir] ?? null,
+                  savedAt: Date.now(),
+                });
+                _bgLog.push(`${euLeague} teamtotal ALERT: ${g.home.short}v${g.away.short} (${side}) est=${expected.toFixed(1)} line=${line} → ${dir} (prob ${(prob*100).toFixed(1)}%)`);
+              };
+              if (homeTTLine != null) emitTeamTotalEU('home', homeTTLine, full.homeExpected, calcTeamPtsStdBg(homeGames), homeHasKeyQ, homeTTBk, homeOutPenalty);
+              if (awayTTLine != null) emitTeamTotalEU('away', awayTTLine, full.awayExpected, calcTeamPtsStdBg(awayGames), awayHasKeyQ, awayTTBk, awayOutPenalty);
+            }
+
             const dirOdds = Math.max(bks.unibet?.[direction] ?? 0, bks.betclic?.[direction] ?? 0); // winamax exclu depuis le 22 juin (cf. props)
             const oddsStillOk = dirOdds >= 1.60;
             const alertId = `${g.id}_${euLeague}_total`;
@@ -15981,6 +16915,7 @@ async function generateBackgroundAlerts() {
               }
             }
           } catch { /* skip game */ }
+          finally { _bcpTick(); }
         }
       } catch { /* skip league */ }
     }
@@ -16002,24 +16937,46 @@ async function generateBackgroundAlerts() {
     const footballUpcomingIds = new Set();
     try {
       const fbFixtures = [];
-      for (const m of (_fdCache?.matches || [])) {
-        const leagueAvg = FB_LEAGUE_AVG_GOALS[m.league];
-        if (!leagueAvg || !m.home || !m.away) continue;
-        if (new Date(m.date).getTime() - Date.now() > FOOTBALL_ALERT_WINDOW_MS) continue;
-        fbFixtures.push({
-          fixtureId: `fd_${m.id}`, league: m.league, date: m.date, round: m.round,
-          home: m.home, away: m.away,
-          homeGF: m.home.goalsFor, homeGA: m.home.goalsAgainst, homePlayed: m.home.played,
-          awayGF: m.away.goalsFor, awayGA: m.away.goalsAgainst, awayPlayed: m.away.played,
-          leagueAvgGoals: leagueAvg,
-          // Échantillon trop faible (25 août 2026, demande explicite utilisateur) — cas réel Celta-
-          // Osasuna : 1 seul match joué chacun, 0-0 des deux côtés, alerte Under 2.5 à 71%/+15,6%
-          // malgré le shrinkage (SHRINK_K=5 pensé pour la CDM en tout début de tournoi, pas pour un
-          // 0-0 unique en journée 1 de club — un score extrême à n=1 pèse encore ~17% même shrinké,
-          // et attaque+défense des deux équipes tirent dans le même sens, effet composé). Modèle et
-          // near-miss restent actifs (même principe que isQualifRound) — seule l'alerte est coupée.
-          isEarlySample: (m.home.played ?? 0) < 3 || (m.away.played ?? 0) < 3,
-        });
+      // Fix 27 août 2026 — source remplacée : `_fdCache.matches` (alimenté par /api/fd/matches) ne
+      // garde que les 5 PROCHAINS matchs de tout le championnat (`.slice(0,5)` ligne ~939, pensé pour
+      // l'affichage Carte du Monde). Sur une grosse journée (PL/Bundesliga ont déjà 5 matchs à
+      // exactement la même heure dès la journée 3-5 de la saison), les matchs au-delà des 5 premiers
+      // ne redeviennent visibles qu'une fois ces 5-là terminés — parfois quelques minutes seulement
+      // avant leur propre coup d'envoi, trop tard pour qu'une alerte ait le temps de sortir, sans
+      // aucune trace de l'avoir raté. `_fdFullStandingsCache`/`_fdRemainingFixturesCache` (mêmes
+      // données, mais complètes — déjà utilisées sans plafond par les alertes Outrights) remplacent
+      // `_fdCache.matches` ici : mêmes deux caches alimentés par le même endpoint, juste sans troncature.
+      for (const league of FD_LEAGUES) {
+        const leagueAvg = FB_LEAGUE_AVG_GOALS[league.key];
+        if (!leagueAvg) continue;
+        const statsById = {};
+        for (const s of (_fdFullStandingsCache[league.key] || [])) statsById[s.teamId] = s;
+        for (const m of (_fdRemainingFixturesCache[league.key] || [])) {
+          if (new Date(m.date).getTime() - Date.now() > FOOTBALL_ALERT_WINDOW_MS) continue;
+          // Fix 27 août 2026 — le cache ne portait jusqu'ici aucun statut, donc rien n'empêchait de
+          // générer une alerte pré-match (basée sur les stats saison) sur un match déjà en direct
+          // (IN_PLAY/PAUSED, toujours renvoyé par FD depuis le fix du 23 août). `m.status` absent
+          // (entrées écrites avant ce fix, pas encore rafraîchies) laisse passer, comme le bloc Brésil
+          // juste en dessous — on ne bloque que quand on SAIT que le match a déjà commencé.
+          if (m.status && m.status !== 'SCHEDULED' && m.status !== 'TIMED') continue;
+          const hs = statsById[m.homeTeamId] || {};
+          const as = statsById[m.awayTeamId] || {};
+          fbFixtures.push({
+            fixtureId: `fd_${m.id}`, league: league.key, date: m.date, round: m.matchday ? `Journée ${m.matchday}` : '',
+            home: { name: m.homeTeamName, short: abbrev(m.homeTeamName) },
+            away: { name: m.awayTeamName, short: abbrev(m.awayTeamName) },
+            homeGF: hs.goalsFor, homeGA: hs.goalsAgainst, homePlayed: hs.played,
+            awayGF: as.goalsFor, awayGA: as.goalsAgainst, awayPlayed: as.played,
+            leagueAvgGoals: leagueAvg,
+            // Échantillon trop faible (25 août 2026, demande explicite utilisateur) — cas réel Celta-
+            // Osasuna : 1 seul match joué chacun, 0-0 des deux côtés, alerte Under 2.5 à 71%/+15,6%
+            // malgré le shrinkage (SHRINK_K=5 pensé pour la CDM en tout début de tournoi, pas pour un
+            // 0-0 unique en journée 1 de club — un score extrême à n=1 pèse encore ~17% même shrinké,
+            // et attaque+défense des deux équipes tirent dans le même sens, effet composé). Modèle et
+            // near-miss restent actifs (même principe que isQualifRound) — seule l'alerte est coupée.
+            isEarlySample: (hs.played ?? 0) < 3 || (as.played ?? 0) < 3,
+          });
+        }
       }
 
       // Brasileirão (17 juillet 2026) — isolé de _fdCache, gate BRESIL_ALERTS_ENABLED tant que
@@ -16142,9 +17099,18 @@ async function generateBackgroundAlerts() {
       }
 
       fbFixtures.forEach(f => footballUpcomingIds.add(f.fixtureId));
+      // Jauge de progression Dashboard (30 août 2026) — total fixé une seule fois ici, sur le vrai
+      // nombre de matchs du cycle, jamais retouché ensuite (cf. commentaire _footballCycleProgress).
+      _fcpSetTotal(fbFixtures.length);
       // Rafraîchit activement les cotes foot si le cache est froid/absent — ne plus dépendre
       // d'une visite navigateur sur /api/odds pour que BTTS/O-U/Résultat se déclenchent (22 juin 2026)
-      if (!_oddsCache.data || Date.now() - _oddsCache.ts > ODDS_TTL) {
+      // Fix 27 août 2026 — ODDS_TTL (30 min) dépasse la cadence du cycle d'alertes (20 min) : sur la
+      // majorité des cycles, le contrôle du seuil de cote minimum (FB_BTTS_OU_MIN_ODDS etc.) se
+      // faisait contre une cote pouvant avoir jusqu'à ~50 min d'écart avec le marché réel au moment
+      // de la génération. Seuil dédié ici (n'affecte pas ODDS_TTL, réutilisé ailleurs pour la marge
+      // de grâce du scraping — pas le même usage, pas le même risque à resserrer).
+      const FOOTBALL_ALERT_ODDS_STALE_MS = 20 * 60 * 1000;
+      if (!_oddsCache.data || Date.now() - _oddsCache.ts > FOOTBALL_ALERT_ODDS_STALE_MS) {
         await _refreshOddsCache().catch(() => {});
       }
       const oddsMatches = _oddsCache?.data?.matches || [];
@@ -16196,7 +17162,8 @@ async function generateBackgroundAlerts() {
           };
           _saveFootballSnapshot();
           _logFootballNearMiss({ fixtureId: f.fixtureId, league: f.league, market: 'btts', direction: 'yes', line: null, probability: bttsProb, floor: FB_BTTS_ALERT_PROB,
-            unibetOdds: bttsBk.unibet?.yes ?? null, betclicOdds: bttsBk.betclic?.yes ?? null });
+            unibetOdds: bttsBk.unibet?.yes ?? null, betclicOdds: bttsBk.betclic?.yes ?? null,
+            tags: [...(f.isQualifRound ? ['qualif_round'] : []), ...(f.isEarlySample ? ['early_sample'] : []), ...(oddsMatch?.frozen ? ['frozen_odds'] : [])] });
           if (bttsProb >= FB_BTTS_ALERT_PROB && !f.isQualifRound && !f.isEarlySample) {
             const bestBk = FB_BOOKS.find(bk => (bttsBk[bk]?.yes ?? 0) >= FB_BTTS_OU_MIN_ODDS);
             if (bestBk) {
@@ -16244,7 +17211,8 @@ async function generateBackgroundAlerts() {
           for (const { key, prob } of RESULT_OUTCOMES) {
             if (isCdmJ3) continue; // J3 CDM bloqué — enjeux tactiques imprévisibles
             _logFootballNearMiss({ fixtureId: f.fixtureId, league: f.league, market: 'result', direction: key, line: null, probability: prob, floor: FB_RESULT_ALERT_PROB,
-              unibetOdds: h2hBk.unibet?.[key] ?? null, betclicOdds: h2hBk.betclic?.[key] ?? null });
+              unibetOdds: h2hBk.unibet?.[key] ?? null, betclicOdds: h2hBk.betclic?.[key] ?? null,
+              tags: [...(f.isQualifRound ? ['qualif_round'] : []), ...(f.isEarlySample ? ['early_sample'] : []), ...(oddsMatch?.frozen ? ['frozen_odds'] : [])] });
             if (prob < FB_RESULT_ALERT_PROB || f.isQualifRound || f.isEarlySample) continue;
             const bestBk = FB_BOOKS.find(bk => (h2hBk[bk]?.[key] ?? 0) >= FB_RESULT_MIN_ODDS);
             if (!bestBk) continue;
@@ -16365,18 +17333,29 @@ async function generateBackgroundAlerts() {
             }
           }
 
-          // Over/Under — ligne 2.5 prioritaire, fallback 1.5 (championnats habituels).
-          // Brésil (17 juillet 2026) : ordre inversé — championnat plus fermé, ligne 1.5 privilégiée.
-          const OU_LINES = f.league === 'bresil' ? ['1.5', '2.5'] : ['2.5', '1.5'];
+          // Over/Under — les DEUX lignes (1.5 et 2.5) peuvent désormais alerter sur le même match
+          // (28 août 2026, demande explicite utilisateur — avant ça, `break` après la 1ère ligne
+          // qualifiante ne laissait jamais sortir la seconde, même légitimement qualifiée, cas réel :
+          // São Paulo/RB Bragantino où le modèle est passé de "Moins de 2.5" à "Plus de 1.5" entre
+          // deux cycles sans qu'aucune des deux ne soit fausse). Ordre de la boucle encore utilisé
+          // pour décider laquelle est évaluée "en premier" dans un même cycle (Brésil : 1.5 puis 2.5,
+          // ailleurs : 2.5 puis 1.5), ce qui sert uniquement au garde-fou de seuil relevé ci-dessous —
+          // BTTS non concerné (une seule direction possible, pas de notion de ligne opposée).
           for (const line of OU_LINES) {
             const ou = computeOUProb(lambdaHome, lambdaAway, parseFloat(line));
             const bestP = Math.max(ou.pOver, ou.pUnder);
             const _nmOuDir = ou.pOver >= ou.pUnder ? 'over' : 'under';
             _logFootballNearMiss({ fixtureId: f.fixtureId, league: f.league, market: 'total', direction: _nmOuDir, line: parseFloat(line), probability: bestP, floor: FB_OU_ALERT_PROB,
-              unibetOdds: totalsBk.unibet?.[line]?.[_nmOuDir] ?? null, betclicOdds: totalsBk.betclic?.[line]?.[_nmOuDir] ?? null });
-            if (bestP < FB_OU_ALERT_PROB || f.isQualifRound || f.isEarlySample) continue;
+              unibetOdds: totalsBk.unibet?.[line]?.[_nmOuDir] ?? null, betclicOdds: totalsBk.betclic?.[line]?.[_nmOuDir] ?? null,
+              tags: [...(f.isQualifRound ? ['qualif_round'] : []), ...(f.isEarlySample ? ['early_sample'] : []), ...(oddsMatch?.frozen ? ['frozen_odds'] : [])] });
             const direction = ou.pOver >= ou.pUnder ? 'over' : 'under';
-            const bestBk = FB_BOOKS.find(bk => (totalsBk[bk]?.[line]?.[direction] ?? 0) >= FB_BTTS_OU_MIN_ODDS);
+            // Seuil relevé (+OPPOSING_PROB_MARGIN) si cette ligne va dans le sens opposé à l'autre
+            // ligne du même match — déjà acceptée (across cycles) OU déjà poussée ce cycle-ci (les
+            // deux lignes évaluées dans la même itération de fixture, cf. newAlerts.some ci-dessous).
+            const opposesThisCycle = newAlerts.some(a => a.type === 'football_total' && a.fixtureId === f.fixtureId && a.direction !== direction);
+            const ouRequiredProb = FB_OU_ALERT_PROB + (opposesThisCycle || hasOpposingAcceptedTeamMarket('football_total', f.fixtureId, direction) ? OPPOSING_PROB_MARGIN : 0);
+            if (bestP < ouRequiredProb || f.isQualifRound || f.isEarlySample) continue;
+            const bestBk = FB_BOOKS.find(bk => (totalsBk[bk]?.[line]?.[direction] ?? 0) >= FB_OU_ALERT_MIN_ODDS_TOTAL);
             if (!bestBk) continue;
             const pair = totalsBk[bestBk][line];
             let edge = null;
@@ -16407,8 +17386,7 @@ async function generateBackgroundAlerts() {
               edge,
               savedAt: Date.now(),
             });
-            _bgLog.push(`football O/U alert: ${f.home.name} v ${f.away.name} [${f.league}] ${direction} ${line} prob=${Math.round(bestP * 100)}%`);
-            break; // une seule ligne par match
+            _bgLog.push(`football O/U alert: ${f.home.name} v ${f.away.name} [${f.league}] ${direction} ${line} prob=${Math.round(bestP * 100)}%${opposesThisCycle || hasOpposingAcceptedTeamMarket('football_total', f.fixtureId, direction) ? ' (seuil relevé, opposée à l\'autre ligne)' : ''}`);
           }
 
           // DC & BTTS — 1X/X2 uniquement (12 = "pas de nul" volontairement exclu, retiré le
@@ -16420,7 +17398,8 @@ async function generateBackgroundAlerts() {
             // Near-miss ajouté le 28 juillet 2026 — seul marché avec modèle de proba qui n'avait
             // encore aucun suivi de calibration (cf. mémoire projet_near_miss_unfiltered_odds_juillet28).
             _logFootballNearMiss({ fixtureId: f.fixtureId, league: f.league, market: 'dc_btts', direction: key, line: null, probability: prob, floor: FB_DC_BTTS_ALERT_PROB,
-              unibetOdds: dcBttsBk.unibet?.[key] ?? null, betclicOdds: dcBttsBk.betclic?.[key] ?? null });
+              unibetOdds: dcBttsBk.unibet?.[key] ?? null, betclicOdds: dcBttsBk.betclic?.[key] ?? null,
+              tags: [...(f.isQualifRound ? ['qualif_round'] : []), ...(f.isEarlySample ? ['early_sample'] : []), ...(oddsMatch?.frozen ? ['frozen_odds'] : [])] });
             if (prob < FB_DC_BTTS_ALERT_PROB || f.isQualifRound || f.isEarlySample) continue;
             const bestBk = FB_BOOKS.find(bk => (dcBttsBk[bk]?.[key] ?? 0) >= FB_DC_MIN_ODDS);
             if (!bestBk) continue;
@@ -16452,7 +17431,8 @@ async function generateBackgroundAlerts() {
           for (const [key, prob] of Object.entries(dcOuProbs)) {
             if (key === '12') continue;
             _logFootballNearMiss({ fixtureId: f.fixtureId, league: f.league, market: 'dc_ou', direction: key, line: 1.5, probability: prob, floor: FB_DC_OU_ALERT_PROB,
-              unibetOdds: dcOuBk.unibet?.[key] ?? null, betclicOdds: dcOuBk.betclic?.[key] ?? null });
+              unibetOdds: dcOuBk.unibet?.[key] ?? null, betclicOdds: dcOuBk.betclic?.[key] ?? null,
+              tags: [...(f.isQualifRound ? ['qualif_round'] : []), ...(f.isEarlySample ? ['early_sample'] : []), ...(oddsMatch?.frozen ? ['frozen_odds'] : [])] });
             if (prob < FB_DC_OU_ALERT_PROB || f.isQualifRound || f.isEarlySample) continue;
             const bestBk = FB_BOOKS.find(bk => (dcOuBk[bk]?.[key] ?? 0) >= FB_DC_MIN_ODDS);
             if (!bestBk) continue;
@@ -16478,6 +17458,7 @@ async function generateBackgroundAlerts() {
             _bgLog.push(`football DC&OU alert: ${f.home.name} v ${f.away.name} [${f.league}] ${key} +1.5 prob=${Math.round(prob * 100)}%`);
           }
         } catch { /* skip fixture */ }
+        finally { _fcpTick(); }
       }
     } catch (err) { _bgLog.push(`football error: ${err.message}`); }
 
@@ -16608,7 +17589,14 @@ async function generateBackgroundAlerts() {
         // en cours ne les reproduit plus — seulement rajoutés quand présents. Cas réel : Washington
         // +5,5, avertissement figé à 47,2% malgré le fix computeSpreadCoverProb/refreshOrDropPendingById
         // juste au-dessus, tant que ce merge ne nettoyait pas activement les champs disparus.
-        const base = { ...prev, unibetOdds: a.unibetOdds ?? prev.unibetOdds, winamaxOdds: a.winamaxOdds ?? prev.winamaxOdds, line: a.line ?? prev.line,
+        // Fix 28 août 2026 — `line: a.line ?? prev.line` reprenait toujours la ligne de RÉFÉRENCE
+        // (généralement Unibet) du candidat frais, même quand le pari a réellement été accepté sur
+        // la ligne d'un AUTRE bookmaker (ex: Betclic à 19.5 alors que la ligne Unibet de référence
+        // est 20.5) — écrasait silencieusement une correction manuelle de `line` à chaque cycle. On
+        // ne rafraîchit désormais que si la ligne du bookmaker RÉELLEMENT accepté a bougé.
+        const acceptedLineField = { unibet: 'unibetLine', betclic: 'betclicLine', winamax: 'winamaxLine' }[prev.acceptedBookmaker];
+        const liveAcceptedLine = (acceptedLineField && a[acceptedLineField] != null) ? a[acceptedLineField] : a.line;
+        const base = { ...prev, unibetOdds: a.unibetOdds ?? prev.unibetOdds, winamaxOdds: a.winamaxOdds ?? prev.winamaxOdds, line: liveAcceptedLine ?? prev.line,
           // rawProbability (2 août 2026) — confiance réelle du modèle avant le plafond sanityMax,
           // affichée entre parenthèses. Rafraîchie comme les cotes/ligne (pas figée à l'acceptation),
           // contrairement à `probability` qui elle reste celle du moment du clic.
@@ -16633,7 +17621,22 @@ async function generateBackgroundAlerts() {
     });
     // Purge les alertes pending explicitement marquées obsolètes ce cycle (cote plus jouable) par
     // refreshOrDropPendingProp/refreshOrDropPendingById — cf. commentaire en tête de fichier.
+    // Message Telegram édité à l'expiration (restauré le 28 août 2026, généralisé à TOUS les types —
+    // existait avant seulement pour basketball_spread, retiré avec la suppression du marché le 27
+    // août ; cas réel qui a motivé la restauration : Résultat WNBA Washington, notifié puis disparu
+    // sans trace avant que l'app ne le resynchronise). Le message initial n'est jamais supprimé, juste
+    // réécrit avec le texte d'origine (reconstruit via getAlertTypeMeta) + un avertissement en plus —
+    // les boutons Accepter/Rejeter restent affichés (comme avant) mais un clic dessus après expiration
+    // ne trouve plus l'alerte côté serveur, donc n'a aucun effet (déjà le cas avant cette restauration).
     for (const staleId of _staleAlertIds) {
+      const staleAlert = byId[staleId];
+      if (staleAlert && _telegramNotifiedIds.has(staleId)) {
+        const meta = getAlertTypeMeta(staleAlert.type);
+        const messageId = _debugTokensForId(staleId)[0]?.messageId;
+        if (meta && messageId) {
+          editTelegramMessage(messageId, `${meta.label(staleAlert)}\n\n⚠️ <b>Expirée</b> — ne qualifie plus`).catch(() => {});
+        }
+      }
       delete byId[staleId];
     }
 
@@ -16737,7 +17740,15 @@ async function generateBackgroundAlerts() {
     // faisait disparaître l'alerte pour Telegram sans jamais la renvoyer, alors qu'elle restait
     // visible côté app (dédup par ID déjà notifié, pas par "1er cycle après restart", qui avalait
     // silencieusement les alertes nées juste avant un redémarrage — 18 juillet 2026).
-    const _toNotify = _newForTelegram.filter(a => !_telegramNotifiedIds.has(a.id));
+    // Fix 28 août 2026 — un échec d'envoi (réseau, Telegram down un cycle) ne devait jamais bloquer
+    // le retry pour toujours : _newForTelegram ne contient que les ids VRAIMENT nouveaux ce cycle
+    // (absents de `byId` avant la fusion) — dès le cycle suivant, l'id existe déjà dans
+    // backgroundAlerts (pending), donc `prev` existe et il ne redevient plus jamais "nouveau", même
+    // si l'envoi avait échoué et que _telegramNotifiedIds ne l'a jamais marqué. Cas réel : Sonia
+    // Citron / Jackie Young (props WNBA), jamais notifiées malgré Telegram fonctionnel au moment de
+    // la vérification. `_toNotify` scanne maintenant TOUTES les alertes encore pending, pas
+    // seulement celles nées ce cycle — un échec se retente donc automatiquement au cycle suivant.
+    const _toNotify = Object.values(byId).filter(a => (a.status || 'pending') === 'pending' && !_telegramNotifiedIds.has(a.id));
     if (telegramConfigured() && _toNotify.length) {
       const _sent = await Promise.all(_toNotify.map(a =>
         notifyNewAlert(a).catch(e => { console.error('telegram notify error:', e.message); return false; })
@@ -16792,10 +17803,67 @@ app.get('/api/system/health', async (req, res) => {
     },
     quotas: {
       footballData:  _fdQuota,
-      basketballApi: _basketballApiQuota,
-      footballApi:   _footballApiQuota,
+      basketballApi: { ..._basketballApiQuota, paused: _basketballApiPaused, pausedAt: _basketballApiPausedAt, cycleProgress: _basketballCycleProgress },
+      footballApi:   { ..._footballApiQuota, paused: _footballApiPaused, pausedAt: _footballApiPausedAt, cycleProgress: _footballCycleProgress },
     },
   });
+});
+
+// Pause manuelle api-football (28 août 2026) — { paused: true|false }. Ne touche jamais la clé,
+// juste un interrupteur devant footballApiFetch() (cf. commentaire à la déclaration du flag).
+// Étendu le 29 août 2026 (demande explicite, indicateurs Dashboard) : au clic "play" (paused→false),
+// déclenche immédiatement un cycle (au lieu d'attendre jusqu'à 20min le prochain cycle naturel) et
+// active le suivi de progression (_footballCycleProgress) le temps de ce cycle. Au clic "pause"
+// (paused→true), horodate `pausedAt` (pour le compte à rebours 6h côté Dashboard) et gèle
+// immédiatement le suivi de progression — au-delà de cet instant, plus aucun vrai appel n'a lieu.
+app.post('/api/system/football-api-toggle', (req, res) => {
+  const { paused } = req.body || {};
+  if (typeof paused !== 'boolean') return res.status(400).json({ ok: false, error: 'paused (boolean) requis' });
+  _footballApiPaused = paused;
+  _footballApiPausedAt = paused ? Date.now() : null;
+  _saveFootballApiPaused();
+  if (paused) {
+    _footballCycleProgress.active = false;
+  } else {
+    _footballCycleProgress = { active: true, total: 0, done: 0, startedAt: Date.now() };
+    // Filet de sécurité (29 août 2026) — si l'estimation `total` était trop haute (donc jamais
+    // atteinte) ou qu'un cycle plante en cours de route, la jauge ne doit pas rester bloquée en
+    // "actif" indéfiniment côté Dashboard.
+    const guardStartedAt = _footballCycleProgress.startedAt;
+    setTimeout(() => {
+      if (_footballCycleProgress.startedAt === guardStartedAt) _footballCycleProgress.active = false;
+    }, 5 * 60_000);
+    _waitForBgAlertsCycle('football-api-resume').catch(() => {}).finally(() => {
+      if (_footballCycleProgress.startedAt === guardStartedAt) _footballCycleProgress.active = false;
+    });
+  }
+  res.json({ ok: true, paused: _footballApiPaused });
+});
+
+// Pause manuelle API-Basketball (30 août 2026) — { paused: true|false }. Contrairement au foot,
+// ne gate PAS bballFetch pour les appels déjà couverts par un cache existant (voir commentaire complet
+// sur _basketballApiPaused) : chaque route EU sert son cache même expiré tant que la pause est active,
+// donc le cycle de 20 min continue de recalculer avec les données déjà connues. bballFetch reste gaté
+// en dernier recours pour un vrai cache-miss (jamais aucun appel réseau neuf pendant la pause).
+app.post('/api/system/basketball-api-toggle', (req, res) => {
+  const { paused } = req.body || {};
+  if (typeof paused !== 'boolean') return res.status(400).json({ ok: false, error: 'paused (boolean) requis' });
+  _basketballApiPaused = paused;
+  _basketballApiPausedAt = paused ? Date.now() : null;
+  _saveBasketballApiPaused();
+  if (paused) {
+    _basketballCycleProgress.active = false;
+  } else {
+    _basketballCycleProgress = { active: true, total: 0, done: 0, startedAt: Date.now() };
+    const guardStartedAt = _basketballCycleProgress.startedAt;
+    setTimeout(() => {
+      if (_basketballCycleProgress.startedAt === guardStartedAt) _basketballCycleProgress.active = false;
+    }, 5 * 60_000);
+    _waitForBgAlertsCycle('basketball-api-resume').catch(() => {}).finally(() => {
+      if (_basketballCycleProgress.startedAt === guardStartedAt) _basketballCycleProgress.active = false;
+    });
+  }
+  res.json({ ok: true, paused: _basketballApiPaused });
 });
 
 app.get('/api/nba/background-alerts', (req, res) => {
@@ -17366,13 +18434,6 @@ app.post('/api/bet-history/:id/stake', (req, res) => {
   res.json({ ok: true });
 });
 
-let _calibrationDump = null;
-app.post('/api/debug/calibration-dump', (req, res) => {
-  _calibrationDump = req.body;
-  res.json({ ok: true });
-});
-app.get('/api/debug/calibration-dump', (req, res) => res.json(_calibrationDump));
-
 app.get('/api/debug/underdog', async (req, res) => {
   try {
     const data = await fetchUnderdogWNBALineups();
@@ -17380,41 +18441,6 @@ app.get('/api/debug/underdog', async (req, res) => {
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
   }
-});
-
-// Probe gRPC Betclic foot — découverte des category IDs DC
-// Usage : GET /api/debug/betclic-matchids  → liste matchIds actuels
-//         GET /api/debug/betclic-dc-probe?matchId=XXXXX  → teste ~10 candidats
-app.get('/api/debug/betclic-matchids', (req, res) => {
-  const odds = _oddsCache?.football ?? [];
-  const hrefs = odds
-    .filter(m => m._href || m.href)
-    .map(m => { const h = m._href ?? m.href; const mid = h?.match(/-m(\d+)$/)?.[1]; return { home: m.homeTeam, away: m.awayTeam, matchId: mid, href: h }; })
-    .filter(m => m.matchId);
-  // Fallback : cherche dans le cache betclic brut
-  res.json({ count: hrefs.length, matches: hrefs.slice(0, 10) });
-});
-
-app.get('/api/debug/betclic-dc-probe', async (req, res) => {
-  const { matchId } = req.query;
-  if (!matchId) return res.status(400).json({ error: 'matchId requis' });
-  const candidates = [
-    'ca_ftb_dc', 'ca_ftb_mix', 'ca_ftb_combi', 'ca_ftb_comb',
-    'ca_ftb_dbl', 'ca_ftb_chance', 'ca_ftb_dcmix', 'ca_ftb_extras',
-    'ca_ftb_special', 'ca_ftb_both',
-  ];
-  const results = {};
-  // Séquentiel pour éviter de spammer
-  for (const catId of candidates) {
-    try {
-      const mts = await _betclicGrpcMarketNames(matchId, catId);
-      results[catId] = mts.length
-        ? mts.map(m => ({ name: m.name, sels: m.sels.slice(0, 4) }))
-        : null;
-    } catch (e) { results[catId] = { error: e.message }; }
-    await new Promise(r => setTimeout(r, 300)); // 300ms entre chaque appel
-  }
-  res.json({ matchId, results });
 });
 
 // Le stakeAmount réel (mise éditée à la main ou choisie à l'accept) n'existe que côté copie
@@ -17520,6 +18546,7 @@ async function runAutoSettle() {
 
   const propsToCheck    = toCheck.filter(a => a.type === 'player_prop');
   const totalsToCheck   = toCheck.filter(a => a.type === 'game_total' || a.type === 'basketball_pinnacle_edge');
+  const teamTotalsToCheck = toCheck.filter(a => a.type === 'team_total');
   const resultsToCheck  = toCheck.filter(a => a.type === 'basketball_result');
   const footballToCheck = toCheck.filter(a => ['football_btts', 'football_total', 'football_result', 'football_dc_btts', 'football_dc_ou'].includes(a.type));
 
@@ -17629,6 +18656,24 @@ async function runAutoSettle() {
       const settledAt3 = Date.now();
       _settlements.push({ id: a.id, status, actualStat: total, line: a.line, edge: a.edge, league: a.league, probability: a.acceptedProbability ?? a.prob, settledAt: settledAt3 });
       archiveBet(withStake(a), { status, actualStat: total, settledAt: settledAt3 });
+      _acceptedAlerts = _acceptedAlerts.filter(x => x.id !== a.id);
+      _saveAccepted(); _saveSettlements();
+    } catch {}
+  }
+
+  // Total équipe basket (28 août 2026) — même source de score que game_total/basketball_result
+  // (fetchFinalScoreBg), mais compare le score d'UNE seule équipe (a.side) à la ligne, pas le total
+  // combiné.
+  for (const a of teamTotalsToCheck) {
+    try {
+      const score = await fetchFinalScoreBg(a.league, a.fixtureDate || a.date, a.home, a.away, a.homeShort, a.awayShort);
+      if (!score) continue;
+      const teamScore = a.side === 'home' ? score.homeScore : score.awayScore;
+      if (teamScore == null) continue;
+      const status = (a.direction === 'over' ? teamScore > a.line : teamScore < a.line) ? 'won' : 'lost';
+      const settledAt3b = Date.now();
+      _settlements.push({ id: a.id, status, actualStat: teamScore, line: a.line, league: a.league, probability: a.acceptedProbability ?? a.prob, settledAt: settledAt3b });
+      archiveBet(withStake(a), { status, actualStat: teamScore, settledAt: settledAt3b });
       _acceptedAlerts = _acceptedAlerts.filter(x => x.id !== a.id);
       _saveAccepted(); _saveSettlements();
     } catch {}
@@ -17794,9 +18839,17 @@ let _healthDigestNotifiedAt = {}; // message → timestamp du dernier envoi
 try { if (existsSync(HEALTH_DIGEST_STATE_FILE)) _healthDigestNotifiedAt = JSON.parse(readFileSync(HEALTH_DIGEST_STATE_FILE, 'utf8')); } catch {}
 const _saveHealthDigestState = () => { try { writeFileSync(HEALTH_DIGEST_STATE_FILE, JSON.stringify(_healthDigestNotifiedAt), 'utf8'); } catch {} };
 
+// Bruit connu et non-actionnable, exclu du digest Telegram (29 août 2026, demande explicite —
+// utilisateur saturé de notifs) : les 429 football-data.org sont déjà gérées proprement partout
+// (repli sur cache existant, quota 10 req/min juste serré, auto-résolu en général en moins d'une
+// minute) et "pause manuelle" est le résultat direct d'une action volontaire de l'utilisateur
+// lui-même, jamais un bug. Toujours capturées dans _errorLog (utile pour débugger), juste plus
+// poussées sur Telegram. Filtre volontairement étroit — un vrai problème (DNS, MongoDB, quota
+// vraiment épuisé pour la journée) ne matche aucun des deux motifs et continue de notifier.
+const HEALTH_DIGEST_IGNORE = [/\b429\b/, /pause manuelle/];
 function _runHealthDigest() {
   try {
-    const fresh = _errorLog.slice(_healthDigestLastIdx);
+    const fresh = _errorLog.slice(_healthDigestLastIdx).filter(e => !HEALTH_DIGEST_IGNORE.some(re => re.test(e.msg)));
     _healthDigestLastIdx = _errorLog.length;
     if (!fresh.length) return;
     const counts = {};
@@ -17893,6 +18946,54 @@ app.listen(PORT, () => {
   // Start background alert job: first run after 2s, then every 20min
   setTimeout(generateBackgroundAlertsGuarded, 2_000);
   setInterval(generateBackgroundAlertsGuarded, 20 * 60 * 1000);
+
+  // Auto-réveil pause api-football/API-Basketball (30 août 2026, demande explicite — "une fois
+  // automatisé, la pause doit toujours se réveiller automatiquement"). Une pause manuelle n'est donc
+  // plus indéfinie par défaut : passé la fenêtre affichée côté Dashboard (6h foot, 2h basket, mêmes
+  // constantes que FOOT_CACHE_GUARD_MS/BBALL_CACHE_GUARD_MS côté frontend), le backend se redépause
+  // tout seul le temps d'UN cycle (récupère les données neuves), puis se repause automatiquement —
+  // horodatage `pausedAt` remis à `Date.now()` à ce moment-là, ce qui relance le compte à rebours
+  // pour le prochain réveil, en boucle. L'utilisateur ne voit qu'un état "en pause" stable côté UI,
+  // avec juste le compte à rebours qui se réinitialise à chaque réveil silencieux.
+  const AUTO_REFRESH_CHECK_MS = 10 * 60_000; // vérifie toutes les 10 min, largement sous les fenêtres 2h/6h
+  const FOOT_AUTO_REFRESH_MS  = 6 * 3600_000;
+  const BBALL_AUTO_REFRESH_MS = 2 * 3600_000;
+  let _footAutoRefreshInFlight = false;
+  let _bballAutoRefreshInFlight = false;
+  setInterval(async () => {
+    if (_footballApiPaused && _footballApiPausedAt && !_footAutoRefreshInFlight
+        && Date.now() - _footballApiPausedAt >= FOOT_AUTO_REFRESH_MS) {
+      _footAutoRefreshInFlight = true;
+      _bgLog.push('football-api: réveil automatique (pause dépassant 6h) — cycle de rafraîchissement puis re-pause');
+      _footballApiPaused = false; _footballApiPausedAt = null; _saveFootballApiPaused();
+      _footballCycleProgress = { active: true, total: 0, done: 0, startedAt: Date.now() };
+      const guardStartedAt = _footballCycleProgress.startedAt;
+      const guardTimer = setTimeout(() => {
+        if (_footballCycleProgress.startedAt === guardStartedAt) _footballCycleProgress.active = false;
+      }, 5 * 60_000);
+      try { await _waitForBgAlertsCycle('football-api-auto-refresh'); } catch {}
+      clearTimeout(guardTimer);
+      if (_footballCycleProgress.startedAt === guardStartedAt) _footballCycleProgress.active = false;
+      _footballApiPaused = true; _footballApiPausedAt = Date.now(); _saveFootballApiPaused();
+      _footAutoRefreshInFlight = false;
+    }
+    if (_basketballApiPaused && _basketballApiPausedAt && !_bballAutoRefreshInFlight
+        && Date.now() - _basketballApiPausedAt >= BBALL_AUTO_REFRESH_MS) {
+      _bballAutoRefreshInFlight = true;
+      _bgLog.push('basketball-api: réveil automatique (pause dépassant 2h) — cycle de rafraîchissement puis re-pause');
+      _basketballApiPaused = false; _basketballApiPausedAt = null; _saveBasketballApiPaused();
+      _basketballCycleProgress = { active: true, total: 0, done: 0, startedAt: Date.now() };
+      const guardStartedAt = _basketballCycleProgress.startedAt;
+      const guardTimer = setTimeout(() => {
+        if (_basketballCycleProgress.startedAt === guardStartedAt) _basketballCycleProgress.active = false;
+      }, 5 * 60_000);
+      try { await _waitForBgAlertsCycle('basketball-api-auto-refresh'); } catch {}
+      clearTimeout(guardTimer);
+      if (_basketballCycleProgress.startedAt === guardStartedAt) _basketballCycleProgress.active = false;
+      _basketballApiPaused = true; _basketballApiPausedAt = Date.now(); _saveBasketballApiPaused();
+      _bballAutoRefreshInFlight = false;
+    }
+  }, AUTO_REFRESH_CHECK_MS);
 
   // Watcher Underdog WNBA (19 août 2026) — vérifie toutes les 2min si de nouvelles infos compo/
   // blessure sont tombées sur Twitter (bien plus fréquent que le cycle normal 20min), et déclenche
