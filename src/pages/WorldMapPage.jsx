@@ -355,7 +355,15 @@ function Panel({ country, onClose, statsLeague, setStatsLeague }) {
         // affiché à la fois dans "À venir" ET "Terminés". /api/fd/results fait foi dès qu'il connaît
         // déjà l'id, quel que soit le statut (même périmé) renvoyé par /api/fd/matches.
         const freshIds = new Set((dr.matches||[]).filter(f=>f.league===l).map(f=>String(f.id)));
-        const scheduled=(dm.matches||[]).filter(f=>f.league===l && f.status!=='STATUS_FINAL' && !freshIds.has(String(f.id))).map(f=>({
+        // Fix 31 août 2026 — cas plus grave que le précédent : un match dont le coup d'envoi côté
+        // football-data.org est parfois RÉELLEMENT resté bloqué sur TIMED/SCHEDULED des heures après
+        // l'heure prévue (vérifié en direct sur leur API brute — Celta Vigo-Athletic Club, coup
+        // d'envoi 19h30, encore "TIMED" à 1h du matin) — jamais transitionné vers IN_PLAY, donc
+        // absent aussi de /api/fd/results (freshIds ne le voit jamais). Sans donnée fraîche possible,
+        // on arrête au moins d'afficher un coup d'envoi manifestement dépassé comme "à venir" — plus
+        // honnête de le retirer que de laisser un horaire qui ment silencieusement depuis des heures.
+        const STALE_KICKOFF_MS = 4 * 3600_000;
+        const scheduled=(dm.matches||[]).filter(f=>f.league===l && f.status!=='STATUS_FINAL' && !freshIds.has(String(f.id)) && (Date.now() - new Date(f.date).getTime()) < STALE_KICKOFF_MS).map(f=>({
           id:`fd_${f.id}`,date:f.date,status:f.status||'STATUS_SCHEDULED',round:f.round,
           home:{name:f.home?.name,short:f.home?.short,logo:f.home?.logoId,score:null},
           away:{name:f.away?.name,short:f.away?.short,logo:f.away?.logoId,score:null},

@@ -1041,6 +1041,15 @@ app.get('/api/fd/matches', async (req, res) => {
   }
 });
 
+// football-data.org laisse parfois un match "IN_PLAY"/équivalent en amont bien après la fin réelle
+// (constaté en direct à deux reprises : La Liga Deportivo-Valencia et Brasileirão Corinthians-Santos/
+// Flamengo-Botafogo, tous toujours IN_PLAY plus de 4-6h après le coup d'envoi, y compris sur un fetch
+// tout juste rafraîchi — pas un souci de cache côté nous). Un vrai match ne dépasse jamais ~2h30
+// (90min + mi-temps + prolongations/tirs au but éventuels) ; au-delà, on force FINISHED plutôt que de
+// laisser l'app afficher "EN COURS" indéfiniment sur un match déjà terminé. Partagé par les 5 grands
+// championnats (_getFdLeaguesResults) et le Brasileirão (_getBresilMatches) ci-dessous.
+const FD_MAX_LIVE_MATCH_MS = 3 * 3600_000;
+
 // ── Coupe du Monde (football-data.org) ───────────────────────────────────────
 // Cache persisté sur disque : survit aux redémarrages (--watch) pour éviter qu'un
 // rate-limit FD (10 req/min, partagé avec /api/fd/matches) ne vide l'affichage CDM.
@@ -1168,10 +1177,16 @@ async function _getBresilMatches() {
     // même un jour de plusieurs matchs programmés. Filet de sécurité : si `m.status` ne matche
     // aucune valeur connue, déduire le statut depuis le score (rempli = terminé, sinon programmé)
     // plutôt que de perdre le match entier.
+    // Fix 31 août 2026 — même garde-fou que _getFdLeaguesResults() (voir FD_MAX_LIVE_MATCH_MS) :
+    // constaté en direct sur cette compétition aussi (Corinthians-Santos, Flamengo-Botafogo, tous
+    // deux toujours IN_PLAY 6h+ après le coup d'envoi côté football-data.org).
     const inferBresilStatus = m => {
       const mapped = FD_STATUS_MAP_BRESIL[m.status];
-      if (mapped) return mapped;
-      return (m.score?.fullTime?.home != null && m.score?.fullTime?.away != null) ? 'STATUS_FINAL' : 'STATUS_SCHEDULED';
+      const resolved = mapped || ((m.score?.fullTime?.home != null && m.score?.fullTime?.away != null) ? 'STATUS_FINAL' : 'STATUS_SCHEDULED');
+      if (resolved === 'STATUS_IN_PROGRESS' && Date.now() - new Date(m.utcDate).getTime() > FD_MAX_LIVE_MATCH_MS) {
+        return 'STATUS_FINAL';
+      }
+      return resolved;
     };
     const KEEP_MS = 48 * 3600_000;
     const now = Date.now();
@@ -1290,12 +1305,6 @@ const FD_STATUS_MAP_RESULTS = {
   IN_PLAY: 'STATUS_IN_PROGRESS', PAUSED: 'STATUS_IN_PROGRESS', LIVE: 'STATUS_IN_PROGRESS',
   FINISHED: 'STATUS_FINAL', AWARDED: 'STATUS_FINAL',
 };
-// football-data.org laisse parfois un match "IN_PLAY" en amont bien après la fin réelle (constaté
-// en direct : Deportivo La Coruña-Valencia toujours IN_PLAY 5h30 après le coup d'envoi, y compris
-// sur un fetch tout juste rafraîchi — pas un souci de cache côté nous). Un vrai match ne dépasse
-// jamais ~2h30 (90min + mi-temps + prolongations/tirs au but éventuels) ; au-delà, on force FINISHED
-// pour ne pas laisser WorldMapPage afficher "EN COURS" indéfiniment sur un match déjà terminé.
-const FD_MAX_LIVE_MATCH_MS = 3 * 3600_000;
 async function _getFdLeaguesResults() {
   if (!FD_KEY) return { matches: [] };
   if (_fdResultsCache && Date.now() - _fdResultsCacheTs < 30 * 60 * 1000) return _fdResultsCache;
