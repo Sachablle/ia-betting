@@ -8447,28 +8447,40 @@ async function fetchPmuOutrights() {
 
   const { chromium } = await import('playwright');
   const out = {};
-  const browser = await chromium.launch({ headless: true });
+  // Fix 31 août 2026 — trouvé en creusant "cotes PMU La Liga figées sur d'anciennes valeurs" : si le
+  // navigateur meurt en cours de boucle (page lourde, crash renderer — observé en vérifiant en direct :
+  // "browserContext.newPage: Target page, context or browser has been closed"), l'ancien code laissait
+  // `context.newPage()` EN DEHORS du try/catch par cible — l'exception remontait alors jusqu'à la route
+  // /api/outrights et faisait perdre TOUT le cycle, y compris Betclic/Pinnacle déjà récupérés avec
+  // succès dans le même Promise.all (route retombe sur `competitions: {}}`). Chaque cible est
+  // maintenant isolée : un navigateur mort saute juste les cibles restantes (`browser.isConnected()`)
+  // au lieu de faire planter tout l'appel — les cibles déjà réussies avant le crash restent utilisables.
+  let browser;
   try {
+    browser = await chromium.launch({ headless: true });
     const context = await browser.newContext({
       userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
       locale: 'fr-FR',
     });
     for (const t of PMU_OUTRIGHT_TARGETS) {
-      const page = await context.newPage();
+      if (!browser.isConnected()) break;
       try {
-        const markets = await _scrapePmuOutrightPage(page, t.slug, t.titlePattern);
-        // `out[t.key]` (tableau plat, vainqueur seul) conservé tel quel pour rétrocompatibilité —
-        // `_outrightMarketsCache.pmu` (28 juillet 2026) porte tous les marchés trouvés en plus.
-        if (markets.winner?.length) out[t.key] = markets.winner;
-        if (Object.keys(markets).length) _outrightMarketsCache.pmu[t.key] = markets;
-      } catch {} finally {
-        await page.close().catch(() => {});
-      }
+        const page = await context.newPage();
+        try {
+          const markets = await _scrapePmuOutrightPage(page, t.slug, t.titlePattern);
+          // `out[t.key]` (tableau plat, vainqueur seul) conservé tel quel pour rétrocompatibilité —
+          // `_outrightMarketsCache.pmu` (28 juillet 2026) porte tous les marchés trouvés en plus.
+          if (markets.winner?.length) out[t.key] = markets.winner;
+          if (Object.keys(markets).length) _outrightMarketsCache.pmu[t.key] = markets;
+        } finally {
+          await page.close().catch(() => {});
+        }
+      } catch {}
       await new Promise(res => setTimeout(res, 800));
     }
     _saveOutrightMarketsCache();
-  } finally {
-    await browser.close().catch(() => {});
+  } catch {} finally {
+    await browser?.close().catch(() => {});
   }
 
   const successCount = Object.keys(out).length;
@@ -8484,8 +8496,8 @@ async function fetchPmuOutrights() {
 }
 
 const PMU_OUTRIGHTS_CACHE_FILE = join(CACHE_DIR, 'pmu_outrights.json');
-let _pmuOutrightsCache = { data: {}, ts: 0 };
-try { if (existsSync(PMU_OUTRIGHTS_CACHE_FILE)) _pmuOutrightsCache = JSON.parse(readFileSync(PMU_OUTRIGHTS_CACHE_FILE, 'utf8')); } catch {}
+let _pmuOutrightsCache = { data: {}, ts: 0, tsByKey: {} };
+try { if (existsSync(PMU_OUTRIGHTS_CACHE_FILE)) _pmuOutrightsCache = { tsByKey: {}, ...JSON.parse(readFileSync(PMU_OUTRIGHTS_CACHE_FILE, 'utf8')) }; } catch {}
 const _savePmuOutrightsCache = () => { try { writeFileSync(PMU_OUTRIGHTS_CACHE_FILE, JSON.stringify(_pmuOutrightsCache), 'utf8'); } catch {} };
 
 // Cache dédié marchés Top N/Podium/Relégation (28 juillet 2026) — séparé de _pmuOutrightsCache
@@ -8507,11 +8519,23 @@ const _saveOutrightTeamPropsCache = () => { try { writeFileSync(OUTRIGHT_TEAM_PR
 
 async function getPmuOutrights() {
   if (Date.now() < _scraperBlockedUntil.pmu) return _pmuOutrightsCache.data;
-  if (Date.now() - _pmuOutrightsCache.ts > OUTRIGHTS_TTL) {
+  // Fix 31 août 2026 — l'ancienne version ne suivait qu'un `ts` global : dès qu'UNE compétition
+  // réussissait à se rafraîchir, le cache entier était marqué "à jour" même si une autre (ex. La
+  // Liga) avait échoué silencieusement ce cycle-là (page PMU plus lente à révéler l'onglet
+  // "Compétitions" sur cette ligue) — la valeur ratée restait alors figée indéfiniment, invisible
+  // puisque `ts` mentait. Cas réel : La Liga PMU immobile sur d'anciennes cotes (Barcelone favori
+  // devant Real Madrid) alors que pmu.fr affichait déjà Real Madrid 1.90/Barcelone 2.00. `tsByKey`
+  // ne se met à jour que pour les compétitions réellement rescrapées avec succès ce cycle — une
+  // compétition en échec reste éligible à un nouveau tour dès le prochain appel autorisé.
+  const stale = PMU_OUTRIGHT_TARGETS.some(t => Date.now() - (_pmuOutrightsCache.tsByKey?.[t.key] || 0) > OUTRIGHTS_TTL);
+  if (stale) {
     const data = await fetchPmuOutrights();
     const merged = { ..._pmuOutrightsCache.data, ...data };
     if (Object.keys(merged).length) {
-      _pmuOutrightsCache = { data: merged, ts: Date.now() };
+      const tsByKey = { ..._pmuOutrightsCache.tsByKey };
+      const now = Date.now();
+      for (const k of Object.keys(data)) tsByKey[k] = now;
+      _pmuOutrightsCache = { data: merged, ts: now, tsByKey };
       _savePmuOutrightsCache();
     }
   }
