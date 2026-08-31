@@ -1475,7 +1475,16 @@ export default function BacktestingPage() {
   const calibCats  = useMemo(() => calibrationByCategory(filtered), [filtered]);
   const typeStats  = useMemo(() => byTypeStats(filtered),       [filtered]);
 
-  const rolling        = useMemo(() => filtered.filter(b => b.status !== 'void').slice(-ROLLING_N), [filtered]);
+  // Fix 31 août 2026 — en mode BK 500€, `filtered` hérite de l'ordre par `acceptedAt` (nécessaire à
+  // la continuité du bankroll après un reset, voir loadAllResolved ci-dessus) au lieu de la date du
+  // match — un pari accepté tard sur un match plus ancien pouvait donc passer devant un pari accepté
+  // tôt sur un match plus récent dans ce widget "N derniers paris" (cas réel signalé : Alyssa Thomas,
+  // acceptée le 30/08 01h53 pour un match du 30/08 02h, affichée au-dessus du Total WNBA POR-GS,
+  // accepté le 29/08 23h11 pour un match du 30/08 23h — pourtant clairement postérieur). Ce widget
+  // affiche la date du MATCH sur chaque ligne, donc trié dessus explicitement, indépendamment du
+  // modèle actif — n'affecte ni rollingWR/cumPoints (dérivés de `filtered` directement) ni le calcul
+  // du bankroll (inchangé, toujours sur acceptedAt en amont).
+  const rolling        = useMemo(() => [...filtered].filter(b => b.status !== 'void').sort((a, b) => new Date(a.date) - new Date(b.date)).slice(-ROLLING_N), [filtered]);
   const rollingMetrics = useMemo(() => calcMetrics(rolling), [rolling]);
 
   // ── Pinnacle diff — métriques isolées (hors bilan global) ─────────────────
