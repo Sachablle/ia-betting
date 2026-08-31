@@ -206,16 +206,22 @@ export function StakeCalculatorWidget({ items, bottom = 20 }) {
 // buts → BTTS → DC&+1,5 → DC&BTTS, basket renommé sans le suffixe "WNBA" (redondant, déjà affiché
 // via le toggle ⚽/🏀 juste au-dessus). L'ordre d'affichage suit l'ordre du tableau (filter() le
 // préserve), donc réordonner ce tableau suffit — pas de tri supplémentaire au rendu.
+// `ou: true` (31 août 2026, demande explicite) — marchés dont le champ `direction` loggué côté
+// near-miss est bien 'over'/'under' au sens strict (vérifié en direct sur les 3 fichiers near-miss :
+// basket-markets.total, football.total, props.{pts,reb,ast,tpm}). Volontairement absent sur
+// Résultat (home/away/draw), BTTS (toujours 'yes', rien à découper), DC&+1,5/DC&BTTS ('1x'/'x2', pas
+// un sens O/U) et Total points équipes (direction composée 'home_over'/'away_under'… pas un simple
+// over/under filtrable tel quel côté backend, et déjà sous le seuil de 30 cas de toute façon).
 const NEAR_MISS_PANEL_MARKETS = [
   { key: 'wnba_result',   label: 'Résultat',             domain: 'basket', params: 'source=basket-markets&league=wnba&market=result' },
-  { key: 'wnba_total',    label: 'Total points',         domain: 'basket', params: 'source=basket-markets&league=wnba&market=total' },
+  { key: 'wnba_total',    label: 'Total points',         domain: 'basket', params: 'source=basket-markets&league=wnba&market=total', ou: true },
   { key: 'wnba_teamtotal',label: 'Total points équipes', domain: 'basket', params: 'source=basket-markets&league=wnba&market=team_total' },
-  { key: 'wnba_pts',      label: 'Props points',         domain: 'basket', params: 'source=props&league=wnba&stat=pts' },
-  { key: 'wnba_reb',      label: 'Props rebonds',        domain: 'basket', params: 'source=props&league=wnba&stat=reb' },
-  { key: 'wnba_ast',      label: 'Props assists',        domain: 'basket', params: 'source=props&league=wnba&stat=ast' },
-  { key: 'wnba_tpm',      label: 'Props 3pts',           domain: 'basket', params: 'source=props&league=wnba&stat=tpm' },
+  { key: 'wnba_pts',      label: 'Props points',         domain: 'basket', params: 'source=props&league=wnba&stat=pts', ou: true },
+  { key: 'wnba_reb',      label: 'Props rebonds',        domain: 'basket', params: 'source=props&league=wnba&stat=reb', ou: true },
+  { key: 'wnba_ast',      label: 'Props assists',        domain: 'basket', params: 'source=props&league=wnba&stat=ast', ou: true },
+  { key: 'wnba_tpm',      label: 'Props 3pts',           domain: 'basket', params: 'source=props&league=wnba&stat=tpm', ou: true },
   { key: 'fb_result',     label: 'Résultat',                         domain: 'foot', params: 'source=football&market=result' },
-  { key: 'fb_total',      label: 'Total buts',                       domain: 'foot', params: 'source=football&market=total' },
+  { key: 'fb_total',      label: 'Total buts',                       domain: 'foot', params: 'source=football&market=total', ou: true },
   { key: 'fb_btts',       label: 'BTTS',                             domain: 'foot', params: 'source=football&market=btts' },
   { key: 'fb_dcou',       label: 'Double chance & plus de 1,5 buts', domain: 'foot', params: 'source=football&market=dc_ou' },
   { key: 'fb_dcbtts',     label: 'Double chance & BTTS',             domain: 'foot', params: 'source=football&market=dc_btts' },
@@ -260,6 +266,11 @@ export function NearMissPanelWidget({ bottom = 20 } = {}) {
   const [thresholdPickerFor, setThresholdPickerFor] = useState(null);
   const [thresholdPickerPos, setThresholdPickerPos] = useState(null);
   const [selectedThreshold, setSelectedThreshold] = useState({}); // key → seuil choisi, ou absent = agrégat par défaut
+  // Détail Over/Under par marché (31 août 2026, demande explicite) — key → 'over'|'under'|undefined
+  // (undefined = agrégat combiné, comportement d'avant). Résolu vers une clé composite `${key}__over`/
+  // `${key}__under` dans `results` (voir fetchAll ci-dessous et `effKey` au rendu).
+  const [ouSel, setOuSel] = useState({});
+  const effKey = key => (ouSel[key] ? `${key}__${ouSel[key]}` : key);
   const THRESHOLD_PICKER_WIDTH = 128;
   const toggleThresholdPicker = (key, cellEl) => {
     if (thresholdPickerFor === key) { setThresholdPickerFor(null); return; }
@@ -305,8 +316,14 @@ export function NearMissPanelWidget({ bottom = 20 } = {}) {
 
   const fetchAll = () => {
     setLoading(true);
-    Promise.all(NEAR_MISS_PANEL_MARKETS.map(m =>
-      fetch(`/api/analysis/threshold-optimizer?${m.params}`).then(r => r.json()).then(d => [m.key, d]).catch(() => [m.key, null])
+    // Marchés `ou:true` : on récupère aussi les 2 variantes over/under en une fois (clés composites
+    // `${key}__over`/`${key}__under`) — évite un aller-retour réseau supplémentaire au clic sur le
+    // toggle O/U, et permet au rafraîchissement 5min de garder la vue filtrée à jour si elle est active.
+    const jobs = NEAR_MISS_PANEL_MARKETS.flatMap(m => m.ou
+      ? [[m.key, m.params], [`${m.key}__over`, `${m.params}&direction=over`], [`${m.key}__under`, `${m.params}&direction=under`]]
+      : [[m.key, m.params]]);
+    Promise.all(jobs.map(([key, params]) =>
+      fetch(`/api/analysis/threshold-optimizer?${params}`).then(r => r.json()).then(d => [key, d]).catch(() => [key, null])
     )).then(pairs => {
       setResults(Object.fromEntries(pairs));
       setLastFetched(new Date());
@@ -404,7 +421,7 @@ export function NearMissPanelWidget({ bottom = 20 } = {}) {
         </thead>
         <tbody>
           {NEAR_MISS_PANEL_MARKETS.filter(m => m.domain === domain).map(m => {
-            const d = results[m.key];
+            const d = results[effKey(m.key)];
             const rec = d?.recommendedThreshold;
             // floored (28 août 2026) — props WNBA pts/reb/ast/tpm : le log near-miss ne contient que
             // des candidats SOUS le plancher d'alerte déjà actif (voir _analyzeThresholdRows côté
@@ -431,7 +448,31 @@ export function NearMissPanelWidget({ bottom = 20 } = {}) {
               : thresholdOverride || primary;
             return (
               <tr key={m.key}>
-                <td style={{ ...td, color: 'var(--text)', fontWeight: 600 }}>{m.label}</td>
+                <td style={{ ...td, color: 'var(--text)', fontWeight: 600 }}>
+                  {m.label}
+                  {m.ou && (
+                    <div style={{ display: 'flex', gap: 3, marginTop: 3 }}>
+                      {['over', 'under'].map(dir => {
+                        const active = ouSel[m.key] === dir;
+                        return (
+                          <button
+                            key={dir}
+                            onClick={() => setOuSel(prev => ({ ...prev, [m.key]: active ? undefined : dir }))}
+                            title={dir === 'over' ? 'Filtrer sur les cas Over uniquement' : 'Filtrer sur les cas Under uniquement'}
+                            style={{
+                              fontSize: 8, fontWeight: 700, padding: '1px 4px', borderRadius: 3, cursor: 'pointer',
+                              border: `1px solid ${active ? '#60a5fa' : 'rgba(255,255,255,0.12)'}`,
+                              background: active ? 'rgba(96,165,250,0.2)' : 'transparent',
+                              color: active ? '#60a5fa' : 'var(--text-dim)',
+                            }}
+                          >
+                            {dir === 'over' ? 'O' : 'U'}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </td>
                 {!primary ? (
                   <td style={{ ...td, color: 'var(--text-dim)' }} colSpan={5}>
                     {d ? `Pas assez de données (≥30 cas requis, ${d.totalResolved} résolus au total)` : (loading ? '…' : '—')}
@@ -508,7 +549,7 @@ export function NearMissPanelWidget({ bottom = 20 } = {}) {
           `helpOpen`/`helpPos` restent posés pour ne pas avoir à recâbler le positionnement quand la
           légende sera reconstruite, mais rien ne s'affiche pour l'instant. */}
       {oddsPickerFor && oddsPickerPos && createPortal((() => {
-        const d = results[oddsPickerFor];
+        const d = results[effKey(oddsPickerFor)];
         const bucketLo = selectedOdds[oddsPickerFor];
         // Combine avec le seuil déjà choisi sur cette ligne, s'il y en a un (29 août 2026).
         const thresholdSelForOdds = selectedThreshold[oddsPickerFor];
@@ -549,7 +590,7 @@ export function NearMissPanelWidget({ bottom = 20 } = {}) {
         );
       })(), document.body)}
       {thresholdPickerFor && thresholdPickerPos && createPortal((() => {
-        const d = results[thresholdPickerFor];
+        const d = results[effKey(thresholdPickerFor)];
         const sel = selectedThreshold[thresholdPickerFor];
         return (
           <div
