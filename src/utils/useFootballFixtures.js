@@ -52,6 +52,16 @@ async function fetchAndApply() {
   notify();
 }
 
+// Sondage périodique (3 septembre 2026) — avant ce fix, chaque source de fixtures live de ce fichier
+// ne se chargeait qu'UNE FOIS par session de navigateur (singleton module-level, jamais rafraîchi
+// tant que la page n'est pas rechargée entièrement) : un match passant "programmé" → "en direct"
+// restait figé indéfiniment dans un onglet resté ouvert, contrairement au NBA/WNBA (déjà sondés en
+// direct). Cas réel : Real Sociedad-Celta affiché encore "21:00" alors que le match était déjà en
+// cours depuis longtemps. Un seul minuteur partagé par source (pas un par composant abonné),
+// démarré au 1er abonné et arrêté au dernier — même intervalle que le sondage 60s déjà utilisé côté
+// Carte du Monde pour la même raison.
+const LIVE_FIXTURES_POLL_MS = 60_000;
+let _cdmPollTimer = null;
 function useCdmFixtures() {
   const [fixtures, setFixtures] = useState(_cdmFixtures || []);
   const [loaded, setLoaded] = useState(_cdmLoaded);
@@ -61,7 +71,11 @@ function useCdmFixtures() {
     _listeners.add(update);
     if (_cdmFixtures) { setFixtures(_cdmFixtures); setLoaded(true); }
     else if (!_fetching) fetchAndApply();
-    return () => _listeners.delete(update);
+    if (!_cdmPollTimer) _cdmPollTimer = setInterval(fetchAndApply, LIVE_FIXTURES_POLL_MS);
+    return () => {
+      _listeners.delete(update);
+      if (_listeners.size === 0 && _cdmPollTimer) { clearInterval(_cdmPollTimer); _cdmPollTimer = null; }
+    };
   }, []);
 
   return { fixtures, loaded };
@@ -125,6 +139,7 @@ async function fetchAndApplyFd() {
   notifyFd();
 }
 
+let _fdPollTimer = null;
 function useFdFixtures() {
   const [fixtures, setFixtures] = useState(_fdFixtures || []);
 
@@ -132,7 +147,11 @@ function useFdFixtures() {
     _fdListeners.add(setFixtures);
     if (_fdFixtures) setFixtures(_fdFixtures);
     else if (!_fdFetching) fetchAndApplyFd();
-    return () => _fdListeners.delete(setFixtures);
+    if (!_fdPollTimer) _fdPollTimer = setInterval(fetchAndApplyFd, LIVE_FIXTURES_POLL_MS);
+    return () => {
+      _fdListeners.delete(setFixtures);
+      if (_fdListeners.size === 0 && _fdPollTimer) { clearInterval(_fdPollTimer); _fdPollTimer = null; }
+    };
   }, []);
 
   return fixtures;
@@ -178,6 +197,7 @@ async function fetchAndApplyBr() {
   notifyBr();
 }
 
+let _brPollTimer = null;
 function useBresilFixtures() {
   const [fixtures, setFixtures] = useState(_brFixtures || []);
 
@@ -185,7 +205,11 @@ function useBresilFixtures() {
     _brListeners.add(setFixtures);
     if (_brFixtures) setFixtures(_brFixtures);
     else if (!_brFetching) fetchAndApplyBr();
-    return () => _brListeners.delete(setFixtures);
+    if (!_brPollTimer) _brPollTimer = setInterval(fetchAndApplyBr, LIVE_FIXTURES_POLL_MS);
+    return () => {
+      _brListeners.delete(setFixtures);
+      if (_brListeners.size === 0 && _brPollTimer) { clearInterval(_brPollTimer); _brPollTimer = null; }
+    };
   }, []);
 
   return fixtures;
@@ -214,6 +238,7 @@ function makeEuCupFixturesHook(compKey) {
 
   let fixtures = null;
   let fetching = false;
+  let pollTimer = null;
   const listeners = new Set();
   const notify = () => listeners.forEach(fn => fn(fixtures));
 
@@ -236,7 +261,11 @@ function makeEuCupFixturesHook(compKey) {
       listeners.add(setState);
       if (fixtures) setState(fixtures);
       else if (!fetching) fetchAndApply();
-      return () => listeners.delete(setState);
+      if (!pollTimer) pollTimer = setInterval(fetchAndApply, LIVE_FIXTURES_POLL_MS);
+      return () => {
+        listeners.delete(setState);
+        if (listeners.size === 0 && pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+      };
     }, []);
     return state;
   };

@@ -68,7 +68,7 @@ function countAccepted(periodDays, sportFilter, typeFilter, model = 'new') {
   const endCutoff = model === 'old' ? MODEL_SPLIT_MS : Infinity;
   // model === 'all' → rawCutoff + endCutoff=Infinity → tout afficher
   const inPeriod = date => { const t = new Date(date).getTime(); return !isNaN(t) && t >= cutoff && t < endCutoff; };
-  const EU = ['euroleague','wnba','acb','lnb','bbl','legaa'];
+  const EU = ['euroleague','wnba','acb','lnb','bbl','legaa','nbl'];
 
   const props = JSON.parse(localStorage.getItem('nba_prop_alerts') || '[]')
     .filter(a => a.status === 'accepted' && inPeriod(a.fixtureDate))
@@ -156,7 +156,7 @@ function mapLedgerEntry(a) {
   };
   switch (a.type) {
     case 'player_prop':
-      return { ...base, type: 'prop', sport: ['euroleague','wnba','acb','lnb','bbl','legaa'].includes(a.league) ? a.league : 'nba',
+      return { ...base, type: 'prop', sport: ['euroleague','wnba','acb','lnb','bbl','legaa','nbl'].includes(a.league) ? a.league : 'nba',
         label: a.player, sub: `${a.direction === 'over' ? '▲ Over' : '▼ Under'} ${a.line} ${(a.stat || '').toUpperCase()}`,
         actual: a.actualStat, stat: a.stat, direction: a.direction, line: a.line, league: a.league || 'nba' };
     case 'game_total':
@@ -437,7 +437,7 @@ function calibrationBands(bets) {
 // le win rate réel cumulatif "probabilité affichée >= seuil" — permet de voir à
 // partir de quel % affiché les alertes deviennent vraiment fiables.
 
-const EU_BASKET_LEAGUES = new Set(['acb', 'lnb', 'bbl', 'legaa', 'euroleague']);
+const EU_BASKET_LEAGUES = new Set(['acb', 'lnb', 'bbl', 'legaa', 'euroleague', 'nbl']);
 const CALIB_THRESHOLDS = [55, 60, 65, 70, 75, 80, 85, 90];
 
 function categoryKey(b) {
@@ -1113,7 +1113,7 @@ const TIMELINE = [
   { key: '10j',  label: '10j',  days: 10       },
 ];
 const SPORT_FILTERS = [{ key: 'all', label: 'Tous' }, { key: 'basket', label: 'Basket' }, { key: 'foot', label: 'Foot' }];
-const BASKET_LEAGUES = new Set(['nba','wnba','euroleague','acb','lnb','bbl','legaa']);
+const BASKET_LEAGUES = new Set(['nba','wnba','euroleague','acb','lnb','bbl','legaa','nbl']);
 const COMP_FILTERS  = [
   { key: 'nba',        label: 'NBA',            sport: 'basket' },
   { key: 'wnba',       label: 'WNBA',           sport: 'basket' },
@@ -1122,6 +1122,7 @@ const COMP_FILTERS  = [
   { key: 'lnb',        label: 'LNB',             sport: 'basket' },
   { key: 'bbl',        label: 'BBL',             sport: 'basket' },
   { key: 'legaa',      label: 'Lega A',          sport: 'basket' },
+  { key: 'nbl',        label: 'NBL',             sport: 'basket' },
   { key: 'ligue1',     label: 'Ligue 1',         sport: 'foot'   },
   { key: 'laliga',     label: 'La Liga',          sport: 'foot'   },
   { key: 'bundesliga', label: 'Bundesliga',       sport: 'foot'   },
@@ -1417,6 +1418,20 @@ export default function BacktestingPage() {
 
   // Rechargement quand les filtres période/modèle changent ou après suppression
   useEffect(() => { loadData(period, model); }, [period, model, reloadKey]);
+
+  // Fix 7 septembre 2026 — bk500RealPL (P&L "mises réelles") lit localStorage via loadBankrollState()
+  // dans un useMemo gated sur [model, reloadKey] : une correction faite ailleurs (autre onglet, patch
+  // direct backend) arrive bien en localStorage via l'event SSE 'cloud_synced' (App.jsx), mais sans
+  // changer `model`/`reloadKey` ce useMemo ne recalculait jamais — la carte P&L restait figée sur la
+  // valeur du montage de la page (cas réel : correction du départ bankroll 820€→500€ appliquée en
+  // base, page ouverte affichant encore l'ancien P&L jusqu'à un rechargement complet). `reloadKey` sert
+  // déjà de "recompute tout" ailleurs sur cette page — le bumper aussi sur ce signal couvre ce cas sans
+  // toucher au mécanisme existant.
+  useEffect(() => {
+    const onCloudSync = () => setReloadKey(k => k + 1);
+    window.addEventListener('cloud_synced', onCloudSync);
+    return () => window.removeEventListener('cloud_synced', onCloudSync);
+  }, []);
 
   const handleRefresh = async () => {
     setRefreshing(true);

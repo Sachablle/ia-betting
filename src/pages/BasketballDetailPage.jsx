@@ -372,13 +372,16 @@ const WNBA_AVG_GAME_TOTAL  = 174.0;  // total combiné — calibré 29 mai 2026
 const WNBA_SCALE = LEAGUE_AVG_PTS_ALLOWED / WNBA_AVG_PTS_ALLOWED; // ≈ 1.278 (normalise vers NBA)
 
 // Championnats EU 2025-26 — moyennes scoring saison régulière
+// NBL ajoutée le 1er septembre 2026 — vraie moyenne calculée sur les 179 matchs 2025-2026 joués
+// (91,6 pts/équipe, 183,2 pts/match total), pas une estimation à la louche.
 const EU_LEAGUE_CONST = {
   acb:   { avg: 83.0, total: 166.0 },
   lnb:   { avg: 79.0, total: 158.0 },
   bbl:   { avg: 82.0, total: 164.0 },
   legaa: { avg: 80.0, total: 160.0 },
+  nbl:   { avg: 91.6, total: 183.2 },
 };
-const EURO_LEAGUES_IDS = ['acb', 'lnb', 'bbl', 'legaa'];
+const EURO_LEAGUES_IDS = ['acb', 'lnb', 'bbl', 'legaa', 'nbl'];
 const getEuroConst = league => EU_LEAGUE_CONST[league] || null;
 
 // api-sports.io ne renvoie pas toujours les noms EU dans le même ordre (Prénom Nom vs Nom Prénom)
@@ -404,7 +407,7 @@ const PROP_CONF_BANDS = {
     tpm: { high: 80, mid: 70 },
   },
 };
-const EU_PROP_LEAGUES = new Set(['acb', 'lnb', 'bbl', 'legaa', 'euroleague']);
+const EU_PROP_LEAGUES = new Set(['acb', 'lnb', 'bbl', 'legaa', 'euroleague', 'nbl']);
 // Vert/cyan/ambre — mêmes couleurs que les badges .bc-edge-badge.high/.mid/.low (PlaceBetPage/index.css)
 function propConfColor(stat, league, pct) {
   const bands = (EU_PROP_LEAGUES.has(league) ? PROP_CONF_BANDS.eu : PROP_CONF_BANDS.nba_short)[stat];
@@ -1793,7 +1796,7 @@ function PropsSection({ fixture, homePlayers, awayPlayers, rosterLoading, isComp
   // dans injuryData pour réutiliser la redistribution déjà existante (même mécanisme que
   // NBA/WNBA, il manquait juste ce signal côté EU faute de flux blessures type RotoWire).
   useEffect(() => {
-    const EU_OUT_BENCH_LEAGUES = ['acb', 'lnb', 'bbl'];
+    const EU_OUT_BENCH_LEAGUES = ['acb', 'lnb', 'bbl', 'nbl'];
     if (isCompleted || !EU_OUT_BENCH_LEAGUES.includes(fixture.league) || !fixture.home?.id || !fixture.away?.id) return;
     Promise.all([
       cachedFetch(`/api/euro/${fixture.league}/team-lineup/${fixture.home.id}`, 5 * 60_000).catch(() => null),
@@ -1814,7 +1817,7 @@ function PropsSection({ fixture, homePlayers, awayPlayers, rosterLoading, isComp
   // Fetch team schedules (pace / défense / repos)
   useEffect(() => {
     if (isCompleted) return;
-    const EURO_L = ['acb','lnb','bbl','legaa'];
+    const EURO_L = ['acb','lnb','bbl','legaa','nbl'];
     if (EURO_L.includes(fixture.league)) {
       Promise.all([
         cachedFetch(`/api/euro/${fixture.league}/teamschedule/${fixture.home.id}`, 30 * 60_000).catch(() => ({ games: [] })),
@@ -1855,7 +1858,7 @@ function PropsSection({ fixture, homePlayers, awayPlayers, rosterLoading, isComp
     if (!players?.length) return;
     const toFetch = players.slice(0, 15).filter(p => p.id && !(p.id in gamelogs));
     if (!toFetch.length) return;
-    const EURO = ['acb','lnb','bbl','legaa'];
+    const EURO = ['acb','lnb','bbl','legaa','nbl'];
     const endpoint = fixture.league === 'euroleague'
       ? (id) => `/api/euroleague/playergamelog/${id}`
       : EURO.includes(fixture.league)
@@ -2073,7 +2076,7 @@ function PropsSection({ fixture, homePlayers, awayPlayers, rosterLoading, isComp
       } catch {}
       // Pas de cache local → on appelle l'API qui sert le snapshot backend
     }
-    const EURO_BBALL_LEAGUES = ['acb', 'lnb', 'bbl', 'legaa'];
+    const EURO_BBALL_LEAGUES = ['acb', 'lnb', 'bbl', 'legaa', 'nbl'];
     const league = fixture.league === 'euroleague' ? 'euroleague'
       : fixture.league === 'wnba' ? 'wnba'
       : EURO_BBALL_LEAGUES.includes(fixture.league) ? fixture.league
@@ -2255,7 +2258,7 @@ function PropsSection({ fixture, homePlayers, awayPlayers, rosterLoading, isComp
   useEffect(() => {
     if (!isCompleted) return;
     setBsLoading(true);
-    const EURO_L2 = ['acb','lnb','bbl','legaa'];
+    const EURO_L2 = ['acb','lnb','bbl','legaa','nbl'];
     const bsBase = EURO_L2.includes(fixture.league) ? `/api/euro/${fixture.league}/boxscore` : fixture.league === 'euroleague' ? '/api/euroleague/boxscore' : fixture.league === 'wnba' ? '/api/wnba/boxscore' : '/api/nba/boxscore';
     const isEuroLeagueBS = EURO_L2.includes(fixture.league) || fixture.league === 'euroleague';
     const bsH = isEuroLeagueBS ? fixture.home.name : fixture.home.short;
@@ -2769,7 +2772,7 @@ function OddsCard({ odds, home, away, league, homePlayers, awayPlayers, onRefres
     setPropsLoading(true);
     const _propsFetchStart = force ? Date.now() : null;
     const propsKey = `eu_props_${fixture?.id}`;
-    const isEU = ['acb','lnb','bbl','legaa','euroleague'].includes(league);
+    const isEU = ['acb','lnb','bbl','legaa','euroleague','nbl'].includes(league);
     const isMatchDone = fixture?.status === 'STATUS_FINAL';
 
     // EU + terminé + pas de refresh forcé → servir depuis localStorage si dispo
@@ -3023,7 +3026,7 @@ function OddsCard({ odds, home, away, league, homePlayers, awayPlayers, onRefres
           return hScore >= aScore ? 'home' : 'away';
         };
 
-        const isEuroLeagueProps = ['acb','lnb','bbl','legaa','euroleague'].includes(league);
+        const isEuroLeagueProps = ['acb','lnb','bbl','legaa','euroleague','nbl'].includes(league);
         const entries = Object.values(mergedMap)
           .filter(([name]) => {
             if (!playerProps?.found) return true;
@@ -3319,8 +3322,8 @@ export default function BasketballDetailPage() {
   const [searchParams] = useSearchParams();
   const fromAlert = searchParams.get('props') === '1';
   const isWNBA    = searchParams.get('league') === 'wnba';
-  const euroLeague = searchParams.get('league'); // 'acb' | 'lnb' | 'bbl' | 'legaa' | null
-  const isEuro    = ['acb','lnb','bbl','legaa'].includes(euroLeague);
+  const euroLeague = searchParams.get('league'); // 'acb' | 'lnb' | 'bbl' | 'legaa' | 'nbl' | null
+  const isEuro    = ['acb','lnb','bbl','legaa','nbl'].includes(euroLeague);
   const propsSectionRef = useRef(null);
   const rankSlotRef = useRef(null);
   const dropRef = useRef(null);
@@ -3538,7 +3541,7 @@ export default function BasketballDetailPage() {
 
   // ACB/LNB/BBL uniquement : un joueur retiré au moment d'Enregistrer doit être qualifié
   // OUT (redistribution complète) ou BENCH (toujours sur le terrain, pas de redistribution)
-  const EU_OUT_BENCH_LEAGUES = ['acb', 'lnb', 'bbl'];
+  const EU_OUT_BENCH_LEAGUES = ['acb', 'lnb', 'bbl', 'nbl'];
   const supportsOutBench = EU_OUT_BENCH_LEAGUES.includes(euroLeague);
   const saveEuroLineup = (outPlayersBySide = { home: [], away: [] }) => {
     if (!fixture?.home?.id || !fixture?.away?.id) return;

@@ -1012,6 +1012,44 @@ export default function UtilisationPage() {
         </div>
 
         <div className="util-subsection">
+          <h3 className="util-subsection-title">Seuils recalibrés par championnat — Big Five &amp; Brésil (31 août 2026)</h3>
+          <p className="util-intro">
+            Le tableau ci-dessus reste le seuil <strong>global</strong>, partagé par défaut par toutes les compétitions (CDM, coupes d'Europe compris). Sur l'historique near-miss résolu, deux groupes de championnats se sont révélés avoir des marchés rentables très différents des seuils globaux — et différents l'un de l'autre. Recalibré marché par marché (voire sens par sens), pas juste en abaissant tout en bloc.
+          </p>
+          <table className="util-table" style={{ marginTop: '0.5rem' }}>
+            <thead><tr><th>Championnat</th><th>Marché</th><th>Seuil global</th><th>Nouveau seuil</th></tr></thead>
+            <tbody>
+              <tr><td rowSpan={3}><strong>Big Five</strong><br />(L1/PL/Liga/SerieA/Bundes)</td><td>BTTS</td><td>≥ 70% · 1,60</td><td>≥ 58% · 1,50</td></tr>
+              <tr><td>Total "Plus de 1,5" (ligne 2,5 inchangée)</td><td>≥ 65% · 1,30</td><td>≥ 60% · 1,30</td></tr>
+              <tr><td>DC &amp; Over 1,5 (1X et X2)</td><td>≥ 55% · 1,45</td><td>≥ 45% · 1,50</td></tr>
+              <tr><td rowSpan={2}><strong>Brésil</strong></td><td>BTTS</td><td>≥ 70% · 1,60</td><td>≥ 45% · 1,40</td></tr>
+              <tr><td>DC &amp; BTTS "1X" (X2 inchangé)</td><td>≥ 50% · 1,45</td><td>≥ 20% · 1,40</td></tr>
+            </tbody>
+          </table>
+          <p className="util-intro" style={{ marginTop: '0.5rem' }}>
+            <strong>Constat inversé entre les deux groupes</strong> : sur le Big Five, Total/DC&amp;Over sont les marchés rentables (bookmakers efficients, l'edge se cache dans les paris "quasi-évidents" à cote basse) — BTTS/Résultat/DC&amp;BTTS n'ont jamais montré de signal fiable, même à seuil bas. Sur le Brésil, c'est l'inverse : BTTS/DC&amp;BTTS/Résultat-Nul rentables, Total/DC&amp;Over plats ou négatifs. Cohérent avec des bookmakers qui se trompent différemment selon la ligue couverte.
+          </p>
+          <p className="util-intro" style={{ marginTop: '0.4rem' }}>
+            <strong>Pourquoi des seuils aussi bas ?</strong> Un plancher de proba bas n'est pas "on parie à l'aveugle" — c'est un filtre minimum, pas la mesure de rentabilité. Ce qui compte, c'est le taux de réussite <em>réel</em> observé sur tous les candidats qui passent ce filtre, comparé à ce que la cote minimum exige pour être rentable (ex. cote 1,72 → il faut gagner 58% du temps pour être à l'équilibre). Sur ces zones, le taux réel observé dépasse largement ce seuil de rentabilité (BTTS Big Five : 64% de réussite réelle pour un plancher modèle à 45% — le modèle sous-estime, la cote compense).
+          </p>
+          <p className="util-intro" style={{ marginTop: '0.4rem' }}>
+            <strong>Limite connue</strong> : échantillons de 15 à 30 candidats résolus selon le marché — plus fournis que rien, mais nettement plus minces que la recalibration WNBA du 21 août (2005 candidats). Sensible au bruit et à un changement de tarification des bookmakers. Deux marchés initialement estimés positifs en agrégé (Résultat/DC&amp;BTTS Big Five, DC&amp;BTTS "X2" Brésil) se sont révélés instables une fois vérifiés cas par cas — laissés au seuil global plutôt qu'activés sur un signal agrégé trompeur. Seuils codés en dur (<code>FB_BIG5_*</code> / <code>FB_BRESIL_*</code> dans <code>server.js</code>), pas de mécanisme de rollback automatique — surveillance manuelle via le near-miss (<code>GET /api/analysis/near-miss-football</code>) le mois prochain.
+          </p>
+          <p className="util-intro" style={{ marginTop: '0.4rem' }}>
+            <strong>Ajustements du 1er septembre 2026</strong> — deux retours utilisateur en conditions réelles :
+          </p>
+          <p className="util-intro" style={{ marginTop: '0.3rem' }}>
+            <strong>Résultat "Nul" Brésil retiré</strong> (était ≥20%/1,30) : le modèle ne dépasse quasiment jamais 25% sur un Nul (structurel, pas propre au Brésil) — ce plancher filtrait trop peu et déclenchait une alerte quasi à chaque match. Aucun seuil intermédiaire viable trouvé (≥25% tombe à 6 cas/-48% ROI) — revenu au seuil global, comme domicile/extérieur.
+          </p>
+          <p className="util-intro" style={{ marginTop: '0.3rem' }}>
+            <strong>Total "Plus de 1,5" Big Five, cote remontée à 1,30</strong> (était 1,10) : sur l'historique frais (le marché a repris vie après le fix OU_LINES du 31 août, voir plus bas), même 1,10 est repassé négatif (-4% ROI, n=27) — 1,30 reste négatif aussi (-9%, n=6) mais réduit fortement le volume. Décision assumée par l'utilisateur malgré des données pas encore favorables, à resurveiller.
+          </p>
+          <p className="util-intro" style={{ marginTop: '0.3rem' }}>
+            <strong>BTTS Big Five et Brésil resserrés le 4 septembre 2026</strong> — nouvel outil de calibration interactif (winrate cumulé point de probabilité par point, sans chevauchement entre les %) construit pour trouver précisément où la courbe décroche plutôt qu'un seuil deviné à l'aveugle. Big Five : 45%→58% (41 cas à 45% pour 58,5% de réussite réelle, contre 9 cas à 58% pour 77,8% — le point de coupure le plus haut avec assez de volume pour être défendable). Brésil : 25%→45% (le plancher de 25% n'avait en fait jamais été atteint par un seul cas résolu depuis sa création — 45% est le premier seuil qui corresponde à un vrai comportement observé, 65,4% de réussite sur 26 cas).
+          </p>
+        </div>
+
+        <div className="util-subsection">
           <h3 className="util-subsection-title">Affinements du modèle (25 juin 2026)</h3>
           <p className="util-intro">
             <strong>Corrélation Dixon-Coles</strong> : la Poisson "pure" traite les buts domicile/extérieur comme deux dés totalement indépendants, ce qui sous-estime légèrement les scores serrés (0-0, 1-0, 1-1) par rapport à la réalité (une équipe qui mène gère son avance, ce qui referme le match). Un petit correctif statistique (ρ=0.10, valeur de référence académique, pas encore calibrée sur nos propres résultats) rééquilibre ça sur BTTS/Over-Under/Résultat à la fois, pour rester cohérent entre les trois.

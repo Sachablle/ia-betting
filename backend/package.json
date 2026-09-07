@@ -5,7 +5,7 @@
   "scripts": {
     "start": "UV_THREADPOOL_SIZE=16 node server.js",
     "predev": "lsof -ti:3001 | xargs kill -9 2>/dev/null || true",
-    "dev": "UV_THREADPOOL_SIZE=16 node --watch-path=server.js --watch-path=telegram.js --watch-path=compute.js --watch-path=computeFootball.js --watch-path=computeOutrights.js server.js"
+    "dev": "UV_THREADPOOL_SIZE=16 nodemon server.js"
   },
   "dependencies": {
     "cors": "^2.8.5",
@@ -14,5 +14,8 @@
     "mongodb": "^7.4.0",
     "node-fetch": "^3.3.2",
     "playwright": "^1.61.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.14"
   }
 }

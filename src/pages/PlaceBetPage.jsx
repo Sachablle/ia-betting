@@ -58,7 +58,7 @@ const _PB_ESPN_WNBA = {
   'Phoenix Mercury':11,'Portland Fire':132052,'Seattle Storm':14,
   'Toronto Tempo':131935,'Washington Mystics':16,
 };
-const _EU_BBALL = new Set(['acb','lnb','bbl','legaa','euroleague']);
+const _EU_BBALL = new Set(['acb','lnb','bbl','legaa','euroleague','nbl']);
 const _prefetchedPB = new Set();
 function _prefetchBballCard(homeTeam, awayTeam, league) {
   const key = `${league}__${homeTeam}__${awayTeam}`;
@@ -108,7 +108,7 @@ async function resolveCompletedBets(alerts, save) {
     if (!home || !away) continue;
     try {
       const league = matchAlerts[0]?.league;
-      const EU_LEAGUES = ['acb','lnb','bbl','legaa'];
+      const EU_LEAGUES = ['acb','lnb','bbl','legaa','nbl'];
       const bsUrl = league === 'euroleague'
         ? `/api/euroleague/boxscore?date=${encodeURIComponent(date)}&home=${home}&away=${away}`
         : league === 'wnba'
@@ -232,7 +232,7 @@ function resolveMatchId({ ids, fixture, fixtureDate, homeTeam, awayTeam, eventId
   // WNBA — l'ID ESPN est suffisant ; la page le charge via le scoreboard live
   if (league === 'wnba' && eventId) return `${eventId}?league=wnba`;
   // EU basket (ACB/BBL/LegaA/LNB) — eventId = api-sports game ID
-  const EU_BBALL = ['acb', 'lnb', 'bbl', 'legaa'];
+  const EU_BBALL = ['acb', 'lnb', 'bbl', 'legaa', 'nbl'];
   if (EU_BBALL.includes(league) && eventId) return `${eventId}?league=${league}`;
   // NBA — ID ESPN direct : la page résout alors fixture.id = ID ESPN, exactement comme via
   // le chemin de navigation normal (Sport → Match, qui clique sur la ligne du scoreboard live).
@@ -295,7 +295,7 @@ function ResultCard({ group, onDismiss }) {
 
       <div className="bc-header">
         <span className="bc-flag">🏀</span>
-        <span className="bc-league">{group.league === 'wnba' ? 'WNBA Props' : group.league === 'euroleague' ? 'EL Props' : group.league === 'acb' ? 'ACB Props' : group.league === 'bbl' ? 'BBL Props' : group.league === 'legaa' ? 'Lega A Props' : group.league === 'lnb' ? 'LNB Props' : 'NBA Props'} · {group.fixture}</span>
+        <span className="bc-league">{group.league === 'wnba' ? 'WNBA Props' : group.league === 'euroleague' ? 'EL Props' : group.league === 'acb' ? 'ACB Props' : group.league === 'bbl' ? 'BBL Props' : group.league === 'legaa' ? 'Lega A Props' : group.league === 'lnb' ? 'LNB Props' : group.league === 'nbl' ? 'NBL Props' : 'NBA Props'} · {group.fixture}</span>
         <span style={{
           marginLeft: 'auto', marginRight: 24, fontSize: 11, fontWeight: 800, padding: '2px 9px', borderRadius: 10,
           color: accent, background: accentBg,
@@ -520,7 +520,7 @@ function CompactAcceptedTotalCard({ alert, onDismiss, variant = 'accepted' }) {
 }
 
 function GameTotalCard({ alert, onAccept, onReject, onDismiss }) {
-  const { id, home, away, homeShort, awayShort, date, estimated, line, edge, direction, prob, status, league, unibetOdds, betclicOdds, winamaxOdds, eventId, keyPlayerMatchCorrelation } = alert;
+  const { id, home, away, homeShort, awayShort, date, estimated, line, edge, direction, prob, status, league, pinnacleOdds, unibetOdds, betclicOdds, winamaxOdds, eventId, keyPlayerMatchCorrelation } = alert;
   const navigate   = useNavigate();
   const isPending  = status === 'pending';
   const isAccepted = status === 'accepted';
@@ -601,9 +601,10 @@ function GameTotalCard({ alert, onAccept, onReject, onDismiss }) {
         </div>
       </div>
 
-      {(unibetOdds || betclicOdds) && (
+      {(pinnacleOdds || unibetOdds || betclicOdds) && (
         <div style={{ display: 'flex', gap: '0.5rem' }}>
           {[
+            { label: 'Pinnacle', odds: pinnacleOdds, color: 'var(--text)' },
             { label: 'Unibet',  odds: unibetOdds,  color: '#1db954' },
             { label: 'Betclic', odds: betclicOdds, color: '#e0292e' },
           ].filter(b => b.odds).map(({ label, odds, color }) => (
@@ -947,7 +948,7 @@ function ResultTeamLogo({ short, name, league, size = 22 }) {
 }
 
 function BasketballResultCard({ alert, onAccept, onReject, onDismiss }) {
-  const { id, home, away, homeShort, awayShort, date, teamName, teamShort, probability, edge, odds, bookmaker, status, league, eventId, matchCorrelation, keyPlayerMatchCorrelation, opposingPositionWarning } = alert;
+  const { id, home, away, homeShort, awayShort, date, teamName, teamShort, probability, edge, odds, bookmaker, pinnacleOdds, status, league, eventId, matchCorrelation, keyPlayerMatchCorrelation, opposingPositionWarning } = alert;
   const navigate   = useNavigate();
   const isPending  = status === 'pending';
   const isAccepted = status === 'accepted';
@@ -1025,12 +1026,20 @@ function BasketballResultCard({ alert, onAccept, onReject, onDismiss }) {
           <span className="bc-prob-pct" style={{ color: '#60a5fa', fontSize: 10 }}>{timeLabel}</span>
         </div>
       </div>
-      {odds && (
-        <div style={{ marginBottom: isPending ? '0.4rem' : 0 }}>
-          <div style={{ textAlign: 'center', background: 'rgba(255,255,255,0.04)', borderRadius: 6, padding: '0.25rem' }}>
-            <div style={{ fontSize: 9, color: 'var(--text-dim)', marginBottom: 2, textTransform: 'capitalize' }}>{bookmaker}</div>
-            <div style={{ fontSize: 13, fontWeight: 700, color: bkColor, fontVariantNumeric: 'tabular-nums' }}>{odds.toFixed(2)}</div>
-          </div>
+      {(odds || pinnacleOdds) && (
+        <div style={{ marginBottom: isPending ? '0.4rem' : 0, display: 'flex', gap: '0.5rem' }}>
+          {odds && (
+            <div style={{ flex: 1, textAlign: 'center', background: 'rgba(255,255,255,0.04)', borderRadius: 6, padding: '0.25rem' }}>
+              <div style={{ fontSize: 9, color: 'var(--text-dim)', marginBottom: 2, textTransform: 'capitalize' }}>{bookmaker}</div>
+              <div style={{ fontSize: 13, fontWeight: 700, color: bkColor, fontVariantNumeric: 'tabular-nums' }}>{odds.toFixed(2)}</div>
+            </div>
+          )}
+          {pinnacleOdds && (
+            <div style={{ flex: 1, textAlign: 'center', background: 'rgba(255,255,255,0.04)', borderRadius: 6, padding: '0.25rem' }}>
+              <div style={{ fontSize: 9, color: 'var(--text-dim)', marginBottom: 2 }}>Pinnacle</div>
+              <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)', fontVariantNumeric: 'tabular-nums' }}>{pinnacleOdds.toFixed(2)}</div>
+            </div>
+          )}
         </div>
       )}
       {isPending ? (
@@ -1095,7 +1104,7 @@ const PROP_BADGE_BANDS = {
     tpm: { high: 68, mid: 61 },
   },
 };
-const EU_PROP_LEAGUES = new Set(['acb', 'lnb', 'bbl', 'legaa', 'euroleague']);
+const EU_PROP_LEAGUES = new Set(['acb', 'lnb', 'bbl', 'legaa', 'euroleague', 'nbl']);
 function propBadgeClass(stat, league, prob) {
   const bands = (EU_PROP_LEAGUES.has(league) ? PROP_BADGE_BANDS.eu : PROP_BADGE_BANDS.nba_short)[stat];
   if (!bands) return prob >= 85 ? 'high' : 'mid';
@@ -1106,7 +1115,7 @@ function propBadgeClass(stat, league, prob) {
 
 function PropAlertCard({ group, onDismiss, onAccept, onReject }) {
   const { player, fixtureDate, stats, maxProb, ids, status, injury, league, playerIsQ, teamHasQ } = group;
-  const leagueLabel = league === 'wnba' ? 'WNBA Props' : league === 'euroleague' ? 'EL Props' : league === 'acb' ? 'ACB Props' : league === 'bbl' ? 'BBL Props' : league === 'legaa' ? 'Lega A Props' : league === 'lnb' ? 'LNB Props' : 'NBA Props';
+  const leagueLabel = league === 'wnba' ? 'WNBA Props' : league === 'euroleague' ? 'EL Props' : league === 'acb' ? 'ACB Props' : league === 'bbl' ? 'BBL Props' : league === 'legaa' ? 'Lega A Props' : league === 'lnb' ? 'LNB Props' : league === 'nbl' ? 'NBL Props' : 'NBA Props';
   const navigate = useNavigate();
   // Historique near-miss de CETTE joueuse (29 août 2026) — combien de fois elle a passé sa ligne
   // par le passé, par stat. Petit badge ✔ discret à côté de chaque stat, pas une recommandation.
@@ -1968,7 +1977,7 @@ export default function PlaceBetPage() {
     }
 
     // ACB / LNB / BBL / Lega A — score depuis le scoreboard officiel
-    const EU_LEAGUES = new Set(['acb', 'lnb', 'bbl', 'legaa']);
+    const EU_LEAGUES = new Set(['acb', 'lnb', 'bbl', 'legaa', 'nbl']);
     const euAlerts = toResolve.filter(a => EU_LEAGUES.has(a.league));
     if (euAlerts.length) {
       const byLeague = {};

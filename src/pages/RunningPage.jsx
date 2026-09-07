@@ -26,7 +26,7 @@ const FB_LEAGUE_LABEL = { cdm: 'CDM', ligue1: 'L1', pl: 'PL', laliga: 'Liga', bu
 const IN_GAME = s => s === 'STATUS_IN_PROGRESS' || s === 'STATUS_END_PERIOD' || s === 'STATUS_HALFTIME' || s === 'STATUS_END_OF_PERIOD';
 
 // ── Prefetch au hover (même logique que BasketballMatchRow / MatchRow) ────────
-const _EU_LEAGUES = new Set(['acb','lnb','bbl','legaa','euroleague']);
+const _EU_LEAGUES = new Set(['acb','lnb','bbl','legaa','euroleague','nbl']);
 const _ESPN_NBA_RUN = {
   'Atlanta Hawks':1,'Boston Celtics':2,'New Orleans Pelicans':3,'Chicago Bulls':4,
   'Cleveland Cavaliers':5,'Dallas Mavericks':6,'Denver Nuggets':7,'Detroit Pistons':8,
@@ -249,6 +249,7 @@ function footballAlertToGroup(a) {
     homeTeam: isBtts ? a.homeTeam : a.home, awayTeam: isBtts ? a.awayTeam : a.away,
     homeShort: isBtts ? null : (a.homeShort || null),
     awayShort: isBtts ? null : (a.awayShort || null),
+    homeLogo: a.homeLogo || null, awayLogo: a.awayLogo || null,
     eventId: a.fixtureId || a.eventId || null,
     league: a.league || 'cdm',
     stats: [{
@@ -293,6 +294,7 @@ function groupByMatch(acceptedGroups) {
       homeShort: g.league === 'wnba' ? g.homeShort : normShort(g.homeShort),
       awayShort: g.league === 'wnba' ? g.awayShort : normShort(g.awayShort),
       homeTeam: g.homeTeam, awayTeam: g.awayTeam,
+      homeLogo: g.homeLogo || null, awayLogo: g.awayLogo || null,
       fixtureDate: g.fixtureDate, eventId: g.eventId, alerts: [],
       pairKey: [homeKey, awayKey].sort().join('__'),
     };
@@ -395,7 +397,7 @@ function useLiveScores(matchGroups) {
           // Les 5 grands championnats n'ont pas encore de source de scores live
           if (FB_LEAGUES.has(league)) continue;
 
-          const EU = ['acb','lnb','bbl','legaa'];
+          const EU = ['acb','lnb','bbl','legaa','nbl'];
           const url = league === 'wnba' ? '/api/wnba/scoreboard'
             : EU.includes(league) ? `/api/euro/${league}/scoreboard`
             : '/api/nba/scoreboard';
@@ -549,7 +551,7 @@ function AlertCard({ group, playerStats, onDismiss, onEditStake }) {
       }
       return;
     }
-    const EU = ['acb','lnb','bbl','legaa'];
+    const EU = ['acb','lnb','bbl','legaa','nbl'];
     const isEuroLg = EU.includes(group.league) || group.league === 'euroleague';
     // NBA/WNBA : la page de match utilise le scoreboard ESPN live (fixture.id = eventId ESPN),
     // donc on navigue directement avec cet id — exactement comme BasketballMatchRow/PlaceBetPage.
@@ -684,7 +686,7 @@ function TeamLogo({ logo, short, name, size = 40, league = 'nba' }) {
   // Signalé par l'utilisateur — alerte New York Liberty sans logo.
   const normS = league === 'wnba' ? (short || '').toLowerCase() : normShort(short).toLowerCase();
   const fallback = normS ? (
-    ['acb','lnb','bbl','legaa','euroleague'].includes(league) || FB_LEAGUES.has(league)
+    ['acb','lnb','bbl','legaa','euroleague','nbl'].includes(league) || FB_LEAGUES.has(league)
       ? null
       : league === 'wnba'
         ? `https://a.espncdn.com/i/teamlogos/wnba/500/${normS}.png`
@@ -708,7 +710,7 @@ function TeamLogo({ logo, short, name, size = 40, league = 'nba' }) {
 
 // ── Groupe par match ──────────────────────────────────────────────────────────
 function MatchGroup({ match, scoreData, liveStats, onDismiss, onEditStake }) {
-  const { homeShort, awayShort, homeTeam, awayTeam, alerts, league, fixtureDate, showDate } = match;
+  const { homeShort, awayShort, homeTeam, awayTeam, homeLogo, awayLogo, alerts, league, fixtureDate, showDate } = match;
   const hasScores = (scoreData?.homeScore > 0 || scoreData?.awayScore > 0);
   const isLive = IN_GAME(scoreData?.status)
     || (scoreData?.status === 'STATUS_SCHEDULED' && hasScores);
@@ -718,7 +720,7 @@ function MatchGroup({ match, scoreData, liveStats, onDismiss, onEditStake }) {
   useEffect(() => { if (isLive) setOpen(true); }, [isLive]);
 
   const hasScore = scoreData?.homeScore != null && scoreData?.awayScore != null;
-  const leagueLabel = { nba: 'NBA', wnba: 'WNBA', acb: 'ACB', lnb: 'LNB', bbl: 'BBL', legaa: 'Lega A', euroleague: 'EL', ...FB_LEAGUE_LABEL }[league] || league?.toUpperCase();
+  const leagueLabel = { nba: 'NBA', wnba: 'WNBA', acb: 'ACB', lnb: 'LNB', bbl: 'BBL', legaa: 'Lega A', euroleague: 'EL', nbl: 'NBL', ...FB_LEAGUE_LABEL }[league] || league?.toUpperCase();
   const matchTime = fixtureDate ? new Date(fixtureDate).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }) : '';
   // Même paire d'équipes plusieurs fois (série best-of) → date en plus de l'heure pour les distinguer
   const matchDatePrefix = showDate && fixtureDate ? `${new Date(fixtureDate).toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit' })} ` : '';
@@ -736,14 +738,14 @@ function MatchGroup({ match, scoreData, liveStats, onDismiss, onEditStake }) {
           onMouseEnter={() => _prefetchMatchData(league, homeTeam, awayTeam)}
           style={{ width: '100%', display: 'flex', alignItems: 'center', gap: '0.6rem', padding: '0.5rem 0.75rem', background: 'none', border: 'none', cursor: 'pointer' }}
         >
-          <TeamLogo logo={scoreData?.homeLogo} short={league === 'wnba' ? homeShort : normShort(homeShort)} name={homeTeam} size={28} league={league} />
-          <span style={{ fontSize: 11, fontWeight: 700, color: '#fff' }}>{homeShort || homeTeam}</span>
+          <TeamLogo logo={scoreData?.homeLogo || homeLogo} short={league === 'wnba' ? homeShort : normShort(homeShort)} name={homeTeam} size={28} league={league} />
+          <span style={{ fontSize: 9, fontWeight: 700, color: '#fff', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 100 }} title={homeShort || homeTeam}>{homeShort || homeTeam}</span>
           <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
             <span style={{ fontSize: 9, fontWeight: 700, color: '#60a5fa', background: 'rgba(96,165,250,0.12)', borderRadius: 3, padding: '1px 5px' }}>{leagueLabel}</span>
             <span style={{ fontSize: 10, color: 'var(--text-dim)' }}>{matchDatePrefix}{matchTime}</span>
           </div>
-          <span style={{ fontSize: 11, fontWeight: 700, color: '#fff' }}>{awayShort || awayTeam}</span>
-          <TeamLogo logo={scoreData?.awayLogo} short={league === 'wnba' ? awayShort : normShort(awayShort)} name={awayTeam} size={28} league={league} />
+          <span style={{ fontSize: 9, fontWeight: 700, color: '#fff', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 100, textAlign: 'right' }} title={awayShort || awayTeam}>{awayShort || awayTeam}</span>
+          <TeamLogo logo={scoreData?.awayLogo || awayLogo} short={league === 'wnba' ? awayShort : normShort(awayShort)} name={awayTeam} size={28} league={league} />
           <span style={{ fontSize: 9, color: 'var(--text-dim)', marginLeft: 4, flexShrink: 0 }}>{alerts.length}</span>
           <svg style={{ transform: open ? 'rotate(180deg)' : 'none', transition: 'transform 0.2s', color: 'var(--text-dim)', flexShrink: 0 }} width="10" height="10" viewBox="0 0 12 12" fill="none">
             <path d="M2.5 4.5L6 8L9.5 4.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
@@ -763,7 +765,7 @@ function MatchGroup({ match, scoreData, liveStats, onDismiss, onEditStake }) {
     <div style={{ borderRadius: 12, border: `1px solid ${sportBorder}`, overflow: 'hidden', background: sportBg }}>
       <div style={{ position: 'relative', display: 'flex', alignItems: 'center', padding: '1rem', borderBottom: '1px solid rgba(255,255,255,0.06)', minHeight: 110 }}>
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.3rem', flex: 1 }}>
-          <TeamLogo logo={scoreData?.homeLogo} short={league === 'wnba' ? homeShort : normShort(homeShort)} name={homeTeam} size={44} league={league} />
+          <TeamLogo logo={scoreData?.homeLogo || homeLogo} short={league === 'wnba' ? homeShort : normShort(homeShort)} name={homeTeam} size={44} league={league} />
           <span style={{ fontSize: 10, fontWeight: 700 }}>{homeShort || homeTeam}</span>
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '1.1rem', minWidth: 90, flexShrink: 0 }}>
@@ -778,7 +780,7 @@ function MatchGroup({ match, scoreData, liveStats, onDismiss, onEditStake }) {
           <MatchStatusBadge scoreData={scoreData} />
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.3rem', flex: 1 }}>
-          <TeamLogo logo={scoreData?.awayLogo} short={league === 'wnba' ? awayShort : normShort(awayShort)} name={awayTeam} size={44} league={league} />
+          <TeamLogo logo={scoreData?.awayLogo || awayLogo} short={league === 'wnba' ? awayShort : normShort(awayShort)} name={awayTeam} size={44} league={league} />
           <span style={{ fontSize: 10, fontWeight: 700 }}>{awayShort || awayTeam}</span>
         </div>
         <span style={{ position: 'absolute', right: 10, top: 8, fontSize: 9, color: 'var(--text-dim)' }}>{alerts.length} pari{alerts.length > 1 ? 's' : ''}</span>
@@ -1193,12 +1195,27 @@ export default function RunningPage() {
                 août), donc left:16 se comptait depuis le tout bord gauche de l'écran et passait sous
                 la sidebar au lieu de démarrer après elle (régression trouvée par l'utilisateur en
                 testant ce même fix). */}
+            {/* Grille à 4 colonnes fixes (4 septembre 2026) — avant, flex-wrap:nowrap + overflow-x
+                affichait exactement 4 cartes sans retour à la ligne, un 5e pari débordait hors champ
+                (scrollbar horizontal, cas réel : alerte São Paulo-Atlético invisible sans défiler).
+                repeat(4, 1fr) garantit toujours 4 colonnes par ligne quelle que soit la largeur
+                d'écran — un 5e pari (ou plus) descend automatiquement à la ligne du dessous au lieu
+                de déborder. */}
+            {/* minmax(0, 1fr) et non 1fr seul (4 septembre 2026) — sans le plafond à 0, le contenu
+                d'une carte ouverte (ex: le libellé "Nul / RS & +1,5 but", plus long et non tronqué)
+                force sa colonne à dépasser le partage égal entre les 4 cartes, l'élargissant visuellement
+                par rapport aux cartes fermées voisines — piège CSS Grid classique (une piste 1fr respecte
+                quand même le min-content de son contenu sauf si minmax(0, ...) le plafonne explicitement). */}
+            {/* alignItems:'start' (4 septembre 2026) — sans ça, les cartes d'une même ligne grid
+                s'étirent par défaut (stretch) à la hauteur de la plus grande : ouvrir une carte fait
+                grandir toute la ligne et décale visiblement les voisines pendant la ré-application du
+                layout (capturé au ralenti en vidéo par l'utilisateur, cf. artefact caméra sur la
+                transition ~100ms). Avec 'start', chaque carte garde sa propre hauteur ancrée en haut
+                de la ligne — en ouvrir une n'affecte plus jamais la position des autres. */}
             {scheduledGroups.length > 0 && createPortal(
-              <div style={{ position: 'fixed', bottom: 24, left: 216, right: 112, zIndex: 200, display: 'flex', flexDirection: 'row', flexWrap: 'nowrap', overflowX: 'auto', gap: '0.4rem', paddingBottom: 4 }}>
+              <div style={{ position: 'fixed', bottom: 24, left: 216, right: 112, zIndex: 200, display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', alignItems: 'start', gap: '0.4rem' }}>
                 {scheduledGroups.map(m => (
-                  <div key={m.matchKey} style={{ width: 300 }}>
-                    <MatchGroup match={m} scoreData={scoreData[m.matchKey] || null} liveStats={liveStats} onDismiss={dismiss} onEditStake={updateStake} />
-                  </div>
+                  <MatchGroup key={m.matchKey} match={m} scoreData={scoreData[m.matchKey] || null} liveStats={liveStats} onDismiss={dismiss} onEditStake={updateStake} />
                 ))}
               </div>,
               document.body

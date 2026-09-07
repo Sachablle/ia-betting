@@ -715,7 +715,7 @@ function LeagueItem({ league }) {
   );
 }
 
-const EU_BASKET_LEAGUE_IDS = new Set(['acb', 'lnb', 'bbl', 'legaa']);
+const EU_BASKET_LEAGUE_IDS = new Set(['acb', 'lnb', 'bbl', 'legaa', 'nbl']);
 
 // Dispatch par type de ligue (NBA/WNBA/EU basket/football) — réutilisé tel quel par la Carte
 // championnats (DatabaseMapPage.jsx) pour afficher les équipes d'un pays cliqué. EULeagueItem est

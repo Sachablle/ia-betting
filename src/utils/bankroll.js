@@ -227,6 +227,20 @@ export async function resetBankroll(state, amount) {
   return saveBankrollState({ startAmount: amount, startDate: entry.date, current: amount, balances, history: [...state.history, entry], processedIds: existingIds, baselineSeeded: true });
 }
 
+// Ajustement manuel = corriger un solde qui a dérivé (ex: écart constaté avec le vrai solde
+// bookmaker) SANS repartir de zéro — contrairement à resetBankroll(), ne touche ni startAmount/
+// startDate (le P&L continue à se compter depuis le tout premier vrai départ) ni processedIds
+// (aucun pari n'est marqué "déjà traité", ce n'est pas un nouveau départ de tracking). 3 septembre
+// 2026 — avant cette fonction, une correction de solde n'avait d'autre chemin qu'un entry type
+// 'reset' à la main (édition directe /api/userdata), qui cassait le P&L affiché sur Backtesting en
+// le faisant repartir de zéro à la date de la correction (cas réel découvert et corrigé ce jour-là).
+export async function adjustBalance(state, newBalances, note) {
+  const newCurrent = +((newBalances.betclic ?? 0) + (newBalances.unibet ?? 0)).toFixed(2);
+  const profit = +(newCurrent - state.current).toFixed(2);
+  const entry = { date: new Date().toISOString(), type: 'adjustment', stake: null, odds: null, profit, balanceAfter: newCurrent, note };
+  return saveBankrollState({ ...state, current: newCurrent, balances: { ...newBalances }, history: [...state.history, entry] });
+}
+
 // Fix 19 juillet 2026 — basketball_result/basketball_spread stockent leur cote dans un champ plat
 // `odds` (ex: {odds: 1.59, bookmaker: 'betclic'}), jamais dans les champs par bookmaker
 // (acceptedUnibetOdds/acceptedBetclicOdds/...) que ce sélecteur cherchait exclusivement. Comme

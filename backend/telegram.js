@@ -114,6 +114,8 @@ const DC_DIR_DESC  = { '1x': 'Dom. ou Nul', 'x2': 'Nul ou Ext.', '12': 'Dom. ou 
 const dcDirText = a => `${DC_DIR_LABEL[a.direction] ?? a.direction} (${DC_DIR_DESC[a.direction] ?? ''})`;
 const leagueLabel = a => LEAGUE_LABEL[a.league] || (a.league || '').toUpperCase();
 const teamName = (a, side) => side === 'home' ? (a.home || a.homeShort) : (a.away || a.awayShort);
+// "Home - Away" (tiret, pas "vs") — nouveau format Telegram du 6 septembre 2026, demande explicite.
+const matchVs = a => `${teamName(a, 'home')} - ${teamName(a, 'away')}`;
 
 // Meilleure cote dispo parmi les bookmakers scrapés pour cette alerte/direction — Telegram ne
 // permet pas de choisir un bookmaker précis comme sur le site, donc on prend la meilleure cote
@@ -123,11 +125,89 @@ function bestOdds(candidates) {
   if (!valid.length) return [null, null];
   return valid.reduce((best, cur) => (cur[1] > best[1] ? cur : best));
 }
-const fmtOdds = (bk, odds) => (odds ? `${odds.toFixed(2)} (${bk})` : '—');
-
 function propsOdds(a) {
   const dir = a.direction === 'over' ? 'Over' : 'Under';
   return bestOdds([['unibet', a.unibetOdds], ['betclic', a.betclicOdds], ['winamax', a.winamaxOdds]]);
+}
+
+// ── Format de message unifié (6-7 septembre 2026, demande explicite utilisateur) ────────────────
+// 5 lignes fixes pour tout marché "probabiliste" (foot BTTS/Total/Résultat/DC, props, marchés
+// équipe basket) : sport+ligue, match+horaire, pari+cote, probabilité+historique near-miss à ce %
+// exact, et la mise recommandée en euros (barème bankroll de l'app, pas le % implicite de la cote —
+// cf. buildAlertText plus bas). Volontairement PAS appliqué aux types "edge" (Pinnacle/outrights) —
+// ils n'ont pas de probabilité de référence ni d'historique near-miss comparable, un edge se lit
+// différemment (cf. leurs labels existants, inchangés).
+const SPORT_EMOJI = {
+  nba: '🏀', wnba: '🏀', acb: '🏀', lnb: '🏀', bbl: '🏀', legaa: '🏀', euroleague: '🏀',
+  cdm: '⚽', ligue1: '⚽', pl: '⚽', laliga: '⚽', bundes: '⚽', seriea: '⚽', bresil: '⚽',
+  europa: '⚽', conference: '⚽', champions: '⚽',
+};
+// 🇬🇧 (Union Jack) plutôt que le drapeau Angleterre (🏴󠁧󠁢󠁥󠁮󠁧󠁿, séquence de tags Unicode qui ne rend pas
+// sur tous les clients Telegram/polices — préférer un drapeau qui s'affiche partout à un drapeau
+// plus précis mais parfois invisible).
+const LEAGUE_FLAG = {
+  nba: '🇺🇸', wnba: '🇺🇸', acb: '🇪🇸', lnb: '🇫🇷', bbl: '🇩🇪', legaa: '🇮🇹', euroleague: '🇪🇺',
+  cdm: '🌍', ligue1: '🇫🇷', pl: '🇬🇧', laliga: '🇪🇸', bundes: '🇩🇪', seriea: '🇮🇹', bresil: '🇧🇷',
+  europa: '🇪🇺', conference: '🇪🇺', champions: '🇪🇺',
+};
+// Fuseau horaire figé sur Europe/Paris (6 septembre 2026, bug trouvé par l'utilisateur — 1er test
+// affichait 23h30 au lieu de 01h30) — Date.prototype.getHours()/getDate() lisent le fuseau LOCAL du
+// process Node, pas celui de l'utilisateur. Si le serveur tourne dans un environnement réglé sur
+// UTC (fréquent en dev/prod), l'heure affichée dérivait silencieusement. Intl.DateTimeFormat avec
+// `timeZone` explicite convertit toujours vers l'heure française, peu importe le fuseau système.
+function fmtMatchDateTime(dateStr) {
+  if (!dateStr) return null;
+  const d = new Date(dateStr);
+  if (isNaN(d.getTime())) return null;
+  const parts = new Intl.DateTimeFormat('fr-FR', {
+    timeZone: 'Europe/Paris', day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false,
+  }).formatToParts(d);
+  const get = t => parts.find(p => p.type === t)?.value;
+  return `${get('day')}/${get('month')}/${get('year')} - ${get('hour')}h${get('minute')}`;
+}
+// Nombres au format français (virgule) — cohérent avec le reste de l'app (fr-FR partout, cf.
+// src/utils/formatters.js) ; les messages Telegram utilisaient jusqu'ici l'interpolation JS brute
+// (point anglo-saxon), jamais remarqué avant que l'utilisateur ne compare avec le site.
+const frNum = n => (n == null ? null : n.toLocaleString('fr-FR'));
+const frOdds = n => (n == null ? null : n.toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
+// Betclic/Unibet uniquement (demande explicite : "si 2 lignes betclic ou unibet, donne la
+// meilleure des deux") — jamais Winamax (mort, cf. feedback_winamax_removed) ni Pinnacle (pas un
+// bookmaker sur lequel l'utilisateur peut réellement parier).
+function bkOnlyBestOdds(a) {
+  return bestOdds([['unibet', a.unibetOdds], ['betclic', a.betclicOdds]]);
+}
+const BK_DISPLAY = { unibet: 'Unibet', betclic: 'Betclic' };
+function nearMissLine(wl) {
+  if (!wl || wl.won + wl.lost === 0) return null;
+  return `${wl.won}G/${wl.lost}P`;
+}
+// Format 5 lignes revu le 7 septembre 2026 sur retours directs de l'utilisateur : (1) sport+ligue
+// SANS drapeau, (2) drapeau+match, date en texte normal (pas gras) juste après — Telegram n'a aucun
+// contrôle de taille de police (HTML très limité : gras/italique/souligné/lien seulement), le
+// contraste gras/normal est le plus proche possible d'un "petit à droite" dans ce médium ; (3) pari
+// + cote toujours collée juste après la direction (jamais séparée par du texte) ; (4) probabilité +
+// historique near-miss réel à ce % exact (sans "à ce %", implicite) ; (5) mise recommandée en euros
+// — PAS le % implicite de la cote bookmaker (1er essai, rejeté), mais la vraie mise conseillée
+// d'après le barème de paliers bankroll déjà utilisé partout ailleurs dans l'app
+// (BANKROLL_BRACKETS/getRecommendedStake, src/utils/bankroll.js) — porté côté backend en
+// `_recommendedStakeFor()` (server.js) car ce fichier n'a pas accès au localStorage/état bankroll du
+// frontend, lu directement depuis Mongo (userdata.bankroll_tracker.current) et transmis via `_stake`
+// sur l'alerte, même pattern que `_wl` pour le near-miss. Odds/lignes en virgule française
+// (frNum/frOdds).
+function buildAlertText({ league, matchLabel, dateStr, betLabel, bk, odds, probability, wl, stake }) {
+  const emoji = SPORT_EMOJI[league] || '⚽';
+  const flag = LEAGUE_FLAG[league] || '';
+  const lines = [];
+  lines.push(`${emoji} <b>${leagueLabel({ league })}</b>`);
+  const day = fmtMatchDateTime(dateStr);
+  lines.push(`${flag ? `${flag} ` : ''}<b>${matchLabel}</b>${day ? ` (${day})` : ''}`.trim());
+  lines.push(''); // ligne vide demandée entre le match et le pari donné
+  const oddsStr = odds != null ? ` — <b>${frOdds(odds)}</b>${bk ? ` (${BK_DISPLAY[bk] || bk})` : ''}` : '';
+  lines.push(`${betLabel}${oddsStr}`);
+  const nm = nearMissLine(wl);
+  lines.push(`Probabilité : <b>${probability}%</b>${nm ? ` — ${nm}` : ''}`);
+  if (stake != null) lines.push(`Mise recommandée : <b>${frNum(stake)}€</b>`);
+  return lines.join('\n');
 }
 function propsAccepted(a, bk, odds, prob) {
   return {
@@ -141,25 +221,39 @@ function propsAccepted(a, bk, odds, prob) {
 const ALERT_TYPES = {
   player_prop: {
     dateField: 'fixtureDate',
-    label: a => `🏀 <b>${leagueLabel(a)} Props</b>\n${a.player} — ${a.direction === 'over' ? '▲ Over' : '▼ Under'} ${a.line} ${STAT_LABEL[a.stat] || (a.stat || '').toUpperCase()}\nProbabilité : <b>${a.probability}%</b>${a.oppQSamePosition ? '\n⚠ Adversaire Q au même poste — pas de boost tant que son statut n\'est pas confirmé' : ''}`,
+    label: a => {
+      const [bk, odds] = propsOdds(a);
+      const betLabel = `${a.player} — ${a.direction === 'over' ? '▲ Over' : '▼ Under'} ${frNum(a.line)} ${STAT_LABEL[a.stat] || (a.stat || '').toUpperCase()}`;
+      const matchLabel = a.home && a.away ? matchVs(a) : (a.fixture || a.player || '');
+      const base = buildAlertText({ league: a.league, matchLabel, dateStr: a.fixtureDate, betLabel, bk, odds, probability: a.probability, wl: a._wl, stake: a._stake });
+      return a.oppQSamePosition ? `${base}\n⚠ Adversaire Q au même poste — pas de boost tant que son statut n'est pas confirmé` : base;
+    },
     odds: propsOdds,
     buildAccepted: (a, bk, odds) => propsAccepted(a, bk, odds),
   },
   game_total: {
     dateField: 'date',
-    label: a => `🏀 <b>${leagueLabel(a)} Total</b>\n${teamName(a, 'home')} vs ${teamName(a, 'away')} — ${a.direction === 'over' ? '▲ Plus' : '▼ Moins'} de ${a.line}\nProbabilité : <b>${a.prob}%</b>`,
+    label: a => {
+      const [bk, odds] = bkOnlyBestOdds(a);
+      const betLabel = `${a.direction === 'over' ? '▲ Plus' : '▼ Moins'} de ${frNum(a.line)}`;
+      return buildAlertText({ league: a.league, matchLabel: matchVs(a), dateStr: a.date, betLabel, bk, odds, probability: a.prob, wl: a._wl, stake: a._stake });
+    },
     odds: a => bestOdds([['unibet', a.unibetOdds], ['betclic', a.betclicOdds], ['winamax', a.winamaxOdds]]),
     buildAccepted: (a, bk, odds) => ({ ...propsAccepted(a, bk, odds, a.prob), acceptedOdds: odds ?? null }),
   },
   team_total: {
     dateField: 'date',
-    label: a => `🏀 <b>${leagueLabel(a)} Total équipe</b>\n${a.team} (${teamName(a, 'home')} vs ${teamName(a, 'away')}) — ${a.direction === 'over' ? '▲ Plus' : '▼ Moins'} de ${a.line}\nProbabilité : <b>${a.prob}%</b>`,
+    label: a => {
+      const [bk, odds] = bkOnlyBestOdds(a);
+      const betLabel = `${a.team} — ${a.direction === 'over' ? '▲ Plus' : '▼ Moins'} de ${frNum(a.line)}`;
+      return buildAlertText({ league: a.league, matchLabel: matchVs(a), dateStr: a.date, betLabel, bk, odds, probability: a.prob, wl: a._wl, stake: a._stake });
+    },
     odds: a => bestOdds([['unibet', a.unibetOdds], ['betclic', a.betclicOdds]]),
     buildAccepted: (a, bk, odds) => ({ ...propsAccepted(a, bk, odds, a.prob), acceptedOdds: odds ?? null }),
   },
   basketball_result: {
     dateField: 'date',
-    label: a => `🏆 <b>${leagueLabel(a)} Résultat</b>\n${teamName(a, 'home')} vs ${teamName(a, 'away')}\nVictoire ${teamName(a, a.direction)} — <b>${a.probability}%</b>${fmtOdds(a.bookmaker, a.odds) !== '—' ? ` · ${fmtOdds(a.bookmaker, a.odds)}` : ''}`,
+    label: a => buildAlertText({ league: a.league, matchLabel: matchVs(a), dateStr: a.date, betLabel: `Victoire ${teamName(a, a.direction)}`, bk: a.bookmaker ?? null, odds: a.odds ?? null, probability: a.probability, wl: a._wl, stake: a._stake }),
     odds: a => [a.bookmaker ?? null, a.odds ?? null], // déjà figé à la génération, pas de choix à faire
     buildAccepted: () => ({ acceptedAt: Date.now() }),
   },
@@ -177,34 +271,51 @@ const ALERT_TYPES = {
   },
   football_btts: {
     dateField: 'fixtureDate',
-    label: a => `⚽ <b>${leagueLabel(a)} BTTS</b>\n${a.fixture || `${teamName(a, 'home')} vs ${teamName(a, 'away')}`}\n✓ Les deux équipes marquent — <b>${a.probability}%</b>`,
+    label: a => {
+      const [bk, odds] = bkOnlyBestOdds(a);
+      // matchVs(a) plutôt que a.fixture (6 septembre 2026) — le champ `fixture` généré à la création
+      // de l'alerte porte encore l'ancien séparateur "vs" ("Home vs Away"), incompatible avec le
+      // nouveau format "Home - Away" demandé ; a.home/a.away restent la source fiable dans tous les cas.
+      return buildAlertText({ league: a.league, matchLabel: matchVs(a), dateStr: a.fixtureDate, betLabel: 'Les 2 équipes marquent : Oui', bk, odds, probability: a.probability, wl: a._wl, stake: a._stake });
+    },
     odds: a => bestOdds([['unibet', a.unibetOdds], ['betclic', a.betclicOdds], ['winamax', a.winamaxOdds]]),
     buildAccepted: (a, bk, odds) => propsAccepted(a, bk, odds),
   },
   football_total: {
     dateField: 'fixtureDate',
-    label: a => `⚽ <b>${leagueLabel(a)} Total</b>\n${teamName(a, 'home')} vs ${teamName(a, 'away')} — ${a.direction === 'over' ? '▲ Plus' : '▼ Moins'} de ${a.line} buts\nProbabilité : <b>${a.probability}%</b>`,
+    label: a => {
+      const [bk, odds] = bkOnlyBestOdds(a);
+      const betLabel = `${a.direction === 'over' ? '▲ Plus' : '▼ Moins'} de ${frNum(a.line)} buts`;
+      return buildAlertText({ league: a.league, matchLabel: matchVs(a), dateStr: a.fixtureDate, betLabel, bk, odds, probability: a.probability, wl: a._wl, stake: a._stake });
+    },
     odds: a => bestOdds([['unibet', a.unibetOdds], ['betclic', a.betclicOdds], ['winamax', a.winamaxOdds]]),
     buildAccepted: (a, bk, odds) => propsAccepted(a, bk, odds),
   },
   football_result: {
     dateField: 'fixtureDate',
     label: a => {
+      const [bk, odds] = bkOnlyBestOdds(a);
       const who = a.direction === 'draw' ? 'Match nul' : `Victoire ${teamName(a, a.direction)}`;
-      return `⚽ <b>${leagueLabel(a)} Résultat 1X2</b>\n${teamName(a, 'home')} vs ${teamName(a, 'away')}\n${who} — <b>${a.probability}%</b>`;
+      return buildAlertText({ league: a.league, matchLabel: matchVs(a), dateStr: a.fixtureDate, betLabel: who, bk, odds, probability: a.probability, wl: a._wl, stake: a._stake });
     },
     odds: a => bestOdds([['unibet', a.unibetOdds], ['betclic', a.betclicOdds], ['winamax', a.winamaxOdds]]),
     buildAccepted: (a, bk, odds) => propsAccepted(a, bk, odds),
   },
   football_dc_btts: {
     dateField: 'fixtureDate',
-    label: a => `⚽ <b>${leagueLabel(a)} Double Chance + BTTS</b>\n${teamName(a, 'home')} vs ${teamName(a, 'away')} — ${dcDirText(a)} & BTTS\nProbabilité : <b>${a.probability}%</b>`,
+    label: a => {
+      const [bk, odds] = bkOnlyBestOdds(a);
+      return buildAlertText({ league: a.league, matchLabel: matchVs(a), dateStr: a.fixtureDate, betLabel: `${dcDirText(a)} & BTTS`, bk, odds, probability: a.probability, wl: a._wl, stake: a._stake });
+    },
     odds: a => bestOdds([['unibet', a.unibetOdds], ['betclic', a.betclicOdds]]),
     buildAccepted: (a, bk, odds) => propsAccepted(a, bk, odds),
   },
   football_dc_ou: {
     dateField: 'fixtureDate',
-    label: a => `⚽ <b>${leagueLabel(a)} Double Chance + Total</b>\n${teamName(a, 'home')} vs ${teamName(a, 'away')} — ${dcDirText(a)} & +${a.line ?? 1.5} buts\nProbabilité : <b>${a.probability}%</b>`,
+    label: a => {
+      const [bk, odds] = bkOnlyBestOdds(a);
+      return buildAlertText({ league: a.league, matchLabel: matchVs(a), dateStr: a.fixtureDate, betLabel: `${dcDirText(a)} & +${frNum(a.line ?? 1.5)} buts`, bk, odds, probability: a.probability, wl: a._wl, stake: a._stake });
+    },
     odds: a => bestOdds([['unibet', a.unibetOdds], ['betclic', a.betclicOdds]]),
     buildAccepted: (a, bk, odds) => propsAccepted(a, bk, odds),
   },

@@ -4,6 +4,14 @@
 // pendant que le rafraîchissement se fait en arrière-plan.
 const _cache = new Map(); // url → { data, ts, inflight }
 
+// Fix 4 septembre 2026 — fetch() brut n'a pas de timeout par défaut : si une requête reste bloquée
+// côté réseau (ne serait-ce qu'une fois), sa promesse ne se résout jamais, et tout code qui l'attend
+// (ex: le bouton "Recharger" de la Carte du Monde, Promise.all sur plusieurs ligues) reste bloqué en
+// chargement indéfiniment — cas réel signalé par l'utilisateur sur un match PSG en direct. Timeout dur
+// pour que l'appel finisse toujours par échouer proprement plutôt que de pendre pour toujours ; le
+// `.catch()` déjà présent partout où cachedFetch est utilisé retombe alors sur les anciennes données.
+const CACHED_FETCH_TIMEOUT_MS = 5_000;
+
 export function cachedFetch(url, ttlMs = 20_000) {
   const hit = _cache.get(url);
   const now = Date.now();
@@ -14,8 +22,19 @@ export function cachedFetch(url, ttlMs = 20_000) {
   // Requête déjà en vol → on s'accroche à la même promise (déduplication)
   if (hit?.inflight) return hit.inflight;
 
-  const inflight = fetch(url)
-    .then(r => r.json())
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), CACHED_FETCH_TIMEOUT_MS);
+  const inflight = fetch(url, { signal: controller.signal })
+    .finally(() => clearTimeout(timeoutId))
+    .then(r => {
+      // Un 429/500 (ex: rate-limit football-data.org, 10 req/min vite atteint) renvoie quand même
+      // un corps JSON ({error: "..."}) — sans ce check, il était traité comme une réponse valide et
+      // mis en cache tel quel pour tout le ttlMs (jusqu'à 30min), affichant "aucun résultat" pour une
+      // équipe alors que la vraie donnée existe, juste temporairement indisponible (2 septembre 2026,
+      // cas réel : "Derniers résultats" vide sur des équipes PL/Ligue1/Serie A/La Liga au hasard).
+      if (!r.ok) throw new Error(`HTTP ${r.status} — ${url}`);
+      return r.json();
+    })
     .then(data => {
       _cache.set(url, { data, ts: Date.now(), inflight: null });
       return data;

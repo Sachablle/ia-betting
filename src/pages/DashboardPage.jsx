@@ -546,7 +546,6 @@ function SystemHealthSection() {
             <div style={{ display: 'flex', gap: '0.9rem', alignItems: 'flex-end' }}>
               <SignalIcon label="ESPN"     ts={sc.espn?.ts}     ok={sc.espn?.ok}     lastOk={sc.espn?.lastOk}     />
               <SignalIcon label="RotoWire" ts={sc.rotowire?.ts} ok={sc.rotowire?.ok} lastOk={sc.rotowire?.lastOk} />
-              <SignalIcon label="ACB"      ts={sc.acb?.ts}      ok={sc.acb?.ok}      lastOk={sc.acb?.lastOk}      />
               <SignalIcon label="Telegram" ts={sc.telegram?.ts} ok={sc.telegram?.ok} lastOk={sc.telegram?.lastOk} />
             </div>
           </div>
@@ -624,7 +623,11 @@ function QuotasWidget() {
   // Affichée même en pause (30 août 2026, demande explicite) — reste figée sur le résultat du
   // dernier cycle tant qu'un nouveau n'a pas démarré (_footballCycleProgress n'est remis à zéro
   // qu'au moment du "play" suivant côté backend), pour garder trace de ce qui a été récupéré.
-  const footCyclePct = footCycle && footCycle.total > 0 ? Math.min(100, Math.round(footCycle.done / footCycle.total * 100)) : null;
+  // Fix 1er septembre 2026 (demande explicite) — total=0 (rien à traiter ce cycle-ci, ex: aucun
+  // match dans la fenêtre) rendait `null`, donc la barre disparaissait entièrement après un
+  // play/pause — aucune confirmation visuelle que le cycle avait bien tourné. `startedAt` distingue
+  // "jamais lancé" (barre cachée, comme avant) de "lancé mais rien à faire" (barre pleine "0/0").
+  const footCyclePct = footCycle && footCycle.total > 0 ? Math.min(100, Math.round(footCycle.done / footCycle.total * 100)) : (footCycle?.startedAt ? 100 : null);
   // Dégradé rouge→jaune→vert selon le taux de complétion (30 août 2026, demande explicite) — plus
   // la couleur active/pause du bloc au-dessus.
   const footCycleColor = footCyclePct == null ? '#4ade80' : footCyclePct >= 90 ? '#4ade80' : footCyclePct >= 50 ? '#fbbf24' : '#f87171';
@@ -650,7 +653,9 @@ function QuotasWidget() {
   const bballCacheMsLeft = bballPaused && bballPausedAt ? Math.max(0, bballPausedAt + BBALL_CACHE_GUARD_MS - Date.now()) : null;
   const bballCacheH = bballCacheMsLeft != null ? Math.floor(bballCacheMsLeft / 3600_000) : null;
   const bballCacheM = bballCacheMsLeft != null ? Math.floor((bballCacheMsLeft % 3600_000) / 60_000) : null;
-  const bballCyclePct = bballCycle && bballCycle.total > 0 ? Math.min(100, Math.round(bballCycle.done / bballCycle.total * 100)) : null;
+  // Même fix que footCyclePct ci-dessus (1er septembre 2026) — barre pleine "0/0" plutôt que
+  // masquée quand un cycle a tourné mais n'avait aucun match basket EU à traiter.
+  const bballCyclePct = bballCycle && bballCycle.total > 0 ? Math.min(100, Math.round(bballCycle.done / bballCycle.total * 100)) : (bballCycle?.startedAt ? 100 : null);
   const bballCycleColor = bballCyclePct == null ? '#4ade80' : bballCyclePct >= 90 ? '#4ade80' : bballCyclePct >= 50 ? '#fbbf24' : '#f87171';
   const toggleBasketballApi = async () => {
     setBballToggling(true);
@@ -872,7 +877,6 @@ function ScrapingRatePanel({ sc }) {
         <div style={{ width: 1, background: 'rgba(255,255,255,0.08)', alignSelf: 'stretch', flexShrink: 0 }} />
         <WifiStat label="ESPN"     pct={pctFor('espn')} />
         <WifiStat label="RotoWire" pct={pctFor('rotowire')} />
-        <WifiStat label="ACB"      pct={pctFor('acb')} />
       </div>
     </div>
   );
@@ -1138,6 +1142,11 @@ function AlertsChart({ accepted, days: numDays = 30 }) {
   const byDay = {};
   // Détail gagnant/perdant/void/en cours par jour — affiché au survol de chaque point (14 juillet).
   const breakdownByDay = {};
+  // BTTS Coritiba (1er septembre 2026, demande explicite) — accepté à 22h45 UTC le 31 août, soit
+  // 00h45 heure française (UTC+2 été) : bascule côté bucket "1 sept." par le calcul normal ci-dessous,
+  // alors que le match/la journée de paris concernée est bien le 31 août. Forçage scopé à cette seule
+  // alerte plutôt que de toucher la règle de bucketing générale (qui reste correcte pour tout le reste).
+  const DASHBOARD_DAY_OVERRIDE = { fdbr_554987_btts_yes: '2026-08-31' };
   accepted.forEach(a => {
     // Priorité : acceptedAt → savedAt → settledAt → fixtureDate (si déjà réglé, donc forcément
     // dans le passé) → maintenant en tout dernier recours. D'anciennes alertes foot n'ont ni
@@ -1146,7 +1155,7 @@ function AlertsChart({ accepted, days: numDays = 30 }) {
     const resolved = ['won', 'lost', 'void'].includes(a.status);
     const ts = a.acceptedAt ?? a.savedAt ?? a.settledAt ?? (resolved ? (a.fixtureDate ?? a.date) : null) ?? Date.now();
     const raw = new Date(ts);
-    const day = new Date(raw.getTime() - raw.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+    const day = DASHBOARD_DAY_OVERRIDE[a.id] || new Date(raw.getTime() - raw.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
     byDay[day] = (byDay[day] || 0) + 1;
     const b = breakdownByDay[day] ??= { won: 0, lost: 0, void: 0, pending: 0, items: [] };
     if (a.status === 'won') b.won++;
@@ -1298,12 +1307,12 @@ function cleanFootballTeamName(raw) {
 
 const LEAGUE_LABEL_MAP = {
   nba:'NBA', wnba:'WNBA', cdm:'CDM', euroleague:'EL',
-  acb:'ACB', lnb:'LNB', bbl:'BBL', legaa:'LegA',
+  acb:'ACB', lnb:'LNB', bbl:'BBL', legaa:'LegA', nbl:'NBL',
   ligue1:'L1', pl:'PL', laliga:'Liga', bundes:'BL', seriea:'SA',
 };
 const LEAGUE_COLOR_MAP = {
   nba:'#fb923c', wnba:'#fb923c', cdm:'#facc15', euroleague:'#c084fc',
-  acb:'#60a5fa', lnb:'#60a5fa', bbl:'#60a5fa', legaa:'#60a5fa',
+  acb:'#60a5fa', lnb:'#60a5fa', bbl:'#60a5fa', legaa:'#60a5fa', nbl:'#60a5fa',
   ligue1:'#3b82f6', pl:'#a78bfa', laliga:'#f97316', bundes:'#e11d48', seriea:'#10b981',
 };
 
@@ -1344,7 +1353,7 @@ function UpcomingMatchesWidget() {
     });
 
     const load = async () => {
-      const EU_BASKET = ['acb','bbl','legaa'];
+      const EU_BASKET = ['acb','bbl','legaa','nbl'];
       const EU_FOOT   = ['ligue1','pl','laliga','bundes','seriea'];
 
       const results = await Promise.allSettled([
@@ -1601,7 +1610,15 @@ export default function DashboardPage() {
     return Object.values(map);
   };
 
-  const accepted        = dedupAlerts(alerts.filter(a => RESOLVED.includes(a.status)));
+  // Masqués côté Dashboard uniquement (1er septembre 2026, demande explicite) — Tiffany Hayes (1€
+  // test, marché retiré depuis) et Sonia Citron void repoussés en boucle vers Mongo par un onglet
+  // resté ouvert, malgré une suppression posée via /api/userdata. Filtre local plus simple/fiable
+  // que de courir après une resynchro : n'affecte que ce que montre le Dashboard, ne touche à aucun
+  // store (Backtesting/Bankroll/Alertes restent inchangés).
+  const HIDDEN_DASHBOARD_IDS = new Set(['401857188_1054_pts_under_13.5', '401857183_4433524_pts_under_17.5']);
+  const alertsVisible = alerts.filter(a => !HIDDEN_DASHBOARD_IDS.has(a.id));
+
+  const accepted        = dedupAlerts(alertsVisible.filter(a => RESOLVED.includes(a.status)));
   const acceptedTotals  = totalAlerts.filter(a => RESOLVED.includes(a.status));
   const acceptedTeamTotals = teamTotalAlerts.filter(a => RESOLVED.includes(a.status));
   // Pas de dedupAlerts ici : ces alertes n'ont pas de champ `player`, la clé de dédup collapserait
@@ -1609,7 +1626,7 @@ export default function DashboardPage() {
   const acceptedFootball    = footballAlerts.filter(a => RESOLVED.includes(a.status));
   const acceptedBballResult = resultAlerts.filter(a => RESOLVED.includes(a.status));
   const acceptedBballSpread = spreadAlerts.filter(a => RESOLVED.includes(a.status));
-  const allDedupAlerts  = dedupAlerts(alerts);
+  const allDedupAlerts  = dedupAlerts(alertsVisible);
 
   return (
     <div className="page" style={{ padding: '0.9rem 2.5rem 2rem' }}>

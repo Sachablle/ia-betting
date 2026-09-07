@@ -19,7 +19,7 @@ const ESPN_NBA = {
   'Oklahoma City Thunder': 25, 'Utah Jazz': 26, 'Washington Wizards': 27, 'Toronto Raptors': 28,
   'Memphis Grizzlies': 29, 'Charlotte Hornets': 30,
 };
-const EU_LEAGUES = new Set(['euroleague', 'acb', 'lnb', 'bbl', 'legaa']);
+const EU_LEAGUES = new Set(['euroleague', 'acb', 'lnb', 'bbl', 'legaa', 'nbl']);
 
 const EL_LOGOS = {
   FEN: 'https://upload.wikimedia.org/wikipedia/en/thumb/0/0b/Fenerbah%C3%A7e_Men%27s_Basketball_logo.svg/120px-Fenerbah%C3%A7e_Men%27s_Basketball_logo.svg.png',
@@ -75,7 +75,7 @@ export default function BasketballMatchRow({ fixture }) {
   };
 
   const handleClick = () => {
-    const EURO = ['acb', 'lnb', 'bbl', 'legaa'];
+    const EURO = ['acb', 'lnb', 'bbl', 'legaa', 'nbl'];
     const leagueKey = isEL ? 'euroleague' : EURO.includes(fixture.league) ? fixture.league : fixture.league === 'wnba' ? 'wnba' : 'nba';
     sessionStorage.setItem(`league_open_${leagueKey}`, 'open');
     sessionStorage.setItem('sports_active', 'basketball');

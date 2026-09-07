@@ -7,7 +7,7 @@ import { fileURLToPath } from 'url';
 import { MongoClient } from 'mongodb';
 import { promises as dnsPromises } from 'dns';
 import { computeEstimate, calcStd, isConsistentStat, blendedSeasonAvg, winsorizeRecent, getShotVolumeAnchor, probAtLeast, tCDF4, getRestFactor, getScheduleDensityFactor, isPlayoffRound, toDefCat, getDefByPosFactor } from './compute.js';
-import { computeLambdas, computeBTTSProb, computeOUProb, compute1X2Probs, computeDCBTTSProbs, computeDCOverProbs, computeTeamAttackDefenseFactor } from './computeFootball.js';
+import { computeLambdas, computeBTTSProb, computeOUProb, compute1X2Probs, computeDCBTTSProbs, computeDCOverProbs, computeTeamGoalsProb, computeTeamAttackDefenseFactor } from './computeFootball.js';
 import { computeFootballOutrightScore, computeFootballRelegationScore, computeFootballPlausibility, computeBasketballOutrightScore, computeBasketballPlausibility, OUTRIGHT_MAX_GAMES_BACK } from './computeOutrights.js';
 import { telegramConfigured, answerCallbackQuery, editTelegramMessage, getAlertTypeMeta, notifyNewAlert, resolveCallbackToken, recordAction, getActionsSince, _debugTokensForId, checkTelegramWebhookHealth, sendTelegramMessage } from './telegram.js';
 
@@ -27,6 +27,28 @@ console.error = (...args) => {
   } catch {}
 };
 
+// Filet anti-crash réseau (1er septembre 2026) — le backend plantait plusieurs fois par soirée sur
+// un simple blip réseau (Wi-Fi qui saute une seconde) : `fetch()` natif de Node émet parfois un
+// événement 'error' asynchrone sur son flux TLS/HTTP2 sous-jacent APRÈS que la promesse principale
+// se soit déjà réglée (bug connu undici sur réseau instable — EHOSTUNREACH/ENOTFOUND/ECONNRESET vus
+// en rafale ce soir) — ce n'est pas une erreur applicative capturable par un try/catch classique,
+// Node la traite comme fatale par défaut et tue tout le process. `node --watch` ne relance PAS après
+// un crash (seulement après une sauvegarde de fichier) — le backend restait mort jusqu'à un
+// redémarrage manuel, avec tous les cycles d'alertes/rafraîchissement de données interrompus entre
+// les deux (cause directe de plusieurs cas de données périmées ce soir : match La Liga bloqué "EN
+// COURS", classement Brésil pas à jour). Ces erreurs réseau sont loggées (capturées dans _errorLog
+// ci-dessous, remontent dans le digest santé Telegram) mais ne tuent plus le process — un cycle
+// suivant retentera l'appel réseau normalement. Ne masque PAS les vraies erreurs de programmation
+// (bug dans notre code) : celles-ci continuent de logger la stack complète, juste sans killer le
+// serveur — un compromis déjà largement en notre faveur pour un outil perso où la fraîcheur des
+// données prime sur la pureté "crash on any unexpected error".
+process.on('uncaughtException', (err) => {
+  console.error('[uncaughtException — process maintenu en vie]', err?.stack || err?.message || err);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('[unhandledRejection — process maintenu en vie]', reason?.stack || reason?.message || reason);
+});
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const CACHE_DIR   = join(__dirname, 'cache');
 const ODDS_CACHE_FILE = join(CACHE_DIR, 'odds.json');
@@ -43,6 +65,9 @@ const FD_RESULTS_CACHE_FILE = join(CACHE_DIR, 'fd_results.json');
 const FD_FULL_STANDINGS_CACHE_FILE   = join(CACHE_DIR, 'fd_full_standings.json');
 const FD_REMAINING_FIXTURES_CACHE_FILE = join(CACHE_DIR, 'fd_remaining_fixtures.json');
 const FD_SEASON_INFO_CACHE_FILE = join(CACHE_DIR, 'fd_season_info.json');
+// Migration api-football (2 septembre 2026) — remplace fdGet comme source de calendrier/classement
+// pour Ligue 1/PL/La Liga/Bundesliga/Serie A/Brésil (CDM reste sur football-data.org, cf. plan).
+const FB_LEAGUE_BUNDLE_CACHE_FILE = join(CACHE_DIR, 'football_league_bundle.json');
 const GAMELOGS_CACHE_FILE  = join(CACHE_DIR, 'gamelogs_cache.json');
 const SCRAPER_BLOCK_FILE   = join(CACHE_DIR, 'scraper_blocks.json');
 const OUTRIGHTS_CACHE_FILE = join(CACHE_DIR, 'outrights.json');
@@ -58,6 +83,7 @@ const UB_MATCH_URL_CACHE_FILE   = join(CACHE_DIR, 'unibet_match_urls.json');
 const EURO_DEFBYPOS_CACHE_FILE  = join(CACHE_DIR, 'euro_defbypos.json');
 const EURO_PLAYERS_CACHE_FILE   = join(CACHE_DIR, 'euro_players.json');
 const EURO_GAMELOG_CACHE_FILE   = join(CACHE_DIR, 'euro_gamelog.json');
+const EU_CLUB_MATCHES_CACHE_FILE = join(CACHE_DIR, 'eu_club_matches.json');
 
 // Cache persistant gamelogs — survit aux redémarrages, jamais remplacé par moins de données
 let _glPersist = {};
@@ -113,6 +139,7 @@ function _updateGlCache(key, games) {
 const ACCEPTED_FILE        = join(CACHE_DIR, 'accepted_alerts.json');
 const SETTLEMENTS_FILE     = join(CACHE_DIR, 'settlements.json');
 const BET_LEDGER_FILE      = join(CACHE_DIR, 'bet_ledger.json');
+const PENDING_ALERTS_FILE  = join(CACHE_DIR, 'pending_alerts.json');
 
 let _acceptedAlerts = [];
 let _settlements    = [];
@@ -128,7 +155,17 @@ try { if (existsSync(BET_LEDGER_FILE)) _betLedger = JSON.parse(readFileSync(BET_
 const _saveBetLedger = () => { try { writeFileSync(BET_LEDGER_FILE, JSON.stringify(_betLedger), 'utf8'); } catch {} };
 // Fusionne l'alerte complète (métadonnées joueur/match/cotes) avec son résultat final, et
 // upsert par id dans le registre — jamais de remplacement en bloc du tableau.
+// Fix 6 septembre 2026 (bug réel, argent réel) — cette fonction n'avait AUCUN garde-fou de statut
+// terminal, contrairement à /api/userdata et /api/accepted-alerts qui en ont un. Un onglet resté
+// ouvert avec une vieille copie locale (croit encore le pari "accepted") appelle POST /api/settlements
+// de façon autonome dès qu'il détecte lui-même le match terminé, et archiveBet() réécrasait alors
+// sans condition un pari déjà marqué "void" à la main — cas réel : 2 alertes doublons (São Paulo
+// BTTS, Rayo/Racing DC&+1,5) voidées manuellement 3 fois de suite dans la même soirée, revenues à
+// "lost" à chaque fois. Un "void" posé une fois doit être définitif, peu importe combien de fois un
+// onglet périmé retente de régler le même id.
 function archiveBet(alert, result) {
+  const existing = _betLedger.find(b => b.id === alert.id);
+  if (existing?.status === 'void') return;
   const entry = { ...alert, ...result };
   const i = _betLedger.findIndex(b => b.id === entry.id);
   if (i >= 0) _betLedger[i] = entry; else _betLedger.push(entry);
@@ -154,6 +191,35 @@ try {
 } catch {}
 const _saveAccepted    = () => { try { writeFileSync(ACCEPTED_FILE,    JSON.stringify(_acceptedAlerts), 'utf8'); } catch {} };
 const _saveSettlements = () => { try { writeFileSync(SETTLEMENTS_FILE, JSON.stringify(_settlements),    'utf8'); } catch {} };
+// Alertes pending persistées (31 août 2026) — `backgroundAlerts` était jusqu'ici purement en
+// mémoire (voir commentaire complet à sa déclaration, ~ligne 10942) : un restart backend pendant
+// la courte fenêtre où une alerte rare (ex: Big Five foot, quelques cas par mois) est pending mais
+// pas encore vue/acceptée l'effaçait sans aucune trace — message Telegram déjà envoyé mais mort,
+// bouton Accepter qui ne trouve plus rien côté serveur. `_acceptedAlerts`/`_settlements` sont déjà
+// persistés depuis longtemps ; il ne manquait que le pending. Chargé APRES _acceptedAlerts/
+// _settlements (ordre du fichier) pour pouvoir exclure au restore tout id déjà accepté/réglé —
+// l'accepté fait toujours autorité sur un snapshot pending potentiellement périmé de quelques
+// minutes (sauvegardé à chaque cycle de 20min, pas à chaque clic).
+let _pendingAlertsPersisted = [];
+try {
+  if (existsSync(PENDING_ALERTS_FILE)) {
+    const raw = JSON.parse(readFileSync(PENDING_ALERTS_FILE, 'utf8'));
+    // Re-filtre au chargement (pas seulement à l'écriture) : le fichier peut dater de quelques
+    // minutes avant le restart si un accept est survenu entre-temps — _acceptedAlerts/_settlements
+    // sont rechargés juste au-dessus dans ce même fichier et reflètent l'état le plus frais.
+    const acceptedIds = new Set(_acceptedAlerts.map(a => a.id));
+    const settledIds = new Set(_settlements.map(s => s.id));
+    _pendingAlertsPersisted = raw.filter(a => !acceptedIds.has(a.id) && !settledIds.has(a.id));
+  }
+} catch {}
+function _savePendingAlerts(alerts) {
+  try {
+    const acceptedIds = new Set(_acceptedAlerts.map(a => a.id));
+    const settledIds = new Set(_settlements.map(s => s.id));
+    const pendingOnly = alerts.filter(a => (!a.status || a.status === 'pending') && !acceptedIds.has(a.id) && !settledIds.has(a.id));
+    writeFileSync(PENDING_ALERTS_FILE, JSON.stringify(pendingOnly), 'utf8');
+  } catch {}
+}
 const EURO_CUSTOM_PLAYERS_FILE = join(CACHE_DIR, 'euro_custom_players.json');
 const EURO_PLAYER_TEAMS_FILE = join(CACHE_DIR, 'euro_player_teams.json');
 
@@ -261,6 +327,12 @@ const COUNTRY_ALIASES = {
   tunisia: 'tunisie', tunisie: 'tunisie',
   turkiye: 'turquie', turquie: 'turquie', turkey: 'turquie',
   unitedstates: 'etatsunis', etatsunis: 'etatsunis', usa: 'etatsunis',
+  // Clubs Bundesliga (1er septembre 2026) — même bug que Vienne/Nicosie du 25 août : Unibet/Betclic
+  // utilisent des noms FR/abrégés, Pinnacle des noms complets DE/EN, jamais fusionnés par fuzzy() sans
+  // alias. Cas réel : plusieurs matchs Bundesliga dupliqués en 2 entrées (une avec Unibet+Betclic, une
+  // identique avec Pinnacle seul) — Cologne/FC Koln, Ein.Francfort/Eintracht Frankfurt, Brême/Bremen,
+  // Hambourg/Hamburger SV.
+  koln: 'cologne', francfort: 'frankfurt', ein: 'eintracht', breme: 'bremen', hambourg: 'hamburg',
 };
 
 // Alias clubs Brasileirão (17 juillet 2026) — football-data.org utilise un préfixe (EC Bahia,
@@ -420,8 +492,14 @@ async function _footballApiFetchRaw(url) {
     return j;
   } finally { footballApiRelease(); }
 }
-async function footballApiFetch(url, attempt = 0) {
-  if (_footballApiPaused) throw new Error('football-api paused (pause manuelle)');
+async function footballApiFetch(url, attempt = 0, allowDuringPause = false) {
+  // allowDuringPause (1er septembre 2026) — la pause manuelle/auto bloque tout footballApiFetch par
+  // défaut (quota), mais quelques routes à la demande, jamais interrogées en tâche de fond, coûtent
+  // trop peu (2 appels, cache 6h) pour justifier de rester périmées des dizaines d'heures pendant les
+  // longues fenêtres de pause — cas réel : Buteurs/Passeurs La Liga servis figés 46h+ (jamais
+  // rafraîchis, la pause bloquait systématiquement le seul point d'entrée qui les rafraîchit,
+  // l'ouverture du panneau) sans le moindre signal à l'utilisateur que c'était périmé.
+  if (_footballApiPaused && !allowDuringPause) throw new Error('football-api paused (pause manuelle)');
   try {
     return await _footballApiFetchRaw(url);
   } catch (e) {
@@ -432,7 +510,7 @@ async function footballApiFetch(url, attempt = 0) {
     // formes déclenchent maintenant le même retry avec backoff.
     if ((/rateLimit/i.test(e.message) || /football-api 429\b/.test(e.message)) && attempt < 3) {
       await new Promise(r => setTimeout(r, 2000 * (attempt + 1)));
-      return footballApiFetch(url, attempt + 1);
+      return footballApiFetch(url, attempt + 1, allowDuringPause);
     }
     throw e;
   }
@@ -445,6 +523,141 @@ function footballApiSeasonForDate(leagueKey, dateStr) {
   if (leagueKey === 'bresil') return d.getUTCFullYear();
   return d.getUTCMonth() + 1 >= 7 ? d.getUTCFullYear() : d.getUTCFullYear() - 1;
 }
+
+// ── Statut/score live via api-football (1er septembre 2026, demande explicite utilisateur) ─────
+// football-data.org démontré peu fiable sur le statut/score EN DIRECT ce soir (statut corrompu qui
+// retombe sur "programmé" en plein match, score qui redevient null) — api-football (déjà utilisé
+// dans le projet, même clé Pro que blessures/xG/coupes d'Europe/buteurs) s'est montré net et à jour
+// sur une comparaison directe en conditions réelles (Remo-Coritiba : FD disait "programmé" pendant
+// qu'api-football donnait "2e mi-temps, 72e, 2-1" correctement, score même plus à jour que FD).
+// Couche strictement ADDITIVE, jamais bloquante : le calendrier/classement/buteurs restent
+// entièrement sur football-data.org (pas touchés) — seuls status/score du jour même sont
+// éventuellement corrigés si api-football a une réponse exploitable pour ce match précis, sinon le
+// comportement football-data.org existant s'applique tel quel. Dégradation totale et silencieuse si
+// la clé api-football manque, si le quota est en pause, ou si le fetch échoue — aucune erreur ne
+// remonte à l'appelant, aucune régression possible sur ce qui marche déjà (_getBresilMatches/les 5
+// championnats gardent leur propre logique de statut FD intacte, cette couche vient juste
+// l'écraser en tout dernier si elle a mieux).
+function _normLiveTeamName(s) {
+  return (s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]/g, '');
+}
+const LIVE_STATUS_LEAGUES = { ligue1: 61, pl: 39, laliga: 140, bundes: 78, seriea: 135, bresil: 71 };
+const LIVE_API_STATUS_MAP = {
+  NS: 'STATUS_SCHEDULED', TBD: 'STATUS_SCHEDULED',
+  '1H': 'STATUS_IN_PROGRESS', '2H': 'STATUS_IN_PROGRESS', HT: 'STATUS_IN_PROGRESS', ET: 'STATUS_IN_PROGRESS', P: 'STATUS_IN_PROGRESS', BT: 'STATUS_IN_PROGRESS', LIVE: 'STATUS_IN_PROGRESS',
+  FT: 'STATUS_FINAL', AET: 'STATUS_FINAL', PEN: 'STATUS_FINAL',
+};
+// TTL court (30s) — assez pour ne pas re-solliciter l'API à chaque fixture d'un même cycle, assez
+// court pour qu'un clic sur le bouton "recharger" (Carte du Monde, ajouté le 1er septembre) obtienne
+// quasi toujours une donnée fraîche sans avoir besoin d'une route d'invalidation dédiée.
+const LIVE_STATUS_TTL_MS = 30_000;
+let _liveStatusCache = {}; // leagueKey → { ts, byTeamKey }
+async function _getFootballApiLiveStatus(leagueKey) {
+  const cached = _liveStatusCache[leagueKey];
+  if (cached && Date.now() - cached.ts < LIVE_STATUS_TTL_MS) return cached.data;
+  const empty = { byTeamKey: {} };
+  if (!process.env.FOOTBALL_API_KEY || !LIVE_STATUS_LEAGUES[leagueKey]) return empty;
+  try {
+    const leagueId = LIVE_STATUS_LEAGUES[leagueKey];
+    const season = footballApiSeasonForDate(leagueKey, new Date().toISOString());
+    // Deux dates, pas une (1er septembre 2026, bug trouvé en testant) — un match démarré avant
+    // minuit UTC et toujours en cours reste indexé sous la date d'HIER côté api-football (convention
+    // standard : un match est daté par son coup d'envoi, pas par "quel jour on est maintenant").
+    // Interroger seulement "aujourd'hui" ratait donc systématiquement tout match encore en cours
+    // après minuit — cas réel : Remo-Coritiba (coup d'envoi 31/08 23h) introuvable le 01/09, override
+    // silencieusement no-op. Coût : 2 appels au lieu d'1 par championnat, toujours négligeable.
+    const todayStr = new Date().toISOString().slice(0, 10);
+    const yesterdayStr = new Date(Date.now() - 86400_000).toISOString().slice(0, 10);
+    const [jToday, jYesterday] = await Promise.all([
+      footballApiFetch(`${FOOTBALL_API_BASE}/fixtures?league=${leagueId}&season=${season}&date=${todayStr}`, 0, true),
+      footballApiFetch(`${FOOTBALL_API_BASE}/fixtures?league=${leagueId}&season=${season}&date=${yesterdayStr}`, 0, true),
+    ]);
+    const byTeamKey = {};
+    for (const fx of [...(jYesterday.response || []), ...(jToday.response || [])]) {
+      const mapped = LIVE_API_STATUS_MAP[fx.fixture?.status?.short];
+      if (!mapped) continue;
+      const hKey = _normLiveTeamName(fx.teams?.home?.name);
+      const aKey = _normLiveTeamName(fx.teams?.away?.name);
+      if (!hKey || !aKey) continue;
+      byTeamKey[`${hKey}__${aKey}`] = { status: mapped, homeScore: fx.goals?.home ?? null, awayScore: fx.goals?.away ?? null };
+    }
+    const data = { byTeamKey };
+    _liveStatusCache[leagueKey] = { ts: Date.now(), data };
+    return data;
+  } catch {
+    return cached?.data || empty;
+  }
+}
+// Noms différents entre FD ("Clube do Remo") et api-football ("Remo") — recherche exacte d'abord,
+// puis tolérance "l'un des deux noms normalisés contient l'autre" en repli. Ne lève jamais, ne
+// renvoie l'override que s'il trouve vraiment une correspondance exploitable.
+function _applyLiveStatusOverride(homeName, awayName, current, liveData) {
+  try {
+    if (!liveData?.byTeamKey) return current;
+    const hKey = _normLiveTeamName(homeName), aKey = _normLiveTeamName(awayName);
+    let entry = liveData.byTeamKey[`${hKey}__${aKey}`];
+    if (!entry) {
+      for (const [key, val] of Object.entries(liveData.byTeamKey)) {
+        const [kH, kA] = key.split('__');
+        const hMatch = kH === hKey || (kH && hKey && (kH.includes(hKey) || hKey.includes(kH)));
+        const aMatch = kA === aKey || (kA && aKey && (kA.includes(aKey) || aKey.includes(kA)));
+        if (hMatch && aMatch) { entry = val; break; }
+      }
+    }
+    if (!entry) return current;
+    return { status: entry.status, homeScore: entry.homeScore, awayScore: entry.awayScore };
+  } catch {
+    return current;
+  }
+}
+// Bug trouvé le 1er septembre 2026 : appliquer l'override DANS le bloc qui construit le cache
+// 30 minutes de _getBresilMatches()/_api/fd/matches (comme la 1ère version le faisait) le fige pour
+// 30 minutes lui aussi — la fraîcheur api-football (30s) ne servait donc à rien, un score en gardait
+// un vieux jusqu'au prochain vrai refetch FD. Cas réel : Remo-Coritiba affiché 1-1 alors que le score
+// réel était 2-2 (90e minute), simplement parce que le fetch FD qui a peuplé le cache datait d'avant
+// le 2e but. Fix : l'override n'est plus jamais baké dans le cache 30 min — il est réappliqué à
+// CHAQUE appel, sur le résultat (frais ou caché), via cette fonction partagée. `_getFootballApiLiveStatus`
+// garde son propre cache 30s en interne, donc ça reste peu coûteux même appelé à chaque requête.
+async function _applyLiveScoreOverride(result) {
+  if (!result?.matches?.length) return result;
+  // Fix 1er septembre 2026 — quota api-football consommé inutilement (5366/7500 en une soirée avec
+  // un seul vrai match en cours) : cette fonction interrogeait TOUTES les ligues présentes dans la
+  // liste à chaque requête (limité seulement par le cache 30s interne, pas par un vrai besoin), y
+  // compris des ligues sans aucun match encore commencé. Un coup d'envoi dans le futur ne peut par
+  // définition avoir aucun score/statut live à corriger — ne garder que les ligues ayant au moins un
+  // match dont le coup d'envoi est déjà passé (candidat live réel, y compris un statut FD resté
+  // bloqué SCHEDULED après l'heure — cf. FD_MAX_LIVE_MATCH_MS/filet 20min plus haut).
+  const leagueKeys = [...new Set(
+    result.matches.filter(m => m.status !== 'STATUS_FINAL' && new Date(m.date).getTime() <= Date.now()).map(m => m.league)
+  )];
+  if (!leagueKeys.length) return result;
+  const liveDataByLeague = {};
+  await Promise.all(leagueKeys.map(async lk => {
+    liveDataByLeague[lk] = await _getFootballApiLiveStatus(lk).catch(() => ({ byTeamKey: {} }));
+  }));
+  const matches = result.matches.map(m => {
+    const liveData = liveDataByLeague[m.league];
+    if (!liveData || !Object.keys(liveData.byTeamKey || {}).length) return m;
+    const overridden = _applyLiveStatusOverride(m.home.name, m.away.name, { status: m.status, homeScore: m.home.score, awayScore: m.away.score }, liveData);
+    if (overridden.status === m.status && overridden.homeScore === m.home.score && overridden.awayScore === m.away.score) return m;
+    return { ...m, status: overridden.status, home: { ...m.home, score: overridden.homeScore }, away: { ...m.away, score: overridden.awayScore } };
+  });
+  return { ...result, matches };
+}
+// Invalidation manuelle (bouton "recharger" Carte du Monde) — vide le cache de statut par fixture (3
+// septembre 2026, cf. fetchFixtureLiveStatus) pour forcer un vrai refetch immédiat au prochain appel,
+// plutôt que d'attendre son TTL 45s (les entrées `final:true` ne sont volontairement PAS effacées —
+// un match terminé ne peut plus changer, inutile de le réinterroger). `_liveStatusCache` gardé par
+// prudence (ancien mécanisme pré-migration, _applyLiveScoreOverride n'est cependant plus appelé nulle
+// part depuis la migration du 2 septembre — ce vidage-ci est devenu un no-op réel, mais inoffensif) —
+// à nettoyer avec le reste du code FD mort (cf. plan de migration, étape 4).
+app.post('/api/football/live-refresh', (req, res) => {
+  _liveStatusCache = {};
+  for (const id of Object.keys(_fixtureStatusCache)) {
+    if (!_fixtureStatusCache[id]?.final) delete _fixtureStatusCache[id];
+  }
+  res.json({ ok: true });
+});
 const _footballInjuriesCache = {}; // `${leagueKey}_${YYYY-MM-DD}` → { data, ts }
 async function fetchFootballInjuriesForDate(leagueKey, dateOnly) {
   const cacheKey = `${leagueKey}_${dateOnly}`;
@@ -557,20 +770,33 @@ async function computeFootballInjuryPenalties(leagueKey, dateStr, homeTeamName, 
 // n'est pas trouvée côté api-football ou si l'échantillon xG est trop court — jamais bloquant.
 const FB_XG_RECENT_GAMES = 8; // nb de matchs récents moyennés — pas calibré, même statut que SHRINK_K
 const FB_XG_MIN_GAMES    = 3; // sous ce seuil, échantillon jugé trop court, fallback buts bruts
-const _footballTeamIdCache = {}; // `${leagueKey}_${season}` → { data: {apiTeamName: id}, ts }
+// Persisté sur disque + tolérant à la pause manuelle (2 septembre 2026, demande explicite
+// utilisateur : "on garde en mémoire les données récupérées" pendant la pause) — jusqu'ici ce cache
+// n'existait qu'en mémoire (vidé à chaque redémarrage backend, fréquent en dev) ET ne servait jamais
+// une entrée périmée pendant une pause api-football, contrairement aux caches basket EU
+// (`|| _basketballApiPaused`, même principe). Résultat concret observé : un match tout juste entré
+// dans la fenêtre d'alerte 48h, jamais encore résolu, tombait sur un cache-miss pendant la pause →
+// footballApiFetch lève une exception → équipe introuvable → xG à 0 toute la durée de la pause, alors
+// que le vrai cycle de réveil automatique (6h) avait déjà les bonnes données quelques heures plus
+// tôt pour d'autres équipes. Un nom d'équipe→id ne change de toute façon jamais en cours de saison.
+const FB_TEAM_ID_CACHE_FILE = join(CACHE_DIR, 'football_team_ids.json');
+let _footballTeamIdCache = {}; // `${leagueKey}_${season}` → { data: {apiTeamName: id}, ts }
+try { if (existsSync(FB_TEAM_ID_CACHE_FILE)) _footballTeamIdCache = JSON.parse(readFileSync(FB_TEAM_ID_CACHE_FILE, 'utf8')); } catch {}
+const _saveFootballTeamIdCache = () => { try { writeFileSync(FB_TEAM_ID_CACHE_FILE, JSON.stringify(_footballTeamIdCache), 'utf8'); } catch {} };
 async function fetchFootballTeamIds(leagueKey, season) {
   const cacheKey = `${leagueKey}_${season}`;
   const cached = _footballTeamIdCache[cacheKey];
-  if (cached && Date.now() - cached.ts < 24 * CACHE_6H) return cached.data;
+  if (cached && (Date.now() - cached.ts < 24 * CACHE_6H || _footballApiPaused) && Object.keys(cached.data || {}).length) return cached.data;
   const leagueId = FOOTBALL_API_LEAGUE_IDS[leagueKey];
-  if (!leagueId || !process.env.FOOTBALL_API_KEY) return {};
+  if (!leagueId || !process.env.FOOTBALL_API_KEY) return cached?.data || {};
   try {
     const j = await footballApiFetch(`${FOOTBALL_API_BASE}/teams?league=${leagueId}&season=${season}`);
     const map = {};
     for (const t of (j.response || [])) if (t.team?.name && t.team?.id) map[t.team.name] = t.team.id;
     _footballTeamIdCache[cacheKey] = { data: map, ts: Date.now() };
+    _saveFootballTeamIdCache();
     return map;
-  } catch { return {}; }
+  } catch { return cached?.data || {}; }
 }
 const resolveFootballApiTeamId = (teamMap, ourTeamName) => {
   for (const [apiName, id] of Object.entries(teamMap)) if (fuzzy(apiName, ourTeamName)) return id;
@@ -590,8 +816,12 @@ const _saveFootballTeamXGCache = () => { try { writeFileSync(FB_XG_CACHE_FILE, J
 async function fetchTeamRecentXG(teamApiId, leagueId, season) {
   const cacheKey = `${teamApiId}_${leagueId}_${season}`;
   const cached = _footballTeamXGCache[cacheKey];
-  if (cached && Date.now() - cached.ts < FB_XG_CACHE_TTL) return cached.data;
-  if (!process.env.FOOTBALL_API_KEY) return null;
+  // `|| _footballApiPaused` (2 septembre 2026, demande explicite) — pendant une pause manuelle, sert
+  // toujours le dernier xG réel connu plutôt que de tomber sur 0 au moindre cache-miss/TTL dépassé
+  // (ex: équipe jamais encore résolue depuis le dernier réveil auto) — même principe déjà en place
+  // côté basket EU (`|| _basketballApiPaused`).
+  if (cached && (Date.now() - cached.ts < FB_XG_CACHE_TTL || _footballApiPaused)) return cached.data;
+  if (!process.env.FOOTBALL_API_KEY) return cached?.data || null;
   try {
     const fj = await footballApiFetch(`${FOOTBALL_API_BASE}/fixtures?team=${teamApiId}&league=${leagueId}&season=${season}&last=${FB_XG_RECENT_GAMES}&status=FT`);
     const fixtures = fj.response || [];
@@ -626,7 +856,7 @@ async function fetchTeamRecentXG(teamApiId, leagueId, season) {
     _footballTeamXGCache[cacheKey] = { data, ts: Date.now() };
     _saveFootballTeamXGCache();
     return data;
-  } catch { return null; }
+  } catch { return cached?.data || null; }
 }
 // Reconstitue homeGF/homeGA/homePlayed (etc.) attendus par computeLambdas à partir des moyennes
 // xG — même conversion moyenne×matchs déjà utilisée pour la CDM (teamstats renvoie des moyennes,
@@ -817,6 +1047,13 @@ function freezeCdmPoolAvg(fixtureId, avgGF, avgGA) {
   _saveCdmFixturePoolAvg();
   return frozen;
 }
+// Groupes de ligues pour l'outil d'analyse near-miss (3 septembre 2026, demande explicite) — les 5
+// grands championnats partagent déjà les mêmes seuils réels (FB_BIG5_*) et se comportent de façon
+// cohérente entre eux, mais chaque pays pris seul manque de données résolues (~20 cas, sous le
+// minimum de 30 requis par l'outil) pour donner une recommandation fiable. `league=big5` sur
+// /api/analysis/threshold-optimizer regroupe les 5 pour analyser ensemble, SANS empêcher de filtrer
+// un seul pays à la fois (`league=laliga` continue de marcher tel quel) — les deux coexistent.
+const FOOTBALL_LEAGUE_GROUPS = { big5: ['ligue1', 'pl', 'laliga', 'bundes', 'seriea'] };
 const FB_BTTS_ALERT_PROB   = 0.70;
 // Redescendu à 65% le 27 août 2026 (même soirée) — le relevé à 80% ci-dessus reposait sur un
 // calcul sans filtre de cote réellement pariable : en exigeant la vraie cote minimum du marché
@@ -840,6 +1077,81 @@ const FB_RESULT_MIN_ODDS   = 1.50; // cote mini Résultat 1X2 (unibet/betclic �
 const FB_DC_BTTS_ALERT_PROB = 0.50; // proba mini DC & BTTS (combiné — plafond ~50% pour les matchs les plus forts)
 const FB_DC_OU_ALERT_PROB   = 0.55; // proba mini DC & Over 1.5
 const FB_DC_MIN_ODDS        = 1.45; // cote mini DC combinés
+
+// Seuils Big Five spécifiques (31 août 2026) — recalibrés sur l'historique near-miss résolu,
+// détaillé par championnat/marché/sens (voir artefact "Seuils Big Five" partagé avec l'utilisateur).
+// Big Five = 5 grands championnats (fixtureId préfixe fd_) uniquement — CDM/Brésil/coupes d'Europe
+// gardent leurs seuils globaux existants (FB_BTTS_ALERT_PROB etc.), dynamiques différentes, jamais
+// analysées de cette façon. Seuls 3 marchés méritaient d'être activés sur cette base :
+// - BTTS : proba ≥45% (cote inchangée à 1,50, un peu sous 1,60) — mitigé mais positif sur 3/4 ligues
+//   qui ont assez de recul (PL/Ligue1 nets, La Liga à l'équilibre, Serie A plus faible).
+// - Total "Plus de 1,5" SEULEMENT (pas "Plus de 2,5", resté mitigé/rouge sur La Liga et PL à cette
+//   ligne précise) : proba ≥60%, cote ≥1,10 — de loin le marché le plus solide, positif dans les 4
+//   championnats sans exception.
+// - DC & Over 1,5 : proba ≥45%, cote ≥1,50 — positif sur 3/4 championnats (Ligue1/Serie A/PL), La
+//   Liga plus faible surtout côté "X2" mais gardé en bloc (décision explicite : activer les 4
+//   championnats plutôt que d'exclure La Liga a priori, quitte à couper ensuite via la liste
+//   d'exclusion ci-dessous si le réel confirme la faiblesse).
+// Résultat et DC & BTTS restent sur leurs seuils globaux (70%/1,50 et 50%/1,45) — aucune zone
+// proba/cote testée n'a montré un bilan solide, ni en agrégé ni championnat par championnat (rouge
+// ou à peine à l'équilibre presque partout), pas assez de preuve pour les activer.
+const FB_BIG5_LEAGUES = new Set(['ligue1', 'pl', 'laliga', 'seriea', 'bundes']);
+// Remonté 45%→58% le 4 septembre 2026 (demande explicite utilisateur, "qualité avant quantité") —
+// sur l'historique near-miss résolu (55 cas), 45% laissait passer 75% de tous les matchs évalués
+// (41/55) pour un winrate à peine rentable (58,5%). Le seuil n'est PAS monotone par tranche de 5pts
+// (bruit de petit échantillon : 45-50%=71%, 50-55%=53%, 55-60%=43%) donc aucune coupure n'isole
+// proprement "bon" de "mauvais" — 50% testé et rejeté (55,9%, pire que 45%). Sweep fin autour de
+// 55-60% (points de coupure au %) : 57%=13 cas/61,5%, 58%=9 cas/77,8%, 59%/60%=8 cas/75,0%
+// (identiques — aucun cas résolu entre 59 et 60%). 58% retenu : meilleur compromis volume/winrate
+// des seuils hauts testés (9 cas, 7 gagnés/2 perdus) — échantillon encore petit, à resurveiller avec
+// le near-miss une fois plus de matchs résolus.
+const FB_BIG5_BTTS_PROB      = 0.58;
+const FB_BIG5_BTTS_MIN_ODDS  = 1.50;
+const FB_BIG5_TOTAL15_PROB     = 0.60;
+// Remontée à 1,30 le 1er septembre 2026 (demande explicite utilisateur) — sur l'historique frais
+// (marché relancé par le fix OU_LINES), même 1,10 est repassé négatif (-4% ROI, n=27) ; 1,30 reste
+// négatif aussi (-9%, n=6) mais réduit fortement le volume. Décision assumée malgré des données pas
+// encore favorables — à resurveiller via le near-miss avec plus de recul avant de reconsidérer.
+const FB_BIG5_TOTAL15_MIN_ODDS = 1.30;
+const FB_BIG5_DCOU_PROB      = 0.45;
+const FB_BIG5_DCOU_MIN_ODDS  = 1.50;
+// Liste d'exclusion (marché:championnat) — vide au démarrage. Prévue pour couper un couple précis
+// sans toucher au reste si un championnat se révèle perdant sur un marché une fois plus de recul
+// réel accumulé (ex: 'btts:laliga' si La Liga BTTS tourne mal après quelques semaines).
+const FB_BIG5_MARKET_LEAGUE_EXCLUDE = new Set([
+  // 'btts:laliga',
+]);
+function fbBig5Active(market, league) {
+  return FB_BIG5_LEAGUES.has(league) && !FB_BIG5_MARKET_LEAGUE_EXCLUDE.has(`${market}:${league}`);
+}
+
+// Seuils Brésil spécifiques (31 août 2026) — même méthodologie que Big Five ci-dessus, sur
+// l'historique near-miss résolu du Brasileirão (356 candidats). Contrairement au Big Five, le
+// pattern gagnant n'est pas le même marché mais l'INVERSE : Total/DC&Over (forts sur le Big Five)
+// sont plats ou négatifs ici, BTTS/DC&BTTS (faibles sur le Big Five) sont ceux qui gagnent —
+// cohérent avec des bookmakers moins affûtés sur cette ligue mais pas de la même façon que sur les
+// 5 grands championnats. Contrairement au Big Five aussi, l'activation n'est pas "marché entier"
+// mais SENS précis :
+// - BTTS : proba ≥35% (remonté de 25% le 1er septembre 2026 — le plancher théorique n'avait jamais
+//   été atteint en pratique, aucun cas résolu sous 35% sur l'historique complet ; remonté pour
+//   coller au pire cas réellement observé plutôt qu'à une marge de sécurité jamais testée, coût
+//   zéro sur l'historique). Cote ≥1,40 inchangée — 17 cas, 71% de réussite, ROI +23%.
+// - DC & BTTS "1X" SEULEMENT (pas "X2" — vérifié cas par cas, seulement 3 gagnés sur 10 à des cotes
+//   pourtant hautes 2,20-4,35, pas fiable malgré une 1ère estimation agrégée trop optimiste) :
+//   proba ≥20%, cote ≥1,40 — 10-18 cas selon le point de coupure, ROI +19% à +30%.
+// Total et DC&Over Brésil : aucune zone rentable trouvée à aucun seuil testé, non touchés.
+// Résultat "Nul" activé puis retiré le 1er septembre 2026 (≥20%/1,30 testé, +16% ROI sur 17 cas) —
+// remarque utilisateur en conditions réelles : le modèle ne dépasse quasiment jamais 25% sur un Nul
+// (structurel), donc ce plancher filtrait trop peu (alerte quasi systématique) ; la seule zone plus
+// stricte disponible (≥25%) tombe à 6 cas/-48% ROI, aucun seuil intermédiaire viable entre les deux.
+// Revenu au seuil global (jamais atteint en pratique), comme domicile/extérieur.
+// Remonté 35%→45% le 4 septembre 2026 (même demande "qualité avant quantité") — 35% laissait passer
+// 100% des matchs résolus (41/41), winrate 63,4%. 45% coupe la tranche [35-45%) (la plus faible,
+// 15 cas à ~50%) et garde 26 cas à 65,4% — 50% testé et rejeté (12 cas, 50,0%, pile ou face).
+const FB_BRESIL_BTTS_PROB           = 0.45;
+const FB_BRESIL_BTTS_MIN_ODDS       = 1.40;
+const FB_BRESIL_DCBTTS_1X_PROB       = 0.20;
+const FB_BRESIL_DCBTTS_1X_MIN_ODDS   = 1.40;
 
 // ── football-data.org (TEST) ──────────────────────────────────────────────────
 const FD_KEY  = process.env.FD_API_KEY;
@@ -899,126 +1211,244 @@ function _isFdStandingsStale(currentMatchday, table) {
   return table[0].playedGames > (currentMatchday || 0) + 1;
 }
 
+// ── Bundle calendrier+classement api-football (2 septembre 2026) ──────────────────────────────
+// Remplace football-data.org (fdGet) pour les 6 championnats FOOTBALL_API_LEAGUE_IDS ci-dessus
+// (ligue1/pl/laliga/bundes/seriea/bresil) — mesuré à 2 appels/ligue (1 calendrier fenêtré +1
+// classement), 12 appels/cycle pour les 6, contre 10/min de quota chez FD. CDM non concernée,
+// reste sur fdGet/_getFdLeaguesResults ci-dessous (aucun id de compétition api-football pour la CDM).
+let _fbLeagueBundleCache = {}; // leagueKey -> { data: { fixtures, table }, ts }
+try { if (existsSync(FB_LEAGUE_BUNDLE_CACHE_FILE)) _fbLeagueBundleCache = JSON.parse(readFileSync(FB_LEAGUE_BUNDLE_CACHE_FILE, 'utf8')); } catch {}
+const _saveFbLeagueBundleCache = () => { try { writeFileSync(FB_LEAGUE_BUNDLE_CACHE_FILE, JSON.stringify(_fbLeagueBundleCache), 'utf8'); } catch {} };
+
+// FT/AET/PEN/AWD/WO = terminé ; NS/TBD/PST = programmé ; le reste (1H/HT/2H/ET/BT/P/SUSP/INT/LIVE)
+// = en cours. ABD/CANC traités comme "terminé" (statut clos, pas de reprise) plutôt que "programmé"
+// indéfiniment — mêmes garde-fous FD (FD_MAX_LIVE_MATCH_MS/20min) réappliqués côté appelants.
+function apiFootballMatchStatus(short) {
+  if (['FT', 'AET', 'PEN', 'AWD', 'WO', 'ABD', 'CANC'].includes(short)) return 'STATUS_FINAL';
+  if (['NS', 'TBD', 'PST'].includes(short)) return 'STATUS_SCHEDULED';
+  return 'STATUS_IN_PROGRESS';
+}
+
+async function fetchApiFootballLeagueBundle(leagueKey) {
+  const ck = leagueKey;
+  const hit = _fbLeagueBundleCache[ck];
+  if (hit && (Date.now() - hit.ts < 30 * 60_000 || _footballApiPaused)) return hit.data;
+  const leagueId = FOOTBALL_API_LEAGUE_IDS[leagueKey];
+  const season = footballApiSeasonForDate(leagueKey, new Date().toISOString());
+  const from = new Date(Date.now() - 3 * 86400_000).toISOString().slice(0, 10);
+  const to   = new Date(Date.now() + 45 * 86400_000).toISOString().slice(0, 10);
+  try {
+    const fixturesData = await footballApiFetch(`${FOOTBALL_API_BASE}/fixtures?league=${leagueId}&season=${season}&from=${from}&to=${to}`);
+    const standingsData = await footballApiFetch(`${FOOTBALL_API_BASE}/standings?league=${leagueId}&season=${season}`);
+    const table = standingsData.response?.[0]?.league?.standings?.[0] || [];
+    const data = { fixtures: fixturesData.response || [], table };
+    _fbLeagueBundleCache[ck] = { data, ts: Date.now() };
+    _saveFbLeagueBundleCache();
+    return data;
+  } catch (err) {
+    if (hit) return hit.data;
+    throw err;
+  }
+}
+
+// Statut/score en direct sans attendre le TTL 30min du bundle (3 septembre 2026, cas réel Flamengo-
+// Mirassol resté "programmé" en plein match). allowDuringPause=true partout ici : contrairement aux
+// enrichissements (blessures/xG/rosters), un score en direct a trop de valeur (vrai argent en jeu)
+// pour rester figé jusqu'à 6h pendant une pause manuelle.
+const LIVE_FB_POLL_MS = 45_000;
+// Fix 4 septembre 2026 — bug trouvé en direct (Real Sociedad-Celta resté "programmé" des heures après
+// la vraie fin FT) : une borne haute (3h15, ex-LIVE_FB_MAX_WINDOW_MS) faisait que le check en direct
+// s'arrêtait complètement passé ce délai, et la route retombait alors sur le statut du bundle 30min
+// (lui-même figé indéfiniment pendant une pause manuelle api-football, cf. fetchApiFootballLeagueBundle
+// `|| _footballApiPaused`) — un match qui n'avait pas eu le temps d'être détecté FT avant la borne (ici :
+// coupé par une pause manuelle en plein match) restait alors bloqué "programmé" pour toujours, plus aucun
+// mécanisme ne le revérifiait jamais. Suppression de la borne haute : tant qu'un match n'est pas FT, on
+// continue de le vérifier à chaque appel (coût quasi nul — fetchFixtureLiveStatus limite déjà à 1 vraie
+// requête/45s par fixture et met le résultat FT en cache définitivement), peu importe l'ancienneté du
+// coup d'envoi ou une pause manuelle en cours (le live-check bypasse déjà la pause, allowDuringPause=true).
+function _fixtureNeedsLiveCheck(fixtureDate, statusShort) {
+  if (['FT', 'AET', 'PEN', 'AWD', 'WO', 'ABD', 'CANC'].includes(statusShort)) return false;
+  return Date.now() >= new Date(fixtureDate).getTime();
+}
+// Bug trouvé le 3 septembre 2026 (même soir que le fix ci-dessus) — 1ère version interrogeait
+// /fixtures?live=all (1 seul appel partagé, tous matchs en direct toutes ligues). Ça couvrait bien
+// "en cours", mais /fixtures?live=all arrête de renvoyer un match DÈS qu'il passe FT — un match qui
+// vient de se terminer disparaît donc de cette réponse avant que le bundle 30min n'ait eu le temps de
+// se rafraîchir, et l'override retombait silencieusement sur le bundle périmé (cas réel : Flamengo-
+// Mirassol resté affiché "EN COURS 1-0" alors que le vrai match était FT 2-0 depuis un moment). Fix :
+// appel ciblé par fixture (`/fixtures?id=X`) au lieu du live=all groupé — renvoie toujours le vrai
+// état actuel (en cours OU terminé), aucun angle mort. Résultat FT mis en cache durablement (`final:
+// true`, jamais réinterrogé) puisqu'il ne peut plus changer ; sinon TTL court comme avant.
+// Fix 3 septembre 2026 (même soir) — le bouton "Recharger" pouvait rester bloqué "une éternité" :
+// footballApiFetch retente jusqu'à 3 fois sur rate-limit avec un backoff 2s/4s/6s (jusqu'à 12s pour
+// UN SEUL match), et rien ne bornait le temps total si plusieurs matchs en direct avaient besoin d'un
+// check en même temps — un clic pouvait donc attendre la somme de plusieurs chaînes de retry. Timeout
+// dur ajouté (même principe que fetchBetclicFootballExtras, 23 juillet 2026) : au-delà de 5s, on
+// abandonne et on retombe sur le dernier statut connu (bundle périmé, mais un chiffre immédiatement
+// plutôt qu'une attente indéfinie) — la prochaine requête (bouton ou cycle naturel) réessaiera.
+const LIVE_FIXTURE_FETCH_TIMEOUT_MS = 5000;
+const _fixtureStatusCache = {}; // fixtureId -> { data, ts, final }
+async function fetchFixtureLiveStatus(fixtureId) {
+  const hit = _fixtureStatusCache[fixtureId];
+  if (hit && (hit.final || Date.now() - hit.ts < LIVE_FB_POLL_MS)) return hit.data;
+  try {
+    const j = await Promise.race([
+      footballApiFetch(`${FOOTBALL_API_BASE}/fixtures?id=${fixtureId}`, 0, true),
+      new Promise((_, rej) => setTimeout(() => rej(new Error('live fixture check timeout')), LIVE_FIXTURE_FETCH_TIMEOUT_MS)),
+    ]);
+    const f = j.response?.[0];
+    if (!f) return hit?.data ?? null;
+    const final = ['FT', 'AET', 'PEN', 'AWD', 'WO', 'ABD', 'CANC'].includes(f.fixture.status.short);
+    _fixtureStatusCache[fixtureId] = { data: f, ts: Date.now(), final };
+    return f;
+  } catch { return hit?.data ?? null; }
+}
+// Construit un {id -> fixture} pour un lot de fixtures qui en ont besoin, en parallèle (bornée par le
+// sémaphore déjà en place dans footballApiFetch) — même contrat de retour que l'ancien live=all
+// (byId), pour ne pas retoucher les 2 points d'appel.
+async function fetchLiveFootballScoresFor(fixtures) {
+  const byId = {};
+  await Promise.all(fixtures.map(async f => {
+    const status = await fetchFixtureLiveStatus(f.fixture.id).catch(() => null);
+    if (status) byId[f.fixture.id] = status;
+  }));
+  return byId;
+}
+
+// Migré vers api-football le 2 septembre 2026 (cf. plan de migration) — même URL, même forme de
+// réponse qu'avant (id/league/round/date/status/home/away/h2h/markets), seule la source change.
+// _applyLiveScoreOverride retiré ici : il servait à corriger le statut/score de football-data.org
+// avec api-football — devenu redondant puisque la donnée vient désormais directement d'api-football.
+const FB_MIGRATED_LEAGUES = ['ligue1', 'pl', 'laliga', 'bundes', 'seriea', 'bresil'];
 app.get('/api/fd/matches', async (req, res) => {
-  if (!FD_KEY) return res.status(503).json({ error: 'FD_API_KEY not configured' });
-  if (_fdCache && Date.now() - _fdCacheTs < 30 * 60 * 1000) return res.json(_fdCache);
-  // FD limite à 10 req/min — si une tentative récente a échoué (429), on sert le cache
-  // périmé (ou une liste vide) au lieu de re-tenter immédiatement et d'aggraver le 429
+  // Cache externe raccourci à 60s le 3 septembre 2026 (avant : 30 min, doublait le TTL 30 min déjà
+  // appliqué par fetchApiFootballLeagueBundle en dessous — un statut/score fraîchement rafraîchi côté
+  // bundle pouvait donc rester invisible ici jusqu'à 30 min de plus, cas réel Flamengo-Mirassol resté
+  // "programmé" alors que déjà en direct côté api-football). Ce cache externe ne throttle AUCUN appel
+  // réseau (déjà fait par le bundle, seul point qui appelle footballApiFetch) — il ne fait que dédupliquer
+  // les requêtes rapprochées côté route ; le raccourcir n'ajoute donc aucune requête api-football
+  // supplémentaire, juste une re-synthèse en mémoire (pas cher) plus fréquente depuis le bundle déjà en cache.
+  if (_fdCache && Date.now() - _fdCacheTs < 60_000) return res.json(_fdCache);
   if (Date.now() < _fdErrorUntil) return res.json(_fdCache || { matches: [], count: 0 });
 
   try {
     const allMatches = [];
-    for (const league of FD_LEAGUES) {
-      // Rate limit 10 req/min : les 2 requêtes par ligue (matches+standings) étaient lancées
-      // en parallèle, avec seulement 200ms entre ligues — les 10 requêtes partaient en moins
-      // d'1 seconde et saturaient tout le quota de la minute d'un coup. N'importe quel autre
-      // appel FD (CDM, teamstats) tombant dans cette même minute se prenait un 429. Espacement
-      // de chaque requête individuellement (pas juste entre ligues) pour laisser de la marge.
-      // Fix 23 août 2026 — status=SCHEDULED seul excluait aussi les matchs EN DIRECT (IN_PLAY/
-      // PAUSED côté football-data.org), pas seulement les terminés (l'intention d'origine).
-      // MatchDetailPage.jsx dépend entièrement de cette liste pour retrouver une fiche par id —
-      // un match qui passait en direct disparaissait donc de la liste et affichait "Match
-      // introuvable" pile pendant qu'on voulait le suivre (cas réel : Atletico Madrid-Villarreal).
-      // Vérifié en direct : FD accepte les statuts en liste séparée par virgules dans un seul
-      // appel, aucun coût de quota supplémentaire.
-      // Fix 29 août 2026 — même souci pour un match TERMINÉ (demande explicite : "je veux brancher
-      // pour que tout ce qu'on avait en pré-match s'affiche même sur le match terminé"). FINISHED
-      // ajouté au filtre + fenêtre dateFrom/dateTo bornée (même convention que _getFdLeaguesResults
-      // : -2j) pour ne récupérer que les matchs RÉCEMMENT terminés, pas tout l'historique de la
-      // saison (qui écraserait le slice(0,5) "prochains matchs" avec de vieux matchs joués il y a
-      // des mois, en plus d'un payload inutilement lourd). Coût quota inchangé (toujours 1 requête).
-      const dateFrom = new Date(Date.now() - 2 * 86400_000).toISOString().slice(0, 10);
-      const dateTo   = new Date(Date.now() + 45 * 86400_000).toISOString().slice(0, 10);
-      const matchesRes = await fdGet(`/competitions/${league.code}/matches?status=SCHEDULED,IN_PLAY,PAUSED,FINISHED&dateFrom=${dateFrom}&dateTo=${dateTo}`);
-      await new Promise(r => setTimeout(r, 600));
-      const standingsRes = await fdGet(`/competitions/${league.code}/standings`);
-      await new Promise(r => setTimeout(r, 600));
+    // Statut/score en direct par fixture ciblée (3 septembre 2026, cf. fetchFixtureLiveStatus plus
+    // haut), accumulé au fil des 6 championnats de cette route — jamais interrogé pour un match qui
+    // n'en a pas besoin (_fixtureNeedsLiveCheck).
+    const liveById = {};
+    for (const leagueKey of FB_MIGRATED_LEAGUES) {
+      const { fixtures, table } = await fetchApiFootballLeagueBundle(leagueKey);
 
-      // Classement : teamId → stats
-      const table = standingsRes.standings?.find(s => s.type === 'TOTAL')?.table || [];
+      // Classement : teamId → stats (mêmes champs qu'avant, calculés depuis les champs api-football)
       const statsMap = {};
       for (const s of table) {
         statsMap[s.team.id] = {
-          position:     s.position,
+          position:     s.rank,
           points:       s.points,
-          played:       s.playedGames,
-          wins:         s.won,
-          draws:        s.draw,
-          losses:       s.lost,
-          goalsFor:     s.goalsFor,
-          goalsAgainst: s.goalsAgainst,
+          played:       s.all?.played ?? 0,
+          wins:         s.all?.win ?? 0,
+          draws:        s.all?.draw ?? 0,
+          losses:       s.all?.lose ?? 0,
+          goalsFor:     s.all?.goals?.for ?? 0,
+          goalsAgainst: s.all?.goals?.against ?? 0,
           form: (s.form || '').split('').filter(c => 'WDL'.includes(c)).slice(-5),
         };
       }
 
-      // Classement complet + calendrier restant complet pour les outrights — table/matchesRes
-      // couvrent déjà TOUTES les équipes/tout le reste de la saison, statsMap/upcoming ci-dessous
-      // ne fait que les tronquer pour l'usage fixtures existant. Aucun appel FD en plus.
-      _fdSeasonInfo[league.key] = {
-        currentMatchday: standingsRes.season?.currentMatchday ?? null,
-        winner: standingsRes.season?.winner ?? null,
-        stale: _isFdStandingsStale(standingsRes.season?.currentMatchday, table),
-      };
-      _fdFullStandingsCache[league.key] = table.map(s => ({
+      // Classement complet + calendrier restant complet pour les outrights (même rôle qu'avant,
+      // contenu désormais sourcé d'api-football — ids d'équipe différents de l'ancien espace FD).
+      // Pas de détection "classement périmé" ici : api-football prend une saison explicite en
+      // paramètre et a été vérifié en direct pour renvoyer les vraies stats de CETTE saison (pas
+      // de report de la saison précédente comme le faisait FD) — cf. plan, point 4.
+      _fdSeasonInfo[leagueKey] = { currentMatchday: null, winner: null, stale: false };
+      _fdFullStandingsCache[leagueKey] = table.map(s => ({
         teamId: s.team.id, teamName: s.team.name,
-        position: s.position, points: s.points, played: s.playedGames,
-        wins: s.won, draws: s.draw, losses: s.lost,
-        goalsFor: s.goalsFor, goalsAgainst: s.goalsAgainst,
+        position: s.rank, points: s.points, played: s.all?.played ?? 0,
+        wins: s.all?.win ?? 0, draws: s.all?.draw ?? 0, losses: s.all?.lose ?? 0,
+        goalsFor: s.all?.goals?.for ?? 0, goalsAgainst: s.all?.goals?.against ?? 0,
         form: (s.form || '').split('').filter(c => 'WDL'.includes(c)).slice(-5),
       }));
-      // FINISHED exclu de ce cache (29 août 2026) — matchesRes contient désormais aussi les matchs
-      // récemment terminés (cf. fetch ci-dessus), mais le "calendrier restant" pour les outrights ne
-      // doit jamais inclure un match déjà joué.
-      const notFinishedFd = (matchesRes.matches || []).filter(m => m.status !== 'FINISHED' && m.status !== 'AWARDED');
-      _fdRemainingFixturesCache[league.key] = notFinishedFd.map(m => ({
-        id: String(m.id), date: m.utcDate, matchday: m.matchday,
-        homeTeamId: m.homeTeam.id, homeTeamName: m.homeTeam.name,
-        awayTeamId: m.awayTeam.id, awayTeamName: m.awayTeam.name,
-        // Ajouté 27 août 2026 — nécessaire pour exclure les matchs déjà en direct du moteur
-        // d'alertes (cf. filtre dans la boucle fbFixtures). Champ additif, n'affecte aucun
-        // consommateur existant de ce cache (outrights) qui ne lit pas cette clé.
-        status: m.status,
+      const notFinished = fixtures.filter(f => apiFootballMatchStatus(f.fixture.status.short) !== 'STATUS_FINAL');
+      _fdRemainingFixturesCache[leagueKey] = notFinished.map(f => ({
+        // matchday : numéro seul extrait de "Regular Season - N" (api-football) — generateBackgroundAlerts()
+        // le reformate en "Journée ${matchday}" ; stocker le texte brut produisait "Journée Regular
+        // Season - 6" (bug cosmétique trouvé le 2 septembre 2026 sur une vraie alerte Real Sociedad).
+        id: String(f.fixture.id), date: f.fixture.date, matchday: (/(\d+)\s*$/.exec(f.league.round || '') || [])[1] || null,
+        homeTeamId: f.teams.home.id, homeTeamName: f.teams.home.name,
+        awayTeamId: f.teams.away.id, awayTeamName: f.teams.away.name,
+        // Statut déjà normalisé (STATUS_SCHEDULED/STATUS_IN_PROGRESS/STATUS_FINAL) — pas le code brut
+        // api-football ('NS'/'1H'/'FT') : generateBackgroundAlerts() plus bas compare contre les
+        // anciennes valeurs FD ('SCHEDULED'/'TIMED'), corrigé pour comparer contre le statut normalisé.
+        status: apiFootballMatchStatus(f.fixture.status.short),
+        homeTeamCrest: f.teams.home.logo, awayTeamCrest: f.teams.away.logo,
       }));
-      // Sauvegarde par ligue, pas seulement à la fin des 5 (28 juillet 2026) — la boucle FD peut
-      // s'interrompre en cours de route (429, 10 req/min très serré) ; sans ça, un cycle interrompu
-      // perdait purement et simplement les ligues déjà traitées (jamais persistées), y compris
-      // _fdSeasonInfo, pourtant critique pour la détection de classement périmé des outrights.
       _saveFdFullStandings();
       _saveFdRemainingFixtures();
       _saveFdSeasonInfo();
 
-      // 5 prochains matchs + matchs récemment terminés (29 août 2026, demande explicite — "je veux
-      // brancher pour que tout ce qu'on avait en pré-match s'affiche même sur le match terminé").
-      // "5 prochains" reste calculé sur notFinishedFd uniquement (comportement inchangé — le widget
-      // dédié "5 prochains matchs" ne doit jamais se faire polluer par un match déjà joué) ; les
-      // matchs FINISHED des dernières 48h (même fenêtre que la CDM, /api/fd/worldcup) sont ajoutés
-      // À CÔTÉ, pas à la place — ils restent cliquables sans jamais pousser un vrai match à venir
-      // hors du top 5.
-      const FD_STATUS_MAP_MATCHES = {
-        SCHEDULED: 'STATUS_SCHEDULED', TIMED: 'STATUS_SCHEDULED',
-        IN_PLAY: 'STATUS_IN_PROGRESS', PAUSED: 'STATUS_IN_PROGRESS',
-        FINISHED: 'STATUS_FINAL', AWARDED: 'STATUS_FINAL',
-      };
-      const FD_KEEP_FINISHED_MS = 48 * 3600_000;
-      const recentFinishedFd = (matchesRes.matches || []).filter(m =>
-        (m.status === 'FINISHED' || m.status === 'AWARDED') &&
-        (Date.now() - new Date(m.utcDate).getTime()) < FD_KEEP_FINISHED_MS
+      // 5 prochains matchs + matchs récemment terminés (même fenêtre 48h qu'avant).
+      const FB_KEEP_FINISHED_MS = 48 * 3600_000;
+      const recentFinished = fixtures.filter(f =>
+        apiFootballMatchStatus(f.fixture.status.short) === 'STATUS_FINAL' &&
+        (Date.now() - new Date(f.fixture.date).getTime()) < FB_KEEP_FINISHED_MS
       );
-      const upcoming = [...recentFinishedFd, ...notFinishedFd.slice(0, 5)];
-      for (const m of upcoming) {
-        const hId = m.homeTeam.id;
-        const aId = m.awayTeam.id;
+      // Fix 4 septembre 2026 — remplacé "5 prochains matchs" (par COMPTE) par "la journée entière à
+      // venir" (par JOURNÉE/round) — demande explicite utilisateur : la Carte du Monde regroupe déjà
+      // les matchs par jour (repli du 31 juillet), donc afficher une journée complète (~10 matchs pour
+      // un grand championnat) ne surcharge rien visuellement, contrairement à un compte fixe qui coupait
+      // arbitrairement une journée en deux. Coût réseau nul — fetchApiFootballLeagueBundle a déjà
+      // récupéré tout le calendrier -3j/+45j en un seul appel, ceci ne change que ce qui est RENVOYÉ.
+      // Cas réel qui a motivé le fix initial (Espanyol-Sevilla, une alerte Total 1.5 pending invisible
+      // car 6 matchs La Liga programmés avant elle) est désormais couvert par ce mécanisme plus large ;
+      // le filet de sécurité par alerte active (ci-dessous) reste en plus, pour un match reprogrammé
+      // dans une AUTRE journée que celle actuellement affichée.
+      const nextRound = notFinished.length ? notFinished.slice().sort((a, b) => new Date(a.fixture.date) - new Date(b.fixture.date))[0].league.round : null;
+      const activeAlertFixtureIds = new Set(
+        [...backgroundAlerts, ..._acceptedAlerts]
+          .filter(a => a.league === leagueKey && !['won', 'lost', 'rejected'].includes(a.status || 'pending'))
+          .map(a => String(a.eventId || '').replace(/^fd_/, ''))
+      );
+      const forcedIncluded = notFinished.filter(f => activeAlertFixtureIds.has(String(f.fixture.id)));
+      const upcoming = [...recentFinished, ...(nextRound ? notFinished.filter(f => f.league.round === nextRound) : [])];
+      for (const f of forcedIncluded) {
+        if (!upcoming.some(u => u.fixture.id === f.fixture.id)) upcoming.push(f);
+      }
+      // Fix 4 septembre 2026 — vérifier TOUS les matchs déjà commencés-pas-finis (pas seulement les 5
+      // premiers de `upcoming`, qui ne servent qu'à limiter la liste "prochains matchs" affichée) :
+      // pendant une pause manuelle prolongée, le bundle reste figé sur son état d'AVANT la pause — si
+      // plusieurs matchs d'une même journée ont démarré depuis, ils occupent tous les 5 places de
+      // `notFinished.slice(0,5)` (triés par date), et un match plus tardif dans la même journée
+      // (ex: Real Sociedad-Celta 21h alors que 5 autres matchs à 13h/15h/17h/19h/19h30 sont eux aussi
+      // restés bloqués "programmé") ne se faisait donc jamais revérifier, resté "programmé" pour
+      // toujours. Coût négligeable : fetchFixtureLiveStatus met en cache 45s par match non-fini et
+      // définitivement une fois FT, donc ce filtre plus large ne multiplie pas les vraies requêtes réseau.
+      const needingCheck = notFinished.filter(f => _fixtureNeedsLiveCheck(f.fixture.date, f.fixture.status.short));
+      if (needingCheck.length) {
+        Object.assign(liveById, await fetchLiveFootballScoresFor(needingCheck));
+      }
+      for (const f of upcoming) {
+        const hId = f.teams.home.id;
+        const aId = f.teams.away.id;
+        const live = liveById?.[f.fixture.id];
+        const statusShort = live?.fixture?.status?.short ?? f.fixture.status.short;
+        const goals = live?.goals ?? f.goals;
+        let baseStatus = apiFootballMatchStatus(statusShort);
+        // Garde-fou "match resté EN COURS trop longtemps" (même filet que le reste de l'app) —
+        // conservé par prudence même si api-football s'est montré fiable jusqu'ici sur ce point.
+        if (baseStatus === 'STATUS_IN_PROGRESS' && Date.now() - new Date(f.fixture.date).getTime() > FD_MAX_LIVE_MATCH_MS) baseStatus = 'STATUS_FINAL';
+        const roundMatch = /(\d+)\s*$/.exec(f.league.round || '');
         allMatches.push({
-          id:      String(m.id),
-          league:  league.key,
-          round:   m.matchday ? `Journée ${m.matchday}` : '',
-          date:    m.utcDate,
-          status:  FD_STATUS_MAP_MATCHES[m.status] || 'STATUS_SCHEDULED',
+          id:      String(f.fixture.id),
+          league:  leagueKey,
+          round:   roundMatch ? `Journée ${roundMatch[1]}` : (f.league.round || ''),
+          date:    f.fixture.date,
+          status:  baseStatus,
           venue:   null,
           weather: null,
           isLive:  true,
-          home: { id: hId, name: m.homeTeam.name, short: m.homeTeam.tla || abbrev(m.homeTeam.name), logoId: m.homeTeam.crest, score: m.score?.fullTime?.home ?? null, upcoming: [], ...(statsMap[hId] || {}) },
-          away: { id: aId, name: m.awayTeam.name, short: m.awayTeam.tla || abbrev(m.awayTeam.name), logoId: m.awayTeam.crest, score: m.score?.fullTime?.away ?? null, upcoming: [], ...(statsMap[aId] || {}) },
+          home: { id: hId, name: f.teams.home.name, short: abbrev(f.teams.home.name), logoId: f.teams.home.logo, score: goals?.home ?? null, upcoming: [], ...(statsMap[hId] || {}) },
+          away: { id: aId, name: f.teams.away.name, short: abbrev(f.teams.away.name), logoId: f.teams.away.logo, score: goals?.away ?? null, upcoming: [], ...(statsMap[aId] || {}) },
           h2h:     [],
           markets: {},
         });
@@ -1035,7 +1465,7 @@ app.get('/api/fd/matches', async (req, res) => {
     _saveFdSeasonInfo();
     res.json(result);
   } catch (err) {
-    console.error('football-data.org error:', err.message);
+    console.error('api-football (matches) error:', err.message);
     _fdErrorUntil = Date.now() + 60 * 1000;
     res.json(_fdCache || { matches: [], count: 0 });
   }
@@ -1141,90 +1571,95 @@ const FD_STATUS_MAP_BRESIL = {
   IN_PLAY: 'STATUS_IN_PROGRESS', PAUSED: 'STATUS_IN_PROGRESS', LIVE: 'STATUS_IN_PROGRESS',
   FINISHED: 'STATUS_FINAL', AWARDED: 'STATUS_FINAL',
 };
+// Garde-fou statut non-régressif (1er septembre 2026) — football-data.org est démontré instable sur
+// cette compétition précise (champ status corrompu, cf. fix 27 août ci-dessous) : un match déjà vu
+// IN_PLAY (score 0-0 compris — `0 != null` est vrai, donc pas un souci de "score vide") peut, sur un
+// fetch suivant, revenir avec un status corrompu ET un score redevenu null en même temps — l'ancien
+// filet de sécurité (score rempli → FINAL, sinon → SCHEDULED) retombait alors sur SCHEDULED,
+// effaçant purement et simplement un match qu'on savait déjà en cours. Cas réel signalé par
+// l'utilisateur : Clube do Remo-Coritiba, vu 0-0 IN_PLAY puis SCHEDULED/score:null quelques minutes
+// plus tard côté Carte du Monde. Le statut ne peut plus jamais reculer (SCHEDULED < IN_PROGRESS <
+// FINAL) d'un cycle à l'autre ; le dernier score connu est aussi conservé en repli si le fetch
+// courant renvoie null pendant qu'on force IN_PROGRESS/FINAL. Persisté sur disque (survit aux
+// redémarrages --watch), état retiré 48h après le coup d'envoi (plus la peine de le garder).
+const BRESIL_STATUS_RANK = { STATUS_SCHEDULED: 0, STATUS_IN_PROGRESS: 1, STATUS_FINAL: 2 };
+const BRESIL_MATCH_STATE_FILE = join(CACHE_DIR, 'bresil_match_state.json');
+let _bresilMatchState = {};
+try { if (existsSync(BRESIL_MATCH_STATE_FILE)) _bresilMatchState = JSON.parse(readFileSync(BRESIL_MATCH_STATE_FILE, 'utf8')); } catch {}
+function _saveBresilMatchState() { try { writeFileSync(BRESIL_MATCH_STATE_FILE, JSON.stringify(_bresilMatchState), 'utf8'); } catch {} }
 
+// Migré vers api-football le 2 septembre 2026 — même forme de réponse qu'avant, réutilise le bundle
+// mis en cache (fetchApiFootballLeagueBundle('bresil'), même que /api/fd/matches, zéro appel en
+// plus). Tout le durcissement statut-corrompu/non-régressif (BRESIL_STATUS_RANK/_bresilMatchState/
+// inferBresilStatus) était une compensation spécifique à un défaut connu de football-data.org sur
+// cette compétition (champ status renvoyé corrompu) — retiré ici (cf. plan, point 4) : api-football
+// renvoie un statut depuis une énumération propre, la classe de bug ne peut structurellement plus se
+// produire. Seul le garde-fou générique "match resté EN COURS trop longtemps" (FD_MAX_LIVE_MATCH_MS)
+// est conservé, par prudence, comme pour les 5 grands championnats.
 async function _getBresilMatches() {
-  if (!FD_KEY) return { matches: [], count: 0 };
-  if (_bresilCache && Date.now() - _bresilCacheTs < 30 * 60 * 1000) return _bresilCache;
+  // Même fix que /api/fd/matches (3 septembre 2026) — cache externe raccourci 30min→60s, redondant
+  // avec le TTL 30min déjà appliqué par fetchApiFootballLeagueBundle (seul point réseau réel) ; ne
+  // coûte donc aucune requête api-football supplémentaire, juste une re-synthèse mémoire plus fréquente.
+  if (_bresilCache && Date.now() - _bresilCacheTs < 60_000) return _bresilCache;
   if (Date.now() < _bresilErrorUntil) return _bresilCache || { matches: [], count: 0 };
   try {
-    // Pas de filtre status : fenêtre de dates couvrant les 2 derniers jours (matchs à régler,
-    // scores) jusqu'à 14 jours à venir — même principe que /api/fd/worldcup (CDM), qui garde les
-    // matchs terminés 48h avant de les faire disparaître. Sans ça, un match joué disparaissait
-    // juste de la liste (filtre SCHEDULED) au lieu de passer en "Terminé" avec le score (18 juillet 2026).
-    const dateFrom = new Date(Date.now() - 2 * 86400_000).toISOString().slice(0, 10);
-    const dateTo   = new Date(Date.now() + 14 * 86400_000).toISOString().slice(0, 10);
-    const matchesRes = await fdGet(`/competitions/BSA/matches?dateFrom=${dateFrom}&dateTo=${dateTo}`);
-    await new Promise(r => setTimeout(r, 600));
-    const standingsRes = await fdGet('/competitions/BSA/standings');
-
-    const table = standingsRes.standings?.find(s => s.type === 'TOTAL')?.table || [];
+    const { fixtures, table } = await fetchApiFootballLeagueBundle('bresil');
     const statsMap = {};
     for (const s of table) {
       statsMap[s.team.id] = {
-        position: s.position, points: s.points, played: s.playedGames,
-        wins: s.won, draws: s.draw, losses: s.lost,
-        goalsFor: s.goalsFor, goalsAgainst: s.goalsAgainst,
+        position: s.rank, points: s.points, played: s.all?.played ?? 0,
+        wins: s.all?.win ?? 0, draws: s.all?.draw ?? 0, losses: s.all?.lose ?? 0,
+        goalsFor: s.all?.goals?.for ?? 0, goalsAgainst: s.all?.goals?.against ?? 0,
         form: (s.form || '').split('').filter(c => 'WDL'.includes(c)).slice(-5),
       };
     }
 
-    // Fix 27 août 2026 — football-data.org renvoie parfois, sur cette compétition précise, un
-    // champ `status` corrompu contenant la date/heure du match ("2026-08-29 21:30:00Z") au lieu
-    // de l'enum attendu (SCHEDULED/FINISHED/...) — bug constaté côté FD lui-même (vérifié via un
-    // appel direct hors backend, même résultat), pas une régression de ce code. Conséquence
-    // silencieuse : `FD_STATUS_MAP_BRESIL[m.status]` ne matchait jamais rien, donc TOUS les
-    // matchs Brésil étaient filtrés → "Aucun match dans les prochaines 30h" affiché en permanence
-    // même un jour de plusieurs matchs programmés. Filet de sécurité : si `m.status` ne matche
-    // aucune valeur connue, déduire le statut depuis le score (rempli = terminé, sinon programmé)
-    // plutôt que de perdre le match entier.
-    // Fix 31 août 2026 — même garde-fou que _getFdLeaguesResults() (voir FD_MAX_LIVE_MATCH_MS) :
-    // constaté en direct sur cette compétition aussi (Corinthians-Santos, Flamengo-Botafogo, tous
-    // deux toujours IN_PLAY 6h+ après le coup d'envoi côté football-data.org).
-    const inferBresilStatus = m => {
-      const mapped = FD_STATUS_MAP_BRESIL[m.status];
-      const resolved = mapped || ((m.score?.fullTime?.home != null && m.score?.fullTime?.away != null) ? 'STATUS_FINAL' : 'STATUS_SCHEDULED');
-      if (resolved === 'STATUS_IN_PROGRESS' && Date.now() - new Date(m.utcDate).getTime() > FD_MAX_LIVE_MATCH_MS) {
-        return 'STATUS_FINAL';
-      }
-      return resolved;
-    };
     const KEEP_MS = 48 * 3600_000;
+    const WINDOW_MS = 14 * 86400_000;
     const now = Date.now();
-    const relevant = (matchesRes.matches || [])
-      .filter(m => {
-        const status = ['POSTPONED', 'CANCELLED', 'SUSPENDED'].includes(m.status) ? null : inferBresilStatus(m);
-        if (!status) return false;
-        if (status === 'STATUS_FINAL') return (now - new Date(m.utcDate).getTime()) < KEEP_MS;
+    const relevant = fixtures
+      .filter(f => {
+        const t = new Date(f.fixture.date).getTime();
+        if (t - now > WINDOW_MS) return false;
+        let status = apiFootballMatchStatus(f.fixture.status.short);
+        if (status === 'STATUS_IN_PROGRESS' && now - t > FD_MAX_LIVE_MATCH_MS) status = 'STATUS_FINAL';
+        if (status === 'STATUS_FINAL') return (now - t) < KEEP_MS;
         return true;
       })
       .slice(0, 15);
-    const allMatches = relevant.map(m => {
-      const hId = m.homeTeam.id, aId = m.awayTeam.id;
-      const status = inferBresilStatus(m);
-      const ftHome = m.score?.fullTime?.home ?? null;
-      const ftAway = m.score?.fullTime?.away ?? null;
+    // Statut/score en direct par fixture ciblée (3 septembre 2026, cf. fetchFixtureLiveStatus plus
+    // haut) — uniquement pour les matchs qui en ont réellement besoin.
+    const liveById = await fetchLiveFootballScoresFor(relevant.filter(f => _fixtureNeedsLiveCheck(f.fixture.date, f.fixture.status.short)));
+    const allMatches = relevant.map(f => {
+      const hId = f.teams.home.id, aId = f.teams.away.id;
+      const live = liveById[f.fixture.id];
+      const statusShort = live?.fixture?.status?.short ?? f.fixture.status.short;
+      const goals = live?.goals ?? f.goals;
+      let status = apiFootballMatchStatus(statusShort);
+      if (status === 'STATUS_IN_PROGRESS' && now - new Date(f.fixture.date).getTime() > FD_MAX_LIVE_MATCH_MS) status = 'STATUS_FINAL';
+      const roundMatch = /(\d+)\s*$/.exec(f.league.round || '');
       return {
-        id: String(m.id), league: 'bresil', round: m.matchday ? `Journée ${m.matchday}` : '',
-        date: m.utcDate, venue: null, weather: null, isLive: true, status,
-        home: { id: hId, name: m.homeTeam.name, short: m.homeTeam.tla || abbrev(m.homeTeam.name), logoId: m.homeTeam.crest, score: ftHome, upcoming: [], ...(statsMap[hId] || {}) },
-        away: { id: aId, name: m.awayTeam.name, short: m.awayTeam.tla || abbrev(m.awayTeam.name), logoId: m.awayTeam.crest, score: ftAway, upcoming: [], ...(statsMap[aId] || {}) },
+        id: String(f.fixture.id), league: 'bresil', round: roundMatch ? `Journée ${roundMatch[1]}` : (f.league.round || ''),
+        date: f.fixture.date, venue: null, weather: null, isLive: true, status,
+        home: { id: hId, name: f.teams.home.name, short: abbrev(f.teams.home.name), logoId: f.teams.home.logo, score: goals?.home ?? null, upcoming: [], ...(statsMap[hId] || {}) },
+        away: { id: aId, name: f.teams.away.name, short: abbrev(f.teams.away.name), logoId: f.teams.away.logo, score: goals?.away ?? null, upcoming: [], ...(statsMap[aId] || {}) },
         h2h: [], markets: {},
       };
     });
+    allMatches.sort((a, b) => new Date(a.date) - new Date(b.date));
 
     const result = { matches: allMatches, count: allMatches.length };
     _bresilCache = result; _bresilCacheTs = Date.now();
     try { writeFileSync(BRESIL_CACHE_FILE, JSON.stringify({ matches: allMatches, ts: _bresilCacheTs }), 'utf8'); } catch {}
     return result;
   } catch (err) {
-    console.error('football-data.org bresil error:', err.message);
+    console.error('api-football bresil error:', err.message);
     _bresilErrorUntil = Date.now() + 60 * 1000;
     return _bresilCache || { matches: [], count: 0 };
   }
 }
 
 app.get('/api/fd/bresil', async (req, res) => {
-  if (!FD_KEY) return res.status(503).json({ error: 'FD_API_KEY not configured' });
   res.json(await _getBresilMatches());
 });
 
@@ -1235,7 +1670,6 @@ app.get('/api/fd/bresil', async (req, res) => {
 // à l'utilisateur) restait donc bloqué sur ces 5 championnats faute de source. Même forme que
 // /api/fd/bresil ci-dessus ({matches:[{id,league,status,home:{score},away:{score}}]}).
 app.get('/api/fd/results', async (req, res) => {
-  if (!FD_KEY) return res.status(503).json({ error: 'FD_API_KEY not configured' });
   res.json(await _getFdLeaguesResults());
 });
 
@@ -1248,11 +1682,21 @@ const EU_CLUB_STATUS_MAP = {
   '1H': 'STATUS_IN_PROGRESS', '2H': 'STATUS_IN_PROGRESS', HT: 'STATUS_IN_PROGRESS', ET: 'STATUS_IN_PROGRESS', P: 'STATUS_IN_PROGRESS', BT: 'STATUS_IN_PROGRESS',
   FT: 'STATUS_FINAL', AET: 'STATUS_FINAL', PEN: 'STATUS_FINAL',
 };
+// Fix 7 septembre 2026 — cas réel : alerte Telegram Ligue des Champions (Lille) reçue mais match
+// introuvable dans l'app. Cause : ce cache était purement en mémoire (jamais persisté sur disque),
+// contrairement à quasi tous les autres caches de l'app, ET sans la dérogation de pause déjà posée
+// ailleurs le 30 août (`|| _footballApiPaused`, cf. project_api_pause_autorefresh_aout30) — un
+// redémarrage backend pendant une pause api-football (le cas ici) le vidait à zéro sans aucun moyen
+// de le regarnir tant que la pause dure, alors que `generateBackgroundAlerts()` avait généré l'alerte
+// juste avant redémarrage avec les données encore fraîches en mémoire. Persisté comme tous les autres
+// caches de calendrier (même pattern que fd_matches.json/bresil_matches.json).
 let _euClubMatchesCache = {}; // compKey → { data, ts }
+try { if (existsSync(EU_CLUB_MATCHES_CACHE_FILE)) _euClubMatchesCache = JSON.parse(readFileSync(EU_CLUB_MATCHES_CACHE_FILE, 'utf8')); } catch {}
+function _saveEuClubMatchesCache() { try { writeFileSync(EU_CLUB_MATCHES_CACHE_FILE, JSON.stringify(_euClubMatchesCache), 'utf8'); } catch {} }
 async function _getEuClubMatches(compKey) {
   const cached = _euClubMatchesCache[compKey];
-  if (cached && Date.now() - cached.ts < 30 * 60_000) return cached.data;
-  if (!process.env.FOOTBALL_API_KEY || !EU_CLUB_COMP_IDS[compKey]) return { matches: [], count: 0 };
+  if (cached && (Date.now() - cached.ts < 30 * 60_000 || _footballApiPaused)) return cached.data;
+  if (!process.env.FOOTBALL_API_KEY || !EU_CLUB_COMP_IDS[compKey]) return cached?.data || { matches: [], count: 0 };
   try {
     const leagueId = EU_CLUB_COMP_IDS[compKey];
     const season = footballApiSeasonForDate('ligue1', new Date().toISOString());
@@ -1275,6 +1719,7 @@ async function _getEuClubMatches(compKey) {
     matches.sort((a, b) => new Date(a.date) - new Date(b.date));
     const result = { matches, count: matches.length };
     _euClubMatchesCache[compKey] = { data: result, ts: Date.now() };
+    _saveEuClubMatchesCache();
     return result;
   } catch (err) {
     console.error(`api-football ${compKey} matches error:`, err.message);
@@ -1305,41 +1750,62 @@ const FD_STATUS_MAP_RESULTS = {
   IN_PLAY: 'STATUS_IN_PROGRESS', PAUSED: 'STATUS_IN_PROGRESS', LIVE: 'STATUS_IN_PROGRESS',
   FINISHED: 'STATUS_FINAL', AWARDED: 'STATUS_FINAL',
 };
+// Migré vers api-football le 2 septembre 2026 — même forme de réponse qu'avant (id/league/status/
+// date/home{name,short,logo,score}/away{...}, champ `logo` — pas `logoId`, contrat déjà différent
+// de /api/fd/matches avant la migration, conservé tel quel). Réutilise le même bundle mis en cache
+// que /api/fd/matches (fetchApiFootballLeagueBundle) — zéro appel API supplémentaire, le bundle
+// couvre déjà -3j/+45j, un superset large de l'ancienne fenêtre FD -2j/+1j.
 async function _getFdLeaguesResults() {
-  if (!FD_KEY) return { matches: [] };
-  if (_fdResultsCache && Date.now() - _fdResultsCacheTs < 30 * 60 * 1000) return _fdResultsCache;
+  // Cache raccourci 30min→60s le 4 septembre 2026 — même fix que /api/fd/matches le 3 septembre,
+  // manqué ici : un match resté à ce cache pendant 30 min gardait son score figé à l'instant du dernier
+  // calcul (souvent 0-0 au coup d'envoi) pendant toute une mi-temps, alors que la vérification en direct
+  // par fixture (ajoutée le 4 septembre dans cette même fonction) tournait bien mais n'était jamais
+  // réellement invoquée entre deux fenêtres de 30 min. Cas réel : PSG-Monaco affiché 0-0 sur la Carte
+  // du Monde alors que /api/fd/matches (déjà à 60s) montrait 1-0 correctement au même instant — même
+  // bundle sous-jacent, juste deux caches de route désynchronisés. Ne coûte aucune requête réseau
+  // supplémentaire (fetchApiFootballLeagueBundle a son propre TTL 30min, seul point qui appelle
+  // vraiment l'API) — juste une re-synthèse mémoire plus fréquente, comme pour /api/fd/matches.
+  if (_fdResultsCache && Date.now() - _fdResultsCacheTs < 60_000) return _fdResultsCache;
   if (Date.now() < _fdResultsErrorUntil) return _fdResultsCache || { matches: [] };
   try {
-    const dateFrom = new Date(Date.now() - 2 * 86400_000).toISOString().slice(0, 10);
-    const dateTo   = new Date(Date.now() + 1 * 86400_000).toISOString().slice(0, 10);
     const allMatches = [];
-    for (const league of FD_LEAGUES) {
-      const matchesRes = await fdGet(`/competitions/${league.code}/matches?dateFrom=${dateFrom}&dateTo=${dateTo}`);
-      await new Promise(r => setTimeout(r, 600));
-      for (const m of (matchesRes.matches || [])) {
-        let mapped = FD_STATUS_MAP_RESULTS[m.status];
-        if (!mapped) continue; // POSTPONED, CANCELLED, SUSPENDED, SCHEDULED (pas encore joué, rien à régler)
-        if (mapped === 'STATUS_IN_PROGRESS' && Date.now() - new Date(m.utcDate).getTime() > FD_MAX_LIVE_MATCH_MS) {
-          mapped = 'STATUS_FINAL';
-        }
+    const dateFromMs = Date.now() - 2 * 86400_000;
+    const dateToMs   = Date.now() + 1 * 86400_000;
+    for (const leagueKey of ['ligue1', 'pl', 'laliga', 'bundes', 'seriea']) {
+      const { fixtures } = await fetchApiFootballLeagueBundle(leagueKey);
+      const windowed = fixtures.filter(f => {
+        const t = new Date(f.fixture.date).getTime();
+        return t >= dateFromMs && t <= dateToMs;
+      });
+      // Fix 4 septembre 2026 — cette route (source du RÈGLEMENT réel des alertes, pas juste l'affichage)
+      // lisait le statut brut du bundle sans jamais le rafraîchir en direct : pendant une pause manuelle
+      // prolongée, un match resté "NS" dans le bundle figé se faisait `continue` ("pas encore joué"),
+      // donc n'apparaissait JAMAIS dans /api/fd/results — resolveCompletedFootballAlerts() (frontend) ne
+      // pouvait alors jamais le trouver pour le régler, laissant un pari "accepted" indéfiniment malgré
+      // un match réellement terminé (cas réel : Real Sociedad-Celta BTTS, 100€). Même correctif que
+      // /api/fd/matches : un check en direct ciblé par fixture, qui bypass la pause, avant de conclure.
+      const liveById = await fetchLiveFootballScoresFor(windowed.filter(f => _fixtureNeedsLiveCheck(f.fixture.date, f.fixture.status.short)));
+      for (const f of windowed) {
+        const live = liveById[f.fixture.id];
+        const statusShort = live?.fixture?.status?.short ?? f.fixture.status.short;
+        const goals = live?.goals ?? f.goals;
+        const t = new Date(f.fixture.date).getTime();
+        let mapped = apiFootballMatchStatus(statusShort);
+        if (mapped === 'STATUS_SCHEDULED') continue; // pas encore joué, rien à régler
+        if (mapped === 'STATUS_IN_PROGRESS' && Date.now() - t > FD_MAX_LIVE_MATCH_MS) mapped = 'STATUS_FINAL';
         allMatches.push({
-          id: String(m.id), league: league.key, status: mapped, date: m.utcDate,
-          home: { name: m.homeTeam?.name, short: m.homeTeam?.shortName, logo: m.homeTeam?.crest, score: m.score?.fullTime?.home ?? null },
-          away: { name: m.awayTeam?.name, short: m.awayTeam?.shortName, logo: m.awayTeam?.crest, score: m.score?.fullTime?.away ?? null },
+          id: String(f.fixture.id), league: leagueKey, status: mapped, date: f.fixture.date,
+          home: { name: f.teams.home.name, short: abbrev(f.teams.home.name), logo: f.teams.home.logo, score: goals?.home ?? null },
+          away: { name: f.teams.away.name, short: abbrev(f.teams.away.name), logo: f.teams.away.logo, score: goals?.away ?? null },
         });
       }
     }
-    // date/home.name/home.logo/away.name/away.logo ajoutés le 16 août 2026 — déjà présents dans la
-    // réponse brute FD (m.utcDate/m.homeTeam/m.awayTeam), juste jamais mappés puisque le seul
-    // consommateur jusqu'ici (resolveCompletedFootballAlerts/runAutoSettle) n'a besoin que du score.
-    // Permet à WorldMapPage.jsx d'afficher enfin les matchs terminés des 5 grands championnats dans
-    // l'onglet "Terminés" (jusqu'ici vide, /api/fd/matches ne renvoie que les matchs SCHEDULED).
     const result = { matches: allMatches };
     _fdResultsCache = result; _fdResultsCacheTs = Date.now();
     try { writeFileSync(FD_RESULTS_CACHE_FILE, JSON.stringify({ matches: allMatches, ts: _fdResultsCacheTs }), 'utf8'); } catch {}
     return result;
   } catch (err) {
-    console.error('football-data.org results (5 leagues) error:', err.message);
+    console.error('api-football results (5 leagues) error:', err.message);
     _fdResultsErrorUntil = Date.now() + 60 * 1000;
     return _fdResultsCache || { matches: [] };
   }
@@ -1372,12 +1838,58 @@ app.get('/api/fd/match/:id', async (req, res) => {
       date: m.utcDate,
       status: FD_STATUS_MAP[m.status] || 'STATUS_SCHEDULED',
       round: m.stage?.replace(/_/g, ' ') || (m.matchday ? `J${m.matchday}` : ''),
+      // competitionCode (3 septembre 2026) — ajouté pour /api/fd/resolve-legacy-id côté frontend
+      // (MatchDetailPage) : il faut connaître la ligue AVANT d'appeler cette route, qui l'exige en
+      // paramètre. Purement additif, ne change rien pour l'usage CDM existant de cette route.
+      competitionCode: m.competition?.code || null,
       home: { name: m.homeTeam?.name, short: m.homeTeam?.shortName, logo: m.homeTeam?.crest, score: ftHome, scoreReg: ftHome != null ? ftHome - etHome : null },
       away: { name: m.awayTeam?.name, short: m.awayTeam?.shortName, logo: m.awayTeam?.crest, score: ftAway, scoreReg: ftAway != null ? ftAway - etAway : null },
     });
   } catch (err) {
     console.error('football-data.org single match error:', err.message);
     res.status(502).json({ error: err.message });
+  }
+});
+
+// Table de correspondance d'ids (2 septembre 2026, migration football-data.org → api-football) —
+// une alerte fd_/fdbr_ encore accepted/pending au moment de la bascule porte un id football-data.org
+// que /api/fd/results|/api/fd/bresil ne renvoient plus (ils renvoient désormais des ids api-football).
+// Résout le match FD d'origine (fdGet, encore pleinement fonctionnel — juste plus utilisé par le
+// reste de l'app) pour retrouver date+équipes, puis recherche la même rencontre dans le bundle
+// api-football déjà en cache (fetchApiFootballLeagueBundle) par date+nom (sofaNameMatch). Appelée par
+// resolveCompletedFootballAlerts() (syncAlerts.js) uniquement en repli, quand la recherche directe
+// par id échoue sur une alerte fd_/fdbr_ — le résultat est ensuite mémorisé sur l'alerte elle-même
+// côté frontend, un seul appel par alerte concernée. À retirer une fois qu'aucune alerte fd_/fdbr_
+// n'est plus pending/accepted (cf. plan de migration).
+app.get('/api/fd/resolve-legacy-id', async (req, res) => {
+  const { league, oldId } = req.query;
+  if (!league || !oldId) return res.status(400).json({ error: 'league, oldId requis' });
+  if (!FD_KEY) return res.status(503).json({ error: 'FD_API_KEY not configured' });
+  try {
+    const r = await fetch(`https://api.football-data.org/v4/matches/${oldId}`, { headers: { 'X-Auth-Token': FD_KEY } });
+    if (!r.ok) return res.status(404).json({ error: `FD match introuvable (${r.status})` });
+    const m = await r.json();
+    if (!m?.id) return res.status(404).json({ error: 'FD match introuvable' });
+    const { fixtures } = await fetchApiFootballLeagueBundle(league);
+    const dt = new Date(m.utcDate).getTime();
+    // Normalisation dédiée (plus tolérante que sofaNameMatch) — football-data.org ("RC Celta de
+    // Vigo") et api-football ("Celta Vigo") ne s'accordent pas sur les connecteurs/sigles de club,
+    // sofaNameMatch (simple sous-chaîne) échoue sur ce cas réel. Locale à cette route de transition,
+    // ne touche pas sofaNameMatch utilisée ailleurs.
+    const legacyNorm = s => (s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '')
+      .replace(/\b(fc|cf|ac|sc|rc|cd|ud|de|club|deportivo)\b/g, '')
+      .replace(/[^a-z0-9]/g, '');
+    const legacyMatch = (a, b) => { const na = legacyNorm(a), nb = legacyNorm(b); return na.length > 2 && (na === nb || na.includes(nb) || nb.includes(na)); };
+    const match = fixtures.find(f => {
+      const t = new Date(f.fixture.date).getTime();
+      if (Math.abs(t - dt) > 3 * 3600_000) return false;
+      return (legacyMatch(f.teams.home.name, m.homeTeam.name) && legacyMatch(f.teams.away.name, m.awayTeam.name))
+          || (legacyMatch(f.teams.home.name, m.awayTeam.name) && legacyMatch(f.teams.away.name, m.homeTeam.name));
+    });
+    if (!match) return res.status(404).json({ error: 'Correspondance api-football introuvable' });
+    res.json({ newId: String(match.fixture.id) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -1587,6 +2099,12 @@ const _mergeFootballBookmaker = (allMatches, sourceOdds, bkKey) => {
         if (!existing.markets.dcou) existing.markets.dcou = { bookmakers: {} };
         existing.markets.dcou.bookmakers[bkKey] = s.dcou;
       }
+      // Total de buts par équipe (7 septembre 2026, marché "observation" — voir generateBackgroundAlerts,
+      // section football, pas encore d'alerte réelle émise).
+      if (s.teamTotals) {
+        if (!existing.markets.teamTotals) existing.markets.teamTotals = { bookmakers: {} };
+        existing.markets.teamTotals.bookmakers[bkKey] = s.teamTotals;
+      }
     } else {
       const markets = {};
       if (s.h2h)    markets.h2h    = { bookmakers: { [bkKey]: s.h2h } };
@@ -1594,6 +2112,7 @@ const _mergeFootballBookmaker = (allMatches, sourceOdds, bkKey) => {
       if (s.totals) markets.totals = { bookmakers: { [bkKey]: s.totals } };
       if (s.dcbtts) markets.dcbtts = { bookmakers: { [bkKey]: s.dcbtts } };
       if (s.dcou)   markets.dcou   = { bookmakers: { [bkKey]: s.dcou } };
+      if (s.teamTotals) markets.teamTotals = { bookmakers: { [bkKey]: s.teamTotals } };
       allMatches.push({
         id: `${bkKey}_${s.homeTeam}_${s.awayTeam}`.replace(/\s/g, '_'),
         sportKey: 'soccer',
@@ -2034,7 +2553,21 @@ const ESPN_WNBA_CORE     = `https://sports.core.api.espn.com/v2/sports/basketbal
 const WNBA_SEASON        = new Date().getFullYear();
 const now = new Date();
 const ESPN_SEASON = now.getMonth() >= 9 ? now.getFullYear() + 1 : now.getFullYear();
-const _espnCache    = {};
+// Persisté sur disque (1er septembre 2026) — jusqu'ici purement en mémoire, donc vidé à chaque
+// redémarrage backend. Conséquence directe constatée en direct : le fallback "dernière cote connue"
+// pendant un blocage anti-ban (_fillMissingBookmaker pour le foot, section équivalente de
+// _refreshBasketballOdds pour le basket, toutes deux lisent ce cache) n'a plus rien à quoi se
+// raccrocher juste après un restart — un match WNBA a ainsi perdu toute cote Betclic pile pendant un
+// vrai blocage 403/429, alors que le mécanisme de repli est censé l'éviter. Sauvegarde périodique
+// (pas à chaque écriture, ~29 sites d'écriture différents dans ce fichier — periodic snapshot moins
+// risqué qu'un wrapper à retoucher partout) plutôt qu'à chaque set, contrairement au débit d'écriture
+// que ça représenterait sinon.
+const ESPN_MISC_CACHE_FILE = join(CACHE_DIR, 'espn_misc_cache.json');
+const _espnCache = (() => {
+  try { if (existsSync(ESPN_MISC_CACHE_FILE)) return JSON.parse(readFileSync(ESPN_MISC_CACHE_FILE, 'utf8')) || {}; } catch {}
+  return {};
+})();
+setInterval(() => { try { writeFile(ESPN_MISC_CACHE_FILE, JSON.stringify(_espnCache), () => {}); } catch {} }, 60_000);
 // Persisté sur disque (12 juillet 2026) — un match qui passe en live disparaît de la page
 // listing Unibet (cf. fetchUnibetBasketData) ; sans l'URL retenue avant le coup d'envoi, plus
 // aucun moyen de retrouver la page une fois live. Purement en mémoire jusqu'ici, cette table
@@ -2925,25 +3458,14 @@ async function nbaRealStartersSet(players, teamAbbr) {
   return null;
 }
 
-// Équivalent EU de wnbaRealStartersSet, Lega A uniquement (25 août 2026) — seule ligue EU avec une
-// vraie source de compo confirmée par match (fetchLegaALineup, legabasket.it) ; ACB (scraping dédié
-// acb.com, pas de lineup par match) et BBL/LNB (api-sports.io, aucun flux de compo pré-match, cf.
-// CLAUDE.md "pas de lineups pré-match natif") n'ont pas la donnée nécessaire pour identifier LA
-// remplaçante précise — computeRedist reste donc inchangé (dilution proportionnelle) pour ces 2 ligues,
-// pas une régression, juste une limite de source de données déjà documentée.
-async function legaaRealStartersSet(homePlayers, awayPlayers, homeTeamName, awayTeamName, gameDate) {
-  try {
-    const lineup = await fetchLegaALineup(homeTeamName, awayTeamName, gameDate);
-    if (!lineup) return [null, null];
-    const lastName = n => (n || '').trim().split(/\s+/).pop().toLowerCase();
-    const toSet = (players, starters) => {
-      if (!starters || starters.length < 5) return null;
-      const names = new Set(starters.map(s => lastName(s.name)));
-      const matched = players.filter(p => names.has(lastName(p.name)));
-      return matched.length >= 5 ? new Set(matched.map(p => String(p.id))) : null;
-    };
-    return [toSet(homePlayers, lineup.home), toSet(awayPlayers, lineup.away)];
-  } catch { return [null, null]; }
+// Lega A a perdu sa source de compo confirmée par match (fetchLegaALineup/legabasket.it, retiré le
+// 1er septembre 2026, migration api-basketball pur) — rejoint désormais ACB/BBL/LNB/NBL, qui n'ont
+// jamais eu cette donnée : computeRedist reste sur la dilution proportionnelle pour les 5 ligues EU,
+// pas une régression nouvelle, juste la même limite déjà documentée étendue à Lega A. Fonction
+// gardée (plutôt que retirée) pour ne pas devoir toucher ses 2 points d'appel — retourne toujours
+// [null, null], signalant "pas de compo confirmée" comme le faisait déjà le cas d'échec ci-dessus.
+async function legaaRealStartersSet() {
+  return [null, null];
 }
 
 // Redistribution pondérée par fraîcheur de l'absence (19 août 2026) — une titulaire out depuis
@@ -4113,291 +4635,27 @@ app.get('/api/nba/leaders', async (req, res) => {
   }
 });
 
-// ── ACB standings + leaders (scraping acb.com) ───────────────────────────────
-let _acbStandingsCache = { data: null, ts: 0 };
-let _acbLeadersCache   = { data: null, ts: 0 };
-const ACB_CACHE_MS = 3 * 3600_000; // 3h
-const ACB_ABBR = {
-  'Real Madrid': 'MAD', 'Barça': 'BAR', 'Valencia Basket': 'VAL',
-  'Kosner Baskonia': 'BAS', 'Asisa Joventut': 'JOV', 'La Laguna Tenerife': 'TEN',
-  'La Laguna Tenerife CB': 'TEN', 'UCAM Murcia CB': 'MUR', 'UCAM Murcia': 'MUR',
-  'Surne Bilbao Basket': 'BIL', 'Surne Bilbao': 'BIL',
-  'Gran Canaria': 'GCA', 'Dreamland Gran Canaria': 'GCA',
-  'MoraBanc Andorra': 'AND', 'Covirán Granada': 'GRA',
-  'Casademont Zaragoza': 'ZAR', 'Río Breogán': 'BRE',
-  'Recoletas Salud San Pablo Burgos': 'BUR', 'San Pablo Burgos': 'BUR',
-  'Kids&Us Manresa': 'MAN', 'Bàsquet Girona': 'GIR',
-  'Obradoiro CAB': 'OBR', 'Leyma Coruña': 'COR',
-};
+// ── ACB : roster/gamelog/classement/leaders migrés vers api-basketball pur (1er septembre 2026) ──
+// Tout le toolkit acb.com (fetchAcbHtml/ACB_TEAM_MAP/parseAcbRoster/parseAcbGamelog/etc.) a été
+// retiré — ACB utilise désormais exactement le même chemin api-sports.io que BBL/LNB/Lega A/NBL.
 
-async function fetchAcbHtml(path) {
-  const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), 15000);
-  try {
-    const resp = await fetch(`https://www.acb.com${path}`, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml',
-        'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8',
-        'Cache-Control': 'no-cache',
-      },
-      signal: ctrl.signal,
-    });
-    return await resp.text();
-  } finally {
-    clearTimeout(t);
-  }
-}
 
-// Extrait le nom d'équipe depuis l'URL du logo ACB
-// Ex: ".../2526KosnerBaskoniaLogo.png" → "Kosner Baskonia"
-// Ex: ".../2425UCAMMurciapositivo.png" → "UCAM Murcia"
-function acbTeamFromLogo(url) {
-  const m = (url || '').match(/\/\d{4}([A-Za-zÀ-ÿ&'_]+)\.\w+$/);
-  if (!m) return '';
-  const raw = m[1]
-    .replace(/_/g, ' ')  // underscores → espaces avant le nettoyage
-    .replace(/\s*(?:Logoweb|Logo|positivo|negativo|azul|negro|blanco|blanc|rojo|rouge|verde|grana|negre|blue|green|web|Color|Principal|Secundario|escudo|badge|crest)\s*$/i, '')
-    .trim();
-  return raw
-    .replace(/([a-z])([A-Z])/g, '$1 $2')
-    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
+// /api/acb/standings et /api/acb/leaders retirées (1er septembre 2026, migration api-basketball
+// pur) — ACB tombe désormais sur les routes génériques /api/euro/acb/standings|leaders, comme
+// BBL/LNB/Lega A/NBL. Le frontend (WorldMapPage.jsx) a été mis à jour pour ne plus les appeler.
 
-// Parse les chunks RSC Next.js (self.__next_f.push([1,"..."])) pour extraire les stat cards ACB
-function parseAcbNextChunks(html) {
-  const chunks = [];
-  const re = /self\.__next_f\.push\(\[1,"([\s\S]+?)"\]\)/g;
-  let m;
-  while ((m = re.exec(html)) !== null) {
-    try {
-      // Unescape JSON string
-      chunks.push(JSON.parse('"' + m[1] + '"'));
-    } catch { /* chunk malformé, on ignore */ }
-  }
-  return chunks;
-}
-
-// Extrait le tableau JSON complet en équilibrant les brackets
-function extractJsonArray(str, startIdx) {
-  let depth = 0, i = startIdx;
-  while (i < str.length) {
-    if (str[i] === '[' || str[i] === '{') depth++;
-    else if (str[i] === ']' || str[i] === '}') { depth--; if (depth === 0) return str.slice(startIdx, i + 1); }
-    i++;
-  }
-  return null;
-}
-
-// api-sports.io teamId → ACB team slug
-const ACB_TEAM_MAP = {
-  2338: 'real-madrid-9',
-  2341: 'valencia-basket-13',
-  2331: 'kosner-baskonia-3',
-  2336: 'ucam-murcia-12',
-  2329: 'barca-2',
-  2334: 'asisa-joventut-8',
-  1695: 'surne-bilbao-4',
-  2339: 'la-laguna-tenerife-28',
-  2340: 'unicaja-14',
-  1698: 'kidsandus-manresa-10',
-  1120: 'rio-breogan-25',
-  1139: 'basquet-girona-591',
-  1699: 'recoletas-salud-san-pablo-burgos-549',
-  1123: 'hiopos-lleida-658',
-  2330: 'casademont-zaragoza-16',
-  2335: 'morabanc-andorra-22',
-  2333: 'dreamland-gran-canaria-5',
-  1125: 'coviran-granada-592',
-};
-
-const ACB_POSITIONS = {
-  'Base': 'PG', 'Escolta': 'SG', 'Alero': 'SF',
-  'Ala-pívot': 'PF', 'Ala-Pívot': 'PF', 'Ala pívot': 'PF',
-  'Pívot': 'C',
-};
-
-function normalizeAcbSlug(str) {
-  return (str || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase()
-    .replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
-}
-
-function parseAcbRoster(html) {
-  const chunks = parseAcbNextChunks(html);
-  for (const chunk of chunks) {
-    if (!chunk.includes('currentRosterLite')) continue;
-    const rlIdx = chunk.indexOf('"currentRosterLite":');
-    if (rlIdx === -1) continue;
-    const pMarker = '"players":[';
-    const pIdx = chunk.indexOf(pMarker, rlIdx);
-    if (pIdx === -1) continue;
-    const arrStr = extractJsonArray(chunk, pIdx + pMarker.length - 1);
-    if (!arrStr) continue;
-    try {
-      return JSON.parse(arrStr).map(p => ({
-        id: p.id,
-        firstName: p.firstName || '',
-        lastName: p.lastName || '',
-        name: p.nickname || `${p.firstName||''} ${p.lastName||''}`.trim(),
-        jersey: p.shirtNumber || '—',
-        position: ACB_POSITIONS[p.gameRole] || p.gameRole || '—',
-        headshot: p.headshotImageUrl || null,
-      }));
-    } catch { continue; }
-  }
-  return [];
-}
-
-function parseAcbGamelog(html) {
-  const chunks = parseAcbNextChunks(html);
-  const marker = '"matches":[';
-  for (const chunk of chunks) {
-    if (!chunk.includes(marker)) continue;
-    let from = 0;
-    while (true) {
-      const idx = chunk.indexOf(marker, from);
-      if (idx === -1) break;
-      const arrStr = extractJsonArray(chunk, idx + marker.length - 1);
-      if (arrStr) {
-        try {
-          const arr = JSON.parse(arrStr);
-          // Valide que c'est bien un gamelog (champ stats spécifique aux gamelogs joueur)
-          if (Array.isArray(arr) && arr.length > 0 && arr[0]?.stats !== undefined) return arr;
-        } catch {}
-      }
-      from = idx + marker.length;
-    }
-  }
-  return [];
-}
-
-function extractAcbStatCard(chunks, cardKeyword) {
-  for (const chunk of chunks) {
-    if (!chunk.includes(`statistic-card-${cardKeyword}`)) continue;
-    // Trouve le début du tableau "players"
-    const marker = '"players":[';
-    const idx = chunk.indexOf(marker);
-    if (idx === -1) continue;
-    const arrStr = extractJsonArray(chunk, idx + marker.length - 1);
-    if (!arrStr) continue;
-    try {
-      const players = JSON.parse(arrStr);
-      const toEntry = (p, i) => {
-        const name = p?.player?.nickname || `${p?.firstName || ''} ${p?.lastName || ''}`.trim();
-        const team = acbTeamFromLogo(p?.teamLogo);
-        return { rank: i + 1, id: String(p?.player?.id || i), name, team, value: +p?.statValue || 0 };
-      };
-      // top5 garde la photo pour l'affichage ; full sert au lookup de rang dans Analyse Props
-      // (22 juin 2026) — le classement complet est déjà dans la page scrapée, juste pas exposé avant.
-      const top5 = players.slice(0, 5).map((p, i) => ({
-        ...toEntry(p, i),
-        photo: p?.playerImage || p?.player?.headshotImageUrl || null,
-        displayValue: String(p?.statValue || ''),
-      }));
-      const full = players.map(toEntry);
-      return { top5, full };
-    } catch { continue; }
-  }
-  return { top5: [], full: [] };
-}
-
-app.get('/api/acb/standings', async (req, res) => {
-  if (_acbStandingsCache.data && (Date.now() - _acbStandingsCache.ts < ACB_CACHE_MS || _basketballApiPaused))
-    return res.json(_acbStandingsCache.data);
-  try {
-    const cfg = EURO_LEAGUES.acb;
-    const seasonCurrent = isEuroBasketSeasonCurrent('acb');
-    const d = await bballFetch(`/standings?league=${cfg.id}&season=${cfg.season}`);
-    const rows = (d.response || []).flat();
-    const leaderWins = rows[0]?.games?.win?.total ?? 0;
-    const teams = rows.map(r => {
-      const w = seasonCurrent ? (r.games?.win?.total ?? 0) : 0;
-      const l = seasonCurrent ? (r.games?.lose?.total ?? 0) : 0;
-      const gp = w + l || 1;
-      return {
-        id: r.team.id,
-        rank: seasonCurrent ? r.position : 1,
-        abbr: ACB_ABBR[r.team.name] || r.team.name.replace(/\s+\w+$/, '').slice(0, 3).toUpperCase(),
-        logo: r.team.logo || null,
-        wins: w, losses: l,
-        pct: +(w / gp).toFixed(3),
-        gb: !seasonCurrent || r.position === 1 ? 0 : +((leaderWins - w) / 2).toFixed(1),
-      };
-    });
-    const result = { standings: teams, conferences: [] };
-    _acbStandingsCache = { data: result, ts: Date.now() };
-    res.json(result);
-  } catch (err) {
-    if (_acbStandingsCache.data) return res.json(_acbStandingsCache.data);
-    res.json({ standings: [], conferences: [] });
-  }
-});
-
-app.get('/api/acb/leaders', async (req, res) => {
-  if (_acbLeadersCache.data && Date.now() - _acbLeadersCache.ts < ACB_CACHE_MS)
-    return res.json(_acbLeadersCache.data);
-  try {
-    const html = await fetchAcbHtml('/es/liga/estadisticas/estadisticas-de-jugador');
-    const chunks = parseAcbNextChunks(html);
-    const pts = extractAcbStatCard(chunks, 'points');
-    const reb = extractAcbStatCard(chunks, 'rebounds');
-    const ast = extractAcbStatCard(chunks, 'assists');
-    const tpm = extractAcbStatCard(chunks, 'three');
-    const result = {
-      pts: pts.top5, reb: reb.top5, ast: ast.top5, tpm: tpm.top5,
-      full: { pts: pts.full, reb: reb.full, ast: ast.full, tpm: tpm.full },
-    };
-    _acbLeadersCache = { data: result, ts: Date.now() };
-    res.json(result);
-  } catch (err) {
-    if (_acbLeadersCache.data) return res.json(_acbLeadersCache.data);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// ── Bzzoiro (Euroleague) ──────────────────────────────────────────────────────
-const BZZ_KEY  = process.env.BZZOIRO_API_KEY;
-const BZZ_BASE = 'https://sports.bzzoiro.com/basketball/api/v2';
-
-// Semaphore — max 4 appels Bzzoiro simultanés pour éviter le throttling
-let _bzzActive = 0;
-const _bzzQueue = [];
-function bzzRelease() {
-  _bzzActive--;
-  if (_bzzQueue.length > 0) _bzzQueue.shift()();
-}
-async function bzzFetch(path) {
-  if (_bzzActive >= 4) await new Promise(res => _bzzQueue.push(res));
-  _bzzActive++;
-  try {
-    const ac = new AbortController();
-    const t = setTimeout(() => ac.abort(), 8000);
-    try {
-      const resp = await fetch(`${BZZ_BASE}${path}`, {
-        headers: { 'Authorization': `Token ${BZZ_KEY}` },
-        signal: ac.signal,
-      });
-      if (!resp.ok) throw new Error(`bzzoiro ${resp.status} — ${path}`);
-      const data = await resp.json();
-      _updateScraper('bzzoiro', true);
-      return data;
-    } finally { clearTimeout(t); }
-  } catch(e) { _updateScraper('bzzoiro', false); throw e; }
-  finally { bzzRelease(); }
-}
-
-// Notre code interne → bzzoiro team ID (Euroleague)
-const BZZ_EL_TEAMS = {
-  OLY: 37, FEN: 35, RMB: 41, VBC: 46, PAO: 47, BAR: 49, MUN: 50,
-  ZAL: 42, TEL: 34, MIL: 38, MCO: 44, RED: 32, PAR: 43, BAS: 40, IST: 48,
-};
-const BZZ_EL_BY_ID = Object.fromEntries(Object.entries(BZZ_EL_TEAMS).map(([k, v]) => [v, k]));
+// ── Bzzoiro retiré (1er septembre 2026, migration EuroLeague vers api-basketball pur) ──────────
+// bzzFetch/BZZ_KEY/BZZ_BASE/BZZ_EL_TEAMS/BZZ_EL_BY_ID supprimés — les 4 routes /api/euroleague/*
+// qui en dépendaient (players/playergamelog/boxscore/teamschedule) utilisent désormais
+// EL_TEAM_ID_MAP + bballFetch, comme les 5 autres ligues EU (cf. EURO_LEAGUES.euroleague plus bas).
 
 let _elScoreboardCache = { data: null, ts: 0 };
 const EL_API_BASE = 'https://api-live.euroleague.net/v2';
-const EL_SEASON   = 'E2025';
+// Code saison manuel, comme EURO_LEAGUES[x].season — à bumper à la main chaque nouvelle saison
+// (vérifié en direct le 2 septembre 2026 : E2026 = "EuroLeague 2026-27" côté API officielle).
+// E2025 (2025-26, saison déjà terminée) était resté en dur, ce qui vidait entièrement le scoreboard
+// (tous les matchs de cette saison-là sont hors de la fenêtre 48h passés/72h à venir).
+const EL_SEASON   = 'E2026';
 const EL_HEADERS  = { 'Accept': 'application/json', 'User-Agent': 'Mozilla/5.0' };
 
 // Mapping code interne → code EL API
@@ -4502,11 +4760,15 @@ app.get('/api/euroleague/scoreboard', async (req, res) => {
       ...(poResp.ok ? (await poResp.json()).data || [] : []),
       ...(ffResp.ok ? (await ffResp.json()).data || [] : []),
     ];
+    // Élargissement exceptionnel J1 (2 septembre 2026, même principe que /api/euro/:league/scoreboard)
+    const scheduledDates = allGames.filter(g => !g.played).map(g => new Date(g.utcDate).getTime());
+    const firstRoundDateStr = scheduledDates.length ? new Date(Math.min(...scheduledDates)).toISOString().slice(0, 10) : null;
     const games = allGames
       .filter(g => {
         const t = new Date(g.utcDate).getTime();
         if (g.played) return (now - t) < 48 * 3600 * 1000;
-        return (t - now) < 72 * 3600 * 1000;
+        if ((t - now) < 72 * 3600 * 1000) return true;
+        return firstRoundDateStr && g.utcDate.slice(0, 10) === firstRoundDateStr;
       })
       .map(g => {
         const localCode = EL_CLUB_MAP_REV[g.local?.club?.code] || g.local?.club?.code;
@@ -4538,19 +4800,17 @@ app.get('/api/euroleague/players/:teamCode', async (req, res) => {
   const code = teamCode.toUpperCase();
   const cacheKey = `bzz_el_players_${code}`;
   const cached = _espnCache[cacheKey];
-  if (cached && Date.now() - cached.ts < CACHE_6H) return res.json(cached.data);
+  if (cached && (Date.now() - cached.ts < CACHE_6H || _basketballApiPaused)) return res.json(cached.data);
   try {
-    const teamId = BZZ_EL_TEAMS[code];
-    if (!teamId) return res.status(404).json({ error: `Team ${code} not in bzzoiro map` });
-    const rosterData = await bzzFetch(`/players/?team=${teamId}&limit=50`);
-    const rosterList = rosterData.results || [];
-    // Fetch last 15 game logs per player (parallel) to compute season averages
+    // Migré de Bzzoiro vers api-basketball le 1er septembre 2026 (EL_TEAM_ID_MAP, cf. commentaire
+    // près d'EURO_LEAGUES) — même chemin que ACB/BBL/LNB/Lega A/NBL (bballFetch/bballPlayerGamelog),
+    // réponse conservée à l'identique (teamCode, players[]) pour ne rien changer côté frontend.
+    const teamId = EL_TEAM_ID_MAP[code];
+    if (!teamId) return res.status(404).json({ error: `Team ${code} not in EL_TEAM_ID_MAP` });
+    const rosterData = await bballFetch(`/players?team=${teamId}&season=${EURO_LEAGUES.euroleague.season}`);
+    const rosterList = rosterData.response || [];
     const logsArr = await Promise.all(
-      rosterList.map(p =>
-        bzzFetch(`/players/${p.id}/games/?limit=15`)
-          .then(d => ({ id: p.id, games: d.results || [] }))
-          .catch(() => ({ id: p.id, games: [] }))
-      )
+      rosterList.map(p => elPlayerGamelog(p.id).then(games => ({ id: p.id, games })))
     );
     const logMap = {};
     logsArr.forEach(({ id, games }) => { logMap[id] = games; });
@@ -4558,14 +4818,14 @@ app.get('/api/euroleague/players/:teamCode', async (req, res) => {
     const round1 = v => v != null ? Math.round(v * 10) / 10 : null;
     const players = rosterList.map(p => {
       const games = logMap[p.id] || [];
-      const pts = round1(avg(games.map(g => g.points)));
-      const reb = round1(avg(games.map(g => g.rebounds)));
-      const ast = round1(avg(games.map(g => g.assists)));
+      const pts = round1(avg(games.map(g => g.pts ?? 0)));
+      const reb = round1(avg(games.map(g => g.reb ?? 0)));
+      const ast = round1(avg(games.map(g => g.ast ?? 0)));
       return {
         id:       p.id,
         name:     p.name,
         position: p.position || '—',
-        jersey:   p.jersey_number || '—',
+        jersey:   p.number || '—',
         headshot: null,
         stats:    pts != null ? { pts, reb, ast } : null,
       };
@@ -4582,36 +4842,12 @@ app.get('/api/euroleague/playergamelog/:playerId', async (req, res) => {
   const { playerId } = req.params;
   const cacheKey = `bzz_el_gamelog_${playerId}`;
   const cached = _espnCache[cacheKey];
-  if (cached && Date.now() - cached.ts < CACHE_6H) return res.json(cached.data);
+  if (cached && (Date.now() - cached.ts < CACHE_6H || _basketballApiPaused)) return res.json(cached.data);
   try {
-    const data = await bzzFetch(`/players/${playerId}/games/?limit=15`);
-    const games = (data.results || []).map(g => {
-      const fgm  = g.field_goals_made      ?? 0;
-      const fga  = g.field_goals_attempted ?? 0;
-      const ftm  = g.free_throws_made      ?? 0;
-      const fta  = g.free_throws_attempted ?? 0;
-      const fg3m = g.three_pointers_made      ?? 0;
-      const fg3a = g.three_pointers_attempted ?? 0;
-      const pts  = g.points ?? 0;
-      const tsPct = (fga + 0.44 * fta) > 0 ? +(pts / (2 * (fga + 0.44 * fta))).toFixed(3) : null;
-      return {
-        date:    g.event_date,
-        opponent: g.opponent,
-        opponentAbbr: BZZ_EL_BY_ID[g.opponent_team_id] || null,
-        isHome:  g.is_home,
-        starter: g.is_starter,
-        min:     g.minutes != null ? parseFloat(g.minutes.toFixed(1)) : 0,
-        pts, reb: g.rebounds ?? 0, ast: g.assists ?? 0,
-        stl: g.steals ?? 0, blk: g.blocks ?? 0, to: g.turnovers ?? 0,
-        fgm, fga, ftm, fta, fg3m, fg3a, tsPct,
-        oreb: g.offensive_rebounds ?? null,
-        dreb: g.defensive_rebounds ?? null,
-        pm:   g.plus_minus != null ? String(g.plus_minus) : '—',
-        fg:   fgm != null ? `${fgm}-${fga}` : '—',
-        tpm:  fg3m != null ? `${fg3m}-${fg3a}` : '—',
-        ft:   ftm != null ? `${ftm}-${fta}` : '—',
-      };
-    });
+    // Migré de Bzzoiro vers api-basketball le 1er septembre 2026 — bballPlayerGamelog est déjà la
+    // même fonction générique utilisée par ACB/BBL/LNB/Lega A/NBL (pas de stl/blk/to/tsPct/oreb/dreb
+    // côté api-sports.io, même limite déjà en place pour ces 5 ligues, gérée par le frontend).
+    const games = await elPlayerGamelog(playerId);
     const result = { playerId, games };
     _espnCache[cacheKey] = { data: result, ts: Date.now() };
     res.json(result);
@@ -4625,50 +4861,53 @@ app.get('/api/euroleague/boxscore', async (req, res) => {
   if (!date || !home || !away) return res.status(400).json({ error: 'date, home, away requis' });
   const cacheKey = `bzz_el_bs_${date}_${home}_${away}`;
   const cached = _espnCache[cacheKey];
-  if (cached && Date.now() - cached.ts < CACHE_5MIN) return res.json(cached.data);
+  if (cached && (Date.now() - cached.ts < CACHE_5MIN || _basketballApiPaused)) return res.json(cached.data);
   try {
-    const homeId = BZZ_EL_TEAMS[home.toUpperCase()];
-    const awayId = BZZ_EL_TEAMS[away.toUpperCase()];
-    // Search events by date ±1 day to handle timezone drift
-    const dt = new Date(date);
-    const from = new Date(dt.getTime() - 86400000).toISOString().slice(0, 10);
-    const to   = new Date(dt.getTime() + 86400000).toISOString().slice(0, 10);
-    const evData = await bzzFetch(`/events/?league=2&date_from=${from}&date_to=${to}&limit=50`);
-    const ev = (evData.results || []).find(e => {
-      const hid = e.home_team?.id;
-      const aid = e.away_team?.id;
-      return (hid === homeId && aid === awayId) || (hid === awayId && aid === homeId);
+    // Migré de Bzzoiro vers api-basketball le 1er septembre 2026 — même patron que
+    // /api/euro/:league/boxscore générique (getEuroGamesMap + games/statistics/players?id=), mais
+    // résolution du match par ID d'équipe (EL_TEAM_ID_MAP) plutôt que par nom : home/away sont des
+    // codes 3 lettres ici (ex. "OLY"), pas des noms complets, donc sofaNameMatch ne s'applique pas.
+    const homeId = EL_TEAM_ID_MAP[home.toUpperCase()];
+    const awayId = EL_TEAM_ID_MAP[away.toUpperCase()];
+    if (!homeId || !awayId) return res.status(404).json({ error: 'Team not in EL_TEAM_ID_MAP', home, away });
+    const gamesMap = await getElStatsGamesMap();
+    const dt = new Date(date).getTime();
+    let foundId = null, meta = null;
+    for (const [gid, m] of gamesMap) {
+      if (Math.abs(new Date(m.date).getTime() - dt) > 86400000) continue;
+      if ((m.homeId === homeId && m.awayId === awayId) || (m.homeId === awayId && m.awayId === homeId)) {
+        foundId = gid; meta = m; break;
+      }
+    }
+    if (!foundId || meta.status !== 'STATUS_FINAL') return res.status(404).json({ error: 'Match introuvable', home, away, date });
+    const bs = await bballFetch(`/games/statistics/players?id=${foundId}`);
+    const transformBox = teamId => (bs.response || []).filter(s => s.team.id === teamId).map(s => {
+      const min = parseBballMinutes(s.minutes);
+      const fgm = s.field_goals?.total ?? null, fga = s.field_goals?.attempts ?? null;
+      const tpmM = s.threepoint_goals?.total ?? null, tpmA = s.threepoint_goals?.attempts ?? null;
+      const ftm = s.freethrows_goals?.total ?? null, fta = s.freethrows_goals?.attempts ?? null;
+      return {
+        id:       s.player.id,
+        name:     s.player.name,
+        position: '—',
+        starter:  s.type === 'starters',
+        dnp:      min === 0,
+        stats: {
+          min: String(Math.round(min)),
+          pts: s.points ?? 0,
+          reb: s.rebounds?.total ?? 0,
+          ast: s.assists ?? 0,
+          stl: null, blk: null, to: null,
+          fg:  fgm != null ? `${fgm}-${fga}` : '—',
+          tpm: tpmM != null ? `${tpmM}-${tpmA}` : '—',
+          ft:  ftm != null ? `${ftm}-${fta}` : '—',
+          pm:  null,
+        },
+      };
     });
-    if (!ev) return res.status(404).json({ error: 'Match bzzoiro introuvable', home, away, from, to });
-    const bs = await bzzFetch(`/events/${ev.id}/box-score/`);
-    const transformBox = (box, teamShort) => (box || []).map(p => ({
-      id:       p.player_id,
-      name:     p.name,
-      position: p.position || '—',
-      starter:  p.is_starter ?? false,
-      dnp:      p.minutes === 0 && !p.is_starter,
-      stats: {
-        min: p.minutes != null ? String(Math.round(p.minutes)) : '0',
-        pts: p.points   ?? 0,
-        reb: p.rebounds ?? 0,
-        ast: p.assists  ?? 0,
-        stl: p.steals   ?? 0,
-        blk: p.blocks   ?? 0,
-        to:  p.turnovers ?? 0,
-        fg:  p.field_goals_made != null ? `${p.field_goals_made}-${p.field_goals_attempted}` : '—',
-        tpm: p.three_pointers_made != null ? `${p.three_pointers_made}-${p.three_pointers_attempted}` : '—',
-        ft:  p.free_throws_made != null ? `${p.free_throws_made}-${p.free_throws_attempted}` : '—',
-        pm:  p.plus_minus != null ? String(p.plus_minus) : '—',
-      },
-    }));
-    const result = { gameId: ev.id, status: ev.status };
-    // Use our short codes as keys (not bzzoiro names)
-    result[home.toUpperCase()] = transformBox(
-      bs.home_team?.id === homeId ? bs.home_box : bs.away_box, home
-    );
-    result[away.toUpperCase()] = transformBox(
-      bs.away_team?.id === awayId ? bs.away_box : bs.home_box, away
-    );
+    const result = { gameId: foundId, status: 'STATUS_FINAL' };
+    result[home.toUpperCase()] = transformBox(homeId);
+    result[away.toUpperCase()] = transformBox(awayId);
     _espnCache[cacheKey] = { data: result, ts: Date.now() };
     res.json(result);
   } catch (err) {
@@ -4681,30 +4920,42 @@ app.get('/api/euroleague/teamschedule/:teamCode', async (req, res) => {
   const code = req.params.teamCode.toUpperCase();
   const cacheKey = `bzz_el_sched_${code}`;
   const cached = _espnCache[cacheKey];
-  if (cached && Date.now() - cached.ts < CACHE_6H) return res.json(cached.data);
+  if (cached && (Date.now() - cached.ts < CACHE_6H || _basketballApiPaused)) return res.json(cached.data);
   try {
-    const teamId = BZZ_EL_TEAMS[code];
-    if (!teamId) return res.status(404).json({ error: `Team ${code} not in EL map` });
-    const now  = new Date();
-    const from = new Date(now.getTime() - 60 * 86400000).toISOString().slice(0, 10);
-    const to   = new Date(now.getTime() + 30 * 86400000).toISOString().slice(0, 10);
-    const data = await bzzFetch(`/events/?league=2&date_from=${from}&date_to=${to}&limit=60`);
-    const games = (data.results || [])
-      .filter(e => e.home_team?.id === teamId || e.away_team?.id === teamId)
-      .map(e => {
-        const isHome    = e.home_team?.id === teamId;
-        const oppId     = isHome ? e.away_team?.id : e.home_team?.id;
-        const teamScore = isHome ? e.home_score : e.away_score;
-        const oppScore  = isHome ? e.away_score : e.home_score;
+    // Migré de Bzzoiro vers api-basketball le 1er septembre 2026 — même patron que
+    // /api/euro/:league/teamschedule/:teamId générique (bballFetch('/games?...&team=')), mais garde
+    // opponentAbbr (code 3 lettres) au lieu d'opponentId pour ne rien changer côté contrat de route.
+    const teamId = EL_TEAM_ID_MAP[code];
+    if (!teamId) return res.status(404).json({ error: `Team ${code} not in EL_TEAM_ID_MAP` });
+    const cfg = EURO_LEAGUES.euroleague;
+    // Fusion season/gamesSeason (2 septembre 2026, même correction que getEuroGamesMap générique)
+    // — gamesSeason seul ne renvoie que le calendrier à venir, 0 match FINAL tant que la saison n'a
+    // pas commencé.
+    const seasons = cfg.gamesSeason && cfg.gamesSeason !== cfg.season ? [cfg.season, cfg.gamesSeason] : [cfg.season];
+    // allowDuringPause=true (4 septembre 2026) — équivalent basket de la même correction faite côté
+    // foot le même soir ("Derniers résultats" plantait pour toute équipe pas déjà en cache pendant une
+    // pause manuelle) : un historique de résultats a trop de valeur informative pour une page ouverte
+    // activement pour rester bloqué juste parce que le cycle d'arrière-plan est en pause.
+    const responses = await Promise.all(seasons.map(s => bballFetch(`/games?league=${cfg.id}&season=${s}&team=${teamId}`, 0, true)));
+    const byId = new Map();
+    for (const r of responses) for (const g of (r.response || [])) byId.set(g.id, g);
+    const games = [...byId.values()]
+      .filter(g => normGameStatus(g.status) === 'STATUS_FINAL')
+      .map(g => {
+        const isHome    = g.teams.home.id === teamId;
+        const oppId     = isHome ? g.teams.away.id : g.teams.home.id;
+        const ptsScored = isHome ? g.scores?.home?.total : g.scores?.away?.total;
+        const ptsAllow  = isHome ? g.scores?.away?.total : g.scores?.home?.total;
         return {
-          date:          e.event_date || e.date,
-          status:        e.status === 'finished' ? 'STATUS_FINAL' : 'STATUS_SCHEDULED',
+          date:          g.date,
+          status:        'STATUS_FINAL',
           isHome,
-          opponentAbbr:  BZZ_EL_BY_ID[oppId] || String(oppId),
-          ptsScored:  teamScore ?? null,
-          ptsAllowed: oppScore  ?? null,
+          opponentAbbr:  EL_TEAM_ID_BY_CODE_REV[oppId] || String(oppId),
+          ptsScored:  ptsScored ?? null,
+          ptsAllowed: ptsAllow  ?? null,
         };
       })
+      .filter(g => g.ptsScored != null)
       .sort((a, b) => new Date(a.date) - new Date(b.date));
     const result = { teamCode: code, games };
     _espnCache[cacheKey] = { data: result, ts: Date.now() };
@@ -4728,12 +4979,99 @@ const BBALL_BASE = 'https://v1.basketball.api-sports.io';
 // tout (0 résultat même sur les matchs), donc pas de `gamesSeason` pour l'instant.
 // À retirer (repasser `season` lui-même à '2026-2027') dès que /players confirme des effectifs
 // non-vides pour chaque ligue — BBL commence le 31 août 2026, à vérifier en premier.
+// NBL Australie ajoutée le 1er septembre 2026 (demande explicite) — même situation vérifiée en
+// direct : /games?season=2026-2027 renvoie déjà 165 matchs réels (saison démarre le 19 septembre),
+// mais /players?season=2026-2027 renvoie 0 joueur pour chaque équipe (confirmé sur team=8), donc
+// même `gamesSeason` override que ACB/BBL/Lega A — season reste sur 2025-2026 (effectifs réels
+// confirmés, 14 joueurs sur team=8) tant qu'api-sports.io n'a pas peuplé les rosters 2026-2027.
 const EURO_LEAGUES = {
   acb:   { id: 117, season: '2025-2026', gamesSeason: '2026-2027', name: 'ACB',          country: 'ES', flag: '🇪🇸', accent: '#c60b1e' },
   lnb:   { id: 2,   season: '2025-2026', name: 'Betclic Élite', country: 'FR', flag: '🇫🇷', accent: '#002395' },
   bbl:   { id: 40,  season: '2025-2026', gamesSeason: '2026-2027', name: 'BBL',          country: 'DE', flag: '🇩🇪', accent: '#000000' },
   legaa: { id: 52,  season: '2025-2026', gamesSeason: '2026-2027', name: 'Lega A',        country: 'IT', flag: '🇮🇹', accent: '#009246' },
+  nbl:   { id: 1,   season: '2025-2026', gamesSeason: '2026-2027', name: 'NBL',           country: 'AU', flag: '🇦🇺', accent: '#f0b323' },
+  // EuroLeague (id 120, migrée de Bzzoiro le 1er septembre 2026) — format de saison NUMÉRIQUE
+  // chez api-basketball ("2025"/"2026"), pas "YYYY-YYYY" comme les 5 autres ligues EU.
+  euroleague: { id: 120, season: '2025', gamesSeason: '2026', name: 'EuroLeague', country: 'EU', flag: '🇪🇺', accent: '#f77f00' },
 };
+
+// Code interne 3 lettres (déjà utilisé partout côté frontend, ex. BasketballMatchRow/basketball.js)
+// → id api-basketball. Résolu par correspondance de nom, vérifié via 2 sources indépendantes :
+// l'API officielle EuroLeague (api-live.euroleague.net, club.code → club.name) et api-basketball
+// (league=120&season=2025 → team.name), toutes deux recoupées le 1er septembre 2026.
+const EL_TEAM_ID_MAP = {
+  OLY: 1542, FEN: 1270, RMB: 2338, VBC: 2341, PAO: 614,
+  BAR: 2329, MUN: 522,  ZAL: 796,  TEL: 687,  MIL: 722,
+  MCO: 16,   RED: 1065, PAR: 1068, BAS: 2331, IST: 1263,
+  ASV: 26,   HTA: 682,  PRS: 108,  DUB: 6496, VIR: 732,
+};
+const EL_TEAM_ID_BY_CODE_REV = Object.fromEntries(Object.entries(EL_TEAM_ID_MAP).map(([k, v]) => [v, k]));
+
+// ── EuroLeague : games-map dédiée, alignée sur `season` (pas `gamesSeason`) ───────────────────
+// getEuroGamesMap/bballPlayerGamelog (génériques, ACB/BBL/LNB/Lega A/NBL) construisent leur carte
+// de matchs sur `gamesSeason` — correct pour le calendrier à venir, mais ça casse la correspondance
+// avec les stats joueur (récupérées sur `season`) tant que la nouvelle saison n'a pas commencé (bug
+// pré-existant identifié le 1er septembre 2026, masqué ailleurs par le cache disque `_glPersist` —
+// correction plus large prévue séparément, cf. mémoire). Pour ne pas reproduire ce trou dans du code
+// neuf, l'EuroLeague reste volontairement sur sa propre fonction, alignée sur `season` de bout en bout.
+async function getElStatsGamesMap() {
+  const ck = 'euro_games_map_stats_euroleague';
+  const hit = _euroCache[ck];
+  if (hit && (Date.now() - hit.ts < CACHE_6H || _basketballApiPaused)) return hit.data;
+  const cfg = EURO_LEAGUES.euroleague;
+  const d = await bballFetch(`/games?league=${cfg.id}&season=${cfg.season}`);
+  const map = new Map();
+  for (const g of (d.response || [])) {
+    map.set(g.id, {
+      date: g.date, status: normGameStatus(g.status),
+      homeId: g.teams.home.id, awayId: g.teams.away.id,
+      homeName: g.teams.home.name, awayName: g.teams.away.name,
+    });
+  }
+  _euroCache[ck] = { data: map, ts: Date.now() };
+  return map;
+}
+
+async function elPlayerGamelog(playerId) {
+  const cacheKey = `bball_euroleague_${playerId}`;
+  try {
+    const cfg = EURO_LEAGUES.euroleague;
+    const [statsData, gamesMap] = await Promise.all([
+      bballFetch(`/games/statistics/players?player=${playerId}&season=${cfg.season}`),
+      getElStatsGamesMap(),
+    ]);
+    const games = (statsData.response || [])
+      .map(s => {
+        const meta = gamesMap.get(s.game.id);
+        if (!meta || meta.status !== 'STATUS_FINAL') return null;
+        const isHome = meta.homeId === s.team.id;
+        const min = parseBballMinutes(s.minutes);
+        const fgm = s.field_goals?.total ?? null, fga = s.field_goals?.attempts ?? null;
+        const tpmM = s.threepoint_goals?.total ?? null, tpmA = s.threepoint_goals?.attempts ?? null;
+        const ftm = s.freethrows_goals?.total ?? null, fta = s.freethrows_goals?.attempts ?? null;
+        return {
+          date: meta.date,
+          isHome,
+          starter: s.type === 'starters',
+          min: +min.toFixed(1),
+          pts: s.points ?? 0,
+          reb: s.rebounds?.total ?? 0,
+          ast: s.assists ?? 0,
+          stl: null, blk: null, to: null,
+          fg: fgm != null ? `${fgm}-${fga}` : '—', fgm, fga,
+          tpm: tpmM != null ? `${tpmM}-${tpmA}` : '—',
+          ft: ftm != null ? `${ftm}-${fta}` : '—', ftm, fta,
+          league: 'EuroLeague',
+          opponent: isHome ? meta.awayName : meta.homeName,
+        };
+      })
+      .filter(Boolean)
+      .sort((a, b) => new Date(b.date) - new Date(a.date));
+    return _updateGlCache(cacheKey, games);
+  } catch {
+    return _glPersist[cacheKey]?.games || [];
+  }
+}
 
 // Détection saison écoulée pour l'overlay Classement/leaders (31 juillet 2026) — `EURO_LEAGUES.season`
 // est une chaîne fixée à la main (mise à jour manuelle à chaque nouvelle saison, comme l'ordre
@@ -4833,10 +5171,6 @@ const _saveEuroDefByPosCache = _makeEuroCachePersist('euro_defbypos_', EURO_DEFB
 const _saveEuroPlayersCache   = _makeEuroCachePersist('euro_players_', EURO_PLAYERS_CACHE_FILE);
 const _saveEuroGamelogCache   = _makeEuroCachePersist('euro_gl_',      EURO_GAMELOG_CACHE_FILE);
 
-// Cache id joueur ACB → prénom/nom, alimenté par /api/euro/acb/players/:teamId — permet de
-// reconstruire le slug acb.com (prenom-nom-id) dans /playergamelog sans repasser par le roster
-const _acbPlayerNames = {};
-
 // Semaphore — max 5 appels api-sports.io basketball simultanés (rate limit/minute du plan Pro,
 // déclenché en pratique dès ~15-18 requêtes lancées en même temps pour un roster complet)
 let _bballActive = 0;
@@ -4845,12 +5179,16 @@ function bballRelease() {
   _bballActive--;
   if (_bballQueue.length > 0) _bballQueue.shift()();
 }
-async function _bballFetchRaw(path) {
+async function _bballFetchRaw(path, allowDuringPause = false) {
   // Pause manuelle (30 août 2026) — filet de sécurité pour le cas rare d'un cache jamais rempli
   // (tous les points de lecture du cache basket EU acceptent déjà le cache expiré pendant la pause,
   // donc ce throw n'est atteint qu'en vrai cache-miss). Voir commentaire complet sur
   // _basketballApiPaused plus bas dans le fichier.
-  if (_basketballApiPaused) throw new Error('basketball-api paused (pause manuelle)');
+  // allowDuringPause (4 septembre 2026, même principe que footballApiFetch) — un cache-miss sur une
+  // page qu'un utilisateur regarde activement (ex: "Derniers résultats" d'une équipe EU jamais
+  // consultée) a trop de valeur informative pour rester bloqué juste parce que le cycle d'arrière-plan
+  // est en pause — réservé aux points d'affichage, jamais aux enrichissements de fond silencieux.
+  if (_basketballApiPaused && !allowDuringPause) throw new Error('basketball-api paused (pause manuelle)');
   if (_bballActive >= 5) await new Promise(res => _bballQueue.push(res));
   _bballActive++;
   try {
@@ -4868,13 +5206,13 @@ async function _bballFetchRaw(path) {
     return data;
   } finally { bballRelease(); }
 }
-async function bballFetch(path, attempt = 0) {
+async function bballFetch(path, attempt = 0, allowDuringPause = false) {
   try {
-    return await _bballFetchRaw(path);
+    return await _bballFetchRaw(path, allowDuringPause);
   } catch (e) {
     if (/rateLimit/i.test(e.message) && attempt < 3) {
       await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
-      return bballFetch(path, attempt + 1);
+      return bballFetch(path, attempt + 1, allowDuringPause);
     }
     throw e;
   }
@@ -4885,6 +5223,16 @@ async function bballFetch(path, attempt = 0) {
 // Dédup les appels concurrents pour la même ligue (un roster entier déclenche N appels
 // de gamelog en parallèle, qui verraient tous un cache vide en même temps sans ce verrou)
 const _euroGamesMapInflight = {};
+// Fusionne `season` (stats/résultats en cours, ce que bballPlayerGamelog interroge) ET `gamesSeason`
+// (calendrier de la saison à venir, affiché avant que les effectifs ne soient prêts) au lieu de ne
+// prendre QUE gamesSeason (2 septembre 2026, correction du bug ACB/BBL/Lega A/NBL identifié en
+// migrant l'EuroLeague) — avant ce fix, dès que `gamesSeason` divergeait de `season` (cas de ces 4
+// ligues depuis le 25 août), cette carte ne contenait plus AUCUN match de la saison réellement
+// jouée : bballPlayerGamelog (cross-réfèrence par game.id) ne retrouvait donc plus jamais aucun
+// match "terminé", `/api/euro/:league/boxscore` et `/lineups/:gameId` (matchs déjà joués) échouaient
+// silencieusement, seul un vieux cache disque (juillet) masquait le problème pour les joueurs déjà
+// vus avant le 25 août. Un seul appel supplémentaire si `gamesSeason` diffère de `season` (aucun coût
+// pour LNB, qui n'a pas de `gamesSeason`), résultat mis en cache ensemble comme avant.
 async function getEuroGamesMap(league) {
   const cfg = EURO_LEAGUES[league];
   const ck = `euro_games_map_${league}`;
@@ -4892,15 +5240,18 @@ async function getEuroGamesMap(league) {
   if (hit && (Date.now() - hit.ts < CACHE_6H || _basketballApiPaused)) return hit.data;
   if (_euroGamesMapInflight[league]) return _euroGamesMapInflight[league];
   const p = (async () => {
-    const d = await bballFetch(`/games?league=${cfg.id}&season=${cfg.gamesSeason || cfg.season}`);
+    const seasons = cfg.gamesSeason && cfg.gamesSeason !== cfg.season ? [cfg.season, cfg.gamesSeason] : [cfg.season];
+    const responses = await Promise.all(seasons.map(s => bballFetch(`/games?league=${cfg.id}&season=${s}`)));
     const map = new Map();
-    for (const g of (d.response || [])) {
-      map.set(g.id, {
-        date: g.date,
-        status: normGameStatus(g.status),
-        homeId: g.teams.home.id, awayId: g.teams.away.id,
-        homeName: g.teams.home.name, awayName: g.teams.away.name,
-      });
+    for (const d of responses) {
+      for (const g of (d.response || [])) {
+        map.set(g.id, {
+          date: g.date,
+          status: normGameStatus(g.status),
+          homeId: g.teams.home.id, awayId: g.teams.away.id,
+          homeName: g.teams.home.name, awayName: g.teams.away.name,
+        });
+      }
     }
     _euroCache[ck] = { data: map, ts: Date.now() };
     return map;
@@ -4986,11 +5337,22 @@ app.get('/api/euro/:league/scoreboard', async (req, res) => {
     const now = Date.now();
     const KEEP_MS = 48 * 3600_000;
     const AHEAD_MS = 72 * 3600_000;
+    // Élargissement exceptionnel J1 (2 septembre 2026, demande explicite utilisateur) — la toute
+    // première journée de la saison à venir reste visible même hors de la fenêtre 72h normale, le
+    // temps de voir le calendrier d'ouverture avant que les cotes bookmaker ne soient encore
+    // scrapables cette loin à l'avance. Se résorbe tout seul : une fois cette date dépassée de plus
+    // de 48h, la règle KEEP_MS ci-dessus reprend la main normalement, aucun retrait manuel requis.
+    const scheduledDates = (d.response || [])
+      .filter(g => normGameStatus(g.status) !== 'STATUS_FINAL')
+      .map(g => new Date(g.date).getTime());
+    const firstRoundDateStr = scheduledDates.length ? new Date(Math.min(...scheduledDates)).toISOString().slice(0, 10) : null;
     const games = (d.response || [])
       .filter(g => {
         const t = new Date(g.date).getTime();
         const done = normGameStatus(g.status) === 'STATUS_FINAL';
-        return done ? (now - t) < KEEP_MS : (t - now) < AHEAD_MS;
+        if (done) return (now - t) < KEEP_MS;
+        if ((t - now) < AHEAD_MS) return true;
+        return firstRoundDateStr && g.date.slice(0, 10) === firstRoundDateStr;
       })
       .map(g => ({
         id:           g.id,
@@ -5166,46 +5528,8 @@ app.get('/api/euro/:league/players/:teamId', async (req, res) => {
     try { await fetch(`http://localhost:${process.env.PORT || 3001}/api/euro/${league}/scoreboard`, { signal: AbortSignal.timeout(8000) }); } catch {}
   }
   try {
-    // ACB : scraping acb.com (roster + gamelogs), pas Bzzoiro
-    if (league === 'acb') {
-      const slug = ACB_TEAM_MAP[Number(teamId)];
-      if (!slug) return res.status(404).json({ error: `ACB team ${teamId} not mapped` });
-      const rosterHtml = await fetchAcbHtml(`/es/liga/equipos/${slug}?editionId=90`);
-      const roster = parseAcbRoster(rosterHtml);
-      if (!roster.length) { _updateScraper('acb', false); return res.status(500).json({ error: 'ACB roster parse failed' }); }
-      _updateScraper('acb', true);
-      for (const p of roster) _acbPlayerNames[p.id] = { firstName: p.firstName, lastName: p.lastName };
-      const avg = arr => arr.length ? arr.reduce((s,v)=>s+v,0)/arr.length : null;
-      const r1  = v => v != null ? Math.round(v*10)/10 : null;
-      const toMin = t => { if (!t) return 0; const [m,s]=(t||'0:0').split(':').map(Number); return m+(s||0)/60; };
-      const players = await Promise.all(roster.map(async p => {
-        try {
-          const pgSlug = `${normalizeAcbSlug(p.firstName)}-${normalizeAcbSlug(p.lastName)}-${p.id}`;
-          const glHtml = await fetchAcbHtml(`/es/liga/jugadores/${pgSlug}/partidos?editionId=90`);
-          const matches = parseAcbGamelog(glHtml);
-          const games = matches.filter(m => m.stats && toMin(m.stats.timePlayed) > 3);
-          const last5 = games.slice(0, 5);
-          const pts = r1(avg(games.map(g => g.stats.points ?? 0)));
-          const reb = r1(avg(games.map(g => g.stats.rebounds ?? 0)));
-          const ast = r1(avg(games.map(g => g.stats.assists ?? 0)));
-          const tpm = r1(avg(games.map(g => g.stats.threePointersMade ?? 0)));
-          const min = r1(avg(games.filter(g=>toMin(g.stats.timePlayed)>0).map(g=>toMin(g.stats.timePlayed))));
-          const starterFrac = last5.length ? last5.filter(g=>toMin(g.stats.timePlayed)>=18).length/last5.length : 0;
-          return {
-            id: p.id, name: p.name, position: p.position, jersey: p.jersey, headshot: p.headshot,
-            stats: pts != null ? { pts, reb: reb??0, ast: ast??0, tpm: tpm??0, min: min??0 } : null,
-            starterFrac, recentActive: games.length,
-          };
-        } catch {
-          return { id: p.id, name: p.name, position: p.position, jersey: p.jersey, headshot: p.headshot, stats: null, starterFrac: 0, recentActive: 0 };
-        }
-      }));
-      players.sort((a,b)=>(b.stats?.pts??-1)-(a.stats?.pts??-1));
-      const result = { teamId, players };
-      if (players.length >= 1) { _euroCache[ck] = { data: result, ts: Date.now() }; _saveEuroPlayersCache(); }
-      return res.json(result);
-    }
-    // Roster + gamelogs depuis api-sports.io (LNB / BBL / Lega A)
+    // Roster + gamelogs depuis api-sports.io (ACB / LNB / BBL / Lega A / NBL) — ACB migrée depuis
+    // acb.com le 1er septembre 2026 (demande explicite d'homogénéisation, cf. project_acb_legaa_api_basketball_migration).
     const cutoff75 = Date.now() - 75 * 24 * 3600_000;
     const avg = arr => arr.length ? arr.reduce((s, v) => s + v, 0) / arr.length : null;
     const r1  = v => v != null ? Math.round(v * 10) / 10 : null;
@@ -5303,47 +5627,6 @@ app.get('/api/euro/:league/playergamelog/:playerId', async (req, res) => {
   const ck = `euro_gl_${playerId}`;
   const hit = _euroCache[ck];
   if (hit && (Date.now() - hit.ts < CACHE_6H || _basketballApiPaused)) return res.json(hit.data);
-  if (req.params.league === 'acb') {
-    try {
-      const info = _acbPlayerNames[playerId];
-      if (!info) return res.json({ playerId, games: [] });
-      const pgSlug = `${normalizeAcbSlug(info.firstName)}-${normalizeAcbSlug(info.lastName)}-${playerId}`;
-      const glHtml = await fetchAcbHtml(`/es/liga/jugadores/${pgSlug}/partidos?editionId=90`);
-      const matches = parseAcbGamelog(glHtml);
-      const toMin = t => { if (!t) return 0; const [m, s] = (t || '0:0').split(':').map(Number); return m + (s || 0) / 60; };
-      const games = matches.map(g => {
-        const s = g.stats || {};
-        const fgm = (s.twoPointersMade ?? 0) + (s.threePointersMade ?? 0);
-        const fga = (s.twoPointersAttempted ?? 0) + (s.threePointersAttempted ?? 0);
-        const min = toMin(s.timePlayed);
-        return {
-          date:    g.date,
-          isHome:  !!g.isSelectedLocal,
-          starter: min >= 18,
-          min:     parseFloat(min.toFixed(1)),
-          pts:     s.points ?? 0,
-          reb:     s.rebounds ?? 0,
-          ast:     s.assists ?? 0,
-          stl:     s.steals ?? 0,
-          blk:     s.blocks ?? 0,
-          to:      s.turnovers ?? 0,
-          fg:      `${fgm}-${fga}`,
-          fgm, fga,
-          tpm:     s.threePointersMade != null ? `${s.threePointersMade}-${s.threePointersAttempted}` : '—',
-          ft:      s.freeThrowsMade != null ? `${s.freeThrowsMade}-${s.freeThrowsAttempted}` : '—',
-          ftm:     s.freeThrowsMade ?? null, fta: s.freeThrowsAttempted ?? null,
-          league:  'Liga ACB',
-          opponent: g.isSelectedLocal ? (g.awayTeam?.shortName ?? null) : (g.homeTeam?.shortName ?? null),
-        };
-      });
-      const result = { playerId, games };
-      _euroCache[ck] = { data: result, ts: Date.now() };
-      _saveEuroGamelogCache();
-      return res.json(result);
-    } catch (err) {
-      return res.status(500).json({ error: err.message });
-    }
-  }
   try {
     const games = (await bballPlayerGamelog(req.params.league, playerId)).slice(0, 20);
     const result = { playerId, games };
@@ -5380,8 +5663,20 @@ app.get('/api/euro/:league/teamschedule/:teamId', async (req, res) => {
   const hit = _euroCache[ck];
   if (hit && (Date.now() - hit.ts < CACHE_6H || _basketballApiPaused)) return res.json(hit.data);
   try {
-    const d = await bballFetch(`/games?league=${cfg.id}&season=${cfg.gamesSeason || cfg.season}&team=${teamId}`);
-    const games = (d.response || [])
+    // Fusion season/gamesSeason (2 septembre 2026, même correction que getEuroGamesMap) — ne
+    // demander que gamesSeason renvoyait 0 match FINAL tant que la nouvelle saison n'a pas
+    // commencé (calendrier à venir uniquement), cassant repos/densité de calendrier pour
+    // computeTeamWinProb. `season` couvre les matchs récents déjà joués ; les deux se recoupent
+    // naturellement une fois la nouvelle saison lancée (tri par date, les plus récents en tête).
+    const seasons = cfg.gamesSeason && cfg.gamesSeason !== cfg.season ? [cfg.season, cfg.gamesSeason] : [cfg.season];
+    // allowDuringPause=true (4 septembre 2026) — équivalent basket de la même correction faite côté
+    // foot le même soir ("Derniers résultats" plantait pour toute équipe pas déjà en cache pendant une
+    // pause manuelle) : un historique de résultats a trop de valeur informative pour une page ouverte
+    // activement pour rester bloqué juste parce que le cycle d'arrière-plan est en pause.
+    const responses = await Promise.all(seasons.map(s => bballFetch(`/games?league=${cfg.id}&season=${s}&team=${teamId}`, 0, true)));
+    const byId = new Map();
+    for (const d of responses) for (const g of (d.response || [])) byId.set(g.id, g);
+    const games = [...byId.values()]
       .filter(g => normGameStatus(g.status) === 'STATUS_FINAL')
       .map(g => {
         const isHome    = g.teams.home.id === Number(teamId);
@@ -5451,92 +5746,8 @@ app.get('/api/euro/:league/boxscore', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// ── Lega A official lineups (legabasket.it) ──────────────────────────────────
-let _legaaGamesXml = null;
-let _legaaGamesXmlTs = 0;
-
-async function getLegaAGames() {
-  if (_legaaGamesXml && Date.now() - _legaaGamesXmlTs < 6 * 3600_000) return _legaaGamesXml;
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 8000);
-  try {
-    const resp = await fetch('https://www.legabasket.it/games.xml', {
-      headers: { 'User-Agent': 'Mozilla/5.0' }, signal: ctrl.signal
-    });
-    const xml = await resp.text();
-    const games = [...xml.matchAll(/<loc>(https:\/\/www\.legabasket\.it\/game\/(\d+)\/([^<]+))<\/loc>/g)]
-      .map(m => ({ url: m[1], id: m[2], slug: m[3] }));
-    _legaaGamesXml = games;
-    _legaaGamesXmlTs = Date.now();
-    return games;
-  } finally { clearTimeout(timer); }
-}
-
-async function fetchLegaALineup(homeTeam, awayTeam, date) {
-  const games = await getLegaAGames();
-  const normStr = s => (s || '').toLowerCase().replace(/[^a-z]/g, '');
-
-  const keyWords = name => name.toLowerCase().split(/\s+/)
-    .filter(w => w.length > 3)
-    .map(w => w.replace(/[^a-z]/g, ''));
-
-  const homeWords = keyWords(homeTeam);
-  const awayWords = keyWords(awayTeam);
-
-  // Uniquement les matchs récents (IDs élevés), dédupliqués, triés du plus récent
-  const recentUniq = [...new Map(games.map(g => [g.id, g])).values()]
-    .filter(g => parseInt(g.id) > 20000)
-    .sort((a, b) => parseInt(b.id) - parseInt(a.id));
-
-  const candidates = recentUniq.filter(g => {
-    const slug = normStr(g.slug);
-    return homeWords.some(w => slug.includes(w)) && awayWords.some(w => slug.includes(w));
-  });
-  // Prendre le plus récent (trié desc par ID = plus récent en premier)
-  const match = candidates[0] || null;
-
-  if (!match) return null;
-
-  // Récupérer la page du match
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 8000);
-  try {
-    const resp = await fetch(match.url, {
-      headers: { 'User-Agent': 'Mozilla/5.0' }, signal: ctrl.signal
-    });
-    const html = await resp.text();
-
-    const m = html.match(/<script id="__NEXT_DATA__"[^>]*>({.*?})<\/script>/s);
-    if (!m) return null;
-
-    const d = JSON.parse(m[1]);
-    const scores = d?.props?.pageProps?.game?.scores;
-    if (!scores) return null;
-
-    const toStarters = rows => {
-      const seen = new Set();
-      return (rows || [])
-        .filter(p => String(p.sf) === '1')
-        .filter(p => { const k = `${p.player_name}${p.player_surname}`; if (seen.has(k)) return false; seen.add(k); return true; })
-        .map(p => ({ name: `${p.player_name} ${p.player_surname}`, jersey: p.player_num }))
-        .slice(0, 5);
-    };
-
-    // Déterminer quel côté (ht/vt) correspond au home passé en param
-    // On compare la position dans le slug (normalisé sans séparateurs)
-    const slugNorm = normStr(match.slug);
-    const homePos = Math.min(...homeWords.map(w => { const i = slugNorm.indexOf(w); return i >= 0 ? i : Infinity; }));
-    const awayPos = Math.min(...awayWords.map(w => { const i = slugNorm.indexOf(w); return i >= 0 ? i : Infinity; }));
-    const firstIsHome = homePos <= awayPos;
-
-    const homeStarters = toStarters(firstIsHome ? scores.ht?.rows : scores.vt?.rows);
-    const awayStarters = toStarters(firstIsHome ? scores.vt?.rows : scores.ht?.rows);
-
-    if (!homeStarters.length && !awayStarters.length) return null;
-
-    return { confirmed: true, home: homeStarters, away: awayStarters, gameId: match.id };
-  } finally { clearTimeout(timer); }
-}
+// Lega A official lineups (legabasket.it) retiré (1er septembre 2026, migration api-basketball
+// pur) — Lega A retombe sur la redistribution proportionnelle comme ACB/BBL/NBL sans compo confirmée.
 
 // ── SofaScore helpers ─────────────────────────────────────────────────────────
 const SOFA_HEADERS = {
@@ -5619,27 +5830,10 @@ app.get('/api/euro/:league/projectedlineup', async (req, res) => {
     return res.json(result);
   }
 
-  // 2) Lega A — starters officiels depuis legabasket.it (live + terminés). legabasket.it n'a de
-  // vrais titulaires qu'une fois le match commencé — avant le coup d'envoi on laisse la cascade
-  // continuer (sofascore/saved) pour rester en "Probable" plutôt que de figer une compo non vérifiée.
-  if (league === 'legaa' && new Date(date).getTime() <= Date.now()) {
-    try {
-      const ld = await fetchLegaALineup(home, away, date);
-      if (ld && ld.home.length >= 5 && ld.away.length >= 5) {
-        const result = {
-          starters: {
-            [homeShort]: { starters: ld.home, status: 'Confirmé' },
-            [awayShort]: { starters: ld.away, status: 'Confirmé' },
-          },
-          source: 'legabasket', confirmed: true,
-        };
-        _euroCache[ck] = { data: result, ts: Date.now() };
-        return res.json(result);
-      }
-    } catch {}
-  }
+  // Tier "Lega A officiel (legabasket.it)" retiré (1er septembre 2026, migration api-basketball
+  // pur) — Lega A tombe désormais sur la cascade SofaScore ci-dessous comme les 4 autres ligues EU.
 
-  // 3) SofaScore — probables (disponibles ~24h avant)
+  // 2) SofaScore — probables (disponibles ~24h avant)
   try {
     const dt = new Date(date);
     const datesToTry = [0, -1, 1].map(d => new Date(dt.getTime() + d * 86400000).toISOString().slice(0, 10));
@@ -5674,7 +5868,7 @@ app.get('/api/euro/:league/projectedlineup', async (req, res) => {
     }
   } catch {}
 
-  // 4) Compo probable depuis historique gamelog api-sports.io (titularisations + minutes récentes)
+  // 3) Compo probable depuis historique gamelog api-sports.io (titularisations + minutes récentes)
   if (homeId && awayId) {
     try {
       const [homeRoster, awayRoster] = await Promise.all([
@@ -5773,7 +5967,7 @@ app.get('/api/euro/:league/standings', async (req, res) => {
   if (!cfg) return res.status(404).json({ error: 'Unknown league' });
   const ck = `euro_standings_${req.params.league}`;
   const hit = _euroCache[ck];
-  if (hit && (Date.now() - hit.ts < CACHE_6H || _basketballApiPaused)) return res.json(hit.data);
+  if (!req.query.refresh && hit && (Date.now() - hit.ts < CACHE_6H || _basketballApiPaused)) return res.json(hit.data);
   try {
     const seasonCurrent = isEuroBasketSeasonCurrent(req.params.league);
     const d = await bballFetch(`/standings?league=${cfg.id}&season=${cfg.season}`);
@@ -5782,11 +5976,9 @@ app.get('/api/euro/:league/standings', async (req, res) => {
     const ppg  = r => r.points?.for     != null ? +(r.points.for     / gp(r)).toFixed(1) : null;
     const oppg = r => r.points?.against  != null ? +(r.points.against / gp(r)).toFixed(1) : null;
     const teams = rows.map(r => ({ id: r.team.id, name: r.team.name, position: r.position, wins: r.games?.win?.total ?? 0, losses: r.games?.lose?.total ?? 0, ppg: ppg(r), oppg: oppg(r) }));
-    // Même forme que /api/acb/standings (31 juillet 2026) — StatsOverlay/StandTable attend
-    // {standings:[{rank,abbr,logo,wins,losses,pct,gb}]}, pas encore consommé côté frontend avant ce
-    // fix donc aucun risque de casser un appelant existant sur l'ancienne forme {teams:[...]}.
-    // Pas d'alias d'abréviation dédié comme ACB_ABBR pour ces 3 ligues (aucune demandée) — repli sur
-    // les 3 premières lettres du nom, cohérent avec le repli déjà utilisé pour un club ACB non listé.
+    // Forme attendue par StatsOverlay/StandTable : {standings:[{rank,abbr,logo,wins,losses,pct,gb}]}.
+    // Pas d'alias d'abréviation dédié pour ces ligues (aucune demandée, y compris ACB depuis sa
+    // migration vers api-basketball le 1er septembre 2026) — repli sur les 3 premières lettres du nom.
     // Stats vidées si la saison affichée par EURO_LEAGUES.season n'est plus la saison en cours (cf.
     // isEuroBasketSeasonCurrent) — évite de montrer les vraies stats de la saison passée comme si
     // c'était la saison actuelle ; les équipes restent affichées (identité connue, roster stable
@@ -9534,6 +9726,41 @@ async function _fetchBetclicFootballExtrasInner(href, homeTeam = '') {
     };
     const normTeamStr = t => (t ?? '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/[^a-z]/g,'');
     const homeNorm4 = normTeamStr(homeTeam).slice(0, 4);
+
+    // Total de buts PAR ÉQUIPE (7 septembre 2026, nouveau marché "observation" — demande explicite
+    // utilisateur, capture 4 sept CDM). Betclic expose ce marché dans le même bloc "markets" que le
+    // total combiné déjà extrait plus haut ("totMkt"), un bloc séparé par équipe : "Total de buts
+    // (t. rég) - <Équipe>" — sans le préfixe "Nombre" qui distingue le marché combiné (cf. commentaire
+    // sur totMkt). Volontairement PAS branché à generateBackgroundAlerts() pour émettre de vraies
+    // alertes tout de suite — juste loggé en near-miss (market:'team_goals') le temps d'accumuler un
+    // historique avant de calibrer un seuil, même précaution que BTTS Big Five/Brésil à l'origine.
+    let teamTotals = null;
+    const teamTotMkts = mkts.filter(mk => {
+      const n = (mk.name ?? '').toLowerCase();
+      return n.startsWith('total de buts') && !n.startsWith('nombre total de buts');
+    });
+    if (teamTotMkts.length) {
+      teamTotals = {};
+      for (const mk of teamTotMkts) {
+        const nameSuffix = (mk.name ?? '').split(' - ').slice(-1)[0] ?? '';
+        const isHome = homeNorm4 && normTeamStr(nameSuffix).startsWith(homeNorm4);
+        const side = isHome ? 'home' : 'away';
+        const t = {};
+        for (const row of mk.selectionMatrix ?? []) {
+          const sels = (row.selections ?? []).map(s => s.selectionOneof?.selection ?? s);
+          for (const sel of sels) {
+            const m = (sel.name ?? '').match(/^([+-]) de (0|1|2),5$/);
+            if (!m) continue;
+            const line = `${m[2]}.5`;
+            const dir = m[1] === '+' ? 'over' : 'under';
+            t[line] = { ...(t[line] || {}), [dir]: sel.odds };
+          }
+        }
+        if (Object.keys(t).length) teamTotals[side] = { ...(teamTotals[side] || {}), ...t };
+      }
+      if (!teamTotals.home && !teamTotals.away) teamTotals = null;
+    }
+
     const dcKey = n => {
       const low = (n ?? '').toLowerCase().trim();
       if (/^1x$/.test(low)) return '1x';
@@ -9629,7 +9856,7 @@ async function _fetchBetclicFootballExtrasInner(href, homeTeam = '') {
       } catch (eg) { _bgLog.push(`betclic gRPC DC error — ${href.slice(-40)} : ${eg.message}`); }
     }
 
-    return { btts, totals, dcbtts, dcou };
+    return { btts, totals, teamTotals, dcbtts, dcou };
   } catch (e) { _bgLog.push(`betclic extras inner error — ${href} : ${e.message}`); return null; }
 }
 
@@ -9771,10 +9998,11 @@ async function fetchBetclicOdds() {
     return fetchBetclicFootballExtras(r._href, r.homeTeam).catch(() => null);
   }));
   extrasArr.forEach((extras, i) => {
-    if (extras?.btts)   results[i].btts   = extras.btts;
-    if (extras?.totals) results[i].totals = extras.totals;
-    if (extras?.dcbtts) results[i].dcbtts = extras.dcbtts;
-    if (extras?.dcou)   results[i].dcou   = extras.dcou;
+    if (extras?.btts)       results[i].btts       = extras.btts;
+    if (extras?.totals)     results[i].totals     = extras.totals;
+    if (extras?.teamTotals) results[i].teamTotals = extras.teamTotals;
+    if (extras?.dcbtts)     results[i].dcbtts     = extras.dcbtts;
+    if (extras?.dcou)       results[i].dcou       = extras.dcou;
     delete results[i]._href;
     delete results[i]._euCup;
     delete results[i]._bresil;
@@ -10037,6 +10265,31 @@ async function fetchUnibetFootballOdds() {
       }
       return null;
     };
+
+    // Total de buts PAR ÉQUIPE (7 septembre 2026, demande explicite utilisateur — vérifié en direct
+    // sur Getafe-Celta Vigo : groupe "Plus / Moins Buts Equipe - 90 Mins", sous-marchés "Plus / Moins
+    // But(s) - <Équipe> <ligne>" avec 0,5/1,5/2,5/3,5 dispo — on ne garde que 0,5/1,5/2,5, mêmes
+    // lignes que Betclic). Alimente markets.teamTotals.bookmakers.unibet via _mergeFootballBookmaker
+    // (déjà générique, aucun changement nécessaire côté fusion).
+    const teamGoalsGroup = gm.find(g => g.description === 'Plus / Moins Buts Equipe - 90 Mins');
+    if (teamGoalsGroup) {
+      const t = {};
+      for (const sub of teamGoalsGroup.markets ?? []) {
+        const dm = (sub.description ?? '').match(/^Plus \/ Moins But\(s\) - (.+) (0|1|2),5$/);
+        if (!dm) continue;
+        const teamName = dm[1].trim();
+        const line = `${dm[2]}.5`;
+        const isHome = ubHomeNorm4 && ubNormTeam(teamName).startsWith(ubHomeNorm4);
+        const side = isHome ? 'home' : 'away';
+        for (const o of sub.outcomes ?? []) {
+          const om = (o.description ?? '').match(/^(Plus|Moins) (0|1|2),5$/);
+          if (!om) continue;
+          const dir = om[1] === 'Plus' ? 'over' : 'under';
+          t[side] = { ...(t[side] || {}), [line]: { ...(t[side]?.[line] || {}), [dir]: price(o.price) } };
+        }
+      }
+      if (Object.keys(t).length) entry.teamTotals = t;
+    }
 
     // Double Chance & BTTS — branche "Oui" uniquement
     const dcbttsGroup = gm.find(g => {
@@ -10939,8 +11192,7 @@ const ESPN_WNBA_MAP = {
 
 const WNBA_SCALE = 114.5 / 87.0; // normalize WNBA pts to NBA-equivalent for computeEstimate
 
-let backgroundAlerts = [];
-// backgroundAlerts repart vide à chaque redémarrage backend (dev --watch, déploiement) — sans
+// backgroundAlerts repartait vide à chaque redémarrage backend (dev --watch, déploiement) — sans
 // garde-fou, le premier cycle de generateBackgroundAlerts() après un restart considérerait TOUTES
 // les alertes valides du moment comme "nouvelles" (aucune n'existe encore dans byId) et enverrait
 // une notification Telegram pour chacune d'un coup (potentiellement des dizaines).
@@ -10950,6 +11202,13 @@ let backgroundAlerts = [];
 // "nouvelle"). Cas réel : alerte Jonquel Jones jamais notifiée, avalée par un restart pendant une
 // session de dev avec plusieurs redémarrages backend. Remplacé par un set d'IDs déjà notifiés
 // persisté sur disque (survit aux restarts) — dédup par ID réel plutôt que par "1er cycle ou pas".
+// Fix du 31 août 2026 — le trou restant : l'alerte elle-même (pas juste la notif Telegram) restait
+// perdue si elle ne re-qualifiait pas au tout premier cycle post-restart (cas Big Five foot : une
+// alerte rare qui a qualifié un cycle donné peut très bien ne plus qualifier 20min plus tard, la
+// fenêtre entre "créée" et "restart" étant hasardeuse). `backgroundAlerts` démarre maintenant
+// restauré depuis `PENDING_ALERTS_FILE` (voir `_savePendingAlerts`, filtré pour exclure tout id déjà
+// accepté/réglé — l'accepté fait toujours autorité) au lieu de repartir de zéro à chaque fois.
+let backgroundAlerts = _pendingAlertsPersisted;
 const TELEGRAM_NOTIFIED_FILE = join(CACHE_DIR, 'telegram_notified.json');
 let _telegramNotifiedIds = new Set();
 try { if (existsSync(TELEGRAM_NOTIFIED_FILE)) _telegramNotifiedIds = new Set(JSON.parse(readFileSync(TELEGRAM_NOTIFIED_FILE, 'utf8'))); } catch {}
@@ -11041,15 +11300,29 @@ async function fetchBk(bk, url, opts) {
 }
 
 // ── Santé du système — tracking scrapers + cycles bg ─────────────────────────
+const BG_ALERTS_INTERVAL_MS = 20 * 60 * 1000;
+// Persisté (1er septembre 2026) — jusqu'ici _bgLastRun était purement en mémoire, donc remis à null
+// à chaque redémarrage backend. Au lancement, `setTimeout(generateBackgroundAlertsGuarded, 2_000)`
+// déclenchait alors TOUJOURS un cycle complet 2s après le boot, qu'un vrai cycle ait tourné 30
+// secondes avant le restart ou non — chaque redémarrage `nodemon` pendant une session de dev (edits
+// répétés sur server.js) relançait donc un cycle entier, avec son lot de scraping Betclic/Unibet/
+// Pinnacle, en plus du cycle normal 20min. Cas réel : plusieurs redémarrages coup sur coup pendant une
+// session de debug ont probablement contribué à un blocage anti-ban Betclic (403/429 répétés,
+// _scraperBlockedUntil). Fix : le timestamp du dernier cycle survit maintenant au restart
+// (BG_LAST_RUN_FILE) — au boot, si un cycle a tourné il y a moins de BG_ALERTS_INTERVAL_MS, le 1er
+// lancement attend le reste du temps au lieu de repartir immédiatement à 2s.
+const BG_LAST_RUN_FILE = join(CACHE_DIR, 'bg_alerts_last_run.json');
 let _bgLastRun  = null;
+try {
+  if (existsSync(BG_LAST_RUN_FILE)) _bgLastRun = JSON.parse(readFileSync(BG_LAST_RUN_FILE, 'utf8'))?.ts ?? null;
+} catch {}
+function _saveBgLastRun() { try { writeFileSync(BG_LAST_RUN_FILE, JSON.stringify({ ts: _bgLastRun }), 'utf8'); } catch {} }
 let _snapshotLastUpdate = null;
 const _scraperHealth = {
   unibet:      { ts: null, ok: false, lastOk: null, history: [] },
   betclic:     { ts: null, ok: false, lastOk: null, history: [] },
   winamax:     { ts: null, ok: false, lastOk: null, history: [] },
   espn:        { ts: null, ok: false, lastOk: null, history: [] },
-  acb:         { ts: null, ok: false, lastOk: null, history: [] },
-  bzzoiro:     { ts: null, ok: false, lastOk: null, history: [] },
   rotowire:    { ts: null, ok: false, lastOk: null, history: [] },
   unibet_foot: { ts: null, ok: false, lastOk: null, history: [] },
   betclic_foot:{ ts: null, ok: false, lastOk: null, history: [] },
@@ -11697,10 +11970,15 @@ function _saveNearMissFootball() {
   try { writeFileSync(NEAR_MISS_FOOT_FILE, JSON.stringify({ rows: _nearMissFootball }), 'utf8'); } catch {}
 }
 // Filtre de bande retiré le 28 juillet 2026 — voir commentaire détaillé sur _logNearMissCandidate.
-function _logFootballNearMiss({ fixtureId, league, market, direction, line, probability, floor, unibetOdds, betclicOdds, tags }) {
+// `home`/`away` (3 septembre 2026, demande explicite) — jusqu'ici le log ne gardait que fixtureId
+// (id brut, pas de nom d'équipe), rendant impossible d'identifier a posteriori quel match précis a
+// alimenté un cas donné (pour un match déjà terminé depuis longtemps, l'id ne se résout plus via
+// aucune route live). Purement additif : optionnel, `?? null` si un appelant ne les passe pas encore,
+// aucune régression sur les entrées déjà loggées (qui restent sans home/away, comme avant).
+function _logFootballNearMiss({ fixtureId, league, market, direction, line, probability, floor, unibetOdds, betclicOdds, tags, home, away }) {
   const id = `${fixtureId}_${market}_${direction}_${line ?? ''}`;
   if (_nearMissFootball.some(c => c.id === id)) return;
-  _nearMissFootball.push({ id, fixtureId, league, market, direction, line: line ?? null, probability: +(probability * 100).toFixed(1), floor: +(floor * 100).toFixed(1), unibetOdds: unibetOdds ?? null, betclicOdds: betclicOdds ?? null, ...(tags?.length ? { tags } : {}), status: 'pending', savedAt: Date.now() });
+  _nearMissFootball.push({ id, fixtureId, league, market, direction, line: line ?? null, probability: +(probability * 100).toFixed(1), floor: +(floor * 100).toFixed(1), unibetOdds: unibetOdds ?? null, betclicOdds: betclicOdds ?? null, home: home ?? null, away: away ?? null, ...(tags?.length ? { tags } : {}), status: 'pending', savedAt: Date.now() });
 }
 // 21 juillet 2026 — le 'fd' (5 grands championnats) pointait vers /api/fd/matches, qui interroge
 // FD avec ?status=SCHEDULED et ne renvoie donc JAMAIS de match terminé (même bug racine que le
@@ -11745,6 +12023,13 @@ async function _resolveFootballNearMiss() {
         const dcCleared = c.direction === '1x' ? hs >= as : c.direction === 'x2' ? hs <= as : false;
         const otherCleared = c.market === 'dc_btts' ? (hs >= 1 && as >= 1) : (hs + as) > c.line;
         cleared = dcCleared && otherCleared;
+      }
+      // Total de buts par équipe (7 septembre 2026) — direction composée 'home_over'/'home_under'/
+      // 'away_over'/'away_under', même convention que le marché équipe basket (team_total).
+      else if (c.market === 'team_goals') {
+        const [side, dir] = c.direction.split('_');
+        const score = side === 'home' ? hs : as;
+        cleared = dir === 'over' ? score > c.line : score < c.line;
       }
       if (cleared != null) c.status = cleared ? 'won' : 'lost';
     } catch {}
@@ -11792,6 +12077,80 @@ function _logBasketMarketNearMiss({ gameId, league, market, direction, line, pro
     ...(std != null ? { std: +std.toFixed(2) } : {}),
     status: 'pending', savedAt: Date.now(),
   });
+}
+// Nouveau format de message Telegram (6 septembre 2026, demande explicite) — la ligne "Probabilité
+// — X gagnés/Y perdus dans ce %" a besoin d'interroger, au moment précis de l'envoi, l'historique
+// near-miss déjà résolu pour ce marché/cette ligue à CE % exact — même méthodologie "par point,
+// sans chevauchement" que l'artifact "Seuils par marché" (Math.floor, jamais un arrondi qui
+// mélangerait deux % voisins). Seul un attribut TEMPORAIRE `_wl` est attaché à une COPIE de l'alerte
+// juste avant l'appel à notifyNewAlert (telegram.js) — jamais sur l'alerte réelle dans
+// `backgroundAlerts`, qui n'a pas à connaître ce détail d'affichage.
+function _wlAtProbability(rows, matchFn, probability) {
+  const target = Math.floor(probability);
+  let won = 0, lost = 0;
+  for (const r of rows) {
+    if ((r.status !== 'won' && r.status !== 'lost') || Math.floor(r.probability) !== target || !matchFn(r)) continue;
+    if (r.status === 'won') won++; else lost++;
+  }
+  return { won, lost };
+}
+function _nearMissForAlert(a) {
+  switch (a.type) {
+    case 'football_btts':
+      return _wlAtProbability(_nearMissFootball, r => r.market === 'btts' && r.league === a.league, a.probability);
+    case 'football_total':
+      return _wlAtProbability(_nearMissFootball, r => r.market === 'total' && r.league === a.league && r.line === a.line, a.probability);
+    case 'football_result':
+      return _wlAtProbability(_nearMissFootball, r => r.market === 'result' && r.league === a.league, a.probability);
+    case 'football_dc_btts':
+      return _wlAtProbability(_nearMissFootball, r => r.market === 'dc_btts' && r.league === a.league, a.probability);
+    case 'football_dc_ou':
+      return _wlAtProbability(_nearMissFootball, r => r.market === 'dc_ou' && r.league === a.league, a.probability);
+    case 'player_prop':
+      return _wlAtProbability(_nearMissCandidates, r => r.stat === a.stat && r.league === a.league, a.probability);
+    case 'basketball_result':
+      return _wlAtProbability(_nearMissBasketMkt, r => r.market === 'result' && r.league === a.league, a.probability);
+    case 'game_total':
+      return _wlAtProbability(_nearMissBasketMkt, r => r.market === 'total' && r.league === a.league, a.prob);
+    case 'team_total':
+      return _wlAtProbability(_nearMissBasketMkt, r => r.market === 'team_total' && r.league === a.league, a.prob);
+    default:
+      return null; // types edge-based (Pinnacle/outrights) — pas de near-miss probabiliste équivalent
+  }
+}
+// Mise recommandée dans le message Telegram (7 septembre 2026, demande explicite) — remplace un 1er
+// essai (% implicite de la cote bookmaker, 1/cote) rejeté par l'utilisateur : la ligne doit montrer
+// le vrai montant à miser d'après le système déjà en place sur les alertes du site (barème de
+// paliers bankroll, `BANKROLL_BRACKETS`/`getRecommendedStake` dans src/utils/bankroll.js — repris
+// ici à l'identique, PAS le calculateur Kelly multi-alertes de StakeCalculatorWidget, qui répartit
+// entre PLUSIEURS alertes déjà affichées simultanément, un problème différent). Porté côté backend
+// (pas d'accès au localStorage/état bankroll du frontend depuis un process serveur) : lu directement
+// depuis Mongo (`userdata.bankroll_tracker.current`, même document que `/api/userdata`).
+const BANKROLL_BRACKETS_BG = [
+  { min: 0,     stake: 50 },
+  { min: 500,   stake: 75 },
+  { min: 1000,  stake: 125 },
+  { min: 2000,  stake: 200 },
+  { min: 3500,  stake: 300 },
+  { min: 5000,  stake: 400 },
+  { min: 7000,  stake: 500 },
+  { min: 10000, stake: null }, // au-delà de l'objectif : 5% dynamique du BK, même règle que le frontend
+];
+function _recommendedStakeFor(bk) {
+  if (!bk || bk <= 0) return null;
+  let bracket = BANKROLL_BRACKETS_BG[0];
+  for (const b of BANKROLL_BRACKETS_BG) { if (bk >= b.min) bracket = b; else break; }
+  if (bracket.stake == null) return Math.round(bk * 0.05);
+  return Math.min(bracket.stake, bk);
+}
+async function _getBankrollStakeForTelegram() {
+  try {
+    const db = await getMongoDb();
+    if (!db) return null;
+    const doc = await db.collection('userdata').findOne({ _id: 'main' });
+    const current = doc?.data?.bankroll_tracker?.current;
+    return typeof current === 'number' ? _recommendedStakeFor(current) : null;
+  } catch { return null; }
 }
 const BASKET_MKT_SCOREBOARD = {
   nba: '/api/nba/scoreboard', wnba: '/api/wnba/scoreboard',
@@ -11894,6 +12253,15 @@ const THRESHOLD_OPT_MIN_ODDS_GRID = [0, 1.10, 1.20, 1.30, 1.40, 1.50, 1.60, 1.80
 function _configuredMinOddsFor(source, league, market, stat) {
   if (source === 'props') return 1.60; // capOdds/hasValidOverOdds — ladder NBA/WNBA/EU
   if (source === 'football') {
+    // Big5/Bresil (3 septembre 2026) — reflète la vraie cote configurée pour CE groupe précis plutôt
+    // que le seuil générique (qui ne s'applique en réalité qu'à la CDM/coupes d'Europe depuis le
+    // recalibrage du 31 août). Le générique reste le repli pour tout league non reconnu ici.
+    if (league === 'big5') {
+      if (market === 'btts') return FB_BIG5_BTTS_MIN_ODDS;     // 1.50
+      if (market === 'total') return FB_BIG5_TOTAL15_MIN_ODDS; // 1.30
+      if (market === 'dc_ou') return FB_BIG5_DCOU_MIN_ODDS;    // 1.50
+    }
+    if (league === 'bresil' && market === 'btts') return FB_BRESIL_BTTS_MIN_ODDS; // 1.40
     if (market === 'result') return FB_RESULT_MIN_ODDS;   // 1.50
     if (market === 'btts') return FB_BTTS_OU_MIN_ODDS;     // 1.60
     if (market === 'total') return FB_OU_ALERT_MIN_ODDS_TOTAL; // 1.30 — distinct de BTTS depuis le fix du 27 juin
@@ -12098,7 +12466,12 @@ app.get('/api/analysis/threshold-optimizer', (req, res) => {
   const raw = source === 'props' ? _nearMissCandidates : source === 'football' ? _nearMissFootball : _nearMissBasketMkt;
 
   let rows = raw.filter(r => r.savedAt > cutoff);
-  if (league) rows = rows.filter(r => r.league === league);
+  // Groupe de ligues (3 septembre 2026, ex: league=big5) — cf. FOOTBALL_LEAGUE_GROUPS. Un groupe
+  // inconnu retombe sur le comportement existant (égalité stricte), donc league=laliga etc. inchangé.
+  if (league) {
+    const group = FOOTBALL_LEAGUE_GROUPS[league];
+    rows = group ? rows.filter(r => group.includes(r.league)) : rows.filter(r => r.league === league);
+  }
   if (market && source !== 'props') rows = rows.filter(r => r.market === market);
   if (stat && source === 'props') rows = rows.filter(r => r.stat === stat);
   if (direction) rows = rows.filter(r => r.direction === direction);
@@ -12558,7 +12931,9 @@ function mergePlayerProps(scrapedPlayers, playerName, nameMatchFn) {
 
 let _bgLog = [];
 // ── Moteur de projection joueurs EU (backend) ─────────────────────────────
-const EU_LEAGUE_CONST_BG = { acb:83, lnb:79, bbl:82, legaa:80, euroleague:81 };
+// nbl (1er septembre 2026) — vraie moyenne calculée sur les 179 matchs NBL Australie 2025-2026 joués
+// (91,6 pts/équipe), pas encore activée dans LEAGUES_EU/EU_ALERT_LEAGUES (affichage seul pour l'instant).
+const EU_LEAGUE_CONST_BG = { acb:83, lnb:79, bbl:82, legaa:80, euroleague:81, nbl:91.6 };
 const NBA_REF_BG = 114.5;
 
 function calcEWAbg(games, key, n, decay = 0.82) {
@@ -12632,7 +13007,7 @@ const Q_STATUSES_TOTAL = ['Questionable', 'GTD', 'Game Time Decision', 'Doubtful
 const WNBA_TOTAL_LEAGUE_AVG = 87.3;  // pts/équipe WNBA
 const NBA_TOTAL_GAME_AVG    = 229.0;
 const WNBA_TOTAL_GAME_AVG   = 171.0; // recalibré 15 juin (était 174.0)
-const EU_GAME_TOTAL_AVG     = { acb: 166.0, bbl: 164.0, legaa: 160.0 };
+const EU_GAME_TOTAL_AVG     = { acb: 166.0, bbl: 164.0, legaa: 160.0, nbl: 183.2 };
 
 // Facteur playoffs spécifique aux totaux — plus fort que pour les props joueurs
 function getPlayoffFactorTotalBg(round) {
@@ -14928,6 +15303,7 @@ async function _waitForBgAlertsCycle(reason) {
 }
 async function generateBackgroundAlerts() {
   _bgLastRun = Date.now();
+  _saveBgLastRun();
   _bgLog = ['started'];
   _staleAlertIds = new Set();
   console.log('[bg-alerts] Running…');
@@ -16238,6 +16614,7 @@ async function generateBackgroundAlerts() {
             estimated: full.estimated, line, direction,
             edge: +Math.abs(full.edge).toFixed(1),
             prob: +(bestP * 100).toFixed(1),
+            pinnacleOdds: bks.pinnacle?.[direction] ?? null,
             unibetOdds:  bks.unibet?.[direction]  ?? null,
             betclicOdds: bks.betclic?.[direction]  ?? null,
             winamaxOdds: bks.winamax?.[direction]  ?? null,
@@ -16566,7 +16943,7 @@ async function generateBackgroundAlerts() {
                 teamName: forHome ? g.home.name : g.away.name,
                 teamShort: forHome ? g.home.short : g.away.short,
                 probability: +(prob * 100).toFixed(1), margin: result.marginExpected,
-                odds, edge, bookmaker: bk, savedAt: Date.now(),
+                odds, edge, bookmaker: bk, pinnacleOdds: h2hBks.pinnacle?.[side] ?? null, savedAt: Date.now(),
               });
               resultCreatedSidesEU.add(side);
             }
@@ -16725,7 +17102,7 @@ async function generateBackgroundAlerts() {
                   teamName: forHome ? g.home.name : g.away.name,
                   teamShort: forHome ? g.home.short : g.away.short,
                   probability: +(prob * 100).toFixed(1), margin: result.marginExpected,
-                  odds, edge, bookmaker: bk, savedAt: Date.now(),
+                  odds, edge, bookmaker: bk, pinnacleOdds: h2hBks.pinnacle?.[side] ?? null, savedAt: Date.now(),
                 });
                 resultCreatedSides.add(side);
               }
@@ -16989,6 +17366,7 @@ async function generateBackgroundAlerts() {
               direction,
               prob: +(bestP * 100).toFixed(1),
               savedAt: Date.now(),
+              pinnacleOdds: bks.pinnacle?.[direction] ?? null,
               unibetOdds: bks.unibet?.[direction] ?? null,
               betclicOdds: bks.betclic?.[direction] ?? null,
               winamaxOdds: bks.winamax?.[direction] ?? null,
@@ -17095,13 +17473,13 @@ async function generateBackgroundAlerts() {
           // (IN_PLAY/PAUSED, toujours renvoyé par FD depuis le fix du 23 août). `m.status` absent
           // (entrées écrites avant ce fix, pas encore rafraîchies) laisse passer, comme le bloc Brésil
           // juste en dessous — on ne bloque que quand on SAIT que le match a déjà commencé.
-          if (m.status && m.status !== 'SCHEDULED' && m.status !== 'TIMED') continue;
+          if (m.status && m.status !== 'STATUS_SCHEDULED') continue;
           const hs = statsById[m.homeTeamId] || {};
           const as = statsById[m.awayTeamId] || {};
           fbFixtures.push({
             fixtureId: `fd_${m.id}`, league: league.key, date: m.date, round: m.matchday ? `Journée ${m.matchday}` : '',
-            home: { name: m.homeTeamName, short: abbrev(m.homeTeamName) },
-            away: { name: m.awayTeamName, short: abbrev(m.awayTeamName) },
+            home: { name: m.homeTeamName, short: abbrev(m.homeTeamName), logoId: m.homeTeamCrest },
+            away: { name: m.awayTeamName, short: abbrev(m.awayTeamName), logoId: m.awayTeamCrest },
             homeGF: hs.goalsFor, homeGA: hs.goalsAgainst, homePlayed: hs.played,
             awayGF: as.goalsFor, awayGA: as.goalsAgainst, awayPlayed: as.played,
             leagueAvgGoals: leagueAvg,
@@ -17296,13 +17674,150 @@ async function generateBackgroundAlerts() {
             // quand la source est ce snapshot) — plus besoin de stocker chaque marché séparément.
             lambdaHome: +lambdaHome.toFixed(3), lambdaAway: +lambdaAway.toFixed(3),
             estimated: +(lambdaHome + lambdaAway).toFixed(2), savedAt: Date.now(),
+            // 2 septembre 2026 — exposé pour que MatchDetailPage puisse avertir : ce % est calculé
+            // même sur un échantillon <3 matchs (obligatoire pour l'affichage, sinon la fiche match
+            // resterait vide en tout début de saison), mais l'alerte réelle (generateBackgroundAlerts,
+            // ~ligne 17310) est bloquée tant que isEarlySample est vrai — sans ce flag, le % affiché
+            // ici semble "franchir le seuil" alors qu'aucune alerte ne sera jamais émise dessus.
+            isEarlySample: !!f.isEarlySample,
           };
           _saveFootballSnapshot();
           _logFootballNearMiss({ fixtureId: f.fixtureId, league: f.league, market: 'btts', direction: 'yes', line: null, probability: bttsProb, floor: FB_BTTS_ALERT_PROB,
             unibetOdds: bttsBk.unibet?.yes ?? null, betclicOdds: bttsBk.betclic?.yes ?? null,
-            tags: [...(f.isQualifRound ? ['qualif_round'] : []), ...(f.isEarlySample ? ['early_sample'] : []), ...(oddsMatch?.frozen ? ['frozen_odds'] : [])] });
-          if (bttsProb >= FB_BTTS_ALERT_PROB && !f.isQualifRound && !f.isEarlySample) {
-            const bestBk = FB_BOOKS.find(bk => (bttsBk[bk]?.yes ?? 0) >= FB_BTTS_OU_MIN_ODDS);
+            tags: [...(f.isQualifRound ? ['qualif_round'] : []), ...(f.isEarlySample ? ['early_sample'] : []), ...(oddsMatch?.frozen ? ['frozen_odds'] : [])], home: f.home.name, away: f.away.name });
+
+          // Total de buts PAR ÉQUIPE (7 septembre 2026, nouveau marché "observation" — demande
+          // explicite utilisateur). Volontairement PAS de vraie alerte émise ici (aucun newAlerts.push,
+          // pas de seuil de production) — juste loggé en near-miss (market:'team_goals') à chaque
+          // cycle, le temps d'accumuler assez d'historique pour calibrer un seuil, même précaution
+          // que BTTS Big Five/Brésil à l'origine. Direction composée 'home_over'/'home_under'/
+          // 'away_over'/'away_under' (même convention que le marché équipe basket team_total) — une
+          // seule direction loguée par ligne/équipe (la plus probable), même style que Total O/U
+          // (_nmOuDir) qui ne loggue jamais les deux sens d'une même ligne. Cotes réelles (Betclic
+          // uniquement pour l'instant, cf. fetchBetclicFootballExtras) attachées quand disponibles —
+          // indispensable pour calculer un vrai ROI à la calibration, pas seulement un winrate.
+          const teamTotalsBk = oddsMatch?.markets?.teamTotals?.bookmakers || {};
+          for (const side of ['home', 'away']) {
+            for (const lineStr of ['0.5', '1.5', '2.5']) {
+              const line = parseFloat(lineStr);
+              const { pOver, pUnder } = computeTeamGoalsProb(lambdaHome, lambdaAway, line, side);
+              const dir = pOver >= pUnder ? 'over' : 'under';
+              const prob = dir === 'over' ? pOver : pUnder;
+              _logFootballNearMiss({
+                fixtureId: f.fixtureId, league: f.league, market: 'team_goals', direction: `${side}_${dir}`, line, probability: prob, floor: 0,
+                unibetOdds: teamTotalsBk.unibet?.[side]?.[lineStr]?.[dir] ?? null,
+                betclicOdds: teamTotalsBk.betclic?.[side]?.[lineStr]?.[dir] ?? null,
+                tags: [...(f.isQualifRound ? ['qualif_round'] : []), ...(f.isEarlySample ? ['early_sample'] : [])],
+                home: f.home.name, away: f.away.name,
+              });
+            }
+          }
+
+          // "Famille buts" — un seul marché autorisé à alerter par match parmi BTTS/Total/DC&BTTS/DC&+1,5
+          // (4 septembre 2026, demande explicite utilisateur — cas réel São Paulo-Atlético-MG : BTTS Oui
+          // (edge -1,9%) ET Total Over (edge +0,4%) acceptés en même temps, 75€ chacun, alors que les deux
+          // dérivent du même λ Poisson pour ce match — pas 2 opportunités indépendantes, quasi le même pari
+          // répété deux fois). Contrairement au garde-fou 1X/X2 ci-dessous (qui ne bloque qu'à l'intérieur
+          // d'UN marché), celui-ci arbitre ENTRE les 4 marchés : celui à la plus haute probabilité gagne
+          // (edge non comparable partout — DC&BTTS/DC&+1,5 n'ont pas de cote Pinnacle donc pas d'edge), et
+          // un marché déjà ACCEPTÉ verrouille définitivement le reste (jamais de remise en cause d'un pari
+          // déjà pris). Le near-miss continue de tout logger sans exception (calibration) — seule l'émission
+          // de la carte accept/reject est restreinte. Total garde le droit d'émettre ses 2 lignes (1.5 ET
+          // 2.5, décision du 28 août) s'IL est le marché gagnant de la famille ce cycle-ci.
+          const _famDcBtts = computeDCBTTSProbs(lambdaHome, lambdaAway);
+          const _famDcOu = computeDCOverProbs(lambdaHome, lambdaAway, 1.5);
+          const _famOU15 = computeOUProb(lambdaHome, lambdaAway, 1.5);
+          const _famOU25 = computeOUProb(lambdaHome, lambdaAway, 2.5);
+          // Bug trouvé le 6 septembre 2026 (cas réel Botafogo-Palmeiras) — la 1ère version choisissait
+          // le champion sur la seule probabilité MAX de chaque marché, sans jamais vérifier qu'un
+          // bookmaker couvre RÉELLEMENT cette probabilité précise à une cote suffisante. Total +1,5
+          // pointait à 76% (aucune cote exploitable, 1,20 chez Unibet) pendant que Total +2,5 avait
+          // bien une cote correcte mais une probabilité (53,7%) sous son propre seuil — le marché
+          // "gagnait" quand même la famille sur un chiffre qui ne débouchera jamais sur une alerte,
+          // bloquant BTTS qui lui aurait qualifié (56%, cote 1,60). Fix : pour chaque marché, on ne
+          // retient que le MEILLEUR SOUS-CANDIDAT qui clear À LA FOIS sa probabilité ET sa cote — la
+          // probabilité et la cote utilisées pour arbitrer portent donc toujours sur le même pari
+          // réel, jamais deux chiffres dépareillés. `null` si aucun sous-candidat du marché ne qualifie.
+          const _famDcBttsBk = oddsMatch?.markets?.dcbtts?.bookmakers || {};
+          const _famDcOuBk = oddsMatch?.markets?.dcou?.bookmakers || {};
+          const _famBttsBig5 = fbBig5Active('btts', f.league);
+          const _famBttsBresil = f.league === 'bresil';
+          const _famBttsProbFloor = _famBttsBig5 ? FB_BIG5_BTTS_PROB : _famBttsBresil ? FB_BRESIL_BTTS_PROB : FB_BTTS_ALERT_PROB;
+          const _famBttsOddsFloor = _famBttsBig5 ? FB_BIG5_BTTS_MIN_ODDS : _famBttsBresil ? FB_BRESIL_BTTS_MIN_ODDS : FB_BTTS_OU_MIN_ODDS;
+          const _famBttsQualifies = bttsProb >= _famBttsProbFloor && FB_BOOKS.some(bk => (bttsBk[bk]?.yes ?? 0) >= _famBttsOddsFloor);
+
+          const _famTotalBest = (() => {
+            let best = null;
+            for (const line of ['1.5', '2.5']) {
+              const ou = line === '1.5' ? _famOU15 : _famOU25;
+              const dir = ou.pOver >= ou.pUnder ? 'over' : 'under';
+              const p = Math.max(ou.pOver, ou.pUnder);
+              const total15Big5 = line === '1.5' && fbBig5Active('total', f.league);
+              const probFloor = total15Big5 ? FB_BIG5_TOTAL15_PROB : FB_OU_ALERT_PROB;
+              const oddsFloor = total15Big5 ? FB_BIG5_TOTAL15_MIN_ODDS : FB_OU_ALERT_MIN_ODDS_TOTAL;
+              const qualifies = p >= probFloor && FB_BOOKS.some(bk => (totalsBk[bk]?.[line]?.[dir] ?? 0) >= oddsFloor);
+              if (qualifies && (!best || p > best)) best = p;
+            }
+            return best;
+          })();
+
+          const _famDcBttsBest = (() => {
+            let best = null;
+            for (const k of ['1x', 'x2']) {
+              const p = _famDcBtts[k];
+              const is1xBresil = k === '1x' && f.league === 'bresil';
+              const probFloor = is1xBresil ? FB_BRESIL_DCBTTS_1X_PROB : FB_DC_BTTS_ALERT_PROB;
+              const oddsFloor = is1xBresil ? FB_BRESIL_DCBTTS_1X_MIN_ODDS : FB_DC_MIN_ODDS;
+              const qualifies = p >= probFloor && FB_BOOKS.some(bk => (_famDcBttsBk[bk]?.[k] ?? 0) >= oddsFloor);
+              if (qualifies && (!best || p > best)) best = p;
+            }
+            return best;
+          })();
+
+          const _famDcOuBig5 = fbBig5Active('dc_ou', f.league);
+          const _famDcOuProbFloor = _famDcOuBig5 ? FB_BIG5_DCOU_PROB : FB_DC_OU_ALERT_PROB;
+          const _famDcOuOddsFloor = _famDcOuBig5 ? FB_BIG5_DCOU_MIN_ODDS : FB_DC_MIN_ODDS;
+          const _famDcOuBest = (() => {
+            let best = null;
+            for (const k of ['1x', 'x2']) {
+              const p = _famDcOu[k];
+              const qualifies = p >= _famDcOuProbFloor && FB_BOOKS.some(bk => (_famDcOuBk[bk]?.[k] ?? 0) >= _famDcOuOddsFloor);
+              if (qualifies && (!best || p > best)) best = p;
+            }
+            return best;
+          })();
+
+          const goalsFamilyCandidates = {
+            football_btts: _famBttsQualifies ? bttsProb : null,
+            football_total: _famTotalBest,
+            football_dc_btts: _famDcBttsBest,
+            football_dc_ou: _famDcOuBest,
+          };
+          const goalsFamilyAcceptedType = Object.keys(goalsFamilyCandidates)
+            .find(t => _acceptedAlerts.find(a => a.type === t && a.eventId === f.fixtureId));
+          const _famQualifyingEntries = Object.entries(goalsFamilyCandidates).filter(([, p]) => p != null);
+          const goalsFamilyChampion = goalsFamilyAcceptedType
+            || _famQualifyingEntries.sort((a, b) => b[1] - a[1])[0]?.[0]
+            // Aucun marché ne qualifie du tout ce cycle — peu importe lequel "gagne" ici, aucune
+            // alerte ne sera émise de toute façon (chaque bloc re-vérifie son propre seuil plus bas).
+            || 'football_btts';
+          // Purge des alertes PENDING déjà affichées sur un marché perdant de la famille — sans ça,
+          // une alerte créée avant ce garde-fou (ou avant qu'un concurrent ne prenne la tête) resterait
+          // affichée indéfiniment (elle ne serait juste plus jamais régénérée). Ne touche jamais une
+          // alerte déjà acceptée/rejetée — même filet que refreshOrDropPendingProp/ById.
+          for (const losingType of Object.keys(goalsFamilyCandidates)) {
+            if (losingType === goalsFamilyChampion) continue;
+            for (const a of backgroundAlerts) {
+              if (a.type === losingType && a.eventId === f.fixtureId && (a.status || 'pending') === 'pending') _staleAlertIds.add(a.id);
+            }
+          }
+
+          const bttsBig5 = fbBig5Active('btts', f.league);
+          const bttsBresil = f.league === 'bresil';
+          const bttsProbFloor = bttsBig5 ? FB_BIG5_BTTS_PROB : bttsBresil ? FB_BRESIL_BTTS_PROB : FB_BTTS_ALERT_PROB;
+          const bttsOddsFloor = bttsBig5 ? FB_BIG5_BTTS_MIN_ODDS : bttsBresil ? FB_BRESIL_BTTS_MIN_ODDS : FB_BTTS_OU_MIN_ODDS;
+          if (bttsProb >= bttsProbFloor && !f.isQualifRound && !f.isEarlySample && goalsFamilyChampion === 'football_btts') {
+            const bestBk = FB_BOOKS.find(bk => (bttsBk[bk]?.yes ?? 0) >= bttsOddsFloor);
             if (bestBk) {
               const pair = bttsBk[bestBk];
               let edge = null;
@@ -17320,11 +17835,13 @@ async function generateBackgroundAlerts() {
                 fixture: `${f.home.name} vs ${f.away.name}`,
                 homeTeam: f.home.name,
                 awayTeam: f.away.name,
+                homeLogo: f.home.logoId ?? null,
+                awayLogo: f.away.logoId ?? null,
                 fixtureDate: f.date,
                 round: f.round || '',
                 direction: 'yes',
                 probability: Math.round(bttsProb * 100),
-                pinnacleOdds: null,
+                pinnacleOdds: bttsBk.pinnacle?.yes ?? null,
                 unibetOdds: bttsBk.unibet?.yes ?? null,
                 betclicOdds: bttsBk.betclic?.yes ?? null,
                 winamaxOdds: bttsBk.winamax?.yes ?? null,
@@ -17349,7 +17866,14 @@ async function generateBackgroundAlerts() {
             if (isCdmJ3) continue; // J3 CDM bloqué — enjeux tactiques imprévisibles
             _logFootballNearMiss({ fixtureId: f.fixtureId, league: f.league, market: 'result', direction: key, line: null, probability: prob, floor: FB_RESULT_ALERT_PROB,
               unibetOdds: h2hBk.unibet?.[key] ?? null, betclicOdds: h2hBk.betclic?.[key] ?? null,
-              tags: [...(f.isQualifRound ? ['qualif_round'] : []), ...(f.isEarlySample ? ['early_sample'] : []), ...(oddsMatch?.frozen ? ['frozen_odds'] : [])] });
+              tags: [...(f.isQualifRound ? ['qualif_round'] : []), ...(f.isEarlySample ? ['early_sample'] : []), ...(oddsMatch?.frozen ? ['frozen_odds'] : [])], home: f.home.name, away: f.away.name });
+            // Seuil Brésil "Nul" dédié testé puis retiré le 1er septembre 2026 (≥20%/1,30) — le
+            // modèle ne dépasse quasiment jamais 25% sur un Nul (structurel, pas propre au Brésil),
+            // donc ce plancher bas ne filtrait presque rien (alerte quasi à chaque match, remarque
+            // utilisateur en conditions réelles) et la seule zone plus stricte testée (≥25%) tombe à
+            // 6 cas/-48% ROI — pas de seuil intermédiaire viable, retour au seuil global (jamais
+            // atteint par un Nul en pratique, mêmes constats sur domicile/extérieur : aucun edge
+            // fiable, extérieur même franchement négatif à -40% ROI).
             if (prob < FB_RESULT_ALERT_PROB || f.isQualifRound || f.isEarlySample) continue;
             const bestBk = FB_BOOKS.find(bk => (h2hBk[bk]?.[key] ?? 0) >= FB_RESULT_MIN_ODDS);
             if (!bestBk) continue;
@@ -17369,10 +17893,13 @@ async function generateBackgroundAlerts() {
               away: f.away.name,
               homeShort: f.home.short,
               awayShort: f.away.short,
+              homeLogo: f.home.logoId ?? null,
+              awayLogo: f.away.logoId ?? null,
               fixtureDate: f.date,
               round: f.round || '',
               direction: key,
               probability: Math.round(prob * 100),
+              pinnacleOdds: h2hBk.pinnacle?.[key] ?? null,
               unibetOdds: h2hBk.unibet?.[key] ?? null,
               betclicOdds: h2hBk.betclic?.[key] ?? null,
               winamaxOdds: h2hBk.winamax?.[key] ?? null,
@@ -17478,21 +18005,74 @@ async function generateBackgroundAlerts() {
           // pour décider laquelle est évaluée "en premier" dans un même cycle (Brésil : 1.5 puis 2.5,
           // ailleurs : 2.5 puis 1.5), ce qui sert uniquement au garde-fou de seuil relevé ci-dessous —
           // BTTS non concerné (une seule direction possible, pas de notion de ligne opposée).
+          // Fix 31 août 2026 — `OU_LINES` n'était en fait JAMAIS défini nulle part dans le fichier
+          // (confirmé par grep sur tout le repo) : ce `for` levait un ReferenceError à CHAQUE fixture,
+          // pour TOUTES les ligues, avalé en silence par le `catch { /* skip fixture */ }` de la
+          // fixture (aucun `_bgLog.push` dedans, donc invisible même dans les logs de debug). Résultat
+          // réel : plus une seule alerte "Total" (football_total) n'a pu sortir depuis l'introduction
+          // de cette boucle double-ligne du 28 août — BTTS/Résultat/DC, calculés dans des blocs
+          // séparés plus haut dans la même fixture, n'étaient pas affectés. Découvert en préparant les
+          // nouveaux seuils Big Five ci-dessous (le marché aurait dû réagir aux nouveaux planchers,
+          // rien n'aurait pu être vérifié en direct avec la boucle cassée).
+          const OU_LINES = f.league === 'bresil' ? ['1.5', '2.5'] : ['2.5', '1.5'];
+          // Un Over et un Under ne peuvent plus alerter ensemble sur le même match (4 septembre 2026,
+          // demande explicite utilisateur — "les deux peuvent qualifier si elles ont la même direction ;
+          // là on a un over et un under"). Avant ce fix, un sens opposé ne subissait qu'un seuil relevé de
+          // +5pts (OPPOSING_PROB_MARGIN) — pas un vrai blocage, cas réel : Brésil Corinthians-Mirassol,
+          // Plus de 1.5 à 72% ET Moins de 2.5 à 67% alertés ensemble malgré la pénalité (67% dépassait
+          // quand même 65%+5=70%... non — en pratique l'alerte la plus ancienne avait déjà été créée à
+          // un cycle où l'autre ligne n'existait pas encore, jamais repurgée depuis, cf. même classe de
+          // bug que la purge famille buts plus haut). Deux lignes de MÊME sens (2× Over ou 2× Under)
+          // restent autorisées ensemble sans pénalité — décision du 28 août préservée pour ce cas-là,
+          // ce ne sont pas de vrais opposés (Over 1.5 est un sur-ensemble d'Over 2.5).
+          const _famOU15dir = _famOU15.pOver >= _famOU15.pUnder ? 'over' : 'under';
+          const _famOU25dir = _famOU25.pOver >= _famOU25.pUnder ? 'over' : 'under';
+          // Bug trouvé le 4 septembre 2026 (cas réel : Alaves-Osasuna, +1,5 buts alerté alors que
+          // -2,5 buts était déjà accepté) — la 1ère version comparait les directions CALCULÉES des
+          // deux lignes CE cycle-ci l'une à l'autre, pas à la direction RÉELLEMENT acceptée. Si le
+          // calcul de la ligne acceptée dérive depuis l'acceptation (sans repasser sous son propre
+          // seuil d'alerte, donc sans se ré-émettre), les deux directions calculées peuvent finir par
+          // coïncider à nouveau alors que le pari accepté, lui, reste figé dans son sens d'origine —
+          // l'opposition n'était alors plus jamais détectée. Fix : quand une ligne est acceptée, c'est
+          // SA direction au moment de l'acceptation qui fait foi pour juger l'autre ligne, jamais un
+          // recalcul. Sans ligne acceptée, on retombe sur la comparaison des deux calculs du cycle.
+          const ouAccepted = _acceptedAlerts.find(a => a.type === 'football_total' && a.eventId === f.fixtureId && a.status === 'accepted');
+          const ouAcceptedLine = ouAccepted?.line != null ? String(ouAccepted.line) : null;
+          const ouAcceptedDir = ouAccepted?.direction ?? null;
+          const ouLineDir = { '1.5': _famOU15dir, '2.5': _famOU25dir };
+          const ouLinesOppose = ouAcceptedLine
+            ? true // dès qu'une ligne est acceptée, on juge TOUJOURS l'autre contre elle (pas de cas "les 2 vont dans le même sens" qui dispenserait de vérifier)
+            : _famOU15dir !== _famOU25dir;
+          const ouWinningLine = ouAcceptedLine
+            || (Math.max(_famOU15.pOver, _famOU15.pUnder) >= Math.max(_famOU25.pOver, _famOU25.pUnder) ? '1.5' : '2.5');
           for (const line of OU_LINES) {
             const ou = computeOUProb(lambdaHome, lambdaAway, parseFloat(line));
             const bestP = Math.max(ou.pOver, ou.pUnder);
             const _nmOuDir = ou.pOver >= ou.pUnder ? 'over' : 'under';
             _logFootballNearMiss({ fixtureId: f.fixtureId, league: f.league, market: 'total', direction: _nmOuDir, line: parseFloat(line), probability: bestP, floor: FB_OU_ALERT_PROB,
               unibetOdds: totalsBk.unibet?.[line]?.[_nmOuDir] ?? null, betclicOdds: totalsBk.betclic?.[line]?.[_nmOuDir] ?? null,
-              tags: [...(f.isQualifRound ? ['qualif_round'] : []), ...(f.isEarlySample ? ['early_sample'] : []), ...(oddsMatch?.frozen ? ['frozen_odds'] : [])] });
+              tags: [...(f.isQualifRound ? ['qualif_round'] : []), ...(f.isEarlySample ? ['early_sample'] : []), ...(oddsMatch?.frozen ? ['frozen_odds'] : [])], home: f.home.name, away: f.away.name });
+            // Ligne autre que l'acceptée : bloquée dès que sa direction calculée s'oppose à la
+            // direction ACCEPTÉE (pas à la direction calculée de l'autre ligne). Sans ligne acceptée,
+            // comportement inchangé (seule la meilleure des deux probabilités du cycle passe).
+            const opposesAccepted = ouAcceptedLine && line !== ouAcceptedLine && ouLineDir[line] !== ouAcceptedDir;
+            if ((ouLinesOppose && line !== ouWinningLine) || opposesAccepted) {
+              for (const a of backgroundAlerts) {
+                if (a.type === 'football_total' && a.fixtureId === f.fixtureId && a.line === parseFloat(line) && (a.status || 'pending') === 'pending') _staleAlertIds.add(a.id);
+              }
+              continue; // ligne bloquée : sens opposé à l'autre ligne, celle-ci n'est pas la meilleure
+            }
             const direction = ou.pOver >= ou.pUnder ? 'over' : 'under';
-            // Seuil relevé (+OPPOSING_PROB_MARGIN) si cette ligne va dans le sens opposé à l'autre
-            // ligne du même match — déjà acceptée (across cycles) OU déjà poussée ce cycle-ci (les
-            // deux lignes évaluées dans la même itération de fixture, cf. newAlerts.some ci-dessous).
-            const opposesThisCycle = newAlerts.some(a => a.type === 'football_total' && a.fixtureId === f.fixtureId && a.direction !== direction);
-            const ouRequiredProb = FB_OU_ALERT_PROB + (opposesThisCycle || hasOpposingAcceptedTeamMarket('football_total', f.fixtureId, direction) ? OPPOSING_PROB_MARGIN : 0);
-            if (bestP < ouRequiredProb || f.isQualifRound || f.isEarlySample) continue;
-            const bestBk = FB_BOOKS.find(bk => (totalsBk[bk]?.[line]?.[direction] ?? 0) >= FB_OU_ALERT_MIN_ODDS_TOTAL);
+            // Seuil Big Five dédié (31 août 2026) — uniquement sur la ligne 1,5, seule solide dans
+            // les 4 championnats sans exception (voir FB_BIG5_TOTAL15_PROB ci-dessus). La ligne 2,5
+            // garde le seuil global existant, y compris sur le Big Five — mitigé/rouge sur La Liga et
+            // Premier League à cette ligne précise, aucune preuve pour l'y baisser.
+            const total15Big5 = line === '1.5' && fbBig5Active('total', f.league);
+            const ouBaseProb = total15Big5 ? FB_BIG5_TOTAL15_PROB : FB_OU_ALERT_PROB;
+            const ouRequiredProb = ouBaseProb + (hasOpposingAcceptedTeamMarket('football_total', f.fixtureId, direction) ? OPPOSING_PROB_MARGIN : 0);
+            if (bestP < ouRequiredProb || f.isQualifRound || f.isEarlySample || goalsFamilyChampion !== 'football_total') continue;
+            const ouMinOdds = total15Big5 ? FB_BIG5_TOTAL15_MIN_ODDS : FB_OU_ALERT_MIN_ODDS_TOTAL;
+            const bestBk = FB_BOOKS.find(bk => (totalsBk[bk]?.[line]?.[direction] ?? 0) >= ouMinOdds);
             if (!bestBk) continue;
             const pair = totalsBk[bestBk][line];
             let edge = null;
@@ -17511,34 +18091,60 @@ async function generateBackgroundAlerts() {
               away: f.away.name,
               homeShort: f.home.short,
               awayShort: f.away.short,
+              homeLogo: f.home.logoId ?? null,
+              awayLogo: f.away.logoId ?? null,
               fixtureDate: f.date,
               round: f.round || '',
               line: parseFloat(line),
               direction,
               estimated: +(lambdaHome + lambdaAway).toFixed(2),
               probability: Math.round(bestP * 100),
+              pinnacleOdds: totalsBk.pinnacle?.[line]?.[direction] ?? null,
               unibetOdds: totalsBk.unibet?.[line]?.[direction] ?? null,
               betclicOdds: totalsBk.betclic?.[line]?.[direction] ?? null,
               winamaxOdds: totalsBk.winamax?.[line]?.[direction] ?? null,
               edge,
               savedAt: Date.now(),
             });
-            _bgLog.push(`football O/U alert: ${f.home.name} v ${f.away.name} [${f.league}] ${direction} ${line} prob=${Math.round(bestP * 100)}%${opposesThisCycle || hasOpposingAcceptedTeamMarket('football_total', f.fixtureId, direction) ? ' (seuil relevé, opposée à l\'autre ligne)' : ''}`);
+            _bgLog.push(`football O/U alert: ${f.home.name} v ${f.away.name} [${f.league}] ${direction} ${line} prob=${Math.round(bestP * 100)}%${hasOpposingAcceptedTeamMarket('football_total', f.fixtureId, direction) ? ' (seuil relevé, opposée à un autre marché équipe accepté)' : ''}`);
           }
 
           // DC & BTTS — 1X/X2 uniquement (12 = "pas de nul" volontairement exclu, retiré le
           // 2 juillet 2026 — marché non souhaité par l'utilisateur, cf alerte perdante Belgique-Sénégal)
           const dcBttsBk = oddsMatch?.markets?.dcbtts?.bookmakers || {};
           const dcBttsProbs = computeDCBTTSProbs(lambdaHome, lambdaAway);
+          // Un seul sens à la fois par match (3 septembre 2026, demande explicite) — "1X" et "X2"
+          // ne sont pas deux paris indépendants : le nul compte dans les deux, donc les accepter
+          // tous les deux double l'exposition au "+buts" partagé sans vraie diversification (cas
+          // réel : Athletic-Atletico, 1X&BTTS accepté à 57%, X2&BTTS sorti juste après à 54% sur le
+          // même match). Un sens déjà ACCEPTÉ verrouille définitivement l'autre ; sinon seul le sens
+          // à la probabilité la plus haute ce cycle est autorisé à générer une alerte — le near-miss
+          // continue de logger les deux (calibration), seule l'émission de l'alerte est restreinte.
+          const dcBttsAcceptedDir = _acceptedAlerts.find(a => a.type === 'football_dc_btts' && a.eventId === f.fixtureId)?.direction;
+          const dcBttsBestDir = dcBttsAcceptedDir
+            || Object.entries(dcBttsProbs).filter(([k]) => k !== '12').sort((a, b) => b[1] - a[1])[0]?.[0];
+          // Purge la direction opposée si elle traîne encore pending d'un cycle antérieur au verrou
+          // ci-dessus (même raisonnement que la purge famille buts plus haut).
+          for (const a of backgroundAlerts) {
+            if (a.type === 'football_dc_btts' && a.eventId === f.fixtureId && a.direction !== dcBttsBestDir && (a.status || 'pending') === 'pending') _staleAlertIds.add(a.id);
+          }
           for (const [key, prob] of Object.entries(dcBttsProbs)) {
             if (key === '12') continue;
             // Near-miss ajouté le 28 juillet 2026 — seul marché avec modèle de proba qui n'avait
             // encore aucun suivi de calibration (cf. mémoire projet_near_miss_unfiltered_odds_juillet28).
             _logFootballNearMiss({ fixtureId: f.fixtureId, league: f.league, market: 'dc_btts', direction: key, line: null, probability: prob, floor: FB_DC_BTTS_ALERT_PROB,
               unibetOdds: dcBttsBk.unibet?.[key] ?? null, betclicOdds: dcBttsBk.betclic?.[key] ?? null,
-              tags: [...(f.isQualifRound ? ['qualif_round'] : []), ...(f.isEarlySample ? ['early_sample'] : []), ...(oddsMatch?.frozen ? ['frozen_odds'] : [])] });
-            if (prob < FB_DC_BTTS_ALERT_PROB || f.isQualifRound || f.isEarlySample) continue;
-            const bestBk = FB_BOOKS.find(bk => (dcBttsBk[bk]?.[key] ?? 0) >= FB_DC_MIN_ODDS);
+              tags: [...(f.isQualifRound ? ['qualif_round'] : []), ...(f.isEarlySample ? ['early_sample'] : []), ...(oddsMatch?.frozen ? ['frozen_odds'] : [])], home: f.home.name, away: f.away.name });
+            if (key !== dcBttsBestDir) continue;
+            if (goalsFamilyChampion !== 'football_dc_btts') continue;
+            // Seuil Brésil dédié (31 août 2026) — "1X" uniquement (voir FB_BRESIL_DCBTTS_1X_PROB
+            // ci-dessus). "X2" reste au seuil global — vérifié cas par cas (3 gagnés sur 10 à des
+            // cotes 2,20-4,35), pas fiable malgré une 1ère estimation agrégée trop optimiste.
+            const dcBtts1xBresil = key === '1x' && f.league === 'bresil';
+            const dcBttsProbFloor = dcBtts1xBresil ? FB_BRESIL_DCBTTS_1X_PROB : FB_DC_BTTS_ALERT_PROB;
+            const dcBttsOddsFloor = dcBtts1xBresil ? FB_BRESIL_DCBTTS_1X_MIN_ODDS : FB_DC_MIN_ODDS;
+            if (prob < dcBttsProbFloor || f.isQualifRound || f.isEarlySample) continue;
+            const bestBk = FB_BOOKS.find(bk => (dcBttsBk[bk]?.[key] ?? 0) >= dcBttsOddsFloor);
             if (!bestBk) continue;
             const odds = dcBttsBk[bestBk][key];
             newAlerts.push({
@@ -17551,6 +18157,8 @@ async function generateBackgroundAlerts() {
               away: f.away.name,
               homeShort: f.home.short,
               awayShort: f.away.short,
+              homeLogo: f.home.logoId ?? null,
+              awayLogo: f.away.logoId ?? null,
               fixtureDate: f.date,
               round: f.round || '',
               direction: key,
@@ -17565,13 +18173,26 @@ async function generateBackgroundAlerts() {
           // DC & Over 1.5 — 1X/X2 uniquement (12 exclu, cf commentaire ci-dessus)
           const dcOuBk = oddsMatch?.markets?.dcou?.bookmakers || {};
           const dcOuProbs = computeDCOverProbs(lambdaHome, lambdaAway, 1.5);
+          const dcOuBig5 = fbBig5Active('dc_ou', f.league);
+          const dcOuProbFloor = dcOuBig5 ? FB_BIG5_DCOU_PROB : FB_DC_OU_ALERT_PROB;
+          const dcOuOddsFloor = dcOuBig5 ? FB_BIG5_DCOU_MIN_ODDS : FB_DC_MIN_ODDS;
+          // Un seul sens à la fois par match (3 septembre 2026) — même raisonnement que DC&BTTS
+          // juste au-dessus (le nul compte dans "1X" et "X2" à la fois).
+          const dcOuAcceptedDir = _acceptedAlerts.find(a => a.type === 'football_dc_ou' && a.eventId === f.fixtureId)?.direction;
+          const dcOuBestDir = dcOuAcceptedDir
+            || Object.entries(dcOuProbs).filter(([k]) => k !== '12').sort((a, b) => b[1] - a[1])[0]?.[0];
+          for (const a of backgroundAlerts) {
+            if (a.type === 'football_dc_ou' && a.eventId === f.fixtureId && a.direction !== dcOuBestDir && (a.status || 'pending') === 'pending') _staleAlertIds.add(a.id);
+          }
           for (const [key, prob] of Object.entries(dcOuProbs)) {
             if (key === '12') continue;
             _logFootballNearMiss({ fixtureId: f.fixtureId, league: f.league, market: 'dc_ou', direction: key, line: 1.5, probability: prob, floor: FB_DC_OU_ALERT_PROB,
               unibetOdds: dcOuBk.unibet?.[key] ?? null, betclicOdds: dcOuBk.betclic?.[key] ?? null,
-              tags: [...(f.isQualifRound ? ['qualif_round'] : []), ...(f.isEarlySample ? ['early_sample'] : []), ...(oddsMatch?.frozen ? ['frozen_odds'] : [])] });
-            if (prob < FB_DC_OU_ALERT_PROB || f.isQualifRound || f.isEarlySample) continue;
-            const bestBk = FB_BOOKS.find(bk => (dcOuBk[bk]?.[key] ?? 0) >= FB_DC_MIN_ODDS);
+              tags: [...(f.isQualifRound ? ['qualif_round'] : []), ...(f.isEarlySample ? ['early_sample'] : []), ...(oddsMatch?.frozen ? ['frozen_odds'] : [])], home: f.home.name, away: f.away.name });
+            if (key !== dcOuBestDir) continue;
+            if (goalsFamilyChampion !== 'football_dc_ou') continue;
+            if (prob < dcOuProbFloor || f.isQualifRound || f.isEarlySample) continue;
+            const bestBk = FB_BOOKS.find(bk => (dcOuBk[bk]?.[key] ?? 0) >= dcOuOddsFloor);
             if (!bestBk) continue;
             newAlerts.push({
               id: `${f.fixtureId}_dc_ou_${key}`,
@@ -17583,6 +18204,8 @@ async function generateBackgroundAlerts() {
               away: f.away.name,
               homeShort: f.home.short,
               awayShort: f.away.short,
+              homeLogo: f.home.logoId ?? null,
+              awayLogo: f.away.logoId ?? null,
               fixtureDate: f.date,
               round: f.round || '',
               direction: key,
@@ -17676,8 +18299,19 @@ async function generateBackgroundAlerts() {
     // trouve plus aucun `prev` pour cet id → le retombe sur la branche "pending" par défaut et
     // recrée un doublon pending pour un pari déjà accepté. `_acceptedAlerts` fait foi en dernier
     // recours pour tout id absent de `backgroundAlerts` après un restart.
+    // Fix 6 septembre 2026 (argent réel affecté) — le `&& upcomingIds.has(a.eventId)` faisait
+    // dépendre la survie d'un pari ACCEPTÉ d'un simple accident de fenêtrage : plusieurs listes de
+    // fixtures (ex. `_getBresilMatches()`, plafonnée à 15 matchs) sont recalculées à chaque cycle et
+    // peuvent transitoirement exclure un match pourtant EN COURS si assez d'autres matchs de la même
+    // journée sont mieux classés dans le tri. Cas réel : Internacional-Santos (Total +1,5, 1€,
+    // accepté), disparu de l'app après un redémarrage alors que le match était 0-3 en direct — la
+    // synchro frontend a alors purgé sa propre copie locale en se basant sur cette absence
+    // temporaire côté backend, sans jamais se réparer toute seule ensuite (le backend, lui, avait
+    // fini par le retrouver au cycle suivant, mais trop tard). Une alerte acceptée ne doit JAMAIS
+    // dépendre de la présence de son eventId dans `upcomingIds` pour rester visible — seul un vrai
+    // règlement (won/lost/void, qui la retire de `_acceptedAlerts`) doit la faire disparaître.
     for (const a of _acceptedAlerts) {
-      if (!byId[a.id] && upcomingIds.has(a.eventId)) byId[a.id] = a;
+      if (!byId[a.id]) byId[a.id] = a;
     }
     // Notifications Telegram (16 juillet 2026) — une entrée id absente de byId AVANT le merge de ce
     // cycle est une alerte jamais vue (pas juste "re-régénérée identique"), peu importe le type —
@@ -17754,6 +18388,23 @@ async function generateBackgroundAlerts() {
     Object.values(byId).forEach(x => {
       if (x.type === 'player_prop' && (!x.status || x.status === 'pending')) {
         x.obsolete = !refreshedPropKeys.has(`${x.eventId}_${x.player}_${x.stat}`);
+      }
+    });
+    // Même principe pour les 5 types d'alertes foot (1er septembre 2026) — jusqu'ici AUCUNE purge
+    // n'existait pour BTTS/Total/Résultat/DC&BTTS/DC&OU : une fois créée, une alerte pending restait
+    // affichée jusqu'au coup d'envoi même si elle ne repasserait plus les gardes-fous au cycle suivant
+    // (fenêtre 48h dépassée, sous le seuil 3-matchs, proba retombée, cote plus valable) — cas réel
+    // découvert en investiguant Ipswich-Liverpool/Lyon-Auxerre, toujours pending à 88h du coup d'envoi
+    // alors que FOOTBALL_ALERT_WINDOW_MS=48h. `newAlerts.push` régénère l'id identique
+    // (`${fixtureId}_btts_yes` etc.) à chaque cycle où le match qualifie encore — un id absent de
+    // `filteredAlerts` ce cycle-ci veut donc dire "ne qualifie plus", jamais "pas encore évalué".
+    // Comme pour les props : jamais touché si `accepted`/`rejected` (branche dédiée du merge
+    // juste au-dessus), seul le pending est marqué.
+    const FOOTBALL_ALERT_TYPES = ['football_btts', 'football_total', 'football_result', 'football_dc_btts', 'football_dc_ou'];
+    const refreshedFootballIds = new Set(filteredAlerts.filter(a => FOOTBALL_ALERT_TYPES.includes(a.type)).map(a => a.id));
+    Object.values(byId).forEach(x => {
+      if (FOOTBALL_ALERT_TYPES.includes(x.type) && (!x.status || x.status === 'pending')) {
+        x.obsolete = !refreshedFootballIds.has(x.id);
       }
     });
     // Purge les alertes pending explicitement marquées obsolètes ce cycle (cote plus jouable) par
@@ -17860,6 +18511,7 @@ async function generateBackgroundAlerts() {
     // après avoir reçu la notif sur son tel. backgroundAlerts + SSE sont maintenant publiés en premier,
     // Telegram part juste après — l'app n'est jamais plus lente que la notif, jamais l'inverse.
     backgroundAlerts = Object.values(byId);
+    _savePendingAlerts(backgroundAlerts);
 
     // SSE (19 juillet 2026) — jusqu'ici un onglet ouvert ne découvrait une alerte tout juste générée
     // qu'à son prochain sync périodique (jusqu'à 2 min), alors que Telegram la recevait tout de suite.
@@ -17885,10 +18537,17 @@ async function generateBackgroundAlerts() {
     // Citron / Jackie Young (props WNBA), jamais notifiées malgré Telegram fonctionnel au moment de
     // la vérification. `_toNotify` scanne maintenant TOUTES les alertes encore pending, pas
     // seulement celles nées ce cycle — un échec se retente donc automatiquement au cycle suivant.
-    const _toNotify = Object.values(byId).filter(a => (a.status || 'pending') === 'pending' && !_telegramNotifiedIds.has(a.id));
+    // Fix 3 septembre 2026 — cas réel : DC&+1,5 "X2" (Athletic-Atletico) jamais notifié sur Telegram
+    // (aucun token créé, échec d'envoi silencieux au 1er cycle où elle est apparue pending), puis
+    // acceptée directement dans l'app avant le cycle suivant — une fois `status:'accepted'`, l'ancien
+    // filtre `=== 'pending'` l'excluait de _toNotify pour toujours, la panne ne se retentait donc
+    // jamais. `!== 'rejected'` retente pour pending ET accepted (le rejet, lui, n'a pas besoin d'être
+    // notifié a posteriori) tant que l'id n'est pas dans _telegramNotifiedIds.
+    const _toNotify = Object.values(byId).filter(a => a.status !== 'rejected' && !_telegramNotifiedIds.has(a.id));
     if (telegramConfigured() && _toNotify.length) {
+      const _stakeAmt = await _getBankrollStakeForTelegram(); // même bankroll pour tout le cycle, lu une seule fois
       const _sent = await Promise.all(_toNotify.map(a =>
-        notifyNewAlert(a).catch(e => { console.error('telegram notify error:', e.message); return false; })
+        notifyNewAlert({ ...a, _wl: _nearMissForAlert(a), _stake: _stakeAmt }).catch(e => { console.error('telegram notify error:', e.message); return false; })
       ));
       let _sentCount = 0;
       _toNotify.forEach((a, i) => { if (_sent[i]) { _telegramNotifiedIds.add(a.id); _sentCount++; } });
@@ -18148,61 +18807,45 @@ let _fdStandingsCache = {};
 try { if (existsSync(FD_STANDINGS_CACHE_FILE)) _fdStandingsCache = JSON.parse(readFileSync(FD_STANDINGS_CACHE_FILE, 'utf8')) || {}; } catch {}
 const _saveFdStandingsCache = () => { try { writeFileSync(FD_STANDINGS_CACHE_FILE, JSON.stringify(_fdStandingsCache), 'utf8'); } catch {} };
 
+// Migré vers api-football le 2 septembre 2026 — même forme de réponse qu'avant (table[] avec
+// id/name/shortName/tla/crest/position/points/played/wins/draws/losses/goalsFor/goalsAgainst/form).
+// api-football ne fournit ni shortName ni tla séparément (juste id/name/logo) — abbrev(name) réutilisé
+// comme repli, comme déjà fait ailleurs dans l'app pour cette même limite. Pas de détection
+// "classement périmé" : api-football prend une saison explicite en paramètre, vérifié en direct pour
+// renvoyer les vraies stats de la saison demandée (cf. plan, point 4 — défaut non reproduit ici).
 app.get('/api/football/standings/:league', async (req, res) => {
-  if (!FD_KEY) return res.status(503).json({ error: 'FD_API_KEY not configured' });
-
   const { league } = req.params;
-  // 'bresil' résolu séparément — n'ajoute rien à FD_LEAGUES (zéro impact sur les 5 grands championnats)
-  const fdLeague = FD_LEAGUES.find(l => l.key === league) || (league === 'bresil' ? { code: 'BSA', key: 'bresil' } : null);
-  if (!fdLeague) return res.status(400).json({ error: `Unknown league: ${league}` });
+  if (!FOOTBALL_API_LEAGUE_IDS[league] && league !== 'bresil') return res.status(400).json({ error: `Unknown league: ${league}` });
 
   const hit = _fdStandingsCache[league];
   if (hit && Date.now() - hit.ts < 30 * 60 * 1000) return res.json(hit.data);
 
   try {
-    const data = await fdGet(`/competitions/${fdLeague.code}/standings`);
-    const table = data.standings?.find(s => s.type === 'TOTAL')?.table || [];
-    // Fix "classement vide" (31 août 2026, signalé par l'utilisateur — PL/La Liga/Bundesliga/Serie A
-    // affichaient un tableau totalement VIDE, même pas les équipes) : cas différent du "classement
-    // périmé" ci-dessous (qui renvoie une VRAIE table, juste celle de la saison passée) — ici
-    // football-data.org ne renvoie carrément AUCUNE ligne pour la nouvelle saison, alors que de vrais
-    // matchs de cette même saison sont déjà FINISHED côté /api/fd/matches (vérifié en direct sur PL :
-    // 8 matchs déjà joués, `standings` toujours vide). Décalage d'initialisation upstream entre leur
-    // endpoint résultats et leur endpoint classement, pas une erreur de notre côté. En attendant que
-    // FD peuple son classement, on garde le dernier classement non-vide connu plutôt que d'écraser
-    // avec une réponse vide qui n'affiche même plus les noms d'équipe.
+    const { table } = await fetchApiFootballLeagueBundle(league);
     if (!table.length && hit?.data?.table?.length) return res.json(hit.data);
-    // Classement périmé (31 juillet 2026) — même détection que pour les outrights (_isFdStandingsStale,
-    // bug du 28 juillet 2026) : football-data.org crée parfois la nouvelle saison avant de
-    // réinitialiser son tableau standings, qui renvoie alors encore la grille finale de la saison
-    // précédente (vu en direct sur La Liga : 38 matchs joués, classement complet, sous une saison
-    // techniquement déjà nouvelle). Ligue1/Serie A/Brasileirão n'ont pas ce problème (déjà à 0 joué
-    // chez FD), mais PL/La Liga/Bundesliga si — recalculée ici indépendamment de `_fdSeasonInfo`
-    // (alimentée par /api/fd/matches, pas garantie synchro) plutôt que d'en dépendre.
-    const stale = _isFdStandingsStale(data.season?.currentMatchday, table);
     const result = {
       table: table.map(s => ({
         id:           s.team.id,
         name:         s.team.name,
-        shortName:    s.team.shortName,
-        tla:          s.team.tla,
-        crest:        s.team.crest,
-        position:     stale ? 1 : s.position,
-        points:       stale ? 0 : s.points,
-        played:       stale ? 0 : s.playedGames,
-        wins:         stale ? 0 : s.won,
-        draws:        stale ? 0 : s.draw,
-        losses:       stale ? 0 : s.lost,
-        goalsFor:     stale ? 0 : s.goalsFor,
-        goalsAgainst: stale ? 0 : s.goalsAgainst,
-        form:         stale ? [] : (s.form || '').split('').filter(c => 'WDL'.includes(c)).slice(-5),
+        shortName:    s.team.name,
+        tla:          abbrev(s.team.name),
+        crest:        s.team.logo,
+        position:     s.rank,
+        points:       s.points,
+        played:       s.all?.played ?? 0,
+        wins:         s.all?.win ?? 0,
+        draws:        s.all?.draw ?? 0,
+        losses:       s.all?.lose ?? 0,
+        goalsFor:     s.all?.goals?.for ?? 0,
+        goalsAgainst: s.all?.goals?.against ?? 0,
+        form:         (s.form || '').split('').filter(c => 'WDL'.includes(c)).slice(-5),
       })),
     };
     _fdStandingsCache[league] = { data: result, ts: Date.now() };
     _saveFdStandingsCache();
     res.json(result);
   } catch (err) {
-    console.error('FD standings error:', err.message);
+    console.error('api-football standings error:', err.message);
     if (hit?.data) return res.json(hit.data);
     res.status(500).json({ error: err.message });
   }
@@ -18232,8 +18875,8 @@ app.get('/api/football/topscorers/:league', async (req, res) => {
     // déjà honnêtement 0 partout dans ce cas plutôt que les stats d'une saison terminée.
     const season = footballApiSeasonForDate(league, new Date().toISOString());
     const [scorersData, assistsData] = await Promise.all([
-      footballApiFetch(`${FOOTBALL_API_BASE}/players/topscorers?league=${leagueId}&season=${season}`),
-      footballApiFetch(`${FOOTBALL_API_BASE}/players/topassists?league=${leagueId}&season=${season}`),
+      footballApiFetch(`${FOOTBALL_API_BASE}/players/topscorers?league=${leagueId}&season=${season}`, 0, true),
+      footballApiFetch(`${FOOTBALL_API_BASE}/players/topassists?league=${leagueId}&season=${season}`, 0, true),
     ]);
     const mapList = (data, valueKey) => (data.response || []).slice(0, 5).map((r, i) => ({
       rank: i + 1,
@@ -18302,44 +18945,56 @@ app.get('/api/football/teamxgstats', async (req, res) => {
 });
 
 // ── Football-data.org Team Matches ────────────────────────────────────────────
-const _fdTeamMatchCache = {};
+// Persisté sur disque + tolérant à la pause (2 septembre 2026, migration api-football — jusqu'ici
+// en mémoire seulement, perdu à chaque redémarrage --watch, contrairement aux autres caches FD).
+const FD_TEAM_MATCH_CACHE_FILE = join(CACHE_DIR, 'fd_team_matches.json');
+let _fdTeamMatchCache = {};
+try { if (existsSync(FD_TEAM_MATCH_CACHE_FILE)) _fdTeamMatchCache = JSON.parse(readFileSync(FD_TEAM_MATCH_CACHE_FILE, 'utf8')); } catch {}
+const _saveFdTeamMatchCache = () => { try { writeFileSync(FD_TEAM_MATCH_CACHE_FILE, JSON.stringify(_fdTeamMatchCache), 'utf8'); } catch {} };
 
+// Migré vers api-football le 2 septembre 2026 — `teamId` est désormais un id api-football (reçu via
+// /api/football/standings/:league déjà migrée), même forme de réponse qu'avant. api-football expose
+// directement des paramètres `last`/`next` sur /fixtures pour ce cas précis (pas besoin de fenêtre de
+// dates manuelle comme côté FD).
 app.get('/api/football/teammatches/:teamId', async (req, res) => {
-  if (!FD_KEY) return res.status(503).json({ error: 'FD_API_KEY not configured' });
-
   const { teamId } = req.params;
   const limit = Math.min(parseInt(req.query.limit || '30', 10), 50);
-  // status=SCHEDULED ajouté le 31 juillet 2026 (widget "5 prochains matchs", demande utilisateur)
-  // — même endpoint, même cache, juste le filtre FD qui change. Clé de cache distincte par statut
-  // (sinon une requête FINISHED puis SCHEDULED sur le même teamId+limit se marcheraient dessus).
   const status = req.query.status === 'SCHEDULED' ? 'SCHEDULED' : 'FINISHED';
   const cacheKey = `${teamId}_${limit}_${status}`;
   const hit = _fdTeamMatchCache[cacheKey];
-  if (hit && Date.now() - hit.ts < 6 * 60 * 60 * 1000) return res.json(hit.data);
+  if (hit && (Date.now() - hit.ts < 6 * 60 * 60 * 1000 || _footballApiPaused)) return res.json(hit.data);
 
   try {
-    const data = await fdGet(`/teams/${teamId}/matches?status=${status}&limit=${limit}`);
+    const param = status === 'SCHEDULED' ? `next=${limit}` : `last=${limit}`;
+    // allowDuringPause=true (4 septembre 2026) — sans ça, "Derniers résultats" plantait net (erreur
+    // "football-api paused") pour toute équipe pas déjà en cache dès qu'une pause manuelle était
+    // active, touchant quasiment toutes les fiches match d'un coup. Même raisonnement que le score en
+    // direct (bypass déjà en place) : un historique de résultats a trop de valeur informative pour
+    // rester bloqué juste parce que le cycle d'arrière-plan est en pause.
+    const data = await footballApiFetch(`${FOOTBALL_API_BASE}/fixtures?team=${teamId}&${param}`, 0, true);
     // SCHEDULED : les plus proches d'abord (ordre chronologique) ; FINISHED : les plus récents
     // d'abord (inchangé, comportement historique de "Derniers résultats").
-    const matches = (data.matches || [])
-      .sort((a, b) => status === 'SCHEDULED' ? new Date(a.utcDate) - new Date(b.utcDate) : new Date(b.utcDate) - new Date(a.utcDate))
-      .map(m => ({
-        date:      m.utcDate,
-        homeTeam:  m.homeTeam.shortName || m.homeTeam.name,
-        awayTeam:  m.awayTeam.shortName || m.awayTeam.name,
-        homeId:    m.homeTeam.id,
-        awayId:    m.awayTeam.id,
-        homeCrest: m.homeTeam.crest || null,
-        awayCrest: m.awayTeam.crest || null,
-        scoreHome: m.score.fullTime.home,
-        scoreAway: m.score.fullTime.away,
-        competition: m.competition.name,
+    const matches = (data.response || [])
+      .sort((a, b) => status === 'SCHEDULED' ? new Date(a.fixture.date) - new Date(b.fixture.date) : new Date(b.fixture.date) - new Date(a.fixture.date))
+      .map(f => ({
+        date:      f.fixture.date,
+        homeTeam:  f.teams.home.name,
+        awayTeam:  f.teams.away.name,
+        homeId:    f.teams.home.id,
+        awayId:    f.teams.away.id,
+        homeCrest: f.teams.home.logo || null,
+        awayCrest: f.teams.away.logo || null,
+        scoreHome: f.goals?.home ?? null,
+        scoreAway: f.goals?.away ?? null,
+        competition: f.league.name,
       }));
     const result = { matches };
     _fdTeamMatchCache[cacheKey] = { data: result, ts: Date.now() };
+    _saveFdTeamMatchCache();
     res.json(result);
   } catch (err) {
-    console.error('FD teammatches error:', err.message);
+    console.error('api-football teammatches error:', err.message);
+    if (hit) return res.json(hit.data);
     res.status(500).json({ error: err.message });
   }
 });
@@ -18502,14 +19157,23 @@ app.get('/api/telegram/actions', (req, res) => {
 // Debug uniquement (16 juillet 2026) — envoie une fausse alerte de test sur Telegram pour vérifier
 // le flux boutons/webhook sans attendre un vrai cycle d'alertes. À retirer une fois le tunnel
 // Cloudflare + setWebhook en place et le flux validé en conditions réelles.
+// ?type= (6 septembre 2026, ajouté pour tester le nouveau format 5 lignes) — par défaut player_prop
+// (comportement historique inchangé), 'football_btts' envoie un exemple foot avec near-miss réel.
 app.post('/api/telegram/test', async (req, res) => {
   if (!telegramConfigured()) return res.status(503).json({ error: 'telegram not configured' });
-  const fakeAlert = {
+  const type = req.query.type || 'player_prop';
+  const fakeAlert = type === 'football_btts' ? {
+    id: 'test_' + Date.now(), type: 'football_btts', league: 'bresil',
+    home: 'Botafogo', away: 'Palmeiras', homeShort: 'BOT', awayShort: 'PAL',
+    fixture: 'Botafogo vs Palmeiras', fixtureDate: '2026-09-06T23:30:00+00:00',
+    direction: 'yes', probability: 57, unibetOdds: 1.50, betclicOdds: 1.56, eventId: 'test_evt_fb',
+  } : {
     id: 'test_' + Date.now(), type: 'player_prop', player: 'Joueur Test', stat: 'pts',
     direction: 'over', line: 15.5, probability: 82, unibetOdds: 1.75, eventId: 'test_evt', league: 'nba',
   };
   backgroundAlerts.push({ ...fakeAlert, status: 'pending' });
-  await notifyNewAlert(fakeAlert);
+  const _stakeAmt = await _getBankrollStakeForTelegram();
+  await notifyNewAlert({ ...fakeAlert, _wl: _nearMissForAlert(fakeAlert), _stake: _stakeAmt });
   res.json({ ok: true, alertId: fakeAlert.id, tokens: _debugTokensForId(fakeAlert.id) });
 });
 
@@ -18998,9 +19662,28 @@ const _saveHealthDigestState = () => { try { writeFileSync(HEALTH_DIGEST_STATE_F
 // (repli sur cache existant, quota 10 req/min juste serré, auto-résolu en général en moins d'une
 // minute) et "pause manuelle" est le résultat direct d'une action volontaire de l'utilisateur
 // lui-même, jamais un bug. Toujours capturées dans _errorLog (utile pour débugger), juste plus
-// poussées sur Telegram. Filtre volontairement étroit — un vrai problème (DNS, MongoDB, quota
-// vraiment épuisé pour la journée) ne matche aucun des deux motifs et continue de notifier.
-const HEALTH_DIGEST_IGNORE = [/\b429\b/, /pause manuelle/];
+// poussées sur Telegram.
+// Élargi le 1er septembre 2026 (demande explicite — "uniquement si il y a une ENORME erreur ou un
+// bug de fou") : toute la classe des coupures réseau transitoires (DNS, hôte injoignable, timeout,
+// connexion refusée) exclue en bloc — cas réel qui l'a motivé : une vraie coupure passagère du Mac
+// (sommeil prolongé) a généré un digest listant Mongo/football-data.org/fetch en échec simultanément,
+// alors que tout s'était déjà auto-résolu (networkOk repassé à true) au moment de la lecture du
+// message. Ce type d'erreur est par nature transitoire et non-actionnable dans l'immédiat — `/api/health`
+// (`networkOk`/`netFailStreak`) reste la source fiable pour un vrai diagnostic si besoin, sans spam.
+// Filtre toujours volontairement borné à la classe réseau : une vraie erreur applicative (crash JS,
+// bug logique, donnée corrompue) ne matche aucun motif ci-dessous et continue de notifier normalement.
+const HEALTH_DIGEST_IGNORE = [
+  /\b429\b/,
+  /pause manuelle/,
+  /EHOSTUNREACH|ENOTFOUND|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|EPIPE/,
+  /fetch failed/i,
+  // EADDRINUSE (4 septembre 2026, demande explicite — reçu 12 fois la même soirée) : un process
+  // zombie qui échoue à prendre le port 3001 pendant un redémarrage manuel en rafale côté dev — le
+  // vrai serveur qui répond déjà tourne sur ce port, ce zombie est un no-op inoffensif (juste du CPU
+  // gaspillé jusqu'au prochain nettoyage), jamais un signe que le site est down. `/api/health` reste
+  // la source fiable si un vrai doute sur la disponibilité se pose.
+  /EADDRINUSE/,
+];
 function _runHealthDigest() {
   try {
     const fresh = _errorLog.slice(_healthDigestLastIdx).filter(e => !HEALTH_DIGEST_IGNORE.some(re => re.test(e.msg)));
@@ -19097,9 +19780,18 @@ app.listen(PORT, () => {
     console.log(`Keep-alive actif → ${selfUrl}`);
   }
 
-  // Start background alert job: first run after 2s, then every 20min
-  setTimeout(generateBackgroundAlertsGuarded, 2_000);
-  setInterval(generateBackgroundAlertsGuarded, 20 * 60 * 1000);
+  // Start background alert job: first run after 2s, then every 20min.
+  // Fix 1er septembre 2026 — voir commentaire sur BG_LAST_RUN_FILE : un cycle ayant tourné il y a
+  // moins de 20min avant ce boot n'a pas besoin d'être rejoué tout de suite (ses données sont encore
+  // fraîches) — le 1er lancement attend le reste du délai normal au lieu de repartir à 2s, pour ne
+  // pas empiler un scrape Betclic/Unibet/Pinnacle en plus à chaque redémarrage backend en dev.
+  const _sinceLastBgRun = _bgLastRun ? Date.now() - _bgLastRun : Infinity;
+  const _firstBgDelay = _sinceLastBgRun < BG_ALERTS_INTERVAL_MS
+    ? Math.max(BG_ALERTS_INTERVAL_MS - _sinceLastBgRun, 2_000)
+    : 2_000;
+  if (_firstBgDelay > 2_000) console.log(`[bg-alerts] cycle récent (il y a ${Math.round(_sinceLastBgRun / 1000)}s) — 1er lancement différé de ${Math.round(_firstBgDelay / 1000)}s au lieu de 2s`);
+  setTimeout(generateBackgroundAlertsGuarded, _firstBgDelay);
+  setInterval(generateBackgroundAlertsGuarded, BG_ALERTS_INTERVAL_MS);
 
   // Auto-réveil pause api-football/API-Basketball (30 août 2026, demande explicite — "une fois
   // automatisé, la pause doit toujours se réveiller automatiquement"). Une pause manuelle n'est donc
@@ -19322,37 +20014,12 @@ app.listen(PORT, () => {
     } catch { _updateScraper('betclic', false); _updateScraper('betclic_foot', false); }
   };
 
-  // ── Health check Bzzoiro — toutes les 15min ───────────────────────────────────
-  async function refreshBzzoiroHealth() {
-    try {
-      const today = new Date().toISOString().slice(0, 10);
-      const data = await bzzFetch(`/events/?league=2&date_from=${today}&limit=1`);
-      _updateScraper('bzzoiro', data != null);
-    } catch { _updateScraper('bzzoiro', false); }
-  }
-  setTimeout(() => {
-    refreshBzzoiroHealth().catch(() => {});
-    setInterval(() => refreshBzzoiroHealth().catch(() => {}), 15 * 60 * 1000);
-  }, 20_000);
+  // Health check Bzzoiro retiré (1er septembre 2026, migration EuroLeague vers api-basketball pur)
+  // — EuroLeague rejoint l'indicateur santé api-basketball partagé, comme les 5 autres ligues EU.
 
-  // ── Health check ACB (acb.com) — toutes les 15min ─────────────────────────────
-  // Sans ça, l'indicateur ne se rafraîchit que quand quelqu'un visite une page ACB
-  // (ou 1x/jour via dailyRosterRefresh) → passe au rouge dès 20min d'inactivité,
-  // même quand le scraping fonctionne très bien (faux signal de panne).
-  async function refreshAcbHealth() {
-    try {
-      const firstId = Object.keys(ACB_TEAM_MAP)[0];
-      const slug = ACB_TEAM_MAP[firstId];
-      const html = await fetchAcbHtml(`/es/liga/equipos/${slug}?editionId=90`);
-      const roster = parseAcbRoster(html);
-      _updateScraper('acb', roster.length > 0);
-    } catch { _updateScraper('acb', false); }
-  }
-  _manualHealthRefreshers.acb = refreshAcbHealth;
-  setTimeout(() => {
-    refreshAcbHealth().catch(() => {});
-    setInterval(() => refreshAcbHealth().catch(() => {}), 15 * 60 * 1000);
-  }, 25_000);
+  // Health check ACB dédié retiré (1er septembre 2026, migration api-basketball pur) — ACB rejoint
+  // l'indicateur santé api-basketball partagé, comme BBL/LNB/Lega A/NBL (plus de scraper isolé à
+  // surveiller séparément).
 
   // ── Refresh quotidien des rosters (Base de données) ──────────────────────────
   // Pre-chauffe les caches NBA / WNBA / ACB une fois par jour.
@@ -19376,11 +20043,8 @@ app.listen(PORT, () => {
     ];
     await batchFetch(allPairs);
 
-    // ACB — 18 équipes via scraping acb.com
-    for (const id of Object.keys(ACB_TEAM_MAP)) {
-      try { await fetchWithTimeout(`${base}/api/euro/acb/players/${id}?refresh=1`, 30000).catch(() => {}); } catch {}
-      await new Promise(r => setTimeout(r, 800));
-    }
+    // Pré-chauffe ACB retirée (1er septembre 2026) — n'a plus de sens une fois passée sur
+    // api-basketball : plus besoin du ménagement anti-rate-limit propre à un site scrapé (acb.com).
 
     // Persiste le cache joueurs sur disque — disponible immédiatement au prochain restart
     _saveEspnPlayersToDisk();

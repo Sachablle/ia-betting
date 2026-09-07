@@ -1,0 +1,11 @@
+{
+  "watch": [
+    "server.js",
+    "telegram.js",
+    "compute.js",
+    "computeFootball.js",
+    "computeOutrights.js"
+  ],
+  "ext": "js",
+  "delay": 300
+}

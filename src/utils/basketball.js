@@ -6,6 +6,7 @@ export const BBALL_LEAGUES = [
   { id: 'lnb',        name: 'Betclic Élite', country: 'France',  accent: '#002395', flag: '🇫🇷', standingsUrl: 'https://www.lnb.fr/betclic-elite' },
   { id: 'bbl',        name: 'BBL',           country: 'Allemagne',accent: '#000000', flag: '🇩🇪', standingsUrl: 'https://www.easycredit-bbl.de/tabelle' },
   { id: 'legaa',      name: 'Lega A',        country: 'Italie',  accent: '#009246', flag: '🇮🇹', standingsUrl: 'https://www.legabasket.it/classifica' },
+  { id: 'nbl',        name: 'NBL',           country: 'Australie', accent: '#f0b323', flag: '🇦🇺', standingsUrl: 'https://nbl.com.au/ladder' },
 ];
 
 function team(name, short, logoId, position, wins, losses, ppg, oppg, rpg, apg, fg, form) {

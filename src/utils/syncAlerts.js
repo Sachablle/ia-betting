@@ -888,6 +888,26 @@ export async function syncFootballAlerts() {
     const isCdmBeyondWindow = a => /^fdcdm_/.test(a.fixtureId || '')
       && a.fixtureDate && (new Date(a.fixtureDate).getTime() - Date.now()) > 24 * 3600_000;
 
+    // Détecte un doublon même quand le fixtureId change (migration football-data.org → api-football,
+    // 2 septembre 2026 : un match déjà accepté sous un ancien id fd_/fdbr_ se voit régénérer une
+    // alerte "neuve" sous le nouvel id api-football au cycle suivant, pour le même pari réel).
+    // Comparaison FLOUE sur les noms d'équipe — indispensable : les deux sources n'orthographient pas
+    // pareil ("Real Sociedad de Fútbol" côté football-data.org vs "Real Sociedad" côté api-football),
+    // une simple égalité de chaîne ne matche jamais (bug constaté en direct : le doublon revenait
+    // malgré une 1ère version de ce correctif basée sur une clé exacte).
+    const _flNorm = s => (s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '')
+      .replace(/\b(fc|cf|ac|sc|rc|cd|ud|de|club|deportivo)\b/g, '')
+      .replace(/[^a-z0-9]/g, '');
+    const _flTeamsMatch = (a, b) => {
+      const na = _flNorm(a), nb = _flNorm(b);
+      return na.length > 2 && (na === nb || na.includes(nb) || nb.includes(na));
+    };
+    const footballAlertsMatch = (p, a) =>
+      _flTeamsMatch(p.homeTeam || p.home, a.homeTeam || a.home) &&
+      _flTeamsMatch(p.awayTeam || p.away, a.awayTeam || a.away) &&
+      Math.abs(new Date(p.fixtureDate).getTime() - new Date(a.fixtureDate).getTime()) < 6 * 3600_000 &&
+      p.direction === a.direction && (p.line ?? '') === (a.line ?? '');
+
     // BTTS
     const bttsAlerts = bgAlerts.filter(a => a.type === 'football_btts' && a.probability > 0);
     { // bttsAlerts peut être vide (0 alerte BTTS ce cycle) — la purge des orphelins doit quand
@@ -896,7 +916,7 @@ export async function syncFootballAlerts() {
       let changed = false;
       const result = [...existing];
       bttsAlerts.forEach(a => {
-        const idx = result.findIndex(p => p.id === a.id);
+        const idx = result.findIndex(p => p.id === a.id || footballAlertsMatch(p, a));
         if (idx === -1) {
           result.push({ ...a, status: a.status || 'pending' });
           changed = true;
@@ -906,10 +926,11 @@ export async function syncFootballAlerts() {
         if ((prev.status || 'pending') !== 'pending') {
           return; // accepté/rejeté/réglé : ne jamais toucher
         }
-        if (prev.probability !== a.probability || prev.unibetOdds !== a.unibetOdds
+        if (prev.id !== a.id || prev.probability !== a.probability || prev.unibetOdds !== a.unibetOdds
             || prev.betclicOdds !== a.betclicOdds || prev.winamaxOdds !== a.winamaxOdds || prev.edge !== a.edge) {
           result[idx] = {
             ...prev,
+            id: a.id, fixtureId: a.fixtureId, eventId: a.eventId,
             probability: a.probability,
             unibetOdds: a.unibetOdds ?? prev.unibetOdds,
             betclicOdds: a.betclicOdds ?? prev.betclicOdds,
@@ -944,7 +965,7 @@ export async function syncFootballAlerts() {
       let changed = false;
       const result = [...existing];
       totalAlerts.forEach(a => {
-        const idx = result.findIndex(p => p.id === a.id);
+        const idx = result.findIndex(p => p.id === a.id || footballAlertsMatch(p, a));
         if (idx === -1) {
           result.push({ ...a, status: a.status || 'pending' });
           changed = true;
@@ -954,10 +975,11 @@ export async function syncFootballAlerts() {
         if ((prev.status || 'pending') !== 'pending') {
           return; // accepté/rejeté/réglé : ne jamais toucher
         }
-        if (prev.probability !== a.probability || prev.line !== a.line || prev.direction !== a.direction
+        if (prev.id !== a.id || prev.probability !== a.probability || prev.line !== a.line || prev.direction !== a.direction
             || prev.unibetOdds !== a.unibetOdds || prev.betclicOdds !== a.betclicOdds || prev.winamaxOdds !== a.winamaxOdds || prev.edge !== a.edge) {
           result[idx] = {
             ...prev,
+            id: a.id, fixtureId: a.fixtureId, eventId: a.eventId,
             probability: a.probability, line: a.line, direction: a.direction, edge: a.edge,
             unibetOdds: a.unibetOdds ?? prev.unibetOdds,
             betclicOdds: a.betclicOdds ?? prev.betclicOdds,
@@ -998,7 +1020,7 @@ export async function syncFootballAlerts() {
       let changed = false;
       const result = [...existing];
       resultAlerts.forEach(a => {
-        const idx = result.findIndex(p => p.id === a.id);
+        const idx = result.findIndex(p => p.id === a.id || footballAlertsMatch(p, a));
         if (idx === -1) {
           result.push({ ...a, status: a.status || 'pending' });
           changed = true;
@@ -1008,10 +1030,11 @@ export async function syncFootballAlerts() {
         if ((prev.status || 'pending') !== 'pending') {
           return; // accepté/rejeté/réglé : ne jamais toucher
         }
-        if (prev.probability !== a.probability || prev.direction !== a.direction
+        if (prev.id !== a.id || prev.probability !== a.probability || prev.direction !== a.direction
             || prev.unibetOdds !== a.unibetOdds || prev.betclicOdds !== a.betclicOdds || prev.winamaxOdds !== a.winamaxOdds || prev.edge !== a.edge) {
           result[idx] = {
             ...prev,
+            id: a.id, fixtureId: a.fixtureId, eventId: a.eventId,
             probability: a.probability, direction: a.direction, edge: a.edge,
             unibetOdds: a.unibetOdds ?? prev.unibetOdds,
             betclicOdds: a.betclicOdds ?? prev.betclicOdds,
@@ -1239,6 +1262,23 @@ export async function resolveCompletedFootballAlerts(alerts, save) {
           const single = await fetch(`/api/fd/match/${gid}`).then(r => r.ok ? r.json() : null).catch(() => null);
           if (single && ['STATUS_IN_PROGRESS', 'STATUS_FINAL'].includes(single.status)) game = single;
         }
+        // Migration football-data.org → api-football (2 septembre 2026) — une alerte fd_/fdbr_ créée
+        // avant la bascule porte un id football-data.org que ces sources ne renvoient plus (elles
+        // renvoient désormais des ids api-football). Résolution une fois via la table de
+        // correspondance (server.js), mémorisée sur l'alerte pour ne pas la redemander à chaque
+        // cycle. À retirer une fois qu'aucune alerte fd_/fdbr_ n'est plus pending/accepted.
+        if (!game && (source.prefix === 'fd_' || source.prefix === 'fdbr_') && a.league) {
+          const legacyLeague = source.prefix === 'fdbr_' ? 'bresil' : a.league;
+          if (!a.migratedFixtureId) {
+            try {
+              const resolved = await fetch(`/api/fd/resolve-legacy-id?league=${legacyLeague}&oldId=${gid}`).then(r => r.ok ? r.json() : null);
+              if (resolved?.newId) { a.migratedFixtureId = resolved.newId; changed = true; }
+            } catch {}
+          }
+          if (a.migratedFixtureId) {
+            game = games.find(g => String(g.id) === a.migratedFixtureId && ['STATUS_IN_PROGRESS', 'STATUS_FINAL'].includes(g.status));
+          }
+        }
         if (!game) continue;
         const result = resolveFootballAlertResult(a, game);
         if (!result) continue;
@@ -1261,7 +1301,7 @@ export async function resolveCompletedFootballAlerts(alerts, save) {
 // d'alerte live sur ce joueur (cas où la ligne a trop bougé pour rester rentable) : le backend
 // calcule à chaque cycle, pour TOUS les joueurs, la ligne/cotes/probas courantes dans
 // _projectionsSnapshot — exposé via /api/{nba|wnba|euro/<league>}/projections-snapshot/:eventId.
-const EU_PROJ_LEAGUES = ['acb', 'lnb', 'bbl', 'legaa', 'euroleague'];
+const EU_PROJ_LEAGUES = ['acb', 'lnb', 'bbl', 'legaa', 'euroleague', 'nbl'];
 const projectionsSnapshotUrl = (league, eventId) => {
   if (league === 'wnba') return `/api/wnba/projections-snapshot/${eventId}`;
   if (EU_PROJ_LEAGUES.includes(league)) return `/api/euro/${league}/projections-snapshot/${eventId}`;

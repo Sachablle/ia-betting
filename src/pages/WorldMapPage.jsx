@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { ComposableMap, Geographies, Geography, Graticule } from 'react-simple-maps';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { cachedFetch } from '../utils/fetchCache';
+import { cachedFetch, invalidateCache } from '../utils/fetchCache';
 
 import GEO_DATA from 'world-atlas/countries-110m.json';
 const GEO_URL = GEO_DATA;
@@ -19,11 +19,13 @@ const COVERED = {
   '380': { name: 'Italie',     flag: '🇮🇹', leagues: ['seriea','legaa'] },
   '826': { name: 'Angleterre', flag: '🏴󠁧󠁢󠁥󠁮󠁧󠁿', leagues: ['pl'] },
   '076': { name: 'Brésil',     flag: '🇧🇷', leagues: ['bresil'] },
+  // Australie (NBL, 1er septembre 2026) — nouveau pays, pas de foot couvert ici (comme les USA).
+  '036': { name: 'Australie',  flag: '🇦🇺', leagues: ['nbl'] },
 };
 
 const LEAGUE_META = {
   nba: 'NBA', wnba: 'WNBA', lnb: 'Betclic Élite',
-  acb: 'ACB', bbl:  'BBL',  legaa: 'Lega A',
+  acb: 'ACB', bbl:  'BBL',  legaa: 'Lega A', nbl: 'NBL',
   ligue1: 'Ligue 1', laliga: 'La Liga', bundes: 'Bundesliga', seriea: 'Serie A', pl: 'Premier League',
   euroleague: 'EuroLeague', cdm: 'Coupe du Monde', bresil: 'Brasileirão',
   europa: 'Europa League', conference: 'Conference League', champions: 'Ligue des Champions',
@@ -57,10 +59,6 @@ function _prefetchCountry(country) {
       cachedFetch(`${base}/scoreboard`, 20_000).catch(()=>{});
       cachedFetch(`${base}/standings`,  6*3_600_000).catch(()=>{});
       cachedFetch(`${base}/leaders`,    6*3_600_000).catch(()=>{});
-    } else if (l === 'acb') {
-      cachedFetch('/api/euro/acb/scoreboard', 20_000).catch(()=>{});
-      cachedFetch('/api/acb/standings', 6*3_600_000).catch(()=>{});
-      cachedFetch('/api/acb/leaders',   6*3_600_000).catch(()=>{});
     } else if (l === 'cdm') {
       cachedFetch('/api/fd/worldcup', 30_000).catch(()=>{});
     } else if (EU_CUP_LEAGUES.includes(l)) {
@@ -110,9 +108,11 @@ function pickHighlightMatches(games, n) {
 }
 
 // Légende bas-gauche (23 juillet 2026) — 2 lignes : Monde/USA/Brésil, puis les 5 pays européens.
+// Australie (NBL) ajoutée en 3e ligne le 1er septembre 2026.
 const LEGEND_ROWS = [
   [MONDE, COVERED['840'], COVERED['076']],
   [COVERED['250'], COVERED['724'], COVERED['826'], COVERED['276'], COVERED['380']],
+  [COVERED['036']],
 ];
 
 const STAT_CATS = [
@@ -130,7 +130,7 @@ const FOOTBALL_CATS = [
 
 // Championnats basket EU (31 juillet 2026) — même overlay Classement+leaders que NBA/WNBA/ACB,
 // juste une source de données différente côté backend (/api/euro/:league/standings|leaders).
-const EURO_BASKET_STATS_LEAGUES = ['lnb', 'bbl', 'legaa'];
+const EURO_BASKET_STATS_LEAGUES = ['lnb', 'bbl', 'legaa', 'nbl'];
 // Foot (31 juillet 2026) — 5 grands championnats + Brasileirão seulement, pas les 3 coupes d'Europe
 // (LDC/Europa/Conference n'ont pas de classement unique — groupes puis élimination directe, décision
 // utilisateur explicite de ne pas leur donner cet overlay du tout).
@@ -285,6 +285,16 @@ function Panel({ country, onClose, statsLeague, setStatsLeague }) {
   // défaut décidée par l'ordre d'apparition (1er jour rencontré = le plus proche, les matchs arrivent
   // déjà triés chronologiquement) plutôt qu'une comparaison de date en dur.
   const [openDays, setOpenDays] = useState({});
+  // Bouton "recharger" manuel (1er septembre 2026, demande explicite) — force un refetch immédiat
+  // au lieu d'attendre le prochain cycle de 60s, pour un match en direct dont l'affichage semble en
+  // retard. Incrémenter refreshNonce relance l'effet de chargement ci-dessous (même chemin que le
+  // montage initial), après invalidation des caches concernés côté frontend ET du cache 30s côté
+  // backend (_liveStatusCache, /api/football/live-refresh).
+  const [refreshNonce, setRefreshNonce] = useState(0);
+  const [refreshing, setRefreshing] = useState(false);
+  // true seulement pour le déclenchement du bouton manuel — évite de replaquer l'écran "CHARGEMENT..."
+  // (prévu pour le tout 1er montage/changement de pays) sur un simple refresh de quelques matchs déjà affichés.
+  const isManualRefreshRef = useRef(false);
   const _hasFootball = country.leagues.some(l => sportOf(l) === 'football');
   const _hasBasket   = country.leagues.some(l => sportOf(l) === 'basket');
   // Par défaut : sport de la première ligue du pays (acb avant laliga → basket ; cdm avant euroleague
@@ -365,8 +375,14 @@ function Panel({ country, onClose, statsLeague, setStatsLeague }) {
         const STALE_KICKOFF_MS = 4 * 3600_000;
         const scheduled=(dm.matches||[]).filter(f=>f.league===l && f.status!=='STATUS_FINAL' && !freshIds.has(String(f.id)) && (Date.now() - new Date(f.date).getTime()) < STALE_KICKOFF_MS).map(f=>({
           id:`fd_${f.id}`,date:f.date,status:f.status||'STATUS_SCHEDULED',round:f.round,
-          home:{name:f.home?.name,short:f.home?.short,logo:f.home?.logoId,score:null},
-          away:{name:f.away?.name,short:f.away?.short,logo:f.away?.logoId,score:null},
+          // score (3 septembre 2026) — avant la migration, /api/fd/matches ne renvoyait JAMAIS de
+          // match en direct (filtré ?status=SCHEDULED côté football-data.org), donc score:null en dur
+          // était toujours correct ici. Depuis la migration api-football, cette route renvoie aussi
+          // les matchs en cours avec leur vrai score — le hardcode n'avait jamais été retiré, un
+          // match "EN COURS" affichait donc le badge mais jamais le score (cas réel : Real Sociedad-
+          // Celta 0-0 affiché sans score, alors que la donnée était déjà disponible).
+          home:{name:f.home?.name,short:f.home?.short,logo:f.home?.logoId,score:f.home?.score ?? null},
+          away:{name:f.away?.name,short:f.away?.short,logo:f.away?.logoId,score:f.away?.score ?? null},
         }));
         const finished=(dr.matches||[]).filter(f=>f.league===l).map(f=>({
           id:`fd_${f.id}`,date:f.date,status:f.status,round:f.round,
@@ -393,7 +409,19 @@ function Panel({ country, onClose, statsLeague, setStatsLeague }) {
       // Brasileirão (17 juillet 2026) — source isolée /api/fd/bresil, même prefixe fdbr_ que
       // generateBackgroundAlerts (server.js) pour que fixtureId corresponde partout.
       if (l === 'bresil') return cachedFetch('/api/fd/bresil', 30_000).then(d => {
-        const all=(d.matches||[]).map(f=>({
+        // Fix 31 août 2026 — même garde-fou que les 5 grands championnats ci-dessus (voir
+        // STALE_KICKOFF_MS) : un match resté bloqué en STATUS_SCHEDULED des heures après son coup
+        // d'envoi (football-data.org ne transitionne jamais vers IN_PLAY) restait affiché "à venir"
+        // indéfiniment — jamais branché ici lors du fix du 31 août sur les 5 ligues, oublié pour le
+        // Brésil. Pas besoin du croisement freshIds des 5 ligues : /api/fd/bresil renvoie déjà
+        // scheduled ET finished dans le même appel (contrairement à /api/fd/matches qui exclut les
+        // terminés), donc pas de 2e source à croiser pour distinguer "vraiment pas encore joué" de
+        // "bloqué côté football-data.org". Cas réel : Grêmio-Chapecoense, Mirassol-Palmeiras,
+        // coup d'envoi dépassé de 17h, toujours "à venir".
+        const STALE_KICKOFF_MS = 4 * 3600_000;
+        const all=(d.matches||[])
+          .filter(f => f.status === 'STATUS_FINAL' || (Date.now() - new Date(f.date).getTime()) < STALE_KICKOFF_MS)
+          .map(f=>({
           id:`fdbr_${f.id}`,date:f.date,status:f.status||'STATUS_SCHEDULED',round:f.round,
           home:{name:f.home?.name,short:f.home?.short,logo:f.home?.logoId,score:f.home?.score ?? null},
           away:{name:f.away?.name,short:f.away?.short,logo:f.away?.logoId,score:f.away?.score ?? null},
@@ -415,12 +443,35 @@ function Panel({ country, onClose, statsLeague, setStatsLeague }) {
         });
       } else setLoading(false);
     });
-    load(true);
+    const wasManual = isManualRefreshRef.current;
+    isManualRefreshRef.current = false;
+    const loadPromise = load(!wasManual);
+    if (wasManual) loadPromise.finally(() => { if (!cancelled) setRefreshing(false); });
     // Rafraîchit régulièrement pour faire passer un match terminé de "À venir" à "Terminés"
     // sans devoir fermer/réouvrir le panneau (settlement plus rapide pour la CDM).
     const t = setInterval(() => load(false), 60_000);
     return () => { cancelled = true; clearTimeout(loadTimer); clearInterval(t); };
-  }, [country?.name]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [country?.name, refreshNonce]);
+
+  // Bouton "recharger" (1er septembre 2026, repositionné + réduit le 3 septembre) — affiché sous la
+  // ligne À venir/Terminés de CHAQUE championnat foot ayant un match en direct (cf. plus bas dans le
+  // rendu par championnat), plutôt qu'un seul bouton global en haut du panneau.
+  const handleManualRefresh = () => {
+    if (refreshing) return;
+    setRefreshing(true);
+    isManualRefreshRef.current = true;
+    fetch('/api/football/live-refresh', { method: 'POST' }).catch(() => {}).finally(() => {
+      // Invalide uniquement les caches foot concernés par ce pays — pas de refetch inutile côté basket.
+      country.leagues.forEach(l => {
+        if (l === 'cdm') invalidateCache('/api/fd/worldcup');
+        else if (l === 'bresil') invalidateCache('/api/fd/bresil');
+        else if (EU_CUP_LEAGUES.includes(l)) invalidateCache(`/api/football/eucup/${l}/matches`);
+        else if (FOOTBALL_LEAGUES.has(l)) { invalidateCache('/api/fd/matches'); invalidateCache('/api/fd/results'); }
+      });
+      setRefreshNonce(n => n + 1);
+    });
+  };
 
   const visibleLeagues = sportFilter
     ? country.leagues.filter(l => sportOf(l) === sportFilter)
@@ -579,6 +630,14 @@ function Panel({ country, onClose, statsLeague, setStatsLeague }) {
                         <span style={{fontSize: country.isMonde ? 8 : 9,fontWeight:700,color:'rgba(255,255,255,0.35)',textTransform:'capitalize',letterSpacing:'0.06em',whiteSpace:'nowrap'}}>{dateLabel}</span>
                         <div style={{flex:1,height:'1px',background:'rgba(255,255,255,0.08)'}}/>
                       </div>
+                      {dayOpen && FOOTBALL_LEAGUES.has(league) && dayGames.some(isLiveGame) && (
+                        <div style={{display:'flex',justifyContent:'flex-end',padding:'2px 4px 4px'}}>
+                          <button
+                            className={`icon-refresh-btn icon-refresh-btn--football icon-refresh-btn--sm${refreshing ? ' spinning' : ''}`}
+                            onClick={handleManualRefresh} disabled={refreshing}
+                            title="Recharger les scores en direct">↻</button>
+                        </div>
+                      )}
                       {dayOpen && dayGames.map((g,i) => {
                         const live = isLiveGame(g);
                         const logoSize = country.isMonde ? 14 : 20;
@@ -709,7 +768,7 @@ export default function WorldMapPage() {
   // (5 grands championnats + Brasileirão, Classement+Buteurs+Passeurs) — pas les 3 coupes d'Europe
   // (décision explicite, pas de classement unique pour elles).
   const STATS_LEAGUES = new Set(['nba', 'wnba', 'acb', ...EURO_BASKET_STATS_LEAGUES, ...FOOTBALL_STATS_LEAGUES]);
-  const statsBase = l => l === 'nba' ? '/api/nba' : l === 'wnba' ? '/api/wnba' : l === 'acb' ? '/api/acb' : `/api/euro/${l}`;
+  const statsBase = l => l === 'nba' ? '/api/nba' : l === 'wnba' ? '/api/wnba' : `/api/euro/${l}`;
 
   // Pré-fetch standings + leaders dès qu'un pays avec basket/foot éligible est sélectionné
   useEffect(() => {

@@ -9,7 +9,6 @@ import FormStrip from '../components/FormStrip';
 import StatBar from '../components/StatBar';
 import TeamLogo from '../components/TeamLogo';
 import { OddsCell } from '../components/OddsCell';
-import { setItem as cloudSet } from '../utils/cloudStorage';
 
 const FINAL_STATUSES = new Set(['STATUS_FULL_TIME', 'STATUS_FINAL', 'STATUS_FT', 'STATUS_AFTER_EXTRA_TIME', 'STATUS_AFTER_PENALTIES']);
 
@@ -358,6 +357,22 @@ function computeOU(lambda_home, lambda_away, line, rho = 0) {
   return { lambda_total: +lambda_total.toFixed(2), over: Math.round(pOver * 100), under: Math.round(pUnder * 100) };
 }
 
+// P(une équipe seule marque plus/moins de "line" buts) — 7 septembre 2026, marché "Total de buts par
+// équipe" (observation, pas encore d'alerte réelle — cf. server.js computeTeamGoalsProb, même formule).
+// Marginale d'une équipe dérivée de la même grille Dixon-Coles que BTTS/O-U (pas un Poisson brut isolé).
+function computeTeamGoals(lambda_home, lambda_away, line, side, rho = 0) {
+  if (lambda_home == null || lambda_away == null) return null;
+  const kMax = 10;
+  const grid = computeScoreGrid(lambda_home, lambda_away, rho, kMax);
+  const threshold = Math.floor(line); // 0.5 → 0, 1.5 → 1, 2.5 → 2
+  const marginal = new Array(kMax + 1).fill(0);
+  for (let i = 0; i <= kMax; i++) for (let j = 0; j <= kMax; j++) marginal[side === 'home' ? i : j] += grid[i][j];
+  let pUnder = 0;
+  for (let k = 0; k <= threshold; k++) pUnder += marginal[k];
+  const pOver = 1 - pUnder;
+  return { over: Math.round(pOver * 100), under: Math.round(pUnder * 100) };
+}
+
 // P(DC & BTTS) et P(DC & Over line) — même grille Dixon-Coles que les autres calculs CDM
 function computeDCBTTS(lambda_home, lambda_away, rho = 0) {
   if (lambda_home == null || lambda_away == null) return null;
@@ -506,9 +521,11 @@ const FB_BK_COLORS = { unibet: '#1db954', betclic: '#e0292e' };
 // affiché avec le style "REF" déjà prévu dans le rendu ci-dessous (isPinnacle).
 const FB_BK_ORDER  = ['pinnacle', 'unibet', 'betclic'];
 
-function FootballOddsBox({ markets, bttsResult, home, away, frozen, onRefresh, refreshing, lastRefreshed }) {
+const BIG5_LEAGUES = new Set(['ligue1', 'pl', 'laliga', 'seriea', 'bundes']);
+
+function FootballOddsBox({ markets, bttsResult, home, away, frozen, onRefresh, refreshing, lastRefreshed, fixtureLeague }) {
   const [tab, setTab] = useState('result');
-  const [totalsLine, setTotalsLine] = useState('2.5');
+  const [totalsLine, setTotalsLine] = useState('1.5');
   const [showLegend, setShowLegend] = useState(false);
   const [legendBox, setLegendBox] = useState(null); // { top, left }
   const cardRef = useRef(null);
@@ -561,10 +578,15 @@ function FootballOddsBox({ markets, bttsResult, home, away, frozen, onRefresh, r
   const btts   = markets?.btts;
   const dcbtts = markets?.dcbtts;
   const dcou   = markets?.dcou;
+  // Total de buts par équipe (7 septembre 2026) — marché "observation", pas encore d'alerte réelle
+  // (cf. server.js generateBackgroundAlerts, section football). Affiché ici à côté de "Buts" sur
+  // demande explicite utilisateur, uniquement pour consultation (cotes réelles + estimation modèle).
+  const teamGoals = markets?.teamTotals;
 
   const hasDcBtts = !!(dcbtts?.bookmakers);
   const hasDcOu   = !!(dcou?.bookmakers);
   const hasDC = hasDcBtts || hasDcOu;
+  const hasTeamGoals = !!(teamGoals?.bookmakers);
 
   const availBks = FB_BK_ORDER.filter(bk =>
     h2h?.bookmakers?.[bk] || tots?.bookmakers?.[bk] || btts?.bookmakers?.[bk]
@@ -573,20 +595,17 @@ function FootballOddsBox({ markets, bttsResult, home, away, frozen, onRefresh, r
     (bk === 'dc_btts' ? dcbtts?.bookmakers?.[b] : dcou?.bookmakers?.[b])
   ).filter(b => b !== 'pinnacle');
 
-  // Lignes O/U disponibles : union des clés de tous les bookmakers (Pinnacle peut avoir 2.75 etc.)
-  const availTotalsLines = (() => {
-    const lines = new Set(['1.5', '2.5']);
-    if (tots?.bookmakers) {
-      for (const bk of Object.values(tots.bookmakers)) {
-        for (const key of Object.keys(bk)) lines.add(key);
-      }
-    }
-    return [...lines].sort((a, b) => parseFloat(a) - parseFloat(b));
-  })();
+  // Toggle limité aux 2 lignes standards (1er septembre 2026, demande explicite) — avant ce fix,
+  // toute ligne exotique que Pinnacle scrape parfois (3, 2.25, 3.25...) ajoutait son propre bouton
+  // au toggle, en plus de 1,5/2,5. Combiné au fix précédent (Pinnacle "—" si sa ligne ne correspond
+  // pas au toggle sélectionné), une ligne Pinnacle non-standard n'a plus besoin d'un bouton dédié —
+  // elle affiche juste "—" sur les 2 lignes standards, comme n'importe quel bookmaker sans cette ligne.
+  const availTotalsLines = ['1.5', '2.5'];
 
   const TABS = [
     { id: 'result', label: 'Résultat' },
     { id: 'buts',   label: 'Buts'     },
+    ...(hasTeamGoals ? [{ id: 'team_goals', label: 'Buts par équipe' }] : []),
     { id: 'btts',   label: 'BTTS'     },
     ...(hasDcBtts ? [{ id: 'dc_btts', label: 'Double chance & BTTS' }] : []),
     ...(hasDcOu   ? [{ id: 'dc_ou',   label: 'Double chance & Over 1,5' }] : []),
@@ -724,28 +743,185 @@ function FootballOddsBox({ markets, bttsResult, home, away, frozen, onRefresh, r
             background: 'var(--bg-card, #11141c)', border: '1px solid var(--border)', borderRadius: 8,
             padding: '0.6rem 0.65rem', boxShadow: '0 8px 24px rgba(0,0,0,0.4)',
           }}>
-            <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text)', marginBottom: '0.4rem' }}>
-              Envoi des alertes — Football
-            </div>
-            <div style={{ fontSize: 9.5, lineHeight: 1.55, color: 'var(--text-dim)' }}>
-              Un modèle de Poisson estime les buts attendus de chaque équipe à partir de leurs stats récentes.
-              <br /><br />
-              <b style={{ color: '#00ff80' }}>BTTS Oui</b> : alerte si probabilité ≥ 70% · cote ≥ 1,60.
-              <br />
-              <b style={{ color: '#00ff80' }}>Total Over/Under</b> : alerte si probabilité ≥ 65% (ligne 2,5, sinon 1,5) · cote ≥ 1,30.
-              <br />
-              <b style={{ color: '#00ff80' }}>Résultat 1X2</b> : alerte si probabilité ≥ 70% sur une issue (domicile/nul/extérieur), chacune traitée indépendamment — au plus une alerte par match · cote ≥ 1,50.
-              <br />
-              <b style={{ color: '#f59e0b' }}>DC & BTTS</b> : Double Chance (1X/X2/12) ET les deux équipes marquent. Alerte si probabilité ≥ 50% · cote ≥ 1,45. Les % du modèle sont affichés directement dans les onglets "Double chance & BTTS" et "Double chance & Over 1,5".
-              <br />
-              <b style={{ color: '#f59e0b' }}>DC & Over 1,5</b> : Double Chance ET plus de 1,5 buts. Alerte si probabilité ≥ 55% · cote ≥ 1,45.
-              <br /><br />
-              Cotes comparées : Unibet/Betclic uniquement (Winamax exclu). Générées automatiquement toutes les 20 min — pas besoin d'ouvrir cette page.
-              <br /><br />
-              Dans le widget <b>Modèle 1X2</b>, le <span style={{ color: '#4ade80', fontWeight: 700 }}>+Xpt</span>/<span style={{ color: '#f87171', fontWeight: 700 }}>−Xpt</span> indique l'écart entre la probabilité du modèle et celle du marché (cotes bookmaker, marge retirée) pour cette issue — rien à voir avec les flèches ▲▼ de tendance de cote vues ailleurs sur cette page.
-              <br /><br />
-              La mention <span style={{ color: '#fb923c', fontWeight: 700 }}>· estimation site</span> (BTTS/O-U/1X2) signale que ce % vient d'un modèle recalculé côté navigateur, plus simple que celui des alertes — peut légèrement différer du % qui aurait généré une alerte sur ce match. N'apparaît que si le backend n'a pas encore de projection fraîche pour ce match précis (fixture trop récente/loin dans le temps) ; sinon (CDM, ou 5 grands championnats + Brésil dès que le backend a tourné dessus) la page lit directement le vrai résultat du modèle, sans mention.
-            </div>
+            {(() => {
+              const isBig5 = BIG5_LEAGUES.has(fixtureLeague);
+              const Dot = ({ color }) => <span style={{ display: 'inline-block', width: 6, height: 6, borderRadius: '50%', background: color, marginRight: 4, marginTop: 3, flexShrink: 0 }} />;
+              const Row = ({ color, children }) => (
+                <span style={{ display: 'flex', alignItems: 'flex-start', fontSize: 9.5, lineHeight: 1.4 }}>
+                  <Dot color={color} />
+                  <span>{children}</span>
+                </span>
+              );
+              const estimSite = (
+                <>La mention <span style={{ color: '#fb923c', fontWeight: 700 }}>· estimation site</span> signale que ce % vient d'un modèle recalculé côté navigateur, plus simple que celui des alertes — peut légèrement différer du % qui aurait généré une alerte sur ce match. N'apparaît que si le backend n'a pas encore de projection fraîche pour ce match précis ; sinon (CDM, ou 5 grands championnats + Brésil) la page lit directement le vrai résultat du modèle, sans mention.</>
+              );
+              const estimSiteShort = <>La mention <span style={{ color: '#fb923c', fontWeight: 700 }}>· estimation site</span> n'apparaît que si le backend n'a pas encore de projection fraîche pour ce match précis.</>;
+              // Format "Big Five" (1er septembre 2026, demande explicite utilisateur) — 🚨 + liste
+              // "Infos" numérotée, propre à ces 5 championnats (seuils réellement actifs dessus,
+              // recalibrés le 31 août). Volontairement différent du format à puces des autres ligues
+              // (CDM/Brésil/coupes d'Europe, seuils globaux inchangés) plutôt qu'unifié en un seul style.
+              const AlertLine = ({ children }) => <div style={{ fontSize: 9.5, lineHeight: 1.5 }}>🚨 {children}</div>;
+              const Infos = ({ items }) => (
+                <div style={{ marginTop: '0.5rem', fontSize: 9, lineHeight: 1.5, color: 'var(--text-dim)', borderTop: '1px solid var(--border)', paddingTop: '0.4rem' }}>
+                  <div style={{ fontWeight: 700, color: 'var(--text)', marginBottom: '0.25rem' }}>Infos ⬇️📝</div>
+                  <ol style={{ margin: 0, paddingLeft: '1.1rem' }}>
+                    {items.map((it, i) => <li key={i} style={{ marginBottom: i < items.length - 1 ? '0.3rem' : 0 }}>{it}</li>)}
+                  </ol>
+                </div>
+              );
+              const BIG5_ALERTS = {
+                result: (
+                  <>
+                    <AlertLine>Alerte si probabilité ≥ 70% par issue · Cote ≥ 1,50.</AlertLine>
+                    <Infos items={[
+                      <>Dans le widget <b>Modèle 1X2</b>, le <span style={{ color: '#4ade80', fontWeight: 700 }}>+Xpt</span>/<span style={{ color: '#f87171', fontWeight: 700 }}>−Xpt</span> indique l'écart entre la probabilité du modèle et celle du marché (cotes bookmaker, marge retirée) pour cette issue.</>,
+                      estimSiteShort,
+                    ]} />
+                  </>
+                ),
+                buts: (
+                  <>
+                    <AlertLine>Alerte Over/Under 1,5 buts si probabilité ≥ 60% · Cote 1,30</AlertLine>
+                    <AlertLine>Alerte Over/Under 2,5 buts si probabilité ≥ 65% · Cote 1,30</AlertLine>
+                    <Infos items={[estimSiteShort]} />
+                  </>
+                ),
+                btts: (
+                  <>
+                    <AlertLine>Alerte BTTS si probabilité ≥ 58% · Cote 1,50</AlertLine>
+                    <Infos items={[estimSiteShort]} />
+                  </>
+                ),
+                dc_btts: <AlertLine>Alerte DC &amp; BTTS si probabilité ≥ 50% · Cote ≥ 1,45</AlertLine>,
+                dc_ou: <AlertLine>Alerte DC &amp; Over 1,5 buts si probabilité ≥ 45% · Cote ≥ 1,50</AlertLine>,
+                team_goals: <div style={{ fontSize: 9.5, lineHeight: 1.5, color: 'var(--text-dim)' }}>📊 Marché en observation — les données s'accumulent (near-miss) mais aucune alerte réelle n'est encore générée dessus.</div>,
+              };
+              // Format Brésil (1er septembre 2026, demande explicite utilisateur, même style que
+              // Big Five ci-dessus). Seuils recalibrés le 31 août — contrairement au Big Five, ce
+              // n'est jamais le marché ENTIER qui change mais un SENS précis (le reste du marché
+              // reste au seuil global, aucun edge trouvé dessus) — les 2 lignes 🚨 par marché
+              // matérialisent ça plutôt que de le cacher dans une seule ligne moyenne.
+              const BRESIL_ALERTS = {
+                result: (
+                  <>
+                    <AlertLine>Alerte si probabilité ≥ 70% par issue · Cote ≥ 1,50.</AlertLine>
+                    <Infos items={[
+                      <>Dans le widget <b>Modèle 1X2</b>, le <span style={{ color: '#4ade80', fontWeight: 700 }}>+Xpt</span>/<span style={{ color: '#f87171', fontWeight: 700 }}>−Xpt</span> indique l'écart entre la probabilité du modèle et celle du marché (cotes bookmaker, marge retirée) pour cette issue.</>,
+                      estimSiteShort,
+                    ]} />
+                  </>
+                ),
+                buts: (
+                  <>
+                    <AlertLine>Alerte Over/Under si probabilité ≥ 65% (ligne 2,5, sinon 1,5) · Cote ≥ 1,30</AlertLine>
+                    <Infos items={[estimSiteShort]} />
+                  </>
+                ),
+                btts: (
+                  <>
+                    <AlertLine>Alerte BTTS si probabilité ≥ 45% · Cote ≥ 1,40</AlertLine>
+                    <Infos items={[estimSiteShort]} />
+                  </>
+                ),
+                dc_btts: (
+                  <>
+                    <AlertLine>Alerte DC &amp; BTTS "1X" si probabilité ≥ 20% · Cote ≥ 1,40</AlertLine>
+                    <AlertLine>Alerte DC &amp; BTTS "X2" si probabilité ≥ 50% · Cote ≥ 1,45</AlertLine>
+                  </>
+                ),
+                dc_ou: <AlertLine>Alerte DC &amp; Over 1,5 buts si probabilité ≥ 55% · Cote ≥ 1,45</AlertLine>,
+                team_goals: <div style={{ fontSize: 9.5, lineHeight: 1.5, color: 'var(--text-dim)' }}>📊 Marché en observation — les données s'accumulent (near-miss) mais aucune alerte réelle n'est encore générée dessus.</div>,
+              };
+              // Une seule ligne de marché affichée — celle de l'onglet ouvert — même principe que
+              // OddsLegendCard côté basket (ALERTS[tab]), demande explicite utilisateur après la 1ère
+              // version qui empilait les 5 marchés d'un coup peu importe l'onglet actif.
+              const ALERTS = {
+                result: {
+                  row: (
+                    <Row color="#00ff80">
+                      <b style={{ color: '#00ff80' }}>Résultat 1X2</b> — ≥ 70% par issue (dom./nul/ext., indépendantes) · cote ≥ 1,50
+                    </Row>
+                  ),
+                  extra: (
+                    <>
+                      Dans le widget <b>Modèle 1X2</b>, le <span style={{ color: '#4ade80', fontWeight: 700 }}>+Xpt</span>/<span style={{ color: '#f87171', fontWeight: 700 }}>−Xpt</span> indique l'écart entre la probabilité du modèle et celle du marché (cotes bookmaker, marge retirée) pour cette issue — rien à voir avec les flèches ▲▼ de tendance de cote vues ailleurs sur cette page.
+                      <br /><br />
+                      {estimSite}
+                    </>
+                  ),
+                },
+                buts: {
+                  row: (
+                    <Row color="#00ff80">
+                      <b style={{ color: '#00ff80' }}>Total Over/Under</b> — ≥ 65% (ligne 2,5, sinon 1,5) · cote ≥ 1,30
+                    </Row>
+                  ),
+                  extra: estimSite,
+                },
+                btts: {
+                  row: (
+                    <Row color="#00ff80">
+                      <b style={{ color: '#00ff80' }}>BTTS Oui</b> — ≥ 70% · cote ≥ 1,60
+                    </Row>
+                  ),
+                  extra: estimSite,
+                },
+                dc_btts: {
+                  row: (
+                    <Row color="#f59e0b">
+                      <b style={{ color: '#f59e0b' }}>DC &amp; BTTS</b> — ≥ 50% · cote ≥ 1,45
+                    </Row>
+                  ),
+                  extra: <>Les % du modèle sont affichés directement dans cet onglet — pas besoin d'ouvrir le near-miss pour les voir.</>,
+                },
+                dc_ou: {
+                  row: (
+                    <Row color="#f59e0b">
+                      <b style={{ color: '#f59e0b' }}>DC &amp; Over 1,5</b> — ≥ 55% · cote ≥ 1,45
+                    </Row>
+                  ),
+                  extra: <>Les % du modèle sont affichés directement dans cet onglet — pas besoin d'ouvrir le near-miss pour les voir.</>,
+                },
+                team_goals: {
+                  row: (
+                    <Row color="#60a5fa">
+                      <b style={{ color: '#60a5fa' }}>Total de buts par équipe</b> — marché en observation, pas d'alerte
+                    </Row>
+                  ),
+                  extra: <>Les données s'accumulent en arrière-plan (near-miss) pour calibrer un seuil fiable avant d'activer de vraies alertes dessus.</>,
+                },
+              };
+              if (isBig5 || fixtureLeague === 'bresil') {
+                const activeAlerts = isBig5 ? BIG5_ALERTS : BRESIL_ALERTS;
+                return (
+                  <>
+                    <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text)', marginBottom: '0.5rem' }}>
+                      Envoi des alertes — Football
+                    </div>
+                    {activeAlerts[tab] ?? activeAlerts.result}
+                  </>
+                );
+              }
+              const current = ALERTS[tab] ?? ALERTS.result;
+              return (
+                <>
+                  <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text)', marginBottom: '0.4rem' }}>
+                    Envoi des alertes — Football
+                  </div>
+                  <div style={{ fontSize: 9, lineHeight: 1.4, color: 'var(--text-dim)', marginBottom: '0.5rem' }}>
+                    Un modèle de Poisson estime les buts attendus de chaque équipe à partir de leurs stats récentes.
+                  </div>
+                  <div style={{ marginBottom: '0.5rem' }}>
+                    {current.row}
+                  </div>
+                  <div style={{ fontSize: 9, lineHeight: 1.5, color: 'var(--text-dim)', borderTop: '1px solid var(--border)', paddingTop: '0.4rem' }}>
+                    {current.extra}
+                    <br /><br />
+                    Cotes comparées : Unibet/Betclic uniquement (Winamax exclu). Générées automatiquement toutes les 20 min — pas besoin d'ouvrir cette page.
+                  </div>
+                </>
+              );
+            })()}
           </div>,
           document.body
         )}
@@ -767,14 +943,19 @@ function FootballOddsBox({ markets, bttsResult, home, away, frozen, onRefresh, r
         </div>
       )}
 
-      {!['dc','dc_btts','dc_ou'].includes(tab) && availBks.map(bk => {
+      {!['dc','dc_btts','dc_ou','team_goals'].includes(tab) && availBks.map(bk => {
         const isPinnacle = bk === 'pinnacle';
         const color = isPinnacle ? undefined : FB_BK_COLORS[bk];
         const h = h2h?.bookmakers?.[bk];
-        const t = isPinnacle
-          ? (pinTotLine ? pinTotsBk[pinTotLine] : undefined)
-          : tots?.bookmakers?.[bk]?.[totalsLine];
-        const tLine = isPinnacle ? (pinTotLine ?? totalsLine) : totalsLine;
+        // Pinnacle suit désormais le toggle 1,5/2,5 comme les autres bookmakers (1er septembre
+        // 2026, demande explicite) — avant ce fix, sa ligne "réelle" (pinTotLine, la seule dispo)
+        // s'affichait toujours telle quelle, y compris quand le toggle sélectionnait l'autre ligne,
+        // donnant l'impression que le clic sur 1,5/2,5 n'avait aucun effet sur Pinnacle. Si Pinnacle
+        // n'a pas la ligne sélectionnée, sa ligne affiche "—" comme Unibet/Betclic dans le même cas
+        // — fairTots/pinTotLine (widget "Vs Pinnacle" plus bas) restent inchangés, sur la vraie
+        // ligne Pinnacle, indépendants de ce toggle d'affichage.
+        const t = tots?.bookmakers?.[bk]?.[totalsLine];
+        const tLine = totalsLine;
         const b = btts?.bookmakers?.[bk];
         return (
           <div key={bk} style={{
@@ -805,7 +986,7 @@ function FootballOddsBox({ markets, bttsResult, home, away, frozen, onRefresh, r
         );
       })}
 
-      {!['dc_btts','dc_ou'].includes(tab) && availBks.length === 0 && (
+      {!['dc_btts','dc_ou','team_goals'].includes(tab) && availBks.length === 0 && (
         <div style={{ textAlign: 'center', padding: '1rem 0', color: 'var(--text-dim)', fontSize: 12 }}>Cotes indisponibles</div>
       )}
 
@@ -849,6 +1030,71 @@ function FootballOddsBox({ markets, bttsResult, home, away, frozen, onRefresh, r
         );
       })()}
 
+      {tab === 'team_goals' && (() => {
+        // Format revu le 7 septembre 2026, demande explicite utilisateur : équipe 1/équipe 2 côte
+        // à côte (pas empilées) ; chaque ligne Over/Under sur SA PROPRE ligne façon "+ de 0,5 buts"
+        // / "- de 0,5 buts" (même présentation que Betclic lui-même), pas 3 colonnes Total/Over/Under.
+        // Unibet ajouté au passage (même jour) — colonnes dynamiques comme dc_btts/dc_ou (availDcBks).
+        const bks = FB_BK_ORDER.filter(b => teamGoals?.bookmakers?.[b]);
+        if (!bks.length) return <div style={{ textAlign: 'center', padding: '1rem 0', color: 'var(--text-dim)', fontSize: 12 }}>Cotes indisponibles</div>;
+        const lines = ['0.5', '1.5', '2.5'];
+        const sides = [
+          { key: 'home', name: home?.name ?? 'Domicile' },
+          { key: 'away', name: away?.name ?? 'Extérieur' },
+        ];
+        // Format 7 septembre 2026, demande explicite utilisateur : une seule ligne par ligne de
+        // buts ("O/U 0,5 buts") avec over/under combinés en une cellule "1,45/2,20" par bookmaker,
+        // plutôt que 2 lignes séparées "+ de"/"- de".
+        const tgGridCols = `1fr${bks.map(() => ' 64px').join('')}`;
+        // Même format d'écriture que les cotes des autres marchés (7 septembre 2026, demande
+        // explicite) — .toFixed(2), pas de virgule française, même taille/graisse/police tabulaire
+        // que OddsCell.jsx (source commune foot+basket) plutôt qu'un formatage maison différent.
+        const fmtOdd = v => (v != null ? v.toFixed(2) : '—');
+        return (
+          <>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 1rem' }}>
+              {sides.map(({ key: side, name }) => (
+                <div key={side}>
+                  <div style={{ display: 'grid', gridTemplateColumns: tgGridCols, gap: '0 0.25rem', paddingBottom: '0.3rem', borderBottom: '1px solid var(--border)', marginBottom: '0.2rem' }}>
+                    <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>{name}</div>
+                    {bks.map(bk => <div key={bk} style={ch}>{FB_BK_LABELS[bk]}</div>)}
+                  </div>
+                  {lines.map(lineStr => {
+                    const line = parseFloat(lineStr);
+                    const modelP = computeTeamGoals(bttsResult?.lambda_home, bttsResult?.lambda_away, line, side, cdmRho);
+                    return (
+                      <div key={lineStr} style={{ display: 'grid', gridTemplateColumns: tgGridCols, gap: '0 0.25rem', alignItems: 'center', padding: '0.28rem 0', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                          <span style={{ fontSize: 11, color: '#fff' }}>O/U {lineStr.replace('.', ',')} buts</span>
+                          {modelP && (
+                            <span style={{ fontSize: 9, fontWeight: 700, color: 'var(--text-dim)', background: 'rgba(255,255,255,0.06)', borderRadius: 4, padding: '1px 5px' }}>
+                              {modelP.over}%/{modelP.under}%
+                            </span>
+                          )}
+                        </div>
+                        {bks.map(bk => {
+                          const cell = teamGoals.bookmakers[bk]?.[side]?.[lineStr];
+                          return (
+                            <div key={bk} style={{ textAlign: 'center' }}>
+                              <span style={{ fontWeight: 500, fontVariantNumeric: 'tabular-nums', fontSize: 11, color: FB_BK_COLORS[bk] }}>
+                                {fmtOdd(cell?.over)}/{fmtOdd(cell?.under)}
+                              </span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    );
+                  })}
+                </div>
+              ))}
+            </div>
+            <div style={{ fontSize: 9, color: 'var(--text-dim)', marginTop: '0.4rem' }}>
+              Marché en observation — pas encore d'alerte réelle, données accumulées pour calibrer un seuil.
+            </div>
+          </>
+        );
+      })()}
+
       {tab === 'buts' && ouResult && (() => {
         const { over, under, lambda_total } = ouResult;
         const pinnOver  = fairTots ? Math.round(fairTots.over  * 100) : null;
@@ -883,6 +1129,7 @@ function FootballOddsBox({ markets, bttsResult, home, away, frozen, onRefresh, r
             <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-dim)', flexShrink: 0 }}>
               Modèle O/U {totalsLine}<span style={{ fontSize: 9, color: 'var(--text-dim)', marginLeft: 4, fontWeight: 400 }}>λ={lambda_total}</span>
               {!bttsResult?.isCdm && !bttsResult?.isSnapshot && <span style={{ fontSize: 8, color: '#fb923c', marginLeft: 5, fontWeight: 400 }} title="Estimation du site (forme récente + face-à-face) — peut différer du % utilisé pour générer une alerte, qui utilise un modèle plus simple.">· estimation site</span>}
+              {bttsResult?.isEarlySample && <span style={{ fontSize: 8, color: '#ef4444', marginLeft: 5, fontWeight: 400 }} title="Une des deux équipes a moins de 3 matchs joués cette saison — échantillon jugé trop faible, aucune alerte réelle ne sera générée sur ce marché tant que ça reste le cas, même si le % ci-contre franchit le seuil habituel.">· échantillon faible</span>}
             </span>
             <div style={{ display: 'flex', alignItems: 'center', gap: '1.1rem', flexWrap: 'nowrap', flexShrink: 0 }}>
               <span style={{ display: 'flex', alignItems: 'center', gap: 5, position: 'relative' }}>
@@ -922,6 +1169,7 @@ function FootballOddsBox({ markets, bttsResult, home, away, frozen, onRefresh, r
             <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-dim)', flexShrink: 0 }}>
               Modèle 1X2
               {!bttsResult?.isCdm && !bttsResult?.isSnapshot && <span style={{ fontSize: 8, color: '#fb923c', marginLeft: 5, fontWeight: 400 }} title="Estimation du site (forme récente + face-à-face) — peut différer du % utilisé pour générer une alerte, qui utilise un modèle plus simple.">· estimation site</span>}
+              {bttsResult?.isEarlySample && <span style={{ fontSize: 8, color: '#ef4444', marginLeft: 5, fontWeight: 400 }} title="Une des deux équipes a moins de 3 matchs joués cette saison — échantillon jugé trop faible, aucune alerte réelle ne sera générée sur ce marché tant que ça reste le cas, même si le % ci-contre franchit le seuil habituel.">· échantillon faible</span>}
             </span>
             <div style={{ display: 'flex', alignItems: 'center', gap: '1.1rem', flexWrap: 'nowrap', flexShrink: 0 }}>
               {items.map(it => {
@@ -985,6 +1233,7 @@ function FootballOddsBox({ markets, bttsResult, home, away, frozen, onRefresh, r
             <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-dim)', flexShrink: 0 }}>
               Modèle BTTS{isStatic && !bttsResult?.isCdm ? <span style={{ fontSize: 9, color: 'var(--text-dim)', marginLeft: 4, fontWeight: 400 }}>stats saison</span> : ''}
               {!bttsResult?.isCdm && !bttsResult?.isSnapshot && <span style={{ fontSize: 8, color: '#fb923c', marginLeft: 5, fontWeight: 400 }} title="Estimation du site (forme récente + face-à-face) — peut différer du % utilisé pour générer une alerte, qui utilise un modèle plus simple.">· estimation site</span>}
+              {bttsResult?.isEarlySample && <span style={{ fontSize: 8, color: '#ef4444', marginLeft: 5, fontWeight: 400 }} title="Une des deux équipes a moins de 3 matchs joués cette saison — échantillon jugé trop faible, aucune alerte réelle ne sera générée sur ce marché tant que ça reste le cas, même si le % ci-contre franchit le seuil habituel.">· échantillon faible</span>}
             </span>
             <div style={{ display: 'flex', alignItems: 'center', gap: '1.1rem', flexWrap: 'nowrap', flexShrink: 0 }}>
               <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
@@ -1439,6 +1688,40 @@ export default function MatchDetailPage() {
   const navigate = useNavigate();
   const { fixtures: footballFixtures, loading: fixturesLoading } = useFootballFixtures();
   const fixture = footballFixtures.find(f => f.id === id) || getFixtureById(id);
+  // Repli ancien-id (3 septembre 2026) — une alerte acceptée AVANT la migration football-data.org →
+  // api-football (2 septembre) porte encore un id football-data.org (ex: fd_564682), introuvable
+  // dans la liste courante (désormais en ids api-football, ex: fd_1570392). Cas réel : Real Sociedad-
+  // Celta et Flamengo-Mirassol, "Match introuvable" en cliquant depuis Running alors que le match est
+  // bien réel/en cours. Résolution en 2 temps : /api/fd/match/:rawId (football-data.org direct,
+  // renvoie la ligue) puis /api/fd/resolve-legacy-id (cherche le même match dans le bundle
+  // api-football déjà en cache) — puis redirection vers le nouvel id, où la fiche se charge
+  // normalement. Ne concerne que fd_/fdbr_ (5 championnats + Brésil) — CDM et coupes d'Europe
+  // n'ont jamais changé d'id, jamais concernés.
+  const [legacyResolving, setLegacyResolving] = useState(false);
+  const [legacyFailed, setLegacyFailed] = useState(false);
+  useEffect(() => {
+    if (fixture || fixturesLoading || !id) return;
+    const m = /^(fd|fdbr)_(\d+)$/.exec(id);
+    if (!m) return;
+    const [, prefix, rawId] = m;
+    const FD_COMP_TO_LEAGUE = { FL1: 'ligue1', PL: 'pl', PD: 'laliga', BL1: 'bundes', SA: 'seriea', BSA: 'bresil' };
+    let cancelled = false;
+    setLegacyResolving(true);
+    setLegacyFailed(false);
+    (async () => {
+      try {
+        const raw = await fetch(`/api/fd/match/${rawId}`).then(r => r.ok ? r.json() : null);
+        const leagueKey = raw?.competitionCode ? FD_COMP_TO_LEAGUE[raw.competitionCode] : null;
+        if (!leagueKey) throw new Error('ligue non reconnue');
+        const resolved = await fetch(`/api/fd/resolve-legacy-id?league=${leagueKey}&oldId=${rawId}`).then(r => r.ok ? r.json() : null);
+        if (!resolved?.newId) throw new Error('correspondance introuvable');
+        if (!cancelled) navigate(`/football/${prefix}_${resolved.newId}`, { replace: true });
+      } catch {
+        if (!cancelled) { setLegacyResolving(false); setLegacyFailed(true); }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [id, fixture, fixturesLoading, navigate]);
   const [dropOpen, setDropOpen] = useState(false);
   const dropRef = useRef(null);
   const [showLineup, setShowLineup] = useState(true);
@@ -1611,7 +1894,16 @@ export default function MatchDetailPage() {
         } catch { setter([]); }
         return;
       }
-      const info = ESPN_FOOTBALL[name];
+      // Recherche floue (2 septembre 2026, migration api-football) — ESPN_FOOTBALL est indexé sur
+      // les noms exacts football-data.org ("Arsenal FC", "1. FC Union Berlin"...), qui ne
+      // correspondent plus à `name` maintenant que les fixtures viennent d'api-football ("Arsenal",
+      // "Union Berlin"...). normTeam/fuzzy déjà utilisés par findInTable plus haut dans ce fichier —
+      // évite de reconstruire à la main les ~120 lignes du dictionnaire pour chaque championnat.
+      const nName = normTeam(name);
+      const info = ESPN_FOOTBALL[name] || Object.entries(ESPN_FOOTBALL).find(([key]) => {
+        const nKey = normTeam(key);
+        return nKey === nName || nKey.includes(nName) || nName.includes(nKey);
+      })?.[1];
       if (!info) { setter([]); return; }
       try {
         const d = await cachedFetch(`/api/football/squad/${info.league}/${info.id}`, 6 * 3600_000);
@@ -1652,70 +1944,23 @@ export default function MatchDetailPage() {
           prob: Math.round(footballSnapshot.bttsProb * 100),
           lambda_home: footballSnapshot.lambdaHome, lambda_away: footballSnapshot.lambdaAway,
           isSnapshot: true,
+          isEarlySample: !!footballSnapshot.isEarlySample,
         }
       : (homeMatches.length && awayMatches.length && liveHomeStats?.id && liveAwayStats?.id)
         ? computeBTTS(homeMatches, awayMatches, liveHomeStats.id, liveAwayStats.id)
         : computeStaticBTTS(fixture);
 
-  // Sauvegarde alerte BTTS si confiance ≥ 70% — nécessite au moins une cote Unibet/Betclic
-  // exploitable (sinon l'alerte n'est pas actionnable : pas de bouton pour l'accepter, et elle
-  // finit purgée comme orpheline par syncFootballAlerts dès qu'un autre match génère une alerte
-  // backend, ce qui la fait disparaître sans explication côté UI).
-  useEffect(() => {
-    // Brasileirão (17 juillet 2026) — implémentation en cours de revue, même interrupteur que
-    // BRESIL_ALERTS_ENABLED côté backend (server.js) : ce générateur client tourne pour toutes les
-    // ligues indépendamment du backend, donc il a besoin de son propre gate ici aussi.
-    if (fixture?.league === 'bresil') return;
-    if (!bttsResult || !fixture || bttsResult.prob < 70) return;
-    const unibetOdds = matchOdds?.btts?.bookmakers?.unibet?.yes || null;
-    const betclicOdds = matchOdds?.btts?.bookmakers?.betclic?.yes || null;
-    if (!unibetOdds && !betclicOdds) return;
-    const alertId = `${fixture.id}_btts_yes`;
-    try {
-      const existing = JSON.parse(localStorage.getItem('fb_btts_alerts') || '[]');
-      const old = existing.find(a => a.id === alertId);
-      if (old && ['accepted', 'rejected'].includes(old.status)) return;
-      const pinn = matchOdds?.btts?.bookmakers?.pinnacle;
-      let pinnacleOdds = null, edge = null;
-      if (pinn?.yes && pinn?.no) {
-        pinnacleOdds = pinn.yes;
-        const vig = 1 / pinn.yes + 1 / pinn.no;
-        const marketProb = Math.round((1 / pinn.yes / vig) * 100);
-        edge = bttsResult.prob - marketProb;
-      }
-      const alert = {
-        id: alertId,
-        type: 'football_btts',
-        fixtureId: fixture.id,
-        league: fixture.league,
-        fixture: `${home.name} vs ${away.name}`,
-        homeTeam: home.name,
-        awayTeam: away.name,
-        fixtureDate: fixture.date,
-        round: fixture.round || '',
-        direction: 'yes',
-        probability: bttsResult.prob,
-        pinnacleOdds,
-        unibetOdds,
-        betclicOdds,
-        edge,
-        savedAt: Date.now(),
-        status: old?.status || 'pending',
-      };
-      const filtered = existing.filter(a => a.id !== alertId);
-      // cloudSet (pas localStorage.setItem brut) : sans passer par le setItem protégé de
-      // cloudStorage.js, cette alerte n'était jamais envoyée à MongoDB ni couverte par sa fenêtre
-      // de protection 90s — le prochain loadFromCloud() (déclenché par un SSE /api/sync-events,
-      // souvent en quelques secondes) l'écrasait aussitôt avec l'ancienne version sans l'alerte,
-      // la faisant disparaître presque immédiatement après sa création (constaté 7 juillet 2026).
-      cloudSet('fb_btts_alerts', JSON.stringify([...filtered, alert]));
-      window.dispatchEvent(new Event('fb_btts_alerts_updated'));
-    } catch {}
-  }, [bttsResult?.prob, matchOdds]);
+  // Générateur d'alerte BTTS côté navigateur retiré (1er septembre 2026, demande explicite) —
+  // créait de vraies alertes (cloudSet direct vers Mongo) sans passer par aucun garde-fou backend
+  // (fenêtre 48h, seuil 3-matchs, purge des obsolètes, seuils calibrés par ligue). Cas réel qui l'a
+  // révélé : Ipswich-Liverpool/Lyon-Auxerre, alertes à 82%/85% générées alors que les deux matchs
+  // étaient à plus de 48h du coup d'envoi (donc sans vrai snapshot backend — seule l'estimation
+  // "site" non calibrée était disponible ici). Le backend gère déjà le BTTS proprement pour les 5
+  // grands championnats + Brésil + CDM ; ce chemin, antérieur à ce moteur, n'était plus nécessaire.
 
   if (!fixture) {
-    if (fixturesLoading) return <div className="page"><div className="empty-state">Chargement…</div></div>;
-    return <div className="page"><div className="empty-state">Match introuvable.</div></div>;
+    if (fixturesLoading || legacyResolving) return <div className="page"><div className="empty-state">Chargement…</div></div>;
+    return <div className="page"><div className="empty-state">{legacyFailed ? "Match introuvable (ancien id, correspondance non trouvée)." : "Match introuvable."}</div></div>;
   }
 
   return (
@@ -1834,7 +2079,7 @@ export default function MatchDetailPage() {
 
       {showOddsDropdown && matchOdds && Object.keys(matchOdds).length > 0 && (
         <section className="detail-card compact-card" style={{ marginBottom: '0.5rem' }}>
-          <FootballOddsBox markets={matchOdds} bttsResult={bttsResult} home={home} away={away} frozen={matchOddsFrozen} onRefresh={handleRefreshOdds} refreshing={refreshingOdds} lastRefreshed={lastRefreshedOdds} />
+          <FootballOddsBox markets={matchOdds} bttsResult={bttsResult} home={home} away={away} frozen={matchOddsFrozen} onRefresh={handleRefreshOdds} refreshing={refreshingOdds} lastRefreshed={lastRefreshedOdds} fixtureLeague={fixture?.league} />
         </section>
       )}
 

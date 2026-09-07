@@ -13,9 +13,11 @@ const EU_BASKET_META = {
   lnb:   { flag: '🇫🇷', logo: 'https://media.api-sports.io/basketball/leagues/2.png',  name: 'Betclic Élite', country: 'France' },
   bbl:   { flag: '🇩🇪', logo: 'https://media.api-sports.io/basketball/leagues/40.png', name: 'BBL',           country: 'Allemagne' },
   legaa: { flag: '🇮🇹', logo: 'https://media.api-sports.io/basketball/leagues/52.png', name: 'Lega A',        country: 'Italie' },
+  nbl:   { flag: '🇦🇺', logo: 'https://media.api-sports.io/basketball/leagues/1.png',  name: 'NBL',           country: 'Australie' },
 };
 
-// Mêmes pays que la Carte du Monde (Sports).
+// Mêmes pays que la Carte du Monde (Sports). Australie ajoutée le 1er septembre 2026 (NBL) — nouveau
+// pays, contrairement à BBL/Lega A/LNB qui se greffent sous un pays déjà couvert par le foot.
 const COVERED = {
   '840': { name: 'États-Unis', flag: '🇺🇸' },
   '250': { name: 'France',     flag: '🇫🇷' },
@@ -24,20 +26,23 @@ const COVERED = {
   '380': { name: 'Italie',     flag: '🇮🇹' },
   '826': { name: 'Angleterre', flag: '🏴󠁧󠁢󠁥󠁮󠁧󠁿' },
   '076': { name: 'Brésil',     flag: '🇧🇷' },
+  '036': { name: 'Australie',  flag: '🇦🇺' },
 };
 
 // Même ordre/mise en page que la légende de la Carte du Monde (Sports) : 2 lignes — États-Unis/Brésil,
 // puis les 5 pays européens. Pas d'entrée "Monde" ici (pas de hub global sur cette page). Les objets
 // pays sont réutilisés tels quels (pas de copie) pour que la comparaison `selected === c` reste valide.
+// Australie (NBL) ajoutée en 3e ligne le 1er septembre 2026.
 const LEGEND_ROWS = [
   [['840', COVERED['840']], ['076', COVERED['076']]],
   [['250', COVERED['250']], ['724', COVERED['724']], ['826', COVERED['826']], ['276', COVERED['276']], ['380', COVERED['380']]],
+  [['036', COVERED['036']]],
 ];
 
 const ZOOM_ORIGIN = {
   '840': '18% 33%', '250': '50% 28%', '724': '47% 32%',
   '276': '52% 26%', '380': '53% 31%', '826': '48% 23%',
-  '076': '34% 72%',
+  '076': '34% 72%', '036': '75% 75%',
 };
 
 export default function DatabaseMapPage() {

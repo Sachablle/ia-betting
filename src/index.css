@@ -660,6 +660,15 @@ body {
 .icon-refresh-btn:disabled { opacity: 0.4; cursor: default; }
 .icon-refresh-btn.spinning { animation: iconRefreshSpin 0.7s linear infinite; }
 
+/* Variantes par sport (3 septembre 2026) — même bouton partagé ci-dessus, teinté vert foot / orange
+   basket au lieu du neutre par défaut, mêmes couleurs que le reste de l'app (compte à rebours
+   Dashboard, cartes Outrights). */
+.icon-refresh-btn--football { border-color: rgba(74,222,128,0.35); color: #4ade80; }
+.icon-refresh-btn--football:hover:not(:disabled) { border-color: #4ade80; background: rgba(74,222,128,0.12); color: #4ade80; }
+.icon-refresh-btn--basket { border-color: rgba(251,146,60,0.35); color: #fb923c; }
+.icon-refresh-btn--basket:hover:not(:disabled) { border-color: #fb923c; background: rgba(251,146,60,0.12); color: #fb923c; }
+.icon-refresh-btn--sm { width: 15px; height: 15px; font-size: 9px; border-radius: 4px; }
+
 /* ══ LINEUP BUILDER ════════════════════════════════════════════════════════ */
 
 .info-chip--btn {

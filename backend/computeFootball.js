@@ -133,6 +133,27 @@ function compute1X2Probs(lambdaHome, lambdaAway, kMax = 10, rho = DIXON_COLES_RH
   return { pHome, pDraw, pAway };
 }
 
+// P(une équipe seule marque plus/moins de "line" buts) — 7 septembre 2026, marché "Total de buts
+// par équipe" (observation, pas encore d'alerte réelle). Dérivé de la MÊME grille Dixon-Coles que
+// BTTS/O-U/1X2 (cohérence interne : pas de 2e modèle indépendant) en sommant la marginale d'une
+// équipe — P(home=i) = somme sur j de grid[i][j], P(away=j) = somme sur i de grid[i][j] — plutôt
+// qu'un Poisson brut sur le λ de l'équipe seule, qui ignorerait la correction Dixon-Coles.
+function computeTeamGoalsProb(lambdaHome, lambdaAway, line, side, rho = DIXON_COLES_RHO) {
+  const kMax = 10;
+  const grid = computeScoreGrid(lambdaHome, lambdaAway, rho, kMax);
+  const threshold = Math.floor(line); // 0.5 → 0, 1.5 → 1, 2.5 → 2
+  const marginal = new Array(kMax + 1).fill(0);
+  for (let i = 0; i <= kMax; i++) {
+    for (let j = 0; j <= kMax; j++) {
+      const k = side === 'home' ? i : j;
+      marginal[k] += grid[i][j];
+    }
+  }
+  let pUnder = 0;
+  for (let k = 0; k <= threshold; k++) pUnder += marginal[k];
+  return { pOver: 1 - pUnder, pUnder };
+}
+
 // P(DC & BTTS "Oui") pour les 3 combinaisons Double Chance — même grille Dixon-Coles
 // Retourne { p1x, px2, p12 } : proba que la DC ET les deux équipes marquent
 function computeDCBTTSProbs(lambdaHome, lambdaAway, rho = DIXON_COLES_RHO) {
@@ -168,4 +189,4 @@ function computeDCOverProbs(lambdaHome, lambdaAway, line, rho = DIXON_COLES_RHO)
   return { '1x': p1x, 'x2': px2, '12': p12 };
 }
 
-export { poissonPmf, computeLambdas, computeBTTSProb, computeOUProb, compute1X2Probs, computeScoreGrid, dixonColesTau, DIXON_COLES_RHO, computeDCBTTSProbs, computeDCOverProbs, shrinkFactor, computeTeamAttackDefenseFactor };
+export { poissonPmf, computeLambdas, computeBTTSProb, computeOUProb, compute1X2Probs, computeScoreGrid, dixonColesTau, DIXON_COLES_RHO, computeDCBTTSProbs, computeDCOverProbs, computeTeamGoalsProb, shrinkFactor, computeTeamAttackDefenseFactor };
