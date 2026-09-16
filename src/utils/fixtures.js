@@ -74,5 +74,4 @@ export const FIXTURES = [
 ];
 
 export const getFixtureById    = id       => FIXTURES.find(f => f.id === id) || null;
-export const getFixturesByLeague = leagueId => FIXTURES.filter(f => f.league === leagueId);
 export const getLeagueById     = id       => LEAGUES.find(l => l.id === id) || null;

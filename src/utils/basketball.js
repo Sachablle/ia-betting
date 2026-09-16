@@ -431,6 +431,5 @@ export const BBALL_FIXTURES = [
   },
 ];
 
-export const getBballFixtureById     = id       => BBALL_FIXTURES.find(f => f.id === id) || null;
 export const getBballFixturesByLeague = leagueId => BBALL_FIXTURES.filter(f => f.league === leagueId);
 export const getBballLeagueById      = id       => BBALL_LEAGUES.find(l => l.id === id) || null;

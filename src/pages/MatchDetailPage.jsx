@@ -392,40 +392,6 @@ function computeShotsOU(lambda, line) {
   return { over: Math.round((1 - pUnder) * 100), under: Math.round(pUnder * 100) };
 }
 
-// P(DC & BTTS) et P(DC & Over line) — même grille Dixon-Coles que les autres calculs CDM
-function computeDCBTTS(lambda_home, lambda_away, rho = 0) {
-  if (lambda_home == null || lambda_away == null) return null;
-  const grid = computeScoreGrid(lambda_home, lambda_away, rho);
-  let p1x = 0, px2 = 0, p12 = 0;
-  for (let i = 1; i < grid.length; i++) {
-    for (let j = 1; j < grid.length; j++) {
-      const p = grid[i][j];
-      if (i >= j) p1x += p;
-      if (i <= j) px2 += p;
-      if (i !== j) p12 += p;
-    }
-  }
-  return { p1x: +(p1x * 100).toFixed(1), px2: +(px2 * 100).toFixed(1), p12: +(p12 * 100).toFixed(1) };
-}
-
-function computeDCOver(lambda_home, lambda_away, line, rho = 0) {
-  if (lambda_home == null || lambda_away == null) return null;
-  const kMax = 10;
-  const grid = computeScoreGrid(lambda_home, lambda_away, rho, kMax);
-  const threshold = Math.floor(line);
-  let p1x = 0, px2 = 0, p12 = 0;
-  for (let i = 0; i <= kMax; i++) {
-    for (let j = 0; j <= kMax; j++) {
-      if (i + j <= threshold) continue;
-      const p = grid[i][j];
-      if (i >= j) p1x += p;
-      if (i <= j) px2 += p;
-      if (i !== j) p12 += p;
-    }
-  }
-  return { p1x: +(p1x * 100).toFixed(1), px2: +(px2 * 100).toFixed(1), p12: +(p12 * 100).toFixed(1) };
-}
-
 // P(victoire dom. / nul / victoire ext.) — grille Poisson (Dixon-Coles si rho>0, même base que compute1X2Probs backend)
 function compute1X2(lambda_home, lambda_away, kMax = 10, rho = 0) {
   if (lambda_home == null || lambda_away == null) return null;
@@ -622,8 +588,6 @@ function FootballOddsBox({ markets, bttsResult, home, away, frozen, onRefresh, r
   const h2h    = markets?.h2h;
   const tots   = markets?.totals;
   const btts   = markets?.btts;
-  const dcbtts = markets?.dcbtts;
-  const dcou   = markets?.dcou;
   // Total de buts par équipe (7 septembre 2026) — marché "observation", pas encore d'alerte réelle
   // (cf. server.js generateBackgroundAlerts, section football). Affiché ici à côté de "Buts" sur
   // demande explicite utilisateur, uniquement pour consultation (cotes réelles + estimation modèle).
@@ -632,9 +596,6 @@ function FootballOddsBox({ markets, bttsResult, home, away, frozen, onRefresh, r
   // observation, aucune alerte réelle émise dessus pour l'instant côté serveur, cf. server.js).
   const shotsOdds = markets?.shots;
 
-  const hasDcBtts = !!(dcbtts?.bookmakers);
-  const hasDcOu   = !!(dcou?.bookmakers);
-  const hasDC = hasDcBtts || hasDcOu;
   const hasTeamGoals = !!(teamGoals?.bookmakers);
   // Tirs/Tirs cadrés — présence de vraies cotes Betclic (15 septembre 2026, demande explicite
   // utilisateur) : tant qu'aucune cote réelle n'existe, la boxe reste sur "Cotes indisponibles"
@@ -646,10 +607,6 @@ function FootballOddsBox({ markets, bttsResult, home, away, frozen, onRefresh, r
   const availBks = FB_BK_ORDER.filter(bk =>
     h2h?.bookmakers?.[bk] || tots?.bookmakers?.[bk] || btts?.bookmakers?.[bk]
   );
-  const availDcBks = bk => FB_BK_ORDER.filter(b =>
-    (bk === 'dc_btts' ? dcbtts?.bookmakers?.[b] : dcou?.bookmakers?.[b])
-  ).filter(b => b !== 'pinnacle');
-
   // Toggle limité aux 2 lignes standards (1er septembre 2026, demande explicite) — avant ce fix,
   // toute ligne exotique que Pinnacle scrape parfois (3, 2.25, 3.25...) ajoutait son propre bouton
   // au toggle, en plus de 1,5/2,5. Combiné au fix précédent (Pinnacle "—" si sa ligne ne correspond
@@ -761,8 +718,6 @@ function FootballOddsBox({ markets, bttsResult, home, away, frozen, onRefresh, r
   const cdmRho = (bttsResult?.isCdm || bttsResult?.isSnapshot) ? DIXON_COLES_RHO : 0;
   const ouResult = bttsResult ? computeOU(bttsResult.lambda_home, bttsResult.lambda_away, parseFloat(totalsLine), cdmRho) : null;
   const result1X2 = bttsResult ? compute1X2(bttsResult.lambda_home, bttsResult.lambda_away, 10, cdmRho) : null;
-  const dcBttsResult = bttsResult ? computeDCBTTS(bttsResult.lambda_home, bttsResult.lambda_away, cdmRho) : null;
-  const dcOuResult   = bttsResult ? computeDCOver(bttsResult.lambda_home, bttsResult.lambda_away, 1.5, cdmRho) : null;
 
   // Fair 1X2 marché — parcourt availBks dans l'ordre (Pinnacle en tête depuis le 25 juin 2026,
   // CDM uniquement) et prend le 1er bookmaker avec les 3 cotes h2h complètes ; repli naturel sur
@@ -906,8 +861,6 @@ function FootballOddsBox({ markets, bttsResult, home, away, frozen, onRefresh, r
                     <Infos items={[estimSiteShort]} />
                   </>
                 ),
-                dc_btts: <AlertLine>Alerte DC &amp; BTTS si probabilité ≥ 50% · Cote ≥ 1,45</AlertLine>,
-                dc_ou: <AlertLine>Alerte DC &amp; Over 1,5 buts si probabilité ≥ 45% · Cote ≥ 1,50</AlertLine>,
                 team_goals: <div style={{ fontSize: 9.5, lineHeight: 1.5, color: 'var(--text-dim)' }}>📊 Marché en observation — les données s'accumulent (near-miss) mais aucune alerte réelle n'est encore générée dessus.</div>,
                 shots: <div style={{ fontSize: 9.5, lineHeight: 1.5, color: 'var(--text-dim)' }}>📊 Marché en observation — cotes Betclic affichées à titre indicatif, aucune alerte réelle n'est encore générée dessus.</div>,
                 sot: <div style={{ fontSize: 9.5, lineHeight: 1.5, color: 'var(--text-dim)' }}>📊 Marché en observation — cotes Betclic affichées à titre indicatif, aucune alerte réelle n'est encore générée dessus.</div>,
@@ -940,13 +893,6 @@ function FootballOddsBox({ markets, bttsResult, home, away, frozen, onRefresh, r
                     <Infos items={[estimSiteShort]} />
                   </>
                 ),
-                dc_btts: (
-                  <>
-                    <AlertLine>Alerte DC &amp; BTTS "1X" si probabilité ≥ 20% · Cote ≥ 1,40</AlertLine>
-                    <AlertLine>Alerte DC &amp; BTTS "X2" si probabilité ≥ 50% · Cote ≥ 1,45</AlertLine>
-                  </>
-                ),
-                dc_ou: <AlertLine>Alerte DC &amp; Over 1,5 buts si probabilité ≥ 55% · Cote ≥ 1,45</AlertLine>,
                 team_goals: <div style={{ fontSize: 9.5, lineHeight: 1.5, color: 'var(--text-dim)' }}>📊 Marché en observation — les données s'accumulent (near-miss) mais aucune alerte réelle n'est encore générée dessus.</div>,
                 shots: <div style={{ fontSize: 9.5, lineHeight: 1.5, color: 'var(--text-dim)' }}>📊 Marché en observation — cotes Betclic affichées à titre indicatif, aucune alerte réelle n'est encore générée dessus.</div>,
                 sot: <div style={{ fontSize: 9.5, lineHeight: 1.5, color: 'var(--text-dim)' }}>📊 Marché en observation — cotes Betclic affichées à titre indicatif, aucune alerte réelle n'est encore générée dessus.</div>,
@@ -980,8 +926,6 @@ function FootballOddsBox({ markets, bttsResult, home, away, frozen, onRefresh, r
                     <Infos items={[estimSiteShort]} />
                   </>
                 ),
-                dc_btts: <AlertLine>Alerte DC &amp; BTTS si probabilité ≥ 50% · Cote ≥ 1,45</AlertLine>,
-                dc_ou: <AlertLine>Alerte DC &amp; Over 1,5 buts si probabilité ≥ 55% · Cote ≥ 1,45</AlertLine>,
                 team_goals: <div style={{ fontSize: 9.5, lineHeight: 1.5, color: 'var(--text-dim)' }}>📊 Marché en observation — les données s'accumulent (near-miss) mais aucune alerte réelle n'est encore générée dessus.</div>,
                 shots: <div style={{ fontSize: 9.5, lineHeight: 1.5, color: 'var(--text-dim)' }}>📊 Marché en observation — cotes Betclic affichées à titre indicatif, aucune alerte réelle n'est encore générée dessus.</div>,
                 sot: <div style={{ fontSize: 9.5, lineHeight: 1.5, color: 'var(--text-dim)' }}>📊 Marché en observation — cotes Betclic affichées à titre indicatif, aucune alerte réelle n'est encore générée dessus.</div>,
@@ -1017,7 +961,7 @@ function FootballOddsBox({ markets, bttsResult, home, away, frozen, onRefresh, r
         </div>
       )}
 
-      {!['dc','dc_btts','dc_ou','team_goals','shots','sot'].includes(tab) && availBks.map(bk => {
+      {!['team_goals','shots','sot'].includes(tab) && availBks.map(bk => {
         const isPinnacle = bk === 'pinnacle';
         const color = isPinnacle ? undefined : FB_BK_COLORS[bk];
         const h = h2h?.bookmakers?.[bk];
@@ -1060,49 +1004,9 @@ function FootballOddsBox({ markets, bttsResult, home, away, frozen, onRefresh, r
         );
       })}
 
-      {!['dc_btts','dc_ou','team_goals','shots','sot'].includes(tab) && availBks.length === 0 && (
+      {!['team_goals','shots','sot'].includes(tab) && availBks.length === 0 && (
         <div style={{ textAlign: 'center', padding: '1rem 0', color: 'var(--text-dim)', fontSize: 12 }}>Cotes indisponibles</div>
       )}
-
-      {(tab === 'dc_btts' || tab === 'dc_ou') && (() => {
-        const bks = availDcBks(tab);
-        const mkt = tab === 'dc_btts' ? dcbtts : dcou;
-        const dcGridCols = `1fr${bks.map(() => ' 48px').join('')}`;
-        const DcRow = ({ label, vals }) => (
-          <div style={{ display: 'grid', gridTemplateColumns: dcGridCols, gap: '0 0.25rem', alignItems: 'center', padding: '0.28rem 0', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
-            <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>{label}</span>
-            {bks.map(bk => (
-              <Cell key={bk} val={vals?.[bk]} edgeVal={null} isPinnacle={false} color={FB_BK_COLORS[bk]} />
-            ))}
-          </div>
-        );
-        if (!mkt?.bookmakers || bks.length === 0) {
-          return <div style={{ textAlign: 'center', padding: '1rem 0', color: 'var(--text-dim)', fontSize: 12 }}>Marchés DC indisponibles</div>;
-        }
-        const suffix = tab === 'dc_btts' ? 'BTTS' : 'Over 1,5';
-        return (
-          <>
-            <div style={{ display: 'grid', gridTemplateColumns: dcGridCols, gap: '0 0.25rem', paddingBottom: '0.3rem', borderBottom: '1px solid var(--border)', marginBottom: '0.2rem' }}>
-              <div />
-              {bks.map(bk => <div key={bk} style={ch}>{FB_BK_LABELS[bk]}</div>)}
-            </div>
-            {[
-              { key: '1x', label: `${home?.name ?? '1X'} / Nul & ${suffix}`, prob: tab === 'dc_btts' ? dcBttsResult?.p1x : dcOuResult?.p1x },
-              { key: 'x2', label: `${away?.name ?? 'X2'} / Nul & ${suffix}`, prob: tab === 'dc_btts' ? dcBttsResult?.px2 : dcOuResult?.px2 },
-            ].map(({ key, label, prob }) => (
-              <div key={key} style={{ display: 'grid', gridTemplateColumns: `1fr${bks.map(() => ' 48px').join('')}`, gap: '0 0.25rem', alignItems: 'center', padding: '0.28rem 0', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                  <span style={{ fontSize: 9, color: '#fff' }}>{label}</span>
-                  {prob != null && <span style={{ fontSize: 10, fontWeight: 700, color: prob >= 65 ? '#4ade80' : prob >= 55 ? '#f59e0b' : 'var(--text-dim)', background: 'rgba(255,255,255,0.06)', borderRadius: 4, padding: '1px 5px' }}>{prob}%</span>}
-                </div>
-                {bks.map(bk => (
-                  <Cell key={bk} val={mkt.bookmakers[bk]?.[key]} edgeVal={null} isPinnacle={false} color={FB_BK_COLORS[bk]} />
-                ))}
-              </div>
-            ))}
-          </>
-        );
-      })()}
 
       {tab === 'team_goals' && (() => {
         // Format revu le 14 septembre 2026, demande explicite utilisateur : même présentation que

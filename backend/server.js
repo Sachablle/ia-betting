@@ -98,6 +98,15 @@ const EURO_STANDINGS_CACHE_FILE = join(CACHE_DIR, 'euro_standings.json');
 // avant que la vraie cause (cache 100% mémoire) ne soit traitée plutôt que rafistolée à la main.
 const EURO_SCOREBOARD_CACHE_FILE = join(CACHE_DIR, 'euro_scoreboard.json');
 const EURO_GAME_CACHE_FILE       = join(CACHE_DIR, 'euro_game.json');
+// `euro_teamid_*` (16 septembre 2026) — résolution nom→id d'équipe utilisée par
+// /api/euro/:league/roster/byname (seule route consommée par EffectifPage) : sans cache persisté,
+// un redémarrage backend pendant une pause API-Basketball manuelle rend TOUS les effectifs EU
+// inaccessibles ("basketball-api paused"), même pour une équipe dont le roster (par id numérique)
+// est lui-même déjà en cache disque — cas réel signalé par l'utilisateur (Barcelona ACB, id déjà
+// dans euro_players.json, roster/byname échoue quand même faute de pouvoir résoudre son nom vers cet
+// id). Même classe de bug déjà corrigée pour defbypos/players/gamelog/standings/scoreboard/game
+// ci-dessous, manquée pour ce point précis lors de ces fixes.
+const EURO_TEAMID_CACHE_FILE     = join(CACHE_DIR, 'euro_teamid.json');
 const EU_CLUB_MATCHES_CACHE_FILE = join(CACHE_DIR, 'eu_club_matches.json');
 const EU_CLUB_FIXTURES_CACHE_FILE = join(CACHE_DIR, 'eu_club_fixtures.json');
 
@@ -597,135 +606,15 @@ function footballApiSeasonForDate(leagueKey, dateStr) {
   return d.getUTCMonth() + 1 >= 7 ? d.getUTCFullYear() : d.getUTCFullYear() - 1;
 }
 
-// ── Statut/score live via api-football (1er septembre 2026, demande explicite utilisateur) ─────
-// football-data.org démontré peu fiable sur le statut/score EN DIRECT ce soir (statut corrompu qui
-// retombe sur "programmé" en plein match, score qui redevient null) — api-football (déjà utilisé
-// dans le projet, même clé Pro que blessures/xG/coupes d'Europe/buteurs) s'est montré net et à jour
-// sur une comparaison directe en conditions réelles (Remo-Coritiba : FD disait "programmé" pendant
-// qu'api-football donnait "2e mi-temps, 72e, 2-1" correctement, score même plus à jour que FD).
-// Couche strictement ADDITIVE, jamais bloquante : le calendrier/classement/buteurs restent
-// entièrement sur football-data.org (pas touchés) — seuls status/score du jour même sont
-// éventuellement corrigés si api-football a une réponse exploitable pour ce match précis, sinon le
-// comportement football-data.org existant s'applique tel quel. Dégradation totale et silencieuse si
-// la clé api-football manque, si le quota est en pause, ou si le fetch échoue — aucune erreur ne
-// remonte à l'appelant, aucune régression possible sur ce qui marche déjà (_getBresilMatches/les 5
-// championnats gardent leur propre logique de statut FD intacte, cette couche vient juste
-// l'écraser en tout dernier si elle a mieux).
-function _normLiveTeamName(s) {
-  return (s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]/g, '');
-}
-const LIVE_STATUS_LEAGUES = { ligue1: 61, pl: 39, laliga: 140, bundes: 78, seriea: 135, bresil: 71 };
-const LIVE_API_STATUS_MAP = {
-  NS: 'STATUS_SCHEDULED', TBD: 'STATUS_SCHEDULED',
-  '1H': 'STATUS_IN_PROGRESS', '2H': 'STATUS_IN_PROGRESS', HT: 'STATUS_IN_PROGRESS', ET: 'STATUS_IN_PROGRESS', P: 'STATUS_IN_PROGRESS', BT: 'STATUS_IN_PROGRESS', LIVE: 'STATUS_IN_PROGRESS',
-  FT: 'STATUS_FINAL', AET: 'STATUS_FINAL', PEN: 'STATUS_FINAL',
-};
-// TTL court (30s) — assez pour ne pas re-solliciter l'API à chaque fixture d'un même cycle, assez
-// court pour qu'un clic sur le bouton "recharger" (Carte du Monde, ajouté le 1er septembre) obtienne
-// quasi toujours une donnée fraîche sans avoir besoin d'une route d'invalidation dédiée.
-const LIVE_STATUS_TTL_MS = 30_000;
-let _liveStatusCache = {}; // leagueKey → { ts, byTeamKey }
-async function _getFootballApiLiveStatus(leagueKey) {
-  const cached = _liveStatusCache[leagueKey];
-  if (cached && Date.now() - cached.ts < LIVE_STATUS_TTL_MS) return cached.data;
-  const empty = { byTeamKey: {} };
-  if (!process.env.FOOTBALL_API_KEY || !LIVE_STATUS_LEAGUES[leagueKey]) return empty;
-  try {
-    const leagueId = LIVE_STATUS_LEAGUES[leagueKey];
-    const season = footballApiSeasonForDate(leagueKey, new Date().toISOString());
-    // Deux dates, pas une (1er septembre 2026, bug trouvé en testant) — un match démarré avant
-    // minuit UTC et toujours en cours reste indexé sous la date d'HIER côté api-football (convention
-    // standard : un match est daté par son coup d'envoi, pas par "quel jour on est maintenant").
-    // Interroger seulement "aujourd'hui" ratait donc systématiquement tout match encore en cours
-    // après minuit — cas réel : Remo-Coritiba (coup d'envoi 31/08 23h) introuvable le 01/09, override
-    // silencieusement no-op. Coût : 2 appels au lieu d'1 par championnat, toujours négligeable.
-    const todayStr = new Date().toISOString().slice(0, 10);
-    const yesterdayStr = new Date(Date.now() - 86400_000).toISOString().slice(0, 10);
-    const [jToday, jYesterday] = await Promise.all([
-      footballApiFetch(`${FOOTBALL_API_BASE}/fixtures?league=${leagueId}&season=${season}&date=${todayStr}`, 0, true),
-      footballApiFetch(`${FOOTBALL_API_BASE}/fixtures?league=${leagueId}&season=${season}&date=${yesterdayStr}`, 0, true),
-    ]);
-    const byTeamKey = {};
-    for (const fx of [...(jYesterday.response || []), ...(jToday.response || [])]) {
-      const mapped = LIVE_API_STATUS_MAP[fx.fixture?.status?.short];
-      if (!mapped) continue;
-      const hKey = _normLiveTeamName(fx.teams?.home?.name);
-      const aKey = _normLiveTeamName(fx.teams?.away?.name);
-      if (!hKey || !aKey) continue;
-      byTeamKey[`${hKey}__${aKey}`] = { status: mapped, homeScore: fx.goals?.home ?? null, awayScore: fx.goals?.away ?? null };
-    }
-    const data = { byTeamKey };
-    _liveStatusCache[leagueKey] = { ts: Date.now(), data };
-    return data;
-  } catch {
-    return cached?.data || empty;
-  }
-}
-// Noms différents entre FD ("Clube do Remo") et api-football ("Remo") — recherche exacte d'abord,
-// puis tolérance "l'un des deux noms normalisés contient l'autre" en repli. Ne lève jamais, ne
-// renvoie l'override que s'il trouve vraiment une correspondance exploitable.
-function _applyLiveStatusOverride(homeName, awayName, current, liveData) {
-  try {
-    if (!liveData?.byTeamKey) return current;
-    const hKey = _normLiveTeamName(homeName), aKey = _normLiveTeamName(awayName);
-    let entry = liveData.byTeamKey[`${hKey}__${aKey}`];
-    if (!entry) {
-      for (const [key, val] of Object.entries(liveData.byTeamKey)) {
-        const [kH, kA] = key.split('__');
-        const hMatch = kH === hKey || (kH && hKey && (kH.includes(hKey) || hKey.includes(kH)));
-        const aMatch = kA === aKey || (kA && aKey && (kA.includes(aKey) || aKey.includes(kA)));
-        if (hMatch && aMatch) { entry = val; break; }
-      }
-    }
-    if (!entry) return current;
-    return { status: entry.status, homeScore: entry.homeScore, awayScore: entry.awayScore };
-  } catch {
-    return current;
-  }
-}
-// Bug trouvé le 1er septembre 2026 : appliquer l'override DANS le bloc qui construit le cache
-// 30 minutes de _getBresilMatches()/_api/fd/matches (comme la 1ère version le faisait) le fige pour
-// 30 minutes lui aussi — la fraîcheur api-football (30s) ne servait donc à rien, un score en gardait
-// un vieux jusqu'au prochain vrai refetch FD. Cas réel : Remo-Coritiba affiché 1-1 alors que le score
-// réel était 2-2 (90e minute), simplement parce que le fetch FD qui a peuplé le cache datait d'avant
-// le 2e but. Fix : l'override n'est plus jamais baké dans le cache 30 min — il est réappliqué à
-// CHAQUE appel, sur le résultat (frais ou caché), via cette fonction partagée. `_getFootballApiLiveStatus`
-// garde son propre cache 30s en interne, donc ça reste peu coûteux même appelé à chaque requête.
-async function _applyLiveScoreOverride(result) {
-  if (!result?.matches?.length) return result;
-  // Fix 1er septembre 2026 — quota api-football consommé inutilement (5366/7500 en une soirée avec
-  // un seul vrai match en cours) : cette fonction interrogeait TOUTES les ligues présentes dans la
-  // liste à chaque requête (limité seulement par le cache 30s interne, pas par un vrai besoin), y
-  // compris des ligues sans aucun match encore commencé. Un coup d'envoi dans le futur ne peut par
-  // définition avoir aucun score/statut live à corriger — ne garder que les ligues ayant au moins un
-  // match dont le coup d'envoi est déjà passé (candidat live réel, y compris un statut FD resté
-  // bloqué SCHEDULED après l'heure — cf. FD_MAX_LIVE_MATCH_MS/filet 20min plus haut).
-  const leagueKeys = [...new Set(
-    result.matches.filter(m => m.status !== 'STATUS_FINAL' && new Date(m.date).getTime() <= Date.now()).map(m => m.league)
-  )];
-  if (!leagueKeys.length) return result;
-  const liveDataByLeague = {};
-  await Promise.all(leagueKeys.map(async lk => {
-    liveDataByLeague[lk] = await _getFootballApiLiveStatus(lk).catch(() => ({ byTeamKey: {} }));
-  }));
-  const matches = result.matches.map(m => {
-    const liveData = liveDataByLeague[m.league];
-    if (!liveData || !Object.keys(liveData.byTeamKey || {}).length) return m;
-    const overridden = _applyLiveStatusOverride(m.home.name, m.away.name, { status: m.status, homeScore: m.home.score, awayScore: m.away.score }, liveData);
-    if (overridden.status === m.status && overridden.homeScore === m.home.score && overridden.awayScore === m.away.score) return m;
-    return { ...m, status: overridden.status, home: { ...m.home, score: overridden.homeScore }, away: { ...m.away, score: overridden.awayScore } };
-  });
-  return { ...result, matches };
-}
 // Invalidation manuelle (bouton "recharger" Carte du Monde) — vide le cache de statut par fixture (3
 // septembre 2026, cf. fetchFixtureLiveStatus) pour forcer un vrai refetch immédiat au prochain appel,
 // plutôt que d'attendre son TTL 45s (les entrées `final:true` ne sont volontairement PAS effacées —
-// un match terminé ne peut plus changer, inutile de le réinterroger). `_liveStatusCache` gardé par
-// prudence (ancien mécanisme pré-migration, _applyLiveScoreOverride n'est cependant plus appelé nulle
-// part depuis la migration du 2 septembre — ce vidage-ci est devenu un no-op réel, mais inoffensif) —
-// à nettoyer avec le reste du code FD mort (cf. plan de migration, étape 4).
+// un match terminé ne peut plus changer, inutile de le réinterroger).
+// (Nettoyage 16 septembre 2026 : l'ancien mécanisme de statut live pré-migration
+// (`LIVE_STATUS_LEAGUES`/`_liveStatusCache`/`_getFootballApiLiveStatus`/`_applyLiveStatusOverride`/
+// `_applyLiveScoreOverride`), devenu totalement mort depuis la migration api-football du 2 septembre,
+// a été retiré — cf. "plan de migration, étape 4" dans CLAUDE.md.)
 app.post('/api/football/live-refresh', (req, res) => {
-  _liveStatusCache = {};
   for (const id of Object.keys(_fixtureStatusCache)) {
     if (!_fixtureStatusCache[id]?.final) delete _fixtureStatusCache[id];
   }
@@ -1874,37 +1763,15 @@ try {
 
 // Fonction partagée route + generateBackgroundAlerts (section 4d) — un seul endroit qui parle
 // réellement à football-data.org pour le Brésil, tout le monde relit le même cache derrière.
-// Statuts football-data.org → statuts internes app — même mapping que /api/fd/worldcup (CDM).
-const FD_STATUS_MAP_BRESIL = {
-  SCHEDULED: 'STATUS_SCHEDULED', TIMED: 'STATUS_SCHEDULED',
-  IN_PLAY: 'STATUS_IN_PROGRESS', PAUSED: 'STATUS_IN_PROGRESS', LIVE: 'STATUS_IN_PROGRESS',
-  FINISHED: 'STATUS_FINAL', AWARDED: 'STATUS_FINAL',
-};
-// Garde-fou statut non-régressif (1er septembre 2026) — football-data.org est démontré instable sur
-// cette compétition précise (champ status corrompu, cf. fix 27 août ci-dessous) : un match déjà vu
-// IN_PLAY (score 0-0 compris — `0 != null` est vrai, donc pas un souci de "score vide") peut, sur un
-// fetch suivant, revenir avec un status corrompu ET un score redevenu null en même temps — l'ancien
-// filet de sécurité (score rempli → FINAL, sinon → SCHEDULED) retombait alors sur SCHEDULED,
-// effaçant purement et simplement un match qu'on savait déjà en cours. Cas réel signalé par
-// l'utilisateur : Clube do Remo-Coritiba, vu 0-0 IN_PLAY puis SCHEDULED/score:null quelques minutes
-// plus tard côté Carte du Monde. Le statut ne peut plus jamais reculer (SCHEDULED < IN_PROGRESS <
-// FINAL) d'un cycle à l'autre ; le dernier score connu est aussi conservé en repli si le fetch
-// courant renvoie null pendant qu'on force IN_PROGRESS/FINAL. Persisté sur disque (survit aux
-// redémarrages --watch), état retiré 48h après le coup d'envoi (plus la peine de le garder).
-const BRESIL_STATUS_RANK = { STATUS_SCHEDULED: 0, STATUS_IN_PROGRESS: 1, STATUS_FINAL: 2 };
-const BRESIL_MATCH_STATE_FILE = join(CACHE_DIR, 'bresil_match_state.json');
-let _bresilMatchState = {};
-try { if (existsSync(BRESIL_MATCH_STATE_FILE)) _bresilMatchState = JSON.parse(readFileSync(BRESIL_MATCH_STATE_FILE, 'utf8')); } catch {}
-function _saveBresilMatchState() { try { writeFileSync(BRESIL_MATCH_STATE_FILE, JSON.stringify(_bresilMatchState), 'utf8'); } catch {} }
-
 // Migré vers api-football le 2 septembre 2026 — même forme de réponse qu'avant, réutilise le bundle
 // mis en cache (fetchApiFootballLeagueBundle('bresil'), même que /api/fd/matches, zéro appel en
-// plus). Tout le durcissement statut-corrompu/non-régressif (BRESIL_STATUS_RANK/_bresilMatchState/
-// inferBresilStatus) était une compensation spécifique à un défaut connu de football-data.org sur
-// cette compétition (champ status renvoyé corrompu) — retiré ici (cf. plan, point 4) : api-football
-// renvoie un statut depuis une énumération propre, la classe de bug ne peut structurellement plus se
-// produire. Seul le garde-fou générique "match resté EN COURS trop longtemps" (FD_MAX_LIVE_MATCH_MS)
-// est conservé, par prudence, comme pour les 5 grands championnats.
+// plus). Tout le durcissement statut-corrompu/non-régressif (ancien `FD_STATUS_MAP_BRESIL`/
+// `BRESIL_STATUS_RANK`/`_bresilMatchState`/`inferBresilStatus`, retiré le 16 septembre 2026 — code
+// mort depuis la migration, cf. "plan de migration, étape 4" CLAUDE.md) était une compensation
+// spécifique à un défaut connu de football-data.org sur cette compétition (champ status renvoyé
+// corrompu) : api-football renvoie un statut depuis une énumération propre, la classe de bug ne peut
+// structurellement plus se produire. Seul le garde-fou générique "match resté EN COURS trop
+// longtemps" (FD_MAX_LIVE_MATCH_MS) est conservé, par prudence, comme pour les 5 grands championnats.
 async function _getBresilMatches() {
   // Même fix que /api/fd/matches (3 septembre 2026) — cache externe raccourci 30min→60s, redondant
   // avec le TTL 30min déjà appliqué par fetchApiFootballLeagueBundle (seul point réseau réel) ; ne
@@ -2734,9 +2601,9 @@ function _deepMergeOddsFill(oldVal, newVal) {
 
 // Fallback bookmaker (foot) : certains bookmakers ratent un match un cycle sur deux pour des
 // raisons qui n'ont rien à voir avec une vraie absence de cotes :
-// - Betclic : le h2h vient de la page de liste par ligue (fiable), mais btts/totals/dcbtts/dcou/
-//   teamTotals/shots viennent d'un fetch par match individuel (fetchBetclicFootballExtras, timeout
-//   8s) bien plus sujet aux échecs transitoires (page pas trouvée, marché pas encore posté).
+// - Betclic : le h2h vient de la page de liste par ligue (fiable), mais btts/totals/teamTotals/shots
+//   viennent d'un fetch par match individuel (fetchBetclicFootballExtras, timeout 8s) bien plus
+//   sujet aux échecs transitoires (page pas trouvée, marché pas encore posté).
 // - Pinnacle : throttle interne de 15 min (PINNACLE_FOOT_MIN_INTERVAL_MS) — si generateBackgroundAlerts
 //   et /api/odds déclenchent tous les deux un _refreshOddsCache à moins de 15 min d'intervalle,
 //   le 2e renvoie [] pour tout le foot, pas juste un match isolé.
@@ -2748,7 +2615,9 @@ function _deepMergeOddsFill(oldVal, newVal) {
 // `teamTotals`/`shots` ajoutés au 16 septembre 2026 — signalé : ces 2 marchés (imbriqués par côté
 // ET par ligne) n'avaient jusqu'ici AUCUN filet du tout (absents de la liste), pas même le repli
 // "objet entier" que `totals` avait déjà — la fusion récursive ci-dessus les couvre gratuitement.
-const FB_ODDS_MARKET_TYPES = ['h2h', 'btts', 'totals', 'dcbtts', 'dcou', 'teamTotals', 'shots'];
+// `dcbtts`/`dcou` retirés le 16 septembre 2026 (nettoyage) — marchés DC supprimés du projet le 8
+// septembre, plus aucun consommateur (backend ni frontend) ne lit ces champs.
+const FB_ODDS_MARKET_TYPES = ['h2h', 'btts', 'totals', 'teamTotals', 'shots'];
 const _fillMissingBookmaker = (allMatches, prevMatches, bkKey) => {
   const now = Date.now();
   const atKey = `_${bkKey}At`;
@@ -5861,6 +5730,8 @@ const _saveEuroStandingsCache = _makeEuroCachePersist('euro_standings_', EURO_ST
 // problème).
 const _saveEuroScoreboardCache = _makeEuroCachePersist('euro_sb_',   EURO_SCOREBOARD_CACHE_FILE);
 const _saveEuroGameCache       = _makeEuroCachePersist('euro_game_', EURO_GAME_CACHE_FILE);
+// `euro_teamid_*` (16 septembre 2026) — voir commentaire sur EURO_TEAMID_CACHE_FILE plus haut.
+const _saveEuroTeamIdCache     = _makeEuroCachePersist('euro_teamid_', EURO_TEAMID_CACHE_FILE);
 
 // Semaphore — max 5 appels api-sports.io basketball simultanés (rate limit/minute du plan Pro,
 // déclenché en pratique dès ~15-18 requêtes lancées en même temps pour un roster complet)
@@ -6192,6 +6063,18 @@ app.get('/api/euro/:league/game/:gameId', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// Terme de recherche api-sports.io depuis un nom d'équipe complet (16 septembre 2026) — remplace
+// l'ancien `name.split(' ')[0]`, qui échouait sur toute équipe dont le 1er "mot" ne convient pas au
+// validateur strict d'api-sports.io (≥3 caractères, alphanumérique uniquement) : cas réels trouvés en
+// préchauffant le cache EU basket, "AS Karditsas"/"JL Bourg"/"Le Mans"/"Le Portel" (1er mot ≤2
+// caractères) et "Gravelines-Dunkerque"/"Lyon-Villeurbanne"/"Chalon/Saone" (aucun espace, tiret ou
+// slash refusé tel quel). Le tiret/slash est d'abord traité comme un séparateur de mot ; parmi les
+// mots obtenus, le 1er qui fait ≥3 caractères est choisi (le matching exact sur `t.name === name`
+// juste après filtre de toute façon les faux positifs d'une recherche large comme "Lyon").
+function _euroTeamSearchTerm(name) {
+  const words = (name || '').replace(/[^a-zA-Z0-9]+/g, ' ').trim().split(/\s+/).filter(Boolean);
+  return words.find(w => w.length >= 3) || words.sort((a, b) => b.length - a.length)[0] || name;
+}
 // Roster par nom d'équipe (résout l'ID api-sports.io puis délègue à /players/:teamId) — utilisé par EffectifPage
 app.get('/api/euro/:league/roster/byname/:teamName', async (req, res) => {
   const { league, teamName } = req.params;
@@ -6207,9 +6090,9 @@ app.get('/api/euro/:league/roster/byname/:teamName', async (req, res) => {
     if (teamIdHit && (Date.now() - teamIdHit.ts < CACHE_24H || _basketballApiPaused)) {
       team = teamIdHit.data;
     } else {
-      const td = await bballFetch(`/teams?league=${cfg.id}&season=${cfg.season}&search=${encodeURIComponent(name.split(' ')[0])}`);
+      const td = await bballFetch(`/teams?league=${cfg.id}&season=${cfg.season}&search=${encodeURIComponent(_euroTeamSearchTerm(name))}`);
       team = (td.response || []).find(t => t.name === name) || (td.response || [])[0];
-      if (team) _euroCache[teamIdCk] = { data: team, ts: Date.now() };
+      if (team) { _euroCache[teamIdCk] = { data: team, ts: Date.now() }; _saveEuroTeamIdCache(); }
     }
     if (!team) return res.status(404).json({ error: `Team not found: ${name}` });
     const ac = new AbortController();
@@ -20859,35 +20742,6 @@ app.get('/api/nba/debug-alerts', async (req, res) => {
     }
   } catch (e) { log.push({ error: e.message, stack: e.stack?.slice(0,300) }); }
   res.json(log);
-});
-
-app.post('/api/nba/test-alert', (req, res) => {
-  const alert = {
-    id: 'test_999_pts_over',
-    player: 'Shai Gilgeous-Alexander',
-    team: 'OKC',
-    fixture: 'OKC vs SAS',
-    round: 'Finales Conf. Ouest - Game 1',
-    fixtureDate: new Date(Date.now() + 3 * 3600 * 1000).toISOString(),
-    eventId: 'test_event_999',
-    homeTeam: 'Oklahoma City Thunder',
-    awayTeam: 'San Antonio Spurs',
-    stat: 'pts',
-    line: 29.5,
-    estimate: 33.2,
-    direction: 'over',
-    probability: 91,
-    pinnacleOdds: 1.87,
-    unibetOdds: 1.95,
-    unibetLine: 29.5,
-    winamaxOdds: 2.00,
-    winamaxLine: 29.5,
-    injury: null,
-    savedAt: Date.now(),
-  };
-  const existing = backgroundAlerts.filter(a => a.id !== alert.id);
-  backgroundAlerts = [...existing, alert];
-  res.json({ ok: true, alert });
 });
 
 // ── Football-data.org Standings ───────────────────────────────────────────────

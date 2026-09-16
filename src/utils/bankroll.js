@@ -53,7 +53,6 @@ const ALERT_STORAGE_KEYS = [
 // dans le solde Unibet : la règle par type ignorait `acceptedBookmaker`, pourtant déjà posé et fiable
 // sur la quasi-totalité du registre depuis le 1er août. `resolveBookmaker` privilégie maintenant le
 // vrai bookmaker de chaque pari, ne retombe sur la règle par type que si absent.
-export const BOOKMAKER_LABELS = { betclic: 'Betclic', unibet: 'Unibet' };
 export function bookmakerForType(type) {
   return type === 'player_prop' ? 'unibet' : 'betclic';
 }
