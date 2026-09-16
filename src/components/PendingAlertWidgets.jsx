@@ -223,8 +223,7 @@ const NEAR_MISS_PANEL_MARKETS = [
   { key: 'fb_result',     label: 'Résultat',                         domain: 'foot', params: 'source=football&market=result' },
   { key: 'fb_total',      label: 'Total buts',                       domain: 'foot', params: 'source=football&market=total', ou: true },
   { key: 'fb_btts',       label: 'BTTS',                             domain: 'foot', params: 'source=football&market=btts' },
-  { key: 'fb_dcou',       label: 'Double chance & plus de 1,5 buts', domain: 'foot', params: 'source=football&market=dc_ou' },
-  { key: 'fb_dcbtts',     label: 'Double chance & BTTS',             domain: 'foot', params: 'source=football&market=dc_btts' },
+  // fb_dcou/fb_dcbtts (Double chance & buts) retirés le 8 septembre 2026 — marché supprimé du projet.
 ];
 const NEAR_MISS_REFRESH_MS = 5 * 60_000; // aligné sur le rythme réel des cycles d'alertes (20 min) — pas la peine d'actualiser plus souvent, les données near-miss ne bougent pas entre-temps
 
@@ -638,7 +637,7 @@ export function NearMissPanelWidget({ bottom = 20 } = {}) {
 // est simplement omis, le calculateur fonctionne avec ce qui est disponible.
 export function buildPendingItems({
   rawAlerts = [], rawTotalAlerts = [], rawTeamTotalAlerts = [], rawResultAlerts = [],
-  bttsAlerts = [], fbTotalAlerts = [], fbResultAlerts = [], fbPinnacleAlerts = [],
+  bttsAlerts = [], fbTotalAlerts = [], fbTeamGoalsAlerts = [], fbResultAlerts = [], fbPinnacleAlerts = [],
   dcBttsAlerts = [], dcOuAlerts = [], bballPinnacleAlerts = [], bballPinnaclePropsAlerts = [],
   outrightAlerts = [],
 }) {
@@ -650,6 +649,7 @@ export function buildPendingItems({
   const _allFoot = [
     ...bttsAlerts.filter(a => a.status === 'pending' || a.status === 'accepted'),
     ...fbTotalAlerts.filter(a => a.status === 'pending' || a.status === 'accepted'),
+    ...fbTeamGoalsAlerts.filter(a => a.status === 'pending' || a.status === 'accepted'),
     ...fbResultAlerts.filter(a => a.status === 'pending' || a.status === 'accepted'),
     ...fbPinnacleAlerts.filter(a => a.status === 'pending' || a.status === 'accepted'),
     ...dcBttsAlerts.filter(a => a.status === 'pending' || a.status === 'accepted'),

@@ -4,7 +4,7 @@ import GEO_DATA from 'world-atlas/countries-110m.json';
 import { LEAGUES, renderLeagueItem } from './EffectifPage';
 
 const GEO_URL = GEO_DATA;
-const FOOTBALL_IDS = new Set(['ligue1', 'pl', 'laliga', 'bundes', 'seriea', 'bresil']);
+const FOOTBALL_IDS = new Set(['ligue1', 'pl', 'laliga', 'bundes', 'seriea', 'bresil', 'grece', 'arabie', 'portugal']);
 
 // LNB/BBL/Lega A n'ont pas de liste d'équipes statique dans EffectifPage (seul l'ACB y était) —
 // on la récupère dynamiquement via /api/euro/:league/standings (même source que les alertes props
@@ -27,6 +27,9 @@ const COVERED = {
   '826': { name: 'Angleterre', flag: '🏴󠁧󠁢󠁥󠁮󠁧󠁿' },
   '076': { name: 'Brésil',     flag: '🇧🇷' },
   '036': { name: 'Australie',  flag: '🇦🇺' },
+  '300': { name: 'Grèce',      flag: '🇬🇷' },
+  '682': { name: 'Arabie Saoudite', flag: '🇸🇦' },
+  '620': { name: 'Portugal',   flag: '🇵🇹' },
 };
 
 // Même ordre/mise en page que la légende de la Carte du Monde (Sports) : 2 lignes — États-Unis/Brésil,
@@ -36,8 +39,14 @@ const COVERED = {
 const LEGEND_ROWS = [
   [['840', COVERED['840']], ['076', COVERED['076']]],
   [['250', COVERED['250']], ['724', COVERED['724']], ['826', COVERED['826']], ['276', COVERED['276']], ['380', COVERED['380']]],
-  [['036', COVERED['036']]],
+  [['036', COVERED['036']], ['300', COVERED['300']], ['682', COVERED['682']], ['620', COVERED['620']]],
 ];
+
+// EuroLeague (15 septembre 2026, signalé "on a pas les effectifs de l'Europe pour le basket") —
+// pas un pays, donc pas de case cliquable sur la carte : entrée dédiée, sans geoId, sélectionnée
+// directement via `pick(EUROLEAGUE_ENTRY, null)`. Référence stable (même objet à chaque rendu) pour
+// que `selected === c` reste valide, comme les entrées COVERED.
+const EUROLEAGUE_ENTRY = { name: 'Europe', flag: '🇪🇺' };
 
 const ZOOM_ORIGIN = {
   '840': '18% 33%', '250': '50% 28%', '724': '47% 32%',
@@ -175,6 +184,16 @@ export default function DatabaseMapPage() {
             ))}
           </div>
         ))}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginTop: 2, paddingTop: 4, borderTop: '1px solid rgba(255,255,255,0.08)' }}>
+          <button onClick={() => pick(EUROLEAGUE_ENTRY, null)}
+            style={{ display: 'flex', alignItems: 'center', gap: 4, background: 'none', border: 'none', borderRadius: 6, padding: '2px 6px', cursor: 'pointer', transition: 'opacity .15s', opacity: selected === EUROLEAGUE_ENTRY ? 1 : 0.55 }}
+            onMouseEnter={e => e.currentTarget.style.opacity = '1'}
+            onMouseLeave={e => e.currentTarget.style.opacity = selected === EUROLEAGUE_ENTRY ? '1' : '0.55'}
+          >
+            <span style={{ fontSize: 13 }}>{EUROLEAGUE_ENTRY.flag}</span>
+            <span style={{ fontSize: 10, fontWeight: 600, color: '#fff', whiteSpace: 'nowrap' }}>EuroLeague</span>
+          </button>
+        </div>
       </div>
 
       {/* Panel équipes du pays sélectionné — mêmes caractéristiques que le panel matchs de la

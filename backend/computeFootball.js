@@ -59,7 +59,7 @@ function computeLambdas({ homeGF, homeGA, homePlayed, awayGF, awayGA, awayPlayed
 
   const lambdaHome = homeAttack * awayDefense * leagueAvgGoals * homeAdv;
   const lambdaAway = awayAttack * homeDefense * leagueAvgGoals / homeAdv;
-  return { lambdaHome, lambdaAway };
+  return { lambdaHome, lambdaAway, factors: { homeAttack, homeDefense, awayAttack, awayDefense, homeAdv } };
 }
 
 // Correction Dixon-Coles (Dixon & Coles, 1997) : sous l'hypothèse Poisson indépendante, les scores
@@ -154,39 +154,32 @@ function computeTeamGoalsProb(lambdaHome, lambdaAway, line, side, rho = DIXON_CO
   return { pOver: 1 - pUnder, pUnder };
 }
 
-// P(DC & BTTS "Oui") pour les 3 combinaisons Double Chance — même grille Dixon-Coles
-// Retourne { p1x, px2, p12 } : proba que la DC ET les deux équipes marquent
-function computeDCBTTSProbs(lambdaHome, lambdaAway, rho = DIXON_COLES_RHO) {
-  const grid = computeScoreGrid(lambdaHome, lambdaAway, rho);
-  let p1x = 0, px2 = 0, p12 = 0;
-  for (let i = 1; i < grid.length; i++) {
-    for (let j = 1; j < grid.length; j++) {
-      const p = grid[i][j];
-      if (i >= j) p1x += p; // home win or draw
-      if (i <= j) px2 += p; // draw or away win
-      if (i !== j) p12 += p; // no draw
-    }
-  }
-  return { '1x': p1x, 'x2': px2, '12': p12 };
+// computeDCBTTSProbs / computeDCOverProbs (marchés DC & BTTS / DC & +1,5 buts) supprimées le
+// 8 septembre 2026 — demande explicite utilisateur après un pari perdant (Lille-Betis) qui a
+// confirmé l'audit du jour même : DC ne dépasse jamais ~55% de réussite réelle quel que soit le
+// seuil affiché, contrairement à BTTS/Total. Génération d'alertes retirée de server.js ; le
+// règlement des paris déjà acceptés sur ce marché reste géré directement en arithmétique de score
+// dans server.js/syncAlerts.js (n'a jamais dépendu de ces deux fonctions).
+
+// Over/Under sur un comptage Poisson simple, SANS la grille jointe Dixon-Coles (14 septembre 2026,
+// marché "Tirs"/"Tirs cadrés") — computeOUProb/computeTeamGoalsProb ci-dessus ont un kMax=10
+// hardcodé, pensé pour des buts (jamais plus de quelques unités par équipe) ; des tirs montent à
+// 15-30, largement au-delà de ce plafond, ce qui tronque et corrompt silencieusement le résultat
+// (vérifié en isolation : renvoie pOver=0 sur un match pourtant équilibré). Comme le rho Dixon-Coles
+// n'a de sens établi que pour les scores bas/corrélés au football (0-0, 1-1...), sans équivalent
+// connu sur des comptages de tirs, ce marché tourne à rho=0 — deux Poisson INDÉPENDANTS, dont la
+// somme est elle-même un Poisson(λ1+λ2) (propriété mathématique standard). Pas besoin de grille
+// jointe : une simple cumulative suffit, exacte quelle que soit la magnitude. Réutilisable aussi
+// bien pour un total (lambda = lambdaHome+lambdaAway) que pour une seule équipe (lambda = lambdaHome
+// ou lambdaAway).
+function poissonCdf(k, lambda) {
+  let sum = 0;
+  for (let i = 0; i <= k; i++) sum += poissonPmf(lambda, i);
+  return sum;
+}
+function computeIndependentOUProb(lambda, line) {
+  const pUnder = poissonCdf(Math.floor(line), lambda);
+  return { pOver: 1 - pUnder, pUnder };
 }
 
-// P(DC & Over "line" buts) pour les 3 combinaisons Double Chance — même grille Dixon-Coles
-// Retourne { '1x', 'x2', '12' } — clés alignées avec les marchés bookmaker
-function computeDCOverProbs(lambdaHome, lambdaAway, line, rho = DIXON_COLES_RHO) {
-  const kMax = 10;
-  const grid = computeScoreGrid(lambdaHome, lambdaAway, rho, kMax);
-  const threshold = Math.floor(line); // 1.5 → 1
-  let p1x = 0, px2 = 0, p12 = 0;
-  for (let i = 0; i <= kMax; i++) {
-    for (let j = 0; j <= kMax; j++) {
-      if (i + j <= threshold) continue;
-      const p = grid[i][j];
-      if (i >= j) p1x += p;
-      if (i <= j) px2 += p;
-      if (i !== j) p12 += p;
-    }
-  }
-  return { '1x': p1x, 'x2': px2, '12': p12 };
-}
-
-export { poissonPmf, computeLambdas, computeBTTSProb, computeOUProb, compute1X2Probs, computeScoreGrid, dixonColesTau, DIXON_COLES_RHO, computeDCBTTSProbs, computeDCOverProbs, computeTeamGoalsProb, shrinkFactor, computeTeamAttackDefenseFactor };
+export { poissonPmf, computeLambdas, computeBTTSProb, computeOUProb, compute1X2Probs, computeScoreGrid, dixonColesTau, DIXON_COLES_RHO, computeTeamGoalsProb, shrinkFactor, computeTeamAttackDefenseFactor, poissonCdf, computeIndependentOUProb };

@@ -622,6 +622,7 @@ body {
 .ef-fb-player:last-child { border-bottom: none; }
 .ef-fb-player--injured   { background: rgba(255,80,80,0.06); }
 .ef-fb-jersey  { color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.ef-fb-photo   { width: 1.7rem; height: 1.7rem; border-radius: 50%; object-fit: cover; background: rgba(255,255,255,0.06); }
 .ef-fb-name    { color: var(--text-main); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ef-fb-country { color: var(--text-sub); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ef-fb-age     { color: var(--text-dim); font-size: 11px; text-align: right; }
@@ -785,6 +786,44 @@ body {
   font-size: 11px;
   color: var(--text-dim);
   margin: 0;
+}
+
+/* ── Compo officielle (11 septembre 2026) ── */
+.lp-official-badge {
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  border-radius: 20px;
+  padding: 0.15rem 0.5rem;
+  white-space: nowrap;
+}
+.lp-badge--official { color: #2e7d32; background: rgba(46,125,50,0.15); border: 1px solid rgba(46,125,50,0.4); }
+.lp-badge--probable { color: #4da6ff; background: rgba(77,166,255,0.15); border: 1px solid rgba(77,166,255,0.4); }
+.lp-official-formation { font-size: 11px; color: var(--text-dim); font-family: monospace; }
+.lp-official-subs {
+  display: flex;
+  width: 100%;
+  gap: 0.75rem;
+  margin-top: 0.25rem;
+}
+.lp-official-subs-col { flex: 1; min-width: 0; display: flex; flex-wrap: wrap; gap: 0.3rem; align-content: flex-start; }
+.lp-official-subs-col--right { justify-content: flex-end; }
+.lp-official-coach {
+  width: 100%;
+  margin: 0 0 0.2rem;
+  font-size: 10.5px;
+  color: var(--text-dim);
+  font-style: italic;
+}
+.lp-official-sub-chip {
+  font-size: 10px;
+  color: var(--text-dim);
+  background: var(--bg-elevated, #1a2035);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 0.1rem 0.4rem;
+  white-space: nowrap;
 }
 
 /* ── Roster Panel ──────────────────────────────────────────────────────────── */

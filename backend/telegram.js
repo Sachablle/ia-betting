@@ -75,13 +75,21 @@ async function sendTelegramMessage(text, buttons = null) {
 }
 
 // Édite un message existant (après clic sur un bouton) — retire les boutons et affiche le résultat.
+// Fix 11 septembre 2026 : le commentaire ci-dessus disait déjà "retire les boutons" mais c'était
+// faux — `editMessageText` sans `reply_markup` explicite laisse le clavier existant intact côté
+// Telegram (comportement natif de leur API, pas un bug de notre fetch). Les 2 boutons Accepter/
+// Rejeter restaient donc cliquables indéfiniment après une 1ère décision — cas réel : Rennes-Marseille
+// (Total O/U), Rejeter cliqué à 01:33, puis Accepter cliqué sur le MÊME message à 01:40 (le bouton
+// était toujours actif), écrasant silencieusement le rejet en acceptation réelle côté `_acceptedAlerts`
+// sans que rien ne prévienne l'utilisateur ni ne bloque le 2e clic. `reply_markup:{inline_keyboard:[]}`
+// force Telegram à retirer visuellement les boutons dès la 1ère décision.
 async function editTelegramMessage(messageId, text) {
   if (!telegramConfigured() || !messageId) return;
   try {
     await fetch(`${TG_API}/editMessageText`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: TG_CHAT_ID, message_id: messageId, text, parse_mode: 'HTML' }),
+      body: JSON.stringify({ chat_id: TG_CHAT_ID, message_id: messageId, text, parse_mode: 'HTML', reply_markup: { inline_keyboard: [] } }),
     });
   } catch {}
 }
@@ -107,11 +115,6 @@ async function answerCallbackQuery(callbackQueryId, text = '') {
 // aurait une variante de nommage non prévue ici.
 const LEAGUE_LABEL = { nba: 'NBA', wnba: 'WNBA', acb: 'ACB', lnb: 'LNB', bbl: 'BBL', legaa: 'Lega A', euroleague: 'EuroLeague', cdm: 'CDM', ligue1: 'Ligue 1', pl: 'Premier League', laliga: 'Liga', bundes: 'Bundesliga', seriea: 'Serie A', bresil: 'Brasileirão', europa: 'Europa League', conference: 'Conference League', champions: 'Ligue des Champions' };
 const STAT_LABEL = { pts: 'Pts', reb: 'Reb', ast: 'Ast', tpm: '3pts' };
-// Même mapping que DC_DIR_LABEL/DC_DIR_DESC côté frontend (FootballAlertCards.jsx) — dupliqué exprès,
-// fichier volontairement indépendant de la logique alertes (cf. commentaire en tête de fichier).
-const DC_DIR_LABEL = { '1x': '1X', 'x2': 'X2', '12': '12' };
-const DC_DIR_DESC  = { '1x': 'Dom. ou Nul', 'x2': 'Nul ou Ext.', '12': 'Dom. ou Ext.' };
-const dcDirText = a => `${DC_DIR_LABEL[a.direction] ?? a.direction} (${DC_DIR_DESC[a.direction] ?? ''})`;
 const leagueLabel = a => LEAGUE_LABEL[a.league] || (a.league || '').toUpperCase();
 const teamName = (a, side) => side === 'home' ? (a.home || a.homeShort) : (a.away || a.awayShort);
 // "Home - Away" (tiret, pas "vs") — nouveau format Telegram du 6 septembre 2026, demande explicite.
@@ -186,15 +189,15 @@ function nearMissLine(wl) {
 // contrôle de taille de police (HTML très limité : gras/italique/souligné/lien seulement), le
 // contraste gras/normal est le plus proche possible d'un "petit à droite" dans ce médium ; (3) pari
 // + cote toujours collée juste après la direction (jamais séparée par du texte) ; (4) probabilité +
-// historique near-miss réel à ce % exact (sans "à ce %", implicite) ; (5) mise recommandée en euros
-// — PAS le % implicite de la cote bookmaker (1er essai, rejeté), mais la vraie mise conseillée
-// d'après le barème de paliers bankroll déjà utilisé partout ailleurs dans l'app
-// (BANKROLL_BRACKETS/getRecommendedStake, src/utils/bankroll.js) — porté côté backend en
-// `_recommendedStakeFor()` (server.js) car ce fichier n'a pas accès au localStorage/état bankroll du
-// frontend, lu directement depuis Mongo (userdata.bankroll_tracker.current) et transmis via `_stake`
-// sur l'alerte, même pattern que `_wl` pour le near-miss. Odds/lignes en virgule française
-// (frNum/frOdds).
-function buildAlertText({ league, matchLabel, dateStr, betLabel, bk, odds, probability, wl, stake }) {
+// % calibré + historique near-miss réel à ce % exact (sans "à ce %", implicite) ; (5) mise recommandée
+// en % DE LA BANKROLL (pas un montant en euros — un montant absolu se périme dès que le bankroll
+// change) — passée par deux versions rejetées avant celle-ci (% implicite de la cote bookmaker,
+// puis un demi-Kelly qui dépendait de la cote et pouvait tomber à 0%) : la version actuelle
+// (`_stakePctForAlert()`, server.js) ignore complètement la cote, indexée uniquement sur le %
+// calibré de l'alerte (÷12, plafond 10% — mêmes constantes que l'ancienne suggestion par alerte du
+// site, gardées pour cohérence). `null` (jamais 0%) si aucune donnée de calibration pour ce
+// marché/cette ligue. Odds/lignes en virgule française (frNum/frOdds).
+function buildAlertText({ league, matchLabel, dateStr, betLabel, bk, odds, probability, wl, stake, calibratedProbability, stakeAmount }) {
   const emoji = SPORT_EMOJI[league] || '⚽';
   const flag = LEAGUE_FLAG[league] || '';
   const lines = [];
@@ -205,8 +208,25 @@ function buildAlertText({ league, matchLabel, dateStr, betLabel, bk, odds, proba
   const oddsStr = odds != null ? ` — <b>${frOdds(odds)}</b>${bk ? ` (${BK_DISPLAY[bk] || bk})` : ''}` : '';
   lines.push(`${betLabel}${oddsStr}`);
   const nm = nearMissLine(wl);
-  lines.push(`Probabilité : <b>${probability}%</b>${nm ? ` — ${nm}` : ''}`);
-  if (stake != null) lines.push(`Mise recommandée : <b>${frNum(stake)}€</b>`);
+  // % calibré (7 septembre 2026, demande explicite) — affiché EN PLUS du % modèle, jamais à sa place :
+  // taux de réussite réel isotonique (régression PAVA sur l'historique near-miss), garanti croissant
+  // avec le % modèle contrairement au % brut qui peut avoir des zones non-monotones (cf. audit du
+  // 7 sept). Purement informatif, ne change aucun seuil de déclenchement.
+  const calibStr = calibratedProbability != null ? ` (${calibratedProbability}% calibré)` : '';
+  lines.push(`Probabilité : <b>${probability}%</b>${calibStr}${nm ? ` — ${nm}` : ''}`);
+  // % de la bankroll (7 septembre 2026, demande explicite — pas un montant en euros, qui se périme
+  // dès que le bankroll change) — `stake` est déjà un pourcentage calculé côté serveur
+  // (_stakePctForAlert), demi-Kelly indexé sur le % calibré quand disponible, replié sur le palier
+  // bankroll classique sinon. Peut légitimement valoir 0% (aucun edge réel une fois calibré) —
+  // volontaire, pas un bug (cf. discussion utilisateur).
+  // 0% caché (7 septembre 2026, demande explicite) — un edge nul affiché comme "0% de la BK" lisait
+  // comme une recommandation contradictoire avec le fait même de recevoir l'alerte. La ligne
+  // disparaît simplement plutôt que d'afficher un chiffre qui n'a pas de sens à montrer.
+  // Montant en euros (8 septembre 2026, demande explicite) — affiché EN PLUS du %, pas à sa place :
+  // le % reste la vraie règle (s'adapte au solde), le montant est juste la traduction pratique au
+  // solde du moment. Absent si le solde réel n'a pas pu être récupéré (repli silencieux sur le % seul).
+  const amountStr = stakeAmount != null && stakeAmount > 0 ? ` (≈ ${frNum(stakeAmount)}€)` : '';
+  if (stake != null && stake > 0) lines.push(`Mise recommandée : <b>${frNum(stake)}% de la BK</b>${amountStr}`);
   return lines.join('\n');
 }
 function propsAccepted(a, bk, odds, prob) {
@@ -225,7 +245,7 @@ const ALERT_TYPES = {
       const [bk, odds] = propsOdds(a);
       const betLabel = `${a.player} — ${a.direction === 'over' ? '▲ Over' : '▼ Under'} ${frNum(a.line)} ${STAT_LABEL[a.stat] || (a.stat || '').toUpperCase()}`;
       const matchLabel = a.home && a.away ? matchVs(a) : (a.fixture || a.player || '');
-      const base = buildAlertText({ league: a.league, matchLabel, dateStr: a.fixtureDate, betLabel, bk, odds, probability: a.probability, wl: a._wl, stake: a._stake });
+      const base = buildAlertText({ league: a.league, matchLabel, dateStr: a.fixtureDate, betLabel, bk, odds, probability: a.probability, wl: a._wl, stake: a._stake, calibratedProbability: a.calibratedProbability, stakeAmount: a._stakeAmount });
       return a.oppQSamePosition ? `${base}\n⚠ Adversaire Q au même poste — pas de boost tant que son statut n'est pas confirmé` : base;
     },
     odds: propsOdds,
@@ -236,7 +256,7 @@ const ALERT_TYPES = {
     label: a => {
       const [bk, odds] = bkOnlyBestOdds(a);
       const betLabel = `${a.direction === 'over' ? '▲ Plus' : '▼ Moins'} de ${frNum(a.line)}`;
-      return buildAlertText({ league: a.league, matchLabel: matchVs(a), dateStr: a.date, betLabel, bk, odds, probability: a.prob, wl: a._wl, stake: a._stake });
+      return buildAlertText({ league: a.league, matchLabel: matchVs(a), dateStr: a.date, betLabel, bk, odds, probability: a.prob, wl: a._wl, stake: a._stake, calibratedProbability: a.calibratedProbability, stakeAmount: a._stakeAmount });
     },
     odds: a => bestOdds([['unibet', a.unibetOdds], ['betclic', a.betclicOdds], ['winamax', a.winamaxOdds]]),
     buildAccepted: (a, bk, odds) => ({ ...propsAccepted(a, bk, odds, a.prob), acceptedOdds: odds ?? null }),
@@ -246,14 +266,14 @@ const ALERT_TYPES = {
     label: a => {
       const [bk, odds] = bkOnlyBestOdds(a);
       const betLabel = `${a.team} — ${a.direction === 'over' ? '▲ Plus' : '▼ Moins'} de ${frNum(a.line)}`;
-      return buildAlertText({ league: a.league, matchLabel: matchVs(a), dateStr: a.date, betLabel, bk, odds, probability: a.prob, wl: a._wl, stake: a._stake });
+      return buildAlertText({ league: a.league, matchLabel: matchVs(a), dateStr: a.date, betLabel, bk, odds, probability: a.prob, wl: a._wl, stake: a._stake, calibratedProbability: a.calibratedProbability, stakeAmount: a._stakeAmount });
     },
     odds: a => bestOdds([['unibet', a.unibetOdds], ['betclic', a.betclicOdds]]),
     buildAccepted: (a, bk, odds) => ({ ...propsAccepted(a, bk, odds, a.prob), acceptedOdds: odds ?? null }),
   },
   basketball_result: {
     dateField: 'date',
-    label: a => buildAlertText({ league: a.league, matchLabel: matchVs(a), dateStr: a.date, betLabel: `Victoire ${teamName(a, a.direction)}`, bk: a.bookmaker ?? null, odds: a.odds ?? null, probability: a.probability, wl: a._wl, stake: a._stake }),
+    label: a => buildAlertText({ league: a.league, matchLabel: matchVs(a), dateStr: a.date, betLabel: `Victoire ${teamName(a, a.direction)}`, bk: a.bookmaker ?? null, odds: a.odds ?? null, probability: a.probability, wl: a._wl, stake: a._stake, calibratedProbability: a.calibratedProbability }),
     odds: a => [a.bookmaker ?? null, a.odds ?? null], // déjà figé à la génération, pas de choix à faire
     buildAccepted: () => ({ acceptedAt: Date.now() }),
   },
@@ -276,7 +296,7 @@ const ALERT_TYPES = {
       // matchVs(a) plutôt que a.fixture (6 septembre 2026) — le champ `fixture` généré à la création
       // de l'alerte porte encore l'ancien séparateur "vs" ("Home vs Away"), incompatible avec le
       // nouveau format "Home - Away" demandé ; a.home/a.away restent la source fiable dans tous les cas.
-      return buildAlertText({ league: a.league, matchLabel: matchVs(a), dateStr: a.fixtureDate, betLabel: 'Les 2 équipes marquent : Oui', bk, odds, probability: a.probability, wl: a._wl, stake: a._stake });
+      return buildAlertText({ league: a.league, matchLabel: matchVs(a), dateStr: a.fixtureDate, betLabel: 'Les 2 équipes marquent : Oui', bk, odds, probability: a.probability, wl: a._wl, stake: a._stake, calibratedProbability: a.calibratedProbability, stakeAmount: a._stakeAmount });
     },
     odds: a => bestOdds([['unibet', a.unibetOdds], ['betclic', a.betclicOdds], ['winamax', a.winamaxOdds]]),
     buildAccepted: (a, bk, odds) => propsAccepted(a, bk, odds),
@@ -286,7 +306,7 @@ const ALERT_TYPES = {
     label: a => {
       const [bk, odds] = bkOnlyBestOdds(a);
       const betLabel = `${a.direction === 'over' ? '▲ Plus' : '▼ Moins'} de ${frNum(a.line)} buts`;
-      return buildAlertText({ league: a.league, matchLabel: matchVs(a), dateStr: a.fixtureDate, betLabel, bk, odds, probability: a.probability, wl: a._wl, stake: a._stake });
+      return buildAlertText({ league: a.league, matchLabel: matchVs(a), dateStr: a.fixtureDate, betLabel, bk, odds, probability: a.probability, wl: a._wl, stake: a._stake, calibratedProbability: a.calibratedProbability, stakeAmount: a._stakeAmount });
     },
     odds: a => bestOdds([['unibet', a.unibetOdds], ['betclic', a.betclicOdds], ['winamax', a.winamaxOdds]]),
     buildAccepted: (a, bk, odds) => propsAccepted(a, bk, odds),
@@ -296,29 +316,25 @@ const ALERT_TYPES = {
     label: a => {
       const [bk, odds] = bkOnlyBestOdds(a);
       const who = a.direction === 'draw' ? 'Match nul' : `Victoire ${teamName(a, a.direction)}`;
-      return buildAlertText({ league: a.league, matchLabel: matchVs(a), dateStr: a.fixtureDate, betLabel: who, bk, odds, probability: a.probability, wl: a._wl, stake: a._stake });
+      return buildAlertText({ league: a.league, matchLabel: matchVs(a), dateStr: a.fixtureDate, betLabel: who, bk, odds, probability: a.probability, wl: a._wl, stake: a._stake, calibratedProbability: a.calibratedProbability, stakeAmount: a._stakeAmount });
     },
     odds: a => bestOdds([['unibet', a.unibetOdds], ['betclic', a.betclicOdds], ['winamax', a.winamaxOdds]]),
     buildAccepted: (a, bk, odds) => propsAccepted(a, bk, odds),
   },
-  football_dc_btts: {
+  // Total de buts PAR ÉQUIPE — passé en production le 14 septembre 2026 (voir CLAUDE.md pour
+  // l'historique de calibration). Même format que football_total, libellé nommant l'équipe (a.side).
+  football_team_goals: {
     dateField: 'fixtureDate',
     label: a => {
       const [bk, odds] = bkOnlyBestOdds(a);
-      return buildAlertText({ league: a.league, matchLabel: matchVs(a), dateStr: a.fixtureDate, betLabel: `${dcDirText(a)} & BTTS`, bk, odds, probability: a.probability, wl: a._wl, stake: a._stake });
+      const betLabel = `${teamName(a, a.side)} — ${a.direction === 'over' ? '▲ Plus' : '▼ Moins'} de ${frNum(a.line)} but(s)`;
+      return buildAlertText({ league: a.league, matchLabel: matchVs(a), dateStr: a.fixtureDate, betLabel, bk, odds, probability: a.probability, wl: a._wl, stake: a._stake, calibratedProbability: a.calibratedProbability, stakeAmount: a._stakeAmount });
     },
     odds: a => bestOdds([['unibet', a.unibetOdds], ['betclic', a.betclicOdds]]),
     buildAccepted: (a, bk, odds) => propsAccepted(a, bk, odds),
   },
-  football_dc_ou: {
-    dateField: 'fixtureDate',
-    label: a => {
-      const [bk, odds] = bkOnlyBestOdds(a);
-      return buildAlertText({ league: a.league, matchLabel: matchVs(a), dateStr: a.fixtureDate, betLabel: `${dcDirText(a)} & +${frNum(a.line ?? 1.5)} buts`, bk, odds, probability: a.probability, wl: a._wl, stake: a._stake });
-    },
-    odds: a => bestOdds([['unibet', a.unibetOdds], ['betclic', a.betclicOdds]]),
-    buildAccepted: (a, bk, odds) => propsAccepted(a, bk, odds),
-  },
+  // football_dc_btts / football_dc_ou retirés le 8 septembre 2026 (marché supprimé du projet) —
+  // plus aucune nouvelle alerte de ces types n'est jamais générée par server.js.
   football_pinnacle_edge: {
     dateField: 'fixtureDate',
     label: a => `💎 <b>${leagueLabel(a)} Value vs Pinnacle</b>\n${teamName(a, 'home')} vs ${teamName(a, 'away')}\nEdge : <b>${a.edge != null ? Math.round(a.edge * 100) + '%' : '—'}</b>`,
@@ -398,6 +414,23 @@ function _debugTokensForId(id) {
   return found;
 }
 
+// Invalide les tokens Accepter/Rejeter d'une alerte SANS passer par un vrai clic Telegram (16
+// septembre 2026) — utilisée par POST /api/accepted-alerts (server.js) quand la décision est prise
+// depuis le SITE plutôt que depuis Telegram. Avant cette fonction, un accept web ne touchait jamais
+// _tokenMap : le message Telegram d'origine restait affiché avec ses 2 boutons live indéfiniment,
+// et un tap tardif (même des jours après, notification retrouvée en scrollant) sur "Rejeter" pouvait
+// silencieusement écraser l'acceptation (cas réels Espanyol/Levante, football_team_goals). Retourne
+// le messageId pour permettre d'éditer le texte affiché (fait par l'appelant, qui connaît le vrai
+// libellé via getAlertTypeMeta).
+function invalidateTokensForId(id) {
+  let messageId = null;
+  for (const [tok, e] of _tokenMap.entries()) {
+    if (e.id === id) { messageId = e.messageId; _tokenMap.delete(tok); }
+  }
+  if (messageId) _saveTokenMap();
+  return messageId;
+}
+
 // Envoie une notification pour une alerte fraîchement générée (jamais vue au cycle précédent),
 // avec boutons Accepter/Rejeter. Ne fait rien si le type n'est pas dans le registre ou si Telegram
 // n'est pas configuré (clé absente en local dev sans .env rempli, ou sur Render où on ne veut pas
@@ -435,6 +468,14 @@ function resolveCallbackToken(callbackData) {
   const entry = _tokenMap.get(token);
   if (!action || !entry) return null;
   _tokenMap.delete(token);
+  // Invalide aussi le token du bouton opposé (même id) — filet de sécurité en plus du fix
+  // reply_markup ci-dessus (editTelegramMessage) : même si un client Telegram affiche encore une
+  // copie périmée du message avec ses 2 boutons (cache local, notification déjà affichée avant
+  // l'édition), un 2e clic tardif sur l'autre bouton ne peut plus rien écraser silencieusement —
+  // il tombera sur "Alerte introuvable ou expirée" au lieu de renverser la décision déjà prise.
+  for (const [tok, e] of _tokenMap.entries()) {
+    if (tok !== token && e.id === entry.id) _tokenMap.delete(tok);
+  }
   _saveTokenMap();
   return { action, ...entry };
 }
@@ -442,5 +483,5 @@ function resolveCallbackToken(callbackData) {
 export {
   telegramConfigured, sendTelegramMessage, editTelegramMessage, answerCallbackQuery,
   getAlertTypeMeta, bestOdds, notifyNewAlert, resolveCallbackToken, recordAction, getActionsSince,
-  _debugTokensForId, checkTelegramWebhookHealth,
+  _debugTokensForId, invalidateTokensForId, checkTelegramWebhookHealth,
 };

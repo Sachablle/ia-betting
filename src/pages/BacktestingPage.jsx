@@ -68,7 +68,7 @@ function countAccepted(periodDays, sportFilter, typeFilter, model = 'new') {
   const endCutoff = model === 'old' ? MODEL_SPLIT_MS : Infinity;
   // model === 'all' → rawCutoff + endCutoff=Infinity → tout afficher
   const inPeriod = date => { const t = new Date(date).getTime(); return !isNaN(t) && t >= cutoff && t < endCutoff; };
-  const EU = ['euroleague','wnba','acb','lnb','bbl','legaa','nbl'];
+  const EU = ['euroleague','wnba','acb','lnb','bbl','legaa','nbl','gbl'];
 
   const props = JSON.parse(localStorage.getItem('nba_prop_alerts') || '[]')
     .filter(a => a.status === 'accepted' && inPeriod(a.fixtureDate))
@@ -130,7 +130,6 @@ function countAccepted(periodDays, sportFilter, typeFilter, model = 'new') {
   return props.length + totals.length + teamTotals.length + btts.length + fbTotals.length + fbResults.length + basketResults.length;
 }
 
-const DC_DIR = { '1x': '1X', 'x2': 'X2', '12': '12' };
 // Nom complet un peu trop long à l'affichage (19 juillet 2026) — "Los Angeles X" → "LA X".
 const shortTeamName = n => (n || '').replace(/^Los Angeles\b/, 'LA');
 
@@ -156,7 +155,7 @@ function mapLedgerEntry(a) {
   };
   switch (a.type) {
     case 'player_prop':
-      return { ...base, type: 'prop', sport: ['euroleague','wnba','acb','lnb','bbl','legaa','nbl'].includes(a.league) ? a.league : 'nba',
+      return { ...base, type: 'prop', sport: ['euroleague','wnba','acb','lnb','bbl','legaa','nbl','gbl'].includes(a.league) ? a.league : 'nba',
         label: a.player, sub: `${a.direction === 'over' ? '▲ Over' : '▼ Under'} ${a.line} ${(a.stat || '').toUpperCase()}`,
         actual: a.actualStat, stat: a.stat, direction: a.direction, line: a.line, league: a.league || 'nba' };
     case 'game_total':
@@ -172,18 +171,12 @@ function mapLedgerEntry(a) {
     case 'basketball_result':
       return { ...base, type: 'result', sport: a.league || 'nba',
         label: `${shortTeamName(a.home) || a.homeShort} vs ${shortTeamName(a.away) || a.awayShort}`,
-        sub: `🏆 Victoire ${a.direction === 'home' ? (shortTeamName(a.home) || a.homeShort) : (shortTeamName(a.away) || a.awayShort)}`,
+        sub: `Victoire ${a.direction === 'home' ? (shortTeamName(a.home) || a.homeShort) : (shortTeamName(a.away) || a.awayShort)}`,
         direction: a.direction, league: a.league || 'nba' };
-    case 'basketball_spread':
-      return { ...base, type: 'spread', sport: a.league || 'nba',
-        label: `${shortTeamName(a.home) || a.homeShort} vs ${shortTeamName(a.away) || a.awayShort}`,
-        // 19 juillet 2026 — favori (ligne < 0) affiché "Gagne de X ou +" (seuil entier inclusif, cf.
-        // mention ajoutée sur les cartes d'alerte) plutôt que le handicap .5 brut, pour rester
-        // cohérent avec le marché réellement pris chez le bookmaker.
-        sub: a.line < 0 ? `▲ Gagne de ${Math.floor(Math.abs(a.line))} ou +`
-          : `▲ ${a.direction === 'home' ? (a.homeShort || a.home) : (a.awayShort || a.away)} ${a.line > 0 ? '+' : ''}${a.line}`,
-        actual: a.actualHomeScore != null && a.actualAwayScore != null ? `${a.actualHomeScore}-${a.actualAwayScore}` : null,
-        direction: a.direction, line: a.line, league: a.league || 'nba' };
+    // basketball_spread (Écart H2H, supprimé le 27 août 2026) exclu du bilan Backtesting le 10
+    // septembre 2026 (demande explicite utilisateur : "faussent le bilan") — même traitement que
+    // MLB (déjà exclu via le `default: null` ci-dessous). Historique brut toujours dans
+    // `bet_ledger.json`/`basketball_spread_alerts`, juste plus agrégé ici.
     case 'football_btts':
       return { ...base, type: 'btts', sport: 'football',
         label: a.fixture || `${shortTeamName(a.home) || a.homeShort} vs ${shortTeamName(a.away) || a.awayShort}`,
@@ -199,21 +192,21 @@ function mapLedgerEntry(a) {
     case 'football_result':
       return { ...base, type: 'result', sport: 'football',
         label: `${shortTeamName(a.home) || a.homeShort} vs ${shortTeamName(a.away) || a.awayShort}`,
-        sub: a.direction === 'draw' ? '🏆 Match nul' : `🏆 Victoire ${a.direction === 'home' ? (shortTeamName(a.home) || a.homeShort) : (shortTeamName(a.away) || a.awayShort)}`,
+        sub: a.direction === 'draw' ? 'Match nul' : `Victoire ${a.direction === 'home' ? (shortTeamName(a.home) || a.homeShort) : (shortTeamName(a.away) || a.awayShort)}`,
         actual: (a.actualHomeScore != null && a.actualAwayScore != null) ? `${a.actualHomeScore}-${a.actualAwayScore}` : null,
         direction: a.direction, league: a.league || 'football' };
-    case 'football_dc_btts':
-      return { ...base, type: 'btts', sport: 'football',
-        label: `${shortTeamName(a.home) || a.homeShort} vs ${shortTeamName(a.away) || a.awayShort}`,
-        sub: `DC ${DC_DIR[a.direction] ?? a.direction} & BTTS`,
-        actual: (a.actualHomeScore != null && a.actualAwayScore != null) ? `${a.actualHomeScore}-${a.actualAwayScore}` : null,
-        league: a.league || 'cdm' };
-    case 'football_dc_ou':
+    // football_team_goals (Total de buts par équipe, passé en production le 14 septembre 2026)
+    case 'football_team_goals': {
+      const team = a.side === 'home' ? (shortTeamName(a.home) || a.homeShort) : (shortTeamName(a.away) || a.awayShort);
+      const teamScore = a.side === 'home' ? a.actualHomeScore : a.actualAwayScore;
       return { ...base, type: 'total', sport: 'football',
-        label: `${shortTeamName(a.home) || a.homeShort} vs ${shortTeamName(a.away) || a.awayShort}`,
-        sub: `DC ${DC_DIR[a.direction] ?? a.direction} & +${a.line ?? 1.5} buts`,
-        actual: (a.actualHomeScore != null && a.actualAwayScore != null) ? a.actualHomeScore + a.actualAwayScore : null,
-        line: a.line ?? 1.5, direction: 'over', league: a.league || 'cdm' };
+        label: `${team} (${shortTeamName(a.home) || a.homeShort} vs ${shortTeamName(a.away) || a.awayShort})`,
+        sub: `${a.direction === 'over' ? '▲ Plus' : '▼ Moins'} de ${a.line} but(s)`,
+        actual: teamScore, line: a.line, direction: a.direction, league: a.league || 'football' };
+    }
+    // football_dc_btts/football_dc_ou (DC & BTTS / DC & +1,5, supprimés le 8 septembre 2026) exclus
+    // du bilan Backtesting le 10 septembre 2026 (demande explicite utilisateur : "faussent le
+    // bilan") — même traitement que MLB/Écart H2H ci-dessus.
     // Paris long terme (outright) saisis manuellement (20 juillet 2026) — pas d'alerte générée par
     // le modèle, juste label/sub fournis directement à la création de l'entrée dans le registre.
     case 'outright':
@@ -437,7 +430,7 @@ function calibrationBands(bets) {
 // le win rate réel cumulatif "probabilité affichée >= seuil" — permet de voir à
 // partir de quel % affiché les alertes deviennent vraiment fiables.
 
-const EU_BASKET_LEAGUES = new Set(['acb', 'lnb', 'bbl', 'legaa', 'euroleague', 'nbl']);
+const EU_BASKET_LEAGUES = new Set(['acb', 'lnb', 'bbl', 'legaa', 'euroleague', 'nbl', 'gbl']);
 const CALIB_THRESHOLDS = [55, 60, 65, 70, 75, 80, 85, 90];
 
 function categoryKey(b) {
@@ -575,6 +568,13 @@ function BankrollTracker() {
   // visible sur le compte tant qu'un pari est en jeu (20 juillet 2026).
   const pendingEngaged = getEngagedPending();
   const bk = state.current - pendingEngaged.total;
+  // Gris/bleu "—" tant que moins de 10 vrais paris depuis le dernier reset (12 septembre 2026,
+  // demande explicite utilisateur) — même seuil que le P&L "mises réelles" du bloc KPI plus bas
+  // (bk500RealN) : un solde à -0,66€ sur seulement 4 paris se lit comme une vraie perte confirmée
+  // alors que l'échantillon est encore minuscule.
+  const lastResetIdxBk = state.history.map(h => h.type).lastIndexOf('reset');
+  const bkRealN = state.history.slice(lastResetIdxBk + 1).filter(h => h.type === 'win' || h.type === 'loss').length;
+  const bkNotEnough = bkRealN < 10;
   const stake = getRecommendedStake(bk);
   const bracket = getBracketLabel(bk);
   const progressPct = Math.min(100, (bk / BANKROLL_TARGET) * 100);
@@ -604,8 +604,10 @@ function BankrollTracker() {
         <div>
           <span style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: '#3b82f6' }}>Suivi Bankroll ({Math.round(state.startAmount)}€)</span>
           <div style={{ display: 'flex', alignItems: 'baseline', gap: '0.6rem', marginTop: '0.3rem' }}>
-            <span style={{ fontSize: 30, fontWeight: 800, color: 'var(--text)', fontVariantNumeric: 'tabular-nums' }}>{bk.toFixed(0)}€</span>
-            <span style={{ fontSize: 13, color: 'var(--text-dim)' }}>/ objectif {BANKROLL_TARGET.toLocaleString('fr-FR')}€</span>
+            <span style={{ fontSize: 30, fontWeight: 800, color: bkNotEnough ? '#3b82f6' : 'var(--text)', fontVariantNumeric: 'tabular-nums' }}>
+              {bkNotEnough ? '—' : `${bk.toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}€`}
+            </span>
+            <span style={{ fontSize: 13, color: 'var(--text-dim)' }}>{bkNotEnough ? '(trop peu de données)' : `/ objectif ${BANKROLL_TARGET.toLocaleString('fr-FR')}€`}</span>
           </div>
           {pendingEngaged.stakes.length > 0 && (
             <div title={pendingEngaged.stakes.map(s => `${s}€`).join(' + ')} style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 2 }}>
@@ -799,10 +801,16 @@ function LineChart({ points, yKey, color, label, yFormat, baseline }) {
   );
 }
 
+// Seuil relevé de 2 à 10 (12 septembre 2026, demande explicite utilisateur) — même seuil que
+// calcSignificance()/le KPI ROI : une courbe à mise fictive égale (même méthode que le ROI, cf.
+// buildCumPL) tracée sur 2-9 points se lit comme une vraie tendance alors que c'est juste du bruit
+// statistique à cet échantillon. Message aligné sur celui de LineChart (Win Rate glissant) juste à côté.
+const PL_CHART_MIN_POINTS = 10;
+
 function PLChart({ points }) {
-  if (points.length < 2) return (
+  if (points.length < PL_CHART_MIN_POINTS) return (
     <div style={{ height: 140, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-dim)', fontSize: 13 }}>
-      Pas assez de données
+      Pas assez de données ({PL_CHART_MIN_POINTS}+ paris min.)
     </div>
   );
   const W = 600, H = 140, PAD = { t: 12, b: 24, l: 40, r: 12 };
@@ -1113,7 +1121,7 @@ const TIMELINE = [
   { key: '10j',  label: '10j',  days: 10       },
 ];
 const SPORT_FILTERS = [{ key: 'all', label: 'Tous' }, { key: 'basket', label: 'Basket' }, { key: 'foot', label: 'Foot' }];
-const BASKET_LEAGUES = new Set(['nba','wnba','euroleague','acb','lnb','bbl','legaa','nbl']);
+const BASKET_LEAGUES = new Set(['nba','wnba','euroleague','acb','lnb','bbl','legaa','nbl','gbl']);
 const COMP_FILTERS  = [
   { key: 'nba',        label: 'NBA',            sport: 'basket' },
   { key: 'wnba',       label: 'WNBA',           sport: 'basket' },
@@ -1123,6 +1131,7 @@ const COMP_FILTERS  = [
   { key: 'bbl',        label: 'BBL',             sport: 'basket' },
   { key: 'legaa',      label: 'Lega A',          sport: 'basket' },
   { key: 'nbl',        label: 'NBL',             sport: 'basket' },
+  { key: 'gbl',        label: 'Basket League',   sport: 'basket' },
   { key: 'ligue1',     label: 'Ligue 1',         sport: 'foot'   },
   { key: 'laliga',     label: 'La Liga',          sport: 'foot'   },
   { key: 'bundesliga', label: 'Bundesliga',       sport: 'foot'   },
@@ -1479,6 +1488,15 @@ export default function BacktestingPage() {
     const lastResetIdx = bkState.history.map(h => h.type).lastIndexOf('reset');
     return bkState.history.slice(lastResetIdx + 1).reduce((sum, h) => sum + (h.profit || 0), 0);
   }, [model, reloadKey]);
+  // Nombre de paris réels (won/lost) depuis le dernier reset — 12 septembre 2026, demande explicite
+  // utilisateur : gate le P&L "mises réelles" (et le solde Suivi Bankroll, BankrollTracker plus bas)
+  // sur le même principe que ROI/Win Rate/courbe P&L — un -0,66€ sur 4 vrais paris se lit comme une
+  // vraie perte confirmée alors que c'est un échantillon minuscule, pas encore significatif.
+  const bk500RealN = useMemo(() => {
+    const bkState = loadBankrollState();
+    const lastResetIdx = bkState.history.map(h => h.type).lastIndexOf('reset');
+    return bkState.history.slice(lastResetIdx + 1).filter(h => h.type === 'win' || h.type === 'loss').length;
+  }, [reloadKey]);
 
   const metrics    = useMemo(() => calcMetrics(filtered),       [filtered]);
   const dd         = useMemo(() => calcDrawdown(filtered),           [filtered]);
@@ -1639,12 +1657,33 @@ export default function BacktestingPage() {
         <div style={{ transition: 'transform 0.28s ease, opacity 0.28s ease', transform: sectionsFlipping ? 'scaleX(0)' : 'scaleX(1)', opacity: sectionsFlipping ? 0 : 1 }}>
 
         {/* KPIs ligne 1 — performance */}
+        {(() => {
+          // ROI figé à 0 (valeur ET couleur neutres) tant que l'échantillon est trop petit pour être
+          // significatif — même seuil que calcSignificance() (n<10 non-void). Win Rate garde sa vraie
+          // valeur et sa vraie couleur à tout N — 12 septembre 2026, demande explicite utilisateur
+          // (retour sur un 1er essai qui grisait aussi le Win Rate) : le Win Rate seul n'est pas jugé
+          // trompeur à petit échantillon, contrairement au ROI (dépend aussi des cotes, bien plus
+          // bruyant sur 4 paris — cas réel -16,5% qui se lisait comme une vraie perte avérée). Le P&L
+          // (argent réellement engagé, un fait comptable et non une inférence statistique) garde son
+          // propre code couleur, inchangé.
+          const nonVoidN = D.metrics.won + D.metrics.lost;
+          const notEnoughData = nonVoidN < 10;
+          const wrColor  = D.metrics.winRate == null ? 'var(--text-dim)' : D.metrics.winRate >= 50 ? '#4ade80' : '#ef4444';
+          // P&L "mises réelles" (bk500) — gris "—" tant que < 10 vrais paris depuis le dernier reset
+          // (bk500RealN), même principe que ci-dessus. Ne s'applique qu'au modèle bk500 — l'autre
+          // branche (mise flat manuelle) reste inchangée, pas concernée par cette demande.
+          const plNotEnough = model === 'bk500' && bk500RealN < 10;
+          const plValue = plNotEnough ? '—' : `${bk500RealPL != null ? (bk500RealPL >= 0 ? '+' : '') + bk500RealPL.toFixed(0) : (D.metrics.pl >= 0 ? '+' : '') + (D.metrics.pl * stake).toFixed(0)}€`;
+          const plColor = plNotEnough ? 'var(--text-dim)' : ((bk500RealPL ?? D.metrics.pl) >= 0 ? '#4ade80' : '#ef4444');
+          return (
         <div style={{ display: 'flex', gap: '0.6rem', flexWrap: 'wrap', marginBottom: '0.6rem' }}>
           <KpiCard pinnacle={showPinnacle} label="Paris résolus" value={D.metrics.total} sub={`${D.metrics.won}W · ${D.metrics.lost}L`} />
-          <KpiCard pinnacle={showPinnacle} label="Win Rate"  value={D.metrics.winRate != null ? `${D.metrics.winRate.toFixed(1)}%` : '—'} sub={`${D.metrics.won + D.metrics.lost} non-void`} color={D.metrics.winRate == null ? 'var(--text-dim)' : D.metrics.winRate >= 50 ? '#4ade80' : '#ef4444'} />
-          <KpiCard pinnacle={showPinnacle} label="ROI"       value={D.metrics.roi != null ? `${D.metrics.roi >= 0 ? '+' : ''}${D.metrics.roi.toFixed(1)}%` : '—'} sub={model === 'bk500' ? 'mises réelles' : `flat ${stake}€/pari`} color={D.metrics.roi == null ? 'var(--text-dim)' : D.metrics.roi >= 0 ? '#4ade80' : '#ef4444'} />
-          <KpiCard pinnacle={showPinnacle} label="P&L"       value={`${bk500RealPL != null ? (bk500RealPL >= 0 ? '+' : '') + bk500RealPL.toFixed(0) : (D.metrics.pl >= 0 ? '+' : '') + (D.metrics.pl * stake).toFixed(0)}€`} sub={model === 'bk500' ? 'mises réelles' : `mise ${stake}€/alerte`} color={(bk500RealPL ?? D.metrics.pl) >= 0 ? '#4ade80' : '#ef4444'} />
+          <KpiCard pinnacle={showPinnacle} label="Win Rate"  value={D.metrics.winRate != null ? `${D.metrics.winRate.toFixed(1)}%` : '—'} sub={`${nonVoidN} non-void`} color={wrColor} />
+          <KpiCard pinnacle={showPinnacle} label="ROI"       value={notEnoughData ? '0.0%' : (D.metrics.roi != null ? `${D.metrics.roi >= 0 ? '+' : ''}${D.metrics.roi.toFixed(1)}%` : '—')} sub={notEnoughData ? 'trop peu de données' : (model === 'bk500' ? 'mises réelles' : `flat ${stake}€/pari`)} color={notEnoughData || D.metrics.roi == null ? 'var(--text-dim)' : D.metrics.roi >= 0 ? '#4ade80' : '#ef4444'} />
+          <KpiCard pinnacle={showPinnacle} label="P&L"       value={plValue} sub={plNotEnough ? 'trop peu de données' : (model === 'bk500' ? 'mises réelles' : `mise ${stake}€/alerte`)} color={plColor} />
         </div>
+          );
+        })()}
 
         {/* KPIs ligne 2 — séries + significativité */}
         {(() => { const dD = showPinnacle ? pinDd : dd; const sG = showPinnacle ? pinSig : sig; return (

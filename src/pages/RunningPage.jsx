@@ -14,19 +14,23 @@ const BASKETBALL_RESULT_KEY = 'basketball_result_alerts';
 const BBALL_PINNACLE_KEY = 'bball_pinnacle_alerts';
 const FB_BTTS_KEY    = 'fb_btts_alerts';
 const FB_TOTAL_KEY   = 'fb_total_alerts';
+const FB_TEAM_GOALS_KEY = 'fb_team_goals_alerts';
 const FB_RESULT_KEY  = 'fb_result_alerts';
 const FB_PINNACLE_KEY = 'fb_pinnacle_alerts';
-const STAT_LABEL     = { pts: 'Pts', reb: 'Reb', ast: 'Ast', total: 'Total', team_total: 'Total équipe', btts: 'BTTS', result: 'Résultat', pinnacle_edge: 'Pinnacle', dc_btts: 'DC+BTTS', dc_ou: 'DC+1.5' };
+const STAT_LABEL     = { pts: 'Pts', reb: 'Reb', ast: 'Ast', total: 'Total', team_total: 'Total équipe', btts: 'BTTS', result: 'Résultat', pinnacle_edge: 'Pinnacle', dc_btts: 'DC+BTTS', dc_ou: 'DC+1.5', team_goals: 'Buts équipe' };
 
 // Ligues football — affichées dans les mêmes "MatchGroup" compacts que le basket
 const EU_CUP_LEAGUES = ['europa', 'conference', 'champions'];
-const FB_LEAGUES = new Set(['cdm', 'ligue1', 'pl', 'laliga', 'bundes', 'seriea', 'bresil', ...EU_CUP_LEAGUES]);
-const FB_LEAGUE_LABEL = { cdm: 'CDM', ligue1: 'L1', pl: 'PL', laliga: 'Liga', bundes: 'BL', seriea: 'SA', bresil: 'BRA', europa: 'UEL', conference: 'UECL', champions: 'LDC' };
+// Grèce/Arabie/Portugal ajoutées le 9 septembre 2026 — absentes de ce Set depuis leur ajout initial
+// (8 septembre pour les 2 premières), oubli trouvé en ajoutant le Portugal : sans ça, un match de
+// ces 3 championnats aurait la bordure orange "basket" et le mauvais fallback logo dans Running.
+const FB_LEAGUES = new Set(['cdm', 'ligue1', 'pl', 'laliga', 'bundes', 'seriea', 'bresil', 'grece', 'arabie', 'portugal', ...EU_CUP_LEAGUES]);
+const FB_LEAGUE_LABEL = { cdm: 'CDM', ligue1: 'L1', pl: 'PL', laliga: 'Liga', bundes: 'BL', seriea: 'SA', bresil: 'BRA', europa: 'UEL', conference: 'UECL', champions: 'LDC', grece: 'GRE', arabie: 'KSA', portugal: 'POR' };
 
 const IN_GAME = s => s === 'STATUS_IN_PROGRESS' || s === 'STATUS_END_PERIOD' || s === 'STATUS_HALFTIME' || s === 'STATUS_END_OF_PERIOD';
 
 // ── Prefetch au hover (même logique que BasketballMatchRow / MatchRow) ────────
-const _EU_LEAGUES = new Set(['acb','lnb','bbl','legaa','euroleague','nbl']);
+const _EU_LEAGUES = new Set(['acb','lnb','bbl','legaa','euroleague','nbl','gbl']);
 const _ESPN_NBA_RUN = {
   'Atlanta Hawks':1,'Boston Celtics':2,'New Orleans Pelicans':3,'Chicago Bulls':4,
   'Cleveland Cavaliers':5,'Dallas Mavericks':6,'Denver Nuggets':7,'Detroit Pistons':8,
@@ -232,6 +236,7 @@ function bballPinnacleAlertToGroup(a) {
 function footballAlertToGroup(a) {
   const isBtts          = a.type === 'football_btts';
   const isResult        = a.type === 'football_result';
+  const isTeamGoals     = a.type === 'football_team_goals';
   const isPinnacle      = a.type === 'football_pinnacle_edge';
   const isDcBtts        = a.type === 'football_dc_btts';
   const isDcOu          = a.type === 'football_dc_ou';
@@ -240,10 +245,12 @@ function footballAlertToGroup(a) {
   const dcHome = a.homeShort || a.home;
   const dcAway = a.awayShort || a.away;
   const DC_TEAMS = { '1x': `${dcHome} / Nul`, 'x2': `Nul / ${dcAway}`, '12': `${dcHome} / ${dcAway}` };
+  const teamGoalsTeam = isTeamGoals ? (a.side === 'home' ? (a.homeShort || a.home) : (a.awayShort || a.away)) : null;
   return {
     key: `fb__${a.id}`, type: a.type,
     player: isBtts ? 'Les deux équipes marquent' : isResult ? 'Résultat 1X2' : isPinnacle ? 'Value Bet vs Pinnacle'
-      : isDcBtts ? `${DC_TEAMS[a.direction] ?? a.direction} & BTTS` : isDcOu ? `${DC_TEAMS[a.direction] ?? a.direction} & +${a.line ?? 1.5} but` : 'Total buts',
+      : isDcBtts ? `${DC_TEAMS[a.direction] ?? a.direction} & BTTS` : isDcOu ? `${DC_TEAMS[a.direction] ?? a.direction} & +${a.line ?? 1.5} but`
+      : isTeamGoals ? `${teamGoalsTeam} — buts` : 'Total buts',
     team: null, fixture: isBtts ? a.fixture : `${a.home} vs ${a.away}`,
     fixtureDate: a.fixtureDate,
     homeTeam: isBtts ? a.homeTeam : a.home, awayTeam: isBtts ? a.awayTeam : a.away,
@@ -253,7 +260,7 @@ function footballAlertToGroup(a) {
     eventId: a.fixtureId || a.eventId || null,
     league: a.league || 'cdm',
     stats: [{
-      stat: isBtts ? 'btts' : isResult ? 'result' : isPinnacle ? 'pinnacle_edge' : isDcBtts ? 'dc_btts' : isDcOu ? 'dc_ou' : 'total',
+      stat: isBtts ? 'btts' : isResult ? 'result' : isPinnacle ? 'pinnacle_edge' : isDcBtts ? 'dc_btts' : isDcOu ? 'dc_ou' : isTeamGoals ? 'team_goals' : 'total',
       market: isPinnacle ? (a.market || 'h2h') : null,
       direction: isBtts ? 'yes' : a.direction,
       line: isLineless ? null : a.line,
@@ -348,7 +355,12 @@ function useLiveScores(matchGroups) {
                 homeLogo: g.home?.logo || null,
                 awayLogo: g.away?.logo || null,
                 status: g.status,
-                statusDetail: g.round || '',
+                // Minute live (14 septembre 2026) — statusDetail servait jusqu'ici le round ("Journée
+                // 5") même pendant le match, jamais la minute, contrairement à WorldMapPage.jsx/
+                // MatchDetailPage.jsx (déjà corrigés le 13 septembre) : MatchStatusBadge affichait donc
+                // "Journée 5" au lieu de "63'" sur toutes les sources foot de ce hook. g.round reste le
+                // repli si elapsed est absent (match live sans cette donnée, cas rare).
+                statusDetail: g.elapsed != null ? `${g.elapsed}'` : (g.round || ''),
               };
             }
             continue;
@@ -368,7 +380,12 @@ function useLiveScores(matchGroups) {
                 homeLogo: g.home?.logoId || null,
                 awayLogo: g.away?.logoId || null,
                 status: g.status,
-                statusDetail: g.round || '',
+                // Minute live (14 septembre 2026) — statusDetail servait jusqu'ici le round ("Journée
+                // 5") même pendant le match, jamais la minute, contrairement à WorldMapPage.jsx/
+                // MatchDetailPage.jsx (déjà corrigés le 13 septembre) : MatchStatusBadge affichait donc
+                // "Journée 5" au lieu de "63'" sur toutes les sources foot de ce hook. g.round reste le
+                // repli si elapsed est absent (match live sans cette donnée, cas rare).
+                statusDetail: g.elapsed != null ? `${g.elapsed}'` : (g.round || ''),
               };
             }
             continue;
@@ -389,15 +406,119 @@ function useLiveScores(matchGroups) {
                 homeLogo: g.home?.logoId || null,
                 awayLogo: g.away?.logoId || null,
                 status: g.status,
-                statusDetail: g.round || '',
+                // Minute live (14 septembre 2026) — statusDetail servait jusqu'ici le round ("Journée
+                // 5") même pendant le match, jamais la minute, contrairement à WorldMapPage.jsx/
+                // MatchDetailPage.jsx (déjà corrigés le 13 septembre) : MatchStatusBadge affichait donc
+                // "Journée 5" au lieu de "63'" sur toutes les sources foot de ce hook. g.round reste le
+                // repli si elapsed est absent (match live sans cette donnée, cas rare).
+                statusDetail: g.elapsed != null ? `${g.elapsed}'` : (g.round || ''),
               };
             }
             continue;
           }
-          // Les 5 grands championnats n'ont pas encore de source de scores live
+          // Grèce Super League (8 septembre 2026) : live scores + crests via /api/football/grece,
+          // même patron que Brasileirão ci-dessus (jamais passée par FD, source dédiée dès le départ).
+          if (league === 'grece') {
+            const d = await fetch('/api/football/grece').then(r => r.ok ? r.json() : null).catch(() => null);
+            const games = d?.matches || [];
+            for (const m of matches) {
+              const gid = String(m.eventId || '').replace('grc_', '');
+              const g = games.find(g => String(g.id) === gid);
+              if (g) result[m.matchKey] = {
+                homeScore: g.home?.score ?? null,
+                awayScore: g.away?.score ?? null,
+                homeLogo: g.home?.logoId || null,
+                awayLogo: g.away?.logoId || null,
+                status: g.status,
+                // Minute live (14 septembre 2026) — statusDetail servait jusqu'ici le round ("Journée
+                // 5") même pendant le match, jamais la minute, contrairement à WorldMapPage.jsx/
+                // MatchDetailPage.jsx (déjà corrigés le 13 septembre) : MatchStatusBadge affichait donc
+                // "Journée 5" au lieu de "63'" sur toutes les sources foot de ce hook. g.round reste le
+                // repli si elapsed est absent (match live sans cette donnée, cas rare).
+                statusDetail: g.elapsed != null ? `${g.elapsed}'` : (g.round || ''),
+              };
+            }
+            continue;
+          }
+          // Arabie Saoudite Pro League (8 septembre 2026) — même patron que la Grèce ci-dessus.
+          if (league === 'arabie') {
+            const d = await fetch('/api/football/arabie').then(r => r.ok ? r.json() : null).catch(() => null);
+            const games = d?.matches || [];
+            for (const m of matches) {
+              const gid = String(m.eventId || '').replace('arb_', '');
+              const g = games.find(g => String(g.id) === gid);
+              if (g) result[m.matchKey] = {
+                homeScore: g.home?.score ?? null,
+                awayScore: g.away?.score ?? null,
+                homeLogo: g.home?.logoId || null,
+                awayLogo: g.away?.logoId || null,
+                status: g.status,
+                // Minute live (14 septembre 2026) — statusDetail servait jusqu'ici le round ("Journée
+                // 5") même pendant le match, jamais la minute, contrairement à WorldMapPage.jsx/
+                // MatchDetailPage.jsx (déjà corrigés le 13 septembre) : MatchStatusBadge affichait donc
+                // "Journée 5" au lieu de "63'" sur toutes les sources foot de ce hook. g.round reste le
+                // repli si elapsed est absent (match live sans cette donnée, cas rare).
+                statusDetail: g.elapsed != null ? `${g.elapsed}'` : (g.round || ''),
+              };
+            }
+            continue;
+          }
+          // Portugal Primeira Liga (9 septembre 2026) — même patron que la Grèce/l'Arabie ci-dessus.
+          if (league === 'portugal') {
+            const d = await fetch('/api/football/portugal').then(r => r.ok ? r.json() : null).catch(() => null);
+            const games = d?.matches || [];
+            for (const m of matches) {
+              const gid = String(m.eventId || '').replace('por_', '');
+              const g = games.find(g => String(g.id) === gid);
+              if (g) result[m.matchKey] = {
+                homeScore: g.home?.score ?? null,
+                awayScore: g.away?.score ?? null,
+                homeLogo: g.home?.logoId || null,
+                awayLogo: g.away?.logoId || null,
+                status: g.status,
+                // Minute live (14 septembre 2026) — statusDetail servait jusqu'ici le round ("Journée
+                // 5") même pendant le match, jamais la minute, contrairement à WorldMapPage.jsx/
+                // MatchDetailPage.jsx (déjà corrigés le 13 septembre) : MatchStatusBadge affichait donc
+                // "Journée 5" au lieu de "63'" sur toutes les sources foot de ce hook. g.round reste le
+                // repli si elapsed est absent (match live sans cette donnée, cas rare).
+                statusDetail: g.elapsed != null ? `${g.elapsed}'` : (g.round || ''),
+              };
+            }
+            continue;
+          }
+          // Big Five (Ligue 1/PL/La Liga/Bundesliga/Serie A) : live scores + crests via
+          // /api/fd/matches, migrées vers api-football depuis le 2 septembre 2026 — une vraie source
+          // live existe désormais (`status`/scores en direct), contrairement au commentaire précédent
+          // ("pas encore de source live") resté périmé depuis la migration. Bug trouvé le 12 septembre
+          // 2026 (cas réel Strasbourg-Monaco, resté hors "live" dans Running malgré un match
+          // réellement en cours) — même patron que Brésil/Grèce/Arabie/Portugal ci-dessus.
+          if (['ligue1', 'pl', 'laliga', 'bundes', 'seriea'].includes(league)) {
+            const d = await fetch('/api/fd/matches').then(r => r.ok ? r.json() : null).catch(() => null);
+            const games = d?.matches || [];
+            for (const m of matches) {
+              const gid = String(m.eventId || '').replace('fd_', '');
+              const g = games.find(g => String(g.id) === gid);
+              if (g) result[m.matchKey] = {
+                homeScore: g.home?.score ?? null,
+                awayScore: g.away?.score ?? null,
+                homeLogo: g.home?.logoId || null,
+                awayLogo: g.away?.logoId || null,
+                status: g.status,
+                // Minute live (14 septembre 2026) — statusDetail servait jusqu'ici le round ("Journée
+                // 5") même pendant le match, jamais la minute, contrairement à WorldMapPage.jsx/
+                // MatchDetailPage.jsx (déjà corrigés le 13 septembre) : MatchStatusBadge affichait donc
+                // "Journée 5" au lieu de "63'" sur toutes les sources foot de ce hook. g.round reste le
+                // repli si elapsed est absent (match live sans cette donnée, cas rare).
+                statusDetail: g.elapsed != null ? `${g.elapsed}'` : (g.round || ''),
+              };
+            }
+            continue;
+          }
+          // La CDM et les 3 coupes d'Europe ont déjà leur propre bloc plus haut ; tout le reste de
+          // FB_LEAGUES est désormais couvert — plus aucun championnat foot sans source live ici.
           if (FB_LEAGUES.has(league)) continue;
 
-          const EU = ['acb','lnb','bbl','legaa','nbl'];
+          const EU = ['acb','lnb','bbl','legaa','nbl','gbl'];
           const url = league === 'wnba' ? '/api/wnba/scoreboard'
             : EU.includes(league) ? `/api/euro/${league}/scoreboard`
             : '/api/nba/scoreboard';
@@ -551,7 +672,7 @@ function AlertCard({ group, playerStats, onDismiss, onEditStake }) {
       }
       return;
     }
-    const EU = ['acb','lnb','bbl','legaa','nbl'];
+    const EU = ['acb','lnb','bbl','legaa','nbl','gbl'];
     const isEuroLg = EU.includes(group.league) || group.league === 'euroleague';
     // NBA/WNBA : la page de match utilise le scoreboard ESPN live (fixture.id = eventId ESPN),
     // donc on navigue directement avec cet id — exactement comme BasketballMatchRow/PlaceBetPage.
@@ -606,7 +727,11 @@ function AlertCard({ group, playerStats, onDismiss, onEditStake }) {
           <span style={{ fontSize: 11, fontWeight: 700, color: '#22d3ee', flexShrink: 0 }}>
             💎 {s.direction === 'draw' ? 'Nul' : s.direction === 'home' ? (group.homeShort || group.homeTeam) : (group.awayShort || group.awayTeam)}
           </span>
-        ) : s && (s.stat === 'dc_btts' || s.stat === 'dc_ou') ? null : s && (
+        ) : s && (s.stat === 'dc_btts' || s.stat === 'dc_ou') ? null : s && s.stat === 'team_goals' ? (
+          <span style={{ fontSize: 11, fontWeight: 700, color: s.direction === 'over' ? '#4ade80' : '#f87171', flexShrink: 0 }}>
+            {s.direction === 'over' ? '▲' : '▼'} {s.line}
+          </span>
+        ) : s && (
           <span style={{ fontSize: 11, fontWeight: 700, color: s.direction === 'over' ? '#4ade80' : '#f87171', flexShrink: 0 }}>
             {s.direction === 'over' ? '▲' : '▼'} {s.line} {STAT_LABEL[s.stat] ?? s.stat}
           </span>
@@ -686,7 +811,7 @@ function TeamLogo({ logo, short, name, size = 40, league = 'nba' }) {
   // Signalé par l'utilisateur — alerte New York Liberty sans logo.
   const normS = league === 'wnba' ? (short || '').toLowerCase() : normShort(short).toLowerCase();
   const fallback = normS ? (
-    ['acb','lnb','bbl','legaa','euroleague','nbl'].includes(league) || FB_LEAGUES.has(league)
+    ['acb','lnb','bbl','legaa','euroleague','nbl','gbl'].includes(league) || FB_LEAGUES.has(league)
       ? null
       : league === 'wnba'
         ? `https://a.espncdn.com/i/teamlogos/wnba/500/${normS}.png`
@@ -720,7 +845,7 @@ function MatchGroup({ match, scoreData, liveStats, onDismiss, onEditStake }) {
   useEffect(() => { if (isLive) setOpen(true); }, [isLive]);
 
   const hasScore = scoreData?.homeScore != null && scoreData?.awayScore != null;
-  const leagueLabel = { nba: 'NBA', wnba: 'WNBA', acb: 'ACB', lnb: 'LNB', bbl: 'BBL', legaa: 'Lega A', euroleague: 'EL', nbl: 'NBL', ...FB_LEAGUE_LABEL }[league] || league?.toUpperCase();
+  const leagueLabel = { nba: 'NBA', wnba: 'WNBA', acb: 'ACB', lnb: 'LNB', bbl: 'BBL', legaa: 'Lega A', euroleague: 'EL', nbl: 'NBL', gbl: 'GBL', ...FB_LEAGUE_LABEL }[league] || league?.toUpperCase();
   const matchTime = fixtureDate ? new Date(fixtureDate).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }) : '';
   // Même paire d'équipes plusieurs fois (série best-of) → date en plus de l'heure pour les distinguer
   const matchDatePrefix = showDate && fixtureDate ? `${new Date(fixtureDate).toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit' })} ` : '';
@@ -812,6 +937,9 @@ export default function RunningPage() {
   const [fbTotalAlerts, setFbTotalAlerts] = useState(() => {
     try { return JSON.parse(localStorage.getItem(FB_TOTAL_KEY) || '[]'); } catch { return []; }
   });
+  const [fbTeamGoalsAlerts, setFbTeamGoalsAlerts] = useState(() => {
+    try { return JSON.parse(localStorage.getItem(FB_TEAM_GOALS_KEY) || '[]'); } catch { return []; }
+  });
   const [fbResultAlerts, setFbResultAlerts] = useState(() => {
     try { return JSON.parse(localStorage.getItem(FB_RESULT_KEY) || '[]'); } catch { return []; }
   });
@@ -842,6 +970,7 @@ export default function RunningPage() {
     const reloadFootball = () => {
       try { setBttsAlerts(JSON.parse(localStorage.getItem(FB_BTTS_KEY) || '[]')); } catch {}
       try { setFbTotalAlerts(JSON.parse(localStorage.getItem(FB_TOTAL_KEY) || '[]')); } catch {}
+      try { setFbTeamGoalsAlerts(JSON.parse(localStorage.getItem(FB_TEAM_GOALS_KEY) || '[]')); } catch {}
       try { setFbResultAlerts(JSON.parse(localStorage.getItem(FB_RESULT_KEY) || '[]')); } catch {}
       try { setFbPinnacleAlerts(JSON.parse(localStorage.getItem(FB_PINNACLE_KEY) || '[]')); } catch {}
       try { setDcBttsAlerts(JSON.parse(localStorage.getItem(FB_DC_BTTS_KEY) || '[]')); } catch {}
@@ -850,6 +979,7 @@ export default function RunningPage() {
     window.addEventListener('nba_alerts_updated', reloadFromStorage);
     window.addEventListener('fb_btts_alerts_updated', reloadFootball);
     window.addEventListener('fb_total_alerts_updated', reloadFootball);
+    window.addEventListener('fb_team_goals_alerts_updated', reloadFootball);
     window.addEventListener('fb_result_alerts_updated', reloadFootball);
     window.addEventListener('fb_pinnacle_alerts_updated', reloadFootball);
     window.addEventListener('fb_dc_btts_alerts_updated', reloadFootball);
@@ -885,6 +1015,8 @@ export default function RunningPage() {
         resolveCompletedFootballAlerts(btts, alerts => { persistAlertsKey(FB_BTTS_KEY, alerts); setBttsAlerts(alerts); });
         const fbTotal = JSON.parse(localStorage.getItem(FB_TOTAL_KEY) || '[]');
         resolveCompletedFootballAlerts(fbTotal, alerts => { persistAlertsKey(FB_TOTAL_KEY, alerts); setFbTotalAlerts(alerts); });
+        const fbTeamGoals = JSON.parse(localStorage.getItem(FB_TEAM_GOALS_KEY) || '[]');
+        resolveCompletedFootballAlerts(fbTeamGoals, alerts => { persistAlertsKey(FB_TEAM_GOALS_KEY, alerts); setFbTeamGoalsAlerts(alerts); });
         const fbResult = JSON.parse(localStorage.getItem(FB_RESULT_KEY) || '[]');
         resolveCompletedFootballAlerts(fbResult, alerts => { persistAlertsKey(FB_RESULT_KEY, alerts); setFbResultAlerts(alerts); });
         const fbPinnacle = JSON.parse(localStorage.getItem(FB_PINNACLE_KEY) || '[]');
@@ -925,6 +1057,7 @@ export default function RunningPage() {
       window.removeEventListener('nba_alerts_updated', reloadFromStorage);
       window.removeEventListener('fb_btts_alerts_updated', reloadFootball);
       window.removeEventListener('fb_total_alerts_updated', reloadFootball);
+      window.removeEventListener('fb_team_goals_alerts_updated', reloadFootball);
       window.removeEventListener('fb_result_alerts_updated', reloadFootball);
       window.removeEventListener('fb_pinnacle_alerts_updated', reloadFootball);
       window.removeEventListener('fb_dc_btts_alerts_updated', reloadFootball);
@@ -943,12 +1076,13 @@ export default function RunningPage() {
   const acceptedBballPinnacle = bballPinnacleAlerts.filter(a => a.status === 'accepted').map(bballPinnacleAlertToGroup);
   const acceptedBtts = bttsAlerts.filter(a => a.status === 'accepted');
   const acceptedFbTotal = fbTotalAlerts.filter(a => a.status === 'accepted');
+  const acceptedFbTeamGoals = fbTeamGoalsAlerts.filter(a => a.status === 'accepted');
   const acceptedFbResult = fbResultAlerts.filter(a => a.status === 'accepted');
   const acceptedFbPinnacle = fbPinnacleAlerts.filter(a => a.status === 'accepted');
   const dedupFootballDC = arr => { const seen = new Set(); return arr.filter(a => { const k = `${(a.fixtureDate||'').slice(0,10)}__${(a.home||'').toLowerCase()}__${(a.away||'').toLowerCase()}__${a.type}__${a.direction}`; if (seen.has(k)) return false; seen.add(k); return true; }); };
   const acceptedDcBtts = dedupFootballDC(dcBttsAlerts.filter(a => a.status === 'accepted'));
   const acceptedDcOu   = dedupFootballDC(dcOuAlerts.filter(a => a.status === 'accepted'));
-  const footballGroups = [...acceptedBtts.map(footballAlertToGroup), ...acceptedFbTotal.map(footballAlertToGroup), ...acceptedFbResult.map(footballAlertToGroup), ...acceptedFbPinnacle.map(footballAlertToGroup), ...acceptedDcBtts.map(footballAlertToGroup), ...acceptedDcOu.map(footballAlertToGroup)];
+  const footballGroups = [...acceptedBtts.map(footballAlertToGroup), ...acceptedFbTotal.map(footballAlertToGroup), ...acceptedFbTeamGoals.map(footballAlertToGroup), ...acceptedFbResult.map(footballAlertToGroup), ...acceptedFbPinnacle.map(footballAlertToGroup), ...acceptedDcBtts.map(footballAlertToGroup), ...acceptedDcOu.map(footballAlertToGroup)];
   const allAcceptedGroups = [...acceptedGroups, ...acceptedTotalGroups, ...acceptedTeamTotalGroups, ...acceptedResultGroups, ...acceptedBballPinnacle, ...footballGroups];
   const matchGroups = groupByMatch(allAcceptedGroups);
   const liveStats = useLiveBoxscore(acceptedGroups);
@@ -990,6 +1124,7 @@ export default function RunningPage() {
     }
     if (group?.type === 'football_btts') { dismissBtts(group.ids[0]); return; }
     if (group?.type === 'football_total') { dismissFbTotal(group.ids[0]); return; }
+    if (group?.type === 'football_team_goals') { dismissFbTeamGoals(group.ids[0]); return; }
     if (group?.type === 'football_result') { dismissFbResult(group.ids[0]); return; }
     if (group?.type === 'football_pinnacle_edge') { dismissFbPinnacle(group.ids[0]); return; }
     if (group?.type === 'football_dc_btts') { dismissDcBtts(group.ids[0]); return; }
@@ -1065,6 +1200,11 @@ export default function RunningPage() {
       try { persistAlertsKey(FB_TOTAL_KEY, updated); } catch {}
       setFbTotalAlerts(updated); postIfNeeded(updated); return;
     }
+    if (group?.type === 'football_team_goals') {
+      const updated = fbTeamGoalsAlerts.map(patch);
+      try { persistAlertsKey(FB_TEAM_GOALS_KEY, updated); } catch {}
+      setFbTeamGoalsAlerts(updated); postIfNeeded(updated); return;
+    }
     if (group?.type === 'football_result') {
       const updated = fbResultAlerts.map(patch);
       try { persistAlertsKey(FB_RESULT_KEY, updated); } catch {}
@@ -1106,6 +1246,11 @@ export default function RunningPage() {
     try { persistAlertsKey(FB_TOTAL_KEY, updated); } catch {}
     setFbTotalAlerts(updated);
   };
+  const dismissFbTeamGoals = (id) => {
+    const updated = fbTeamGoalsAlerts.filter(a => a.id !== id);
+    try { persistAlertsKey(FB_TEAM_GOALS_KEY, updated); } catch {}
+    setFbTeamGoalsAlerts(updated);
+  };
   const dismissFbResult = (id) => {
     const updated = fbResultAlerts.filter(a => a.id !== id);
     try { persistAlertsKey(FB_RESULT_KEY, updated); } catch {}
@@ -1141,7 +1286,7 @@ export default function RunningPage() {
   // PendingAlertWidgets.jsx), donc ils restent au-dessus au lieu d'être recouverts.
   const allPendingItems = buildPendingItems({
     rawAlerts, rawTotalAlerts, rawTeamTotalAlerts, rawResultAlerts,
-    bttsAlerts, fbTotalAlerts, fbResultAlerts, fbPinnacleAlerts, dcBttsAlerts, dcOuAlerts,
+    bttsAlerts, fbTotalAlerts, fbTeamGoalsAlerts, fbResultAlerts, fbPinnacleAlerts, dcBttsAlerts, dcOuAlerts,
     bballPinnacleAlerts,
   });
 

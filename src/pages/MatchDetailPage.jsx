@@ -39,7 +39,9 @@ const ESPN_FOOTBALL = {
   'Stade Brestois': { league: 'fra.1', id: 6997 },
   'Stade Rennais FC 1901': { league: 'fra.1', id: 169 },
   'Stade Rennais': { league: 'fra.1', id: 169 },
+  'Rennes': { league: 'fra.1', id: 169 }, // "Rennes" (api-football) vs "Rennais" — démonyme, aucun token commun possible
   'ES Troyes AC': { league: 'fra.1', id: 170 },
+  'Estac Troyes': { league: 'fra.1', id: 170 }, // acronyme ESTAC (api-football), ni sous-chaîne ni token commun avec "ES Troyes AC"
   'FC Lorient': { league: 'fra.1', id: 273 },
   'OGC Nice': { league: 'fra.1', id: 2502 },
   'Paris FC': { league: 'fra.1', id: 6851 },
@@ -373,6 +375,23 @@ function computeTeamGoals(lambda_home, lambda_away, line, side, rho = 0) {
   return { over: Math.round(pOver * 100), under: Math.round(pUnder * 100) };
 }
 
+// Tirs / Tirs cadrés (14 septembre 2026, marché en observation — aucune cote bookmaker trouvée sur
+// Betclic/Unibet/Pinnacle, voir CLAUDE.md) : contrairement aux buts, rho=0 systématiquement côté
+// backend (pas de correction Dixon-Coles pertinente à ce niveau de comptage) — les deux λ sont donc
+// de vrais Poisson INDÉPENDANTS, pas besoin de la grille jointe (computeScoreGrid a un kMax=10, bien
+// trop petit pour des comptages de tirs qui montent à 25-30). Somme de deux Poisson indépendants =
+// Poisson(λ1+λ2) (propriété connue) → calcul direct par cumulative, exact quelle que soit la ligne.
+function poissonCdf(k, lambda) {
+  let sum = 0;
+  for (let i = 0; i <= k; i++) sum += poissonPmf(lambda, i);
+  return sum;
+}
+function computeShotsOU(lambda, line) {
+  if (lambda == null) return null;
+  const pUnder = poissonCdf(Math.floor(line), lambda);
+  return { over: Math.round((1 - pUnder) * 100), under: Math.round(pUnder * 100) };
+}
+
 // P(DC & BTTS) et P(DC & Over line) — même grille Dixon-Coles que les autres calculs CDM
 function computeDCBTTS(lambda_home, lambda_away, rho = 0) {
   if (lambda_home == null || lambda_away == null) return null;
@@ -522,10 +541,37 @@ const FB_BK_COLORS = { unibet: '#1db954', betclic: '#e0292e' };
 const FB_BK_ORDER  = ['pinnacle', 'unibet', 'betclic'];
 
 const BIG5_LEAGUES = new Set(['ligue1', 'pl', 'laliga', 'seriea', 'bundes']);
+// Recalibration BTTS par championnat individuel (7 puis 14 septembre 2026) — miroir des constantes
+// backend (FB_BTTS_LEAGUE_PROB, server.js), pour que la légende affiche le vrai seuil actif.
+const FB_BTTS_LEAGUE_PROB_PCT = { ligue1: 62, pl: 58, bundes: 67, seriea: 61, laliga: 58, bresil: 51, europa: 53, conference: 63, portugal: 48 };
+// Recalibration Total "Plus de 1,5" par championnat (14 septembre 2026, miroir de server.js
+// FB_TOTAL15_LEAGUE_PROB) — remplace l'ancien plancher plat 60% partagé par les 5 grands
+// championnats. Championnats non listés restent au seuil global 75% (repli ci-dessous).
+const FB_TOTAL15_LEAGUE_PROB_PCT = { ligue1: 82, pl: 77, bundes: 79, seriea: 71, laliga: 75, bresil: 72, europa: 76, grece: 73 };
+// Recalibration Total "Plus de 2,5" par championnat (11 puis 14 septembre 2026, miroir de server.js
+// FB_TOTAL25_LEAGUE_PROB) — championnats non listés restent au seuil global 75% (repli ci-dessous).
+const FB_TOTAL25_LEAGUE_PROB_PCT = { ligue1: 63, bundes: 71, seriea: 54, bresil: 62, conference: 68, champions: 64, arabie: 64, portugal: 65 };
 
 function FootballOddsBox({ markets, bttsResult, home, away, frozen, onRefresh, refreshing, lastRefreshed, fixtureLeague }) {
   const [tab, setTab] = useState('result');
   const [totalsLine, setTotalsLine] = useState('1.5');
+  // Sélecteur de ligne pour "Buts par équipe" (14 septembre 2026, demande explicite — même format
+  // que le toggle 1,5/2,5 de l'onglet Buts) — une seule ligne affichée à la fois au lieu des 3
+  // empilées.
+  const [teamGoalsLine, setTeamGoalsLine] = useState('0.5');
+  // Tirs / Tirs cadrés (14 septembre, refondu le 15 — même format que "Buts par équipe" : "Tirs" et
+  // "Tirs cadrés" sont deux onglets séparés). Le sélecteur partagé de la barre d'onglets (shotsLine/
+  // sotLine) pilote seulement le "Total du match" désormais — contrairement aux buts par équipe, les
+  // lignes réelles Betclic par équipe (~9-15 tirs, ~2-6 cadrés) sont d'une échelle totalement
+  // différente des lignes du total du match (~22-30 tirs, ~6-10 cadrés), donc un seul sélecteur
+  // partagé ne matchait jamais les vraies lignes équipe (toujours "—", signalé par l'utilisateur le
+  // 15 septembre) — chaque équipe a maintenant son propre sélecteur, indépendant l'un de l'autre.
+  const [shotsLine, setShotsLine] = useState('25.5');
+  const [sotLine, setSotLine] = useState('8.5');
+  const [shotsTeamLineHome, setShotsTeamLineHome] = useState('12.5');
+  const [shotsTeamLineAway, setShotsTeamLineAway] = useState('12.5');
+  const [sotTeamLineHome, setSotTeamLineHome] = useState('4.5');
+  const [sotTeamLineAway, setSotTeamLineAway] = useState('4.5');
   const [showLegend, setShowLegend] = useState(false);
   const [legendBox, setLegendBox] = useState(null); // { top, left }
   const cardRef = useRef(null);
@@ -582,11 +628,20 @@ function FootballOddsBox({ markets, bttsResult, home, away, frozen, onRefresh, r
   // (cf. server.js generateBackgroundAlerts, section football). Affiché ici à côté de "Buts" sur
   // demande explicite utilisateur, uniquement pour consultation (cotes réelles + estimation modèle).
   const teamGoals = markets?.teamTotals;
+  // Tirs / Tirs cadrés (15 septembre 2026) — source Betclic trouvée et branchée (marché toujours en
+  // observation, aucune alerte réelle émise dessus pour l'instant côté serveur, cf. server.js).
+  const shotsOdds = markets?.shots;
 
   const hasDcBtts = !!(dcbtts?.bookmakers);
   const hasDcOu   = !!(dcou?.bookmakers);
   const hasDC = hasDcBtts || hasDcOu;
   const hasTeamGoals = !!(teamGoals?.bookmakers);
+  // Tirs/Tirs cadrés — présence de vraies cotes Betclic (15 septembre 2026, demande explicite
+  // utilisateur) : tant qu'aucune cote réelle n'existe, la boxe reste sur "Cotes indisponibles"
+  // (ni sélecteur de ligne, ni estimation du modèle sur des lignes génériques) — se remplit tout
+  // seul dès qu'un cycle détecte que Betclic a ce marché pour ce match, rien à faire côté frontend.
+  const hasShotsBk = !!shotsOdds?.bookmakers?.betclic?.total;
+  const hasSotBk   = !!shotsOdds?.bookmakers?.betclic?.sotTotal;
 
   const availBks = FB_BK_ORDER.filter(bk =>
     h2h?.bookmakers?.[bk] || tots?.bookmakers?.[bk] || btts?.bookmakers?.[bk]
@@ -601,16 +656,70 @@ function FootballOddsBox({ markets, bttsResult, home, away, frozen, onRefresh, r
   // pas au toggle sélectionné), une ligne Pinnacle non-standard n'a plus besoin d'un bouton dédié —
   // elle affiche juste "—" sur les 2 lignes standards, comme n'importe quel bookmaker sans cette ligne.
   const availTotalsLines = ['1.5', '2.5'];
+  const availTeamGoalsLines = ['0.5', '1.5', '2.5'];
+  // Tirs / Tirs cadrés (15 septembre 2026) — contrairement aux buts (lignes conceptuelles fixes),
+  // les vraies lignes Betclic varient par match (ex. 24,5/27,5/30,5 sur un match, 22,5/25,5/28,5 sur
+  // un autre) : la liste de boutons vient donc du marché "Total" réellement renvoyé ce cycle-ci,
+  // repli sur 3 lignes génériques tant qu'aucun cycle n'a encore scrapé ce match précis.
+  const sortLines = arr => arr.slice().sort((a, b) => parseFloat(a) - parseFloat(b));
+  const availShotsLines = shotsOdds?.bookmakers?.betclic?.total ? sortLines(Object.keys(shotsOdds.bookmakers.betclic.total)) : ['22.5', '25.5', '28.5'];
+  const availSotLines = shotsOdds?.bookmakers?.betclic?.sotTotal ? sortLines(Object.keys(shotsOdds.bookmakers.betclic.sotTotal)) : ['6.5', '8.5', '10.5'];
+  // Lignes par équipe (15 septembre 2026, suite) — sélecteurs indépendants du total du match, sur
+  // une échelle bien plus basse (~9-15 tirs, ~2-6 cadrés par équipe vs ~22-30/~6-10 pour le total).
+  const availShotsLinesHome = shotsOdds?.bookmakers?.betclic?.team?.home ? sortLines(Object.keys(shotsOdds.bookmakers.betclic.team.home)) : ['9.5', '12.5', '15.5'];
+  const availShotsLinesAway = shotsOdds?.bookmakers?.betclic?.team?.away ? sortLines(Object.keys(shotsOdds.bookmakers.betclic.team.away)) : ['9.5', '12.5', '15.5'];
+  const availSotLinesHome = shotsOdds?.bookmakers?.betclic?.sotTeam?.home ? sortLines(Object.keys(shotsOdds.bookmakers.betclic.sotTeam.home)) : ['2.5', '4.5', '6.5'];
+  const availSotLinesAway = shotsOdds?.bookmakers?.betclic?.sotTeam?.away ? sortLines(Object.keys(shotsOdds.bookmakers.betclic.sotTeam.away)) : ['2.5', '4.5', '6.5'];
+  // Auto-sélection de la 1ère ligne réelle sur Tirs/Tirs cadrés (15 septembre 2026, demande explicite
+  // — "quand on clique sur la catégorie Tirs/Tirs cadrés, la 1ère valeur de chaque marché doit être
+  // affichée automatiquement"). Les états de ligne (shotsLine/shotsTeamLineHome/Away, sotLine/...)
+  // démarraient sur une valeur par défaut codée en dur qui ne correspond presque jamais aux vraies
+  // lignes Betclic du match (dynamiques, différentes par match ET par équipe) — jusqu'ici ça affichait
+  // "—" tant qu'on n'avait pas cliqué la bonne pastille à la main. Réassigné inconditionnellement (pas
+  // seulement "si invalide" — un 1er essai gardait par coïncidence une valeur par défaut qui existait
+  // déjà dans la vraie liste sans être la 1ère, ex. 4.5 sur Tirs cadrés) à chaque clic sur l'onglet ET
+  // à chaque fois que les vraies lignes Betclic remplacent le repli générique en cours de session.
+  useEffect(() => {
+    if (tab === 'shots') {
+      if (availShotsLines.length) setShotsLine(availShotsLines[0]);
+      if (availShotsLinesHome.length) setShotsTeamLineHome(availShotsLinesHome[0]);
+      if (availShotsLinesAway.length) setShotsTeamLineAway(availShotsLinesAway[0]);
+    } else if (tab === 'sot') {
+      if (availSotLines.length) setSotLine(availSotLines[0]);
+      if (availSotLinesHome.length) setSotTeamLineHome(availSotLinesHome[0]);
+      if (availSotLinesAway.length) setSotTeamLineAway(availSotLinesAway[0]);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    tab,
+    availShotsLines.join(','), availShotsLinesHome.join(','), availShotsLinesAway.join(','),
+    availSotLines.join(','), availSotLinesHome.join(','), availSotLinesAway.join(','),
+  ]);
 
+  // Onglets "Double chance & BTTS"/"Double chance & Over 1,5" retirés le 8 septembre 2026 — marché
+  // supprimé du projet (demande explicite utilisateur, pari perdant Lille-Betis).
   const TABS = [
     { id: 'result', label: 'Résultat' },
     { id: 'buts',   label: 'Buts'     },
     ...(hasTeamGoals ? [{ id: 'team_goals', label: 'Buts par équipe' }] : []),
     { id: 'btts',   label: 'BTTS'     },
-    ...(hasDcBtts ? [{ id: 'dc_btts', label: 'Double chance & BTTS' }] : []),
-    ...(hasDcOu   ? [{ id: 'dc_ou',   label: 'Double chance & Over 1,5' }] : []),
+    // Tirs / Tirs cadrés — 2 onglets séparés depuis le 15 septembre 2026 (même format que
+    // "Buts"/"Buts par équipe" ci-dessus, demande explicite), affichés quel que soit l'état des
+    // cotes (contrairement à "Buts par équipe", gated sur hasTeamGoals) — le modèle tourne toujours,
+    // même quand Betclic n'a pas encore répondu pour ce match précis ce cycle-ci.
+    { id: 'shots',  label: 'Tirs'         },
+    { id: 'sot',    label: 'Tirs cadrés'  },
   ];
 
+  // Fix 7 septembre 2026 — l'ajout de l'onglet "Buts par équipe" a fait passer la barre d'onglets à
+  // 6 boutons, qui ne tiennent plus sur une seule ligne à côté du toggle 1,5/2,5 (visible seulement
+  // sur l'onglet Buts) sur les championnats au libellé plus long (ex. "Double chance & Over 1,5").
+  // Sans `flexShrink`/`whiteSpace` explicites, les boutons flex par défaut se compressaient plutôt
+  // que de passer à la ligne, cassant le texte au milieu d'un mot ("BUTS PAR / ÉQUIPE"). `flexShrink:
+  // 0` + `whiteSpace: 'nowrap'` gardent chaque onglet entier sur une seule ligne ; associé au
+  // `flexWrap: 'wrap'` du conteneur juste en dessous, un onglet qui ne tient plus passe à la ligne
+  // SUIVANTE en entier plutôt que de s'écraser sur place — visible sur tous les championnats, pas
+  // propre à un seul.
   const tabStyle = id => ({
     padding: '0.25rem 0.75rem', borderRadius: 5, border: '1px solid', cursor: 'pointer',
     fontSize: 10, fontWeight: 700, letterSpacing: '0.05em', textTransform: 'uppercase',
@@ -619,6 +728,7 @@ function FootballOddsBox({ markets, bttsResult, home, away, frozen, onRefresh, r
     borderColor: tab === id ? 'rgba(74,222,128,0.55)' : 'rgba(74,222,128,0.22)',
     boxShadow: '0 0 0 1px rgba(255,255,255,0.22)',
     transition: 'background 0.15s, border-color 0.15s',
+    whiteSpace: 'nowrap', flexShrink: 0,
   });
 
   const ch = { fontSize: 9, fontWeight: 700, textTransform: 'uppercase', color: 'var(--text-dim)', textAlign: 'center', letterSpacing: '0.05em' };
@@ -691,51 +801,65 @@ function FootballOddsBox({ markets, bttsResult, home, away, frozen, onRefresh, r
           <span style={{ fontWeight: 400, color: 'var(--text-dim)' }}>Dernières cotes connues avant le coup d'envoi</span>
         </div>
       )}
-      <div style={{ display: 'flex', gap: '0.6rem', marginBottom: '0.75rem', alignItems: 'center', position: 'relative' }}>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.4rem 0.6rem', marginBottom: '0.75rem', alignItems: 'center', position: 'relative' }}>
         {TABS.map(t => <button key={t.id} style={tabStyle(t.id)} onClick={() => setTab(t.id)}>{t.label}</button>)}
-        {tab === 'buts' && (
-          <div style={{ display: 'flex', gap: '0.3rem', marginLeft: 'auto' }}>
-            {availTotalsLines.map(line => (
-              <button
-                key={line}
-                onClick={() => setTotalsLine(line)}
-                style={{
-                  padding: '0.2rem 0.5rem', borderRadius: 5, border: '1px solid', cursor: 'pointer',
-                  fontSize: 10, fontWeight: 700,
-                  background: totalsLine === line ? 'rgba(251,146,60,0.25)' : 'rgba(251,146,60,0.08)',
-                  color: '#ffffff',
-                  borderColor: totalsLine === line ? 'rgba(251,146,60,0.55)' : 'rgba(251,146,60,0.22)',
-                }}
-              >
-                {line}
-              </button>
-            ))}
+        {(tab === 'buts' || tab === 'team_goals' || (tab === 'shots' && hasShotsBk) || (tab === 'sot' && hasSotBk)) && (() => {
+          // Même toggle que l'onglet Buts (1,5/2,5), étendu à "Buts par équipe" le 14 septembre puis
+          // à "Tirs"/"Tirs cadrés" le 15 septembre 2026 (demande explicite — même format partout).
+          // Masqué sur Tirs/Tirs cadrés tant qu'aucune vraie cote Betclic n'existe (15 septembre,
+          // suite — demande explicite : pas de sélecteur ni d'estimation sur des lignes génériques
+          // tant que le marché n'est pas réellement disponible pour ce match).
+          const lines = tab === 'buts' ? availTotalsLines : tab === 'team_goals' ? availTeamGoalsLines : tab === 'shots' ? availShotsLines : availSotLines;
+          const activeLine = tab === 'buts' ? totalsLine : tab === 'team_goals' ? teamGoalsLine : tab === 'shots' ? shotsLine : sotLine;
+          const setLine = tab === 'buts' ? setTotalsLine : tab === 'team_goals' ? setTeamGoalsLine : tab === 'shots' ? setShotsLine : setSotLine;
+          return (
+            <div style={{ display: 'flex', gap: '0.3rem', marginLeft: 'auto', flexShrink: 0 }}>
+              {lines.map(line => (
+                <button
+                  key={line}
+                  onClick={() => setLine(line)}
+                  style={{
+                    padding: '0.2rem 0.5rem', borderRadius: 5, border: '1px solid', cursor: 'pointer',
+                    fontSize: 10, fontWeight: 700, whiteSpace: 'nowrap',
+                    background: activeLine === line ? 'rgba(251,146,60,0.25)' : 'rgba(251,146,60,0.08)',
+                    color: '#ffffff',
+                    borderColor: activeLine === line ? 'rgba(251,146,60,0.55)' : 'rgba(251,146,60,0.22)',
+                  }}
+                >
+                  {line}
+                </button>
+              ))}
+            </div>
+          );
+        })()}
+        {/* Fix 7 septembre 2026 — le bouton "?" passait à la ligne tout seul (wrap d'un item flex
+            isolé) pendant que le recharger restait sur la ligne du dessus. Les deux regroupés dans un
+            seul conteneur flexShrink:0 : ils passent maintenant à la ligne ENSEMBLE, jamais séparés. */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', marginLeft: (tab === 'buts' || tab === 'team_goals' || (tab === 'shots' && hasShotsBk) || (tab === 'sot' && hasSotBk)) ? '0.3rem' : 'auto', flexShrink: 0 }}>
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
+            <button
+              className={`icon-refresh-btn${refreshing ? ' spinning' : ''}`}
+              onClick={onRefresh}
+              disabled={refreshing}
+              title="Rafraîchir les cotes"
+            >↻</button>
+            {lastRefreshed && (
+              <span style={{ fontSize: 8, color: 'var(--text-dim)' }}>
+                {lastRefreshed.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
+              </span>
+            )}
           </div>
-        )}
-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2, marginLeft: tab === 'buts' ? '0.3rem' : 'auto' }}>
-          <button
-            className={`icon-refresh-btn${refreshing ? ' spinning' : ''}`}
-            onClick={onRefresh}
-            disabled={refreshing}
-            title="Rafraîchir les cotes"
-          >↻</button>
-          {lastRefreshed && (
-            <span style={{ fontSize: 8, color: 'var(--text-dim)' }}>
-              {lastRefreshed.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
-            </span>
-          )}
+          <span
+            ref={legendBtnRef}
+            onClick={() => setShowLegend(v => !v)}
+            style={{
+              width: 16, height: 16, borderRadius: '50%', fontSize: 10, fontWeight: 700,
+              display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+              color: showLegend ? '#fb923c' : 'var(--text-dim)', border: `1px solid ${showLegend ? 'rgba(251,146,60,0.5)' : 'var(--border)'}`,
+              cursor: 'pointer', flexShrink: 0,
+            }}
+          >?</span>
         </div>
-        <span
-          ref={legendBtnRef}
-          onClick={() => setShowLegend(v => !v)}
-          style={{
-            width: 16, height: 16, borderRadius: '50%', fontSize: 10, fontWeight: 700,
-            display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-            color: showLegend ? '#fb923c' : 'var(--text-dim)', border: `1px solid ${showLegend ? 'rgba(251,146,60,0.5)' : 'var(--border)'}`,
-            cursor: 'pointer', flexShrink: 0,
-            marginLeft: '0.3rem',
-          }}
-        >?</span>
         {showLegend && legendBox && createPortal(
           <div ref={legendRef} style={{
             position: 'fixed', top: legendBox.top, left: legendBox.left, zIndex: 200,
@@ -745,16 +869,6 @@ function FootballOddsBox({ markets, bttsResult, home, away, frozen, onRefresh, r
           }}>
             {(() => {
               const isBig5 = BIG5_LEAGUES.has(fixtureLeague);
-              const Dot = ({ color }) => <span style={{ display: 'inline-block', width: 6, height: 6, borderRadius: '50%', background: color, marginRight: 4, marginTop: 3, flexShrink: 0 }} />;
-              const Row = ({ color, children }) => (
-                <span style={{ display: 'flex', alignItems: 'flex-start', fontSize: 9.5, lineHeight: 1.4 }}>
-                  <Dot color={color} />
-                  <span>{children}</span>
-                </span>
-              );
-              const estimSite = (
-                <>La mention <span style={{ color: '#fb923c', fontWeight: 700 }}>· estimation site</span> signale que ce % vient d'un modèle recalculé côté navigateur, plus simple que celui des alertes — peut légèrement différer du % qui aurait généré une alerte sur ce match. N'apparaît que si le backend n'a pas encore de projection fraîche pour ce match précis ; sinon (CDM, ou 5 grands championnats + Brésil) la page lit directement le vrai résultat du modèle, sans mention.</>
-              );
               const estimSiteShort = <>La mention <span style={{ color: '#fb923c', fontWeight: 700 }}>· estimation site</span> n'apparaît que si le backend n'a pas encore de projection fraîche pour ce match précis.</>;
               // Format "Big Five" (1er septembre 2026, demande explicite utilisateur) — 🚨 + liste
               // "Infos" numérotée, propre à ces 5 championnats (seuils réellement actifs dessus,
@@ -781,20 +895,22 @@ function FootballOddsBox({ markets, bttsResult, home, away, frozen, onRefresh, r
                 ),
                 buts: (
                   <>
-                    <AlertLine>Alerte Over/Under 1,5 buts si probabilité ≥ 60% · Cote 1,30</AlertLine>
-                    <AlertLine>Alerte Over/Under 2,5 buts si probabilité ≥ 65% · Cote 1,30</AlertLine>
+                    <AlertLine>Alerte Over/Under 1,5 buts si probabilité ≥ {FB_TOTAL15_LEAGUE_PROB_PCT[fixtureLeague] ?? 75}% · Cote 1,30</AlertLine>
+                    <AlertLine>Alerte Over/Under 2,5 buts si probabilité ≥ {FB_TOTAL25_LEAGUE_PROB_PCT[fixtureLeague] ?? 75}% · Cote 1,50</AlertLine>
                     <Infos items={[estimSiteShort]} />
                   </>
                 ),
                 btts: (
                   <>
-                    <AlertLine>Alerte BTTS si probabilité ≥ 58% · Cote 1,50</AlertLine>
+                    <AlertLine>Alerte BTTS si probabilité ≥ {FB_BTTS_LEAGUE_PROB_PCT[fixtureLeague] ?? 58}% · Cote 1,50</AlertLine>
                     <Infos items={[estimSiteShort]} />
                   </>
                 ),
                 dc_btts: <AlertLine>Alerte DC &amp; BTTS si probabilité ≥ 50% · Cote ≥ 1,45</AlertLine>,
                 dc_ou: <AlertLine>Alerte DC &amp; Over 1,5 buts si probabilité ≥ 45% · Cote ≥ 1,50</AlertLine>,
                 team_goals: <div style={{ fontSize: 9.5, lineHeight: 1.5, color: 'var(--text-dim)' }}>📊 Marché en observation — les données s'accumulent (near-miss) mais aucune alerte réelle n'est encore générée dessus.</div>,
+                shots: <div style={{ fontSize: 9.5, lineHeight: 1.5, color: 'var(--text-dim)' }}>📊 Marché en observation — cotes Betclic affichées à titre indicatif, aucune alerte réelle n'est encore générée dessus.</div>,
+                sot: <div style={{ fontSize: 9.5, lineHeight: 1.5, color: 'var(--text-dim)' }}>📊 Marché en observation — cotes Betclic affichées à titre indicatif, aucune alerte réelle n'est encore générée dessus.</div>,
               };
               // Format Brésil (1er septembre 2026, demande explicite utilisateur, même style que
               // Big Five ci-dessus). Seuils recalibrés le 31 août — contrairement au Big Five, ce
@@ -813,13 +929,14 @@ function FootballOddsBox({ markets, bttsResult, home, away, frozen, onRefresh, r
                 ),
                 buts: (
                   <>
-                    <AlertLine>Alerte Over/Under si probabilité ≥ 65% (ligne 2,5, sinon 1,5) · Cote ≥ 1,30</AlertLine>
+                    <AlertLine>Alerte Over/Under 1,5 buts si probabilité ≥ {FB_TOTAL15_LEAGUE_PROB_PCT.bresil}% · Cote ≥ 1,30</AlertLine>
+                    <AlertLine>Alerte Over/Under 2,5 buts si probabilité ≥ {FB_TOTAL25_LEAGUE_PROB_PCT.bresil}% · Cote ≥ 1,50</AlertLine>
                     <Infos items={[estimSiteShort]} />
                   </>
                 ),
                 btts: (
                   <>
-                    <AlertLine>Alerte BTTS si probabilité ≥ 45% · Cote ≥ 1,40</AlertLine>
+                    <AlertLine>Alerte BTTS si probabilité ≥ {FB_BTTS_LEAGUE_PROB_PCT.bresil ?? 51}% · Cote ≥ 1,40</AlertLine>
                     <Infos items={[estimSiteShort]} />
                   </>
                 ),
@@ -831,94 +948,51 @@ function FootballOddsBox({ markets, bttsResult, home, away, frozen, onRefresh, r
                 ),
                 dc_ou: <AlertLine>Alerte DC &amp; Over 1,5 buts si probabilité ≥ 55% · Cote ≥ 1,45</AlertLine>,
                 team_goals: <div style={{ fontSize: 9.5, lineHeight: 1.5, color: 'var(--text-dim)' }}>📊 Marché en observation — les données s'accumulent (near-miss) mais aucune alerte réelle n'est encore générée dessus.</div>,
+                shots: <div style={{ fontSize: 9.5, lineHeight: 1.5, color: 'var(--text-dim)' }}>📊 Marché en observation — cotes Betclic affichées à titre indicatif, aucune alerte réelle n'est encore générée dessus.</div>,
+                sot: <div style={{ fontSize: 9.5, lineHeight: 1.5, color: 'var(--text-dim)' }}>📊 Marché en observation — cotes Betclic affichées à titre indicatif, aucune alerte réelle n'est encore générée dessus.</div>,
               };
-              // Une seule ligne de marché affichée — celle de l'onglet ouvert — même principe que
-              // OddsLegendCard côté basket (ALERTS[tab]), demande explicite utilisateur après la 1ère
-              // version qui empilait les 5 marchés d'un coup peu importe l'onglet actif.
-              const ALERTS = {
-                result: {
-                  row: (
-                    <Row color="#00ff80">
-                      <b style={{ color: '#00ff80' }}>Résultat 1X2</b> — ≥ 70% par issue (dom./nul/ext., indépendantes) · cote ≥ 1,50
-                    </Row>
-                  ),
-                  extra: (
-                    <>
-                      Dans le widget <b>Modèle 1X2</b>, le <span style={{ color: '#4ade80', fontWeight: 700 }}>+Xpt</span>/<span style={{ color: '#f87171', fontWeight: 700 }}>−Xpt</span> indique l'écart entre la probabilité du modèle et celle du marché (cotes bookmaker, marge retirée) pour cette issue — rien à voir avec les flèches ▲▼ de tendance de cote vues ailleurs sur cette page.
-                      <br /><br />
-                      {estimSite}
-                    </>
-                  ),
-                },
-                buts: {
-                  row: (
-                    <Row color="#00ff80">
-                      <b style={{ color: '#00ff80' }}>Total Over/Under</b> — ≥ 65% (ligne 2,5, sinon 1,5) · cote ≥ 1,30
-                    </Row>
-                  ),
-                  extra: estimSite,
-                },
-                btts: {
-                  row: (
-                    <Row color="#00ff80">
-                      <b style={{ color: '#00ff80' }}>BTTS Oui</b> — ≥ 70% · cote ≥ 1,60
-                    </Row>
-                  ),
-                  extra: estimSite,
-                },
-                dc_btts: {
-                  row: (
-                    <Row color="#f59e0b">
-                      <b style={{ color: '#f59e0b' }}>DC &amp; BTTS</b> — ≥ 50% · cote ≥ 1,45
-                    </Row>
-                  ),
-                  extra: <>Les % du modèle sont affichés directement dans cet onglet — pas besoin d'ouvrir le near-miss pour les voir.</>,
-                },
-                dc_ou: {
-                  row: (
-                    <Row color="#f59e0b">
-                      <b style={{ color: '#f59e0b' }}>DC &amp; Over 1,5</b> — ≥ 55% · cote ≥ 1,45
-                    </Row>
-                  ),
-                  extra: <>Les % du modèle sont affichés directement dans cet onglet — pas besoin d'ouvrir le near-miss pour les voir.</>,
-                },
-                team_goals: {
-                  row: (
-                    <Row color="#60a5fa">
-                      <b style={{ color: '#60a5fa' }}>Total de buts par équipe</b> — marché en observation, pas d'alerte
-                    </Row>
-                  ),
-                  extra: <>Les données s'accumulent en arrière-plan (near-miss) pour calibrer un seuil fiable avant d'activer de vraies alertes dessus.</>,
-                },
-              };
-              if (isBig5 || fixtureLeague === 'bresil') {
-                const activeAlerts = isBig5 ? BIG5_ALERTS : BRESIL_ALERTS;
-                return (
+              // Format unifié (8 septembre 2026, demande explicite utilisateur) — CDM/coupes d'Europe/
+              // Grèce/Arabie Saoudite (tout ce qui n'est ni Big Five ni Brésil) affichaient jusqu'ici
+              // un format bullet-point différent (Row + un seul marché affiché par onglet) au lieu du
+              // format 🚨 AlertLine/Infos du Big Five — désormais même présentation partout, seules
+              // les VALEURS diffèrent (seuils globaux ici, jamais recalibrés faute d'historique sur
+              // ces championnats — voir isNewLeague pour Grèce/Arabie).
+              const GENERIC_ALERTS = {
+                result: (
                   <>
-                    <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text)', marginBottom: '0.5rem' }}>
-                      Envoi des alertes — Football
-                    </div>
-                    {activeAlerts[tab] ?? activeAlerts.result}
+                    <AlertLine>Alerte si probabilité ≥ 70% par issue · Cote ≥ 1,50.</AlertLine>
+                    <Infos items={[
+                      <>Dans le widget <b>Modèle 1X2</b>, le <span style={{ color: '#4ade80', fontWeight: 700 }}>+Xpt</span>/<span style={{ color: '#f87171', fontWeight: 700 }}>−Xpt</span> indique l'écart entre la probabilité du modèle et celle du marché (cotes bookmaker, marge retirée) pour cette issue.</>,
+                      estimSiteShort,
+                    ]} />
                   </>
-                );
-              }
-              const current = ALERTS[tab] ?? ALERTS.result;
+                ),
+                buts: (
+                  <>
+                    <AlertLine>Alerte Over/Under 1,5 buts si probabilité ≥ 75% · Cote ≥ 1,30</AlertLine>
+                    <AlertLine>Alerte Over/Under 2,5 buts si probabilité ≥ 75% · Cote ≥ 1,50</AlertLine>
+                    <Infos items={[estimSiteShort]} />
+                  </>
+                ),
+                btts: (
+                  <>
+                    <AlertLine>Alerte BTTS si probabilité ≥ {FB_BTTS_LEAGUE_PROB_PCT[fixtureLeague] ?? 70}% · Cote ≥ 1,60</AlertLine>
+                    <Infos items={[estimSiteShort]} />
+                  </>
+                ),
+                dc_btts: <AlertLine>Alerte DC &amp; BTTS si probabilité ≥ 50% · Cote ≥ 1,45</AlertLine>,
+                dc_ou: <AlertLine>Alerte DC &amp; Over 1,5 buts si probabilité ≥ 55% · Cote ≥ 1,45</AlertLine>,
+                team_goals: <div style={{ fontSize: 9.5, lineHeight: 1.5, color: 'var(--text-dim)' }}>📊 Marché en observation — les données s'accumulent (near-miss) mais aucune alerte réelle n'est encore générée dessus.</div>,
+                shots: <div style={{ fontSize: 9.5, lineHeight: 1.5, color: 'var(--text-dim)' }}>📊 Marché en observation — cotes Betclic affichées à titre indicatif, aucune alerte réelle n'est encore générée dessus.</div>,
+                sot: <div style={{ fontSize: 9.5, lineHeight: 1.5, color: 'var(--text-dim)' }}>📊 Marché en observation — cotes Betclic affichées à titre indicatif, aucune alerte réelle n'est encore générée dessus.</div>,
+              };
+              const activeAlerts = isBig5 ? BIG5_ALERTS : fixtureLeague === 'bresil' ? BRESIL_ALERTS : GENERIC_ALERTS;
               return (
                 <>
-                  <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text)', marginBottom: '0.4rem' }}>
+                  <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text)', marginBottom: '0.5rem' }}>
                     Envoi des alertes — Football
                   </div>
-                  <div style={{ fontSize: 9, lineHeight: 1.4, color: 'var(--text-dim)', marginBottom: '0.5rem' }}>
-                    Un modèle de Poisson estime les buts attendus de chaque équipe à partir de leurs stats récentes.
-                  </div>
-                  <div style={{ marginBottom: '0.5rem' }}>
-                    {current.row}
-                  </div>
-                  <div style={{ fontSize: 9, lineHeight: 1.5, color: 'var(--text-dim)', borderTop: '1px solid var(--border)', paddingTop: '0.4rem' }}>
-                    {current.extra}
-                    <br /><br />
-                    Cotes comparées : Unibet/Betclic uniquement (Winamax exclu). Générées automatiquement toutes les 20 min — pas besoin d'ouvrir cette page.
-                  </div>
+                  {activeAlerts[tab] ?? activeAlerts.result}
                 </>
               );
             })()}
@@ -943,7 +1017,7 @@ function FootballOddsBox({ markets, bttsResult, home, away, frozen, onRefresh, r
         </div>
       )}
 
-      {!['dc','dc_btts','dc_ou','team_goals'].includes(tab) && availBks.map(bk => {
+      {!['dc','dc_btts','dc_ou','team_goals','shots','sot'].includes(tab) && availBks.map(bk => {
         const isPinnacle = bk === 'pinnacle';
         const color = isPinnacle ? undefined : FB_BK_COLORS[bk];
         const h = h2h?.bookmakers?.[bk];
@@ -986,7 +1060,7 @@ function FootballOddsBox({ markets, bttsResult, home, away, frozen, onRefresh, r
         );
       })}
 
-      {!['dc_btts','dc_ou','team_goals'].includes(tab) && availBks.length === 0 && (
+      {!['dc_btts','dc_ou','team_goals','shots','sot'].includes(tab) && availBks.length === 0 && (
         <div style={{ textAlign: 'center', padding: '1rem 0', color: 'var(--text-dim)', fontSize: 12 }}>Cotes indisponibles</div>
       )}
 
@@ -1031,65 +1105,190 @@ function FootballOddsBox({ markets, bttsResult, home, away, frozen, onRefresh, r
       })()}
 
       {tab === 'team_goals' && (() => {
-        // Format revu le 7 septembre 2026, demande explicite utilisateur : équipe 1/équipe 2 côte
-        // à côte (pas empilées) ; chaque ligne Over/Under sur SA PROPRE ligne façon "+ de 0,5 buts"
-        // / "- de 0,5 buts" (même présentation que Betclic lui-même), pas 3 colonnes Total/Over/Under.
-        // Unibet ajouté au passage (même jour) — colonnes dynamiques comme dc_btts/dc_ou (availDcBks).
+        // Format revu le 14 septembre 2026, demande explicite utilisateur : même présentation que
+        // l'onglet "Buts" (toggle de ligne en haut + tableau Total/Over/Under par bookmaker avec
+        // OddsCell), plutôt que les 3 lignes 0,5/1,5/2,5 empilées d'un coup (format du 7 septembre).
+        // Une seule ligne affichée à la fois (teamGoalsLine, pilotée par le toggle ajouté à côté des
+        // onglets), les deux équipes restent côte à côte comme avant.
         const bks = FB_BK_ORDER.filter(b => teamGoals?.bookmakers?.[b]);
         if (!bks.length) return <div style={{ textAlign: 'center', padding: '1rem 0', color: 'var(--text-dim)', fontSize: 12 }}>Cotes indisponibles</div>;
-        const lines = ['0.5', '1.5', '2.5'];
         const sides = [
           { key: 'home', name: home?.name ?? 'Domicile' },
           { key: 'away', name: away?.name ?? 'Extérieur' },
         ];
-        // Format 7 septembre 2026, demande explicite utilisateur : une seule ligne par ligne de
-        // buts ("O/U 0,5 buts") avec over/under combinés en une cellule "1,45/2,20" par bookmaker,
-        // plutôt que 2 lignes séparées "+ de"/"- de".
-        const tgGridCols = `1fr${bks.map(() => ' 64px').join('')}`;
-        // Même format d'écriture que les cotes des autres marchés (7 septembre 2026, demande
-        // explicite) — .toFixed(2), pas de virgule française, même taille/graisse/police tabulaire
-        // que OddsCell.jsx (source commune foot+basket) plutôt qu'un formatage maison différent.
-        const fmtOdd = v => (v != null ? v.toFixed(2) : '—');
+        const tgGridCols = `1fr 34px 1fr 1fr`;
         return (
           <>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 1rem' }}>
-              {sides.map(({ key: side, name }) => (
-                <div key={side}>
-                  <div style={{ display: 'grid', gridTemplateColumns: tgGridCols, gap: '0 0.25rem', paddingBottom: '0.3rem', borderBottom: '1px solid var(--border)', marginBottom: '0.2rem' }}>
-                    <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>{name}</div>
-                    {bks.map(bk => <div key={bk} style={ch}>{FB_BK_LABELS[bk]}</div>)}
-                  </div>
-                  {lines.map(lineStr => {
-                    const line = parseFloat(lineStr);
-                    const modelP = computeTeamGoals(bttsResult?.lambda_home, bttsResult?.lambda_away, line, side, cdmRho);
-                    return (
-                      <div key={lineStr} style={{ display: 'grid', gridTemplateColumns: tgGridCols, gap: '0 0.25rem', alignItems: 'center', padding: '0.28rem 0', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                          <span style={{ fontSize: 11, color: '#fff' }}>O/U {lineStr.replace('.', ',')} buts</span>
-                          {modelP && (
-                            <span style={{ fontSize: 9, fontWeight: 700, color: 'var(--text-dim)', background: 'rgba(255,255,255,0.06)', borderRadius: 4, padding: '1px 5px' }}>
-                              {modelP.over}%/{modelP.under}%
-                            </span>
-                          )}
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 1rem', marginTop: '0.5cm' }}>
+              {sides.map(({ key: side, name }) => {
+                const modelP = computeTeamGoals(bttsResult?.lambda_home, bttsResult?.lambda_away, parseFloat(teamGoalsLine), side, cdmRho);
+                return (
+                  <div key={side}>
+                    <div style={{ display: 'grid', gridTemplateColumns: tgGridCols, gap: '0 0.25rem', paddingBottom: '0.3rem', borderBottom: '1px solid var(--border)', marginBottom: '0.2rem' }}>
+                      <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text)', textTransform: 'uppercase', letterSpacing: '0.04em', alignSelf: 'end', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={name}>{name}</div>
+                      <div style={ch}>Total</div>
+                      <div style={ch}>Over</div>
+                      <div style={ch}>Under</div>
+                    </div>
+                    {bks.map(bk => {
+                      const isPinnacle = bk === 'pinnacle';
+                      const color = isPinnacle ? undefined : FB_BK_COLORS[bk];
+                      const cell = teamGoals.bookmakers[bk]?.[side]?.[teamGoalsLine];
+                      return (
+                        <div key={bk} style={{
+                          display: 'grid', gridTemplateColumns: tgGridCols, gap: '0 0.25rem', alignItems: 'center',
+                          padding: '0.3rem 0', borderBottom: '1px solid rgba(255,255,255,0.04)',
+                          background: isPinnacle ? 'rgba(255,255,255,0.03)' : 'transparent',
+                        }}>
+                          <span style={{ fontSize: 11, fontWeight: isPinnacle ? 700 : 400, color: isPinnacle ? '#60a5fa' : 'var(--text)' }}>
+                            {FB_BK_LABELS[bk] ?? bk}
+                          </span>
+                          <div style={{ textAlign: 'center', fontSize: 11, fontVariantNumeric: 'tabular-nums', fontWeight: isPinnacle ? 700 : 400, color: 'var(--text)' }}>
+                            {(cell?.over != null || cell?.under != null) ? teamGoalsLine : '—'}
+                          </div>
+                          <Cell val={cell?.over} edgeVal={null} isPinnacle={isPinnacle} color={color} />
+                          <Cell val={cell?.under} edgeVal={null} isPinnacle={isPinnacle} color={color} />
                         </div>
-                        {bks.map(bk => {
-                          const cell = teamGoals.bookmakers[bk]?.[side]?.[lineStr];
-                          return (
-                            <div key={bk} style={{ textAlign: 'center' }}>
-                              <span style={{ fontWeight: 500, fontVariantNumeric: 'tabular-nums', fontSize: 11, color: FB_BK_COLORS[bk] }}>
-                                {fmtOdd(cell?.over)}/{fmtOdd(cell?.under)}
-                              </span>
-                            </div>
-                          );
-                        })}
+                      );
+                    })}
+                    {modelP && (
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem', marginTop: '0.9rem', flexWrap: 'nowrap' }}>
+                        <span style={{ fontSize: 10, fontWeight: 600, color: 'var(--text-dim)', flexShrink: 0 }}>Modèle O/U {teamGoalsLine}</span>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.9rem', flexShrink: 0 }}>
+                          <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                            <span style={{ fontSize: 9, fontWeight: 700, color: 'var(--text)' }}>Over</span>
+                            <span style={{ fontSize: 8, fontWeight: 600, color: modelP.over >= 62 ? '#10b981' : modelP.over >= 52 ? '#f59e0b' : '#ef4444' }}>{modelP.over}%</span>
+                          </span>
+                          <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                            <span style={{ fontSize: 9, fontWeight: 700, color: 'var(--text)' }}>Under</span>
+                            <span style={{ fontSize: 8, fontWeight: 600, color: modelP.under >= 62 ? '#10b981' : modelP.under >= 52 ? '#f59e0b' : '#ef4444' }}>{modelP.under}%</span>
+                          </span>
+                        </div>
                       </div>
-                    );
-                  })}
-                </div>
-              ))}
+                    )}
+                  </div>
+                );
+              })}
             </div>
-            <div style={{ fontSize: 9, color: 'var(--text-dim)', marginTop: '0.4rem' }}>
-              Marché en observation — pas encore d'alerte réelle, données accumulées pour calibrer un seuil.
+          </>
+        );
+      })()}
+
+      {(tab === 'shots' || tab === 'sot') && (() => {
+        // Tirs / Tirs cadrés — refondu le 15 septembre 2026 au même format que "Buts par équipe",
+        // puis affiné le même jour (suite) : le sélecteur partagé de la barre d'onglets ne pilote
+        // plus que le "Total du match" — les 2 équipes ont chacune leur propre sélecteur (état
+        // shotsTeamLineHome/Away, sotTeamLineHome/Away) car les vraies lignes Betclic par équipe
+        // (~9-15 tirs, ~2-6 cadrés) sont d'une échelle différente du total du match (~22-30/~6-10) :
+        // un seul sélecteur partagé ne matchait jamais les lignes équipe, toujours "—" (signalé par
+        // l'utilisateur). Cotes Betclic réelles (categoryId gRPC ca_ftb_prp) — un côté qui n'a pas
+        // exactement la ligne choisie affiche "—", comme n'importe quel bookmaker absent ailleurs
+        // dans l'app. Unibet/Pinnacle n'ont structurellement rien ici (14 septembre) : Betclic reste
+        // la seule source, même statut qu'un marché mono-bookmaker.
+        const isShots = tab === 'shots';
+        const line = isShots ? shotsLine : sotLine;
+        const bkAll = shotsOdds?.bookmakers?.betclic;
+        const bkTotal = isShots ? bkAll?.total : bkAll?.sotTotal;
+        const bkTeam  = isShots ? bkAll?.team  : bkAll?.sotTeam;
+        const lambdaHome = isShots ? bttsResult?.shotsLambdaHome : bttsResult?.sotLambdaHome;
+        const lambdaAway = isShots ? bttsResult?.shotsLambdaAway : bttsResult?.sotLambdaAway;
+        const hasModel = lambdaHome != null && lambdaAway != null;
+        // Cotes réelles requises pour afficher quoi que ce soit (15 septembre 2026, suite —
+        // demande explicite) : avant, l'estimation du modèle seule suffisait à remplir la boxe
+        // sur des lignes génériques (22,5/25,5/28,5 etc.) même sans la moindre cote Betclic —
+        // affichait un "Modèle O/U" et des lignes qui n'ont jamais existé chez le bookmaker. Se
+        // remplit désormais tout seul dès qu'un cycle détecte que Betclic a ce marché pour ce
+        // match, jamais avant.
+        if (!bkTotal && !bkTeam?.home && !bkTeam?.away) {
+          return <div style={{ textAlign: 'center', padding: '1rem 0', color: 'var(--text-dim)', fontSize: 12 }}>Cotes indisponibles</div>;
+        }
+        const totalModel = hasModel ? computeShotsOU(lambdaHome + lambdaAway, parseFloat(line)) : null;
+        const sides = [
+          {
+            key: 'home', name: home?.name ?? 'Domicile', lambda: lambdaHome,
+            line: isShots ? shotsTeamLineHome : sotTeamLineHome,
+            setLine: isShots ? setShotsTeamLineHome : setSotTeamLineHome,
+            lines: isShots ? availShotsLinesHome : availSotLinesHome,
+          },
+          {
+            key: 'away', name: away?.name ?? 'Extérieur', lambda: lambdaAway,
+            line: isShots ? shotsTeamLineAway : sotTeamLineAway,
+            setLine: isShots ? setShotsTeamLineAway : setSotTeamLineAway,
+            lines: isShots ? availShotsLinesAway : availSotLinesAway,
+          },
+        ];
+        // Même gabarit que "Buts par équipe" (tgGridCols) — Cell/OddsCell partagés.
+        const shGridCols = `1fr 34px 1fr 1fr`;
+        const ModelRow = ({ label, model }) => model && (
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem', marginTop: '0.9rem' }}>
+            <span style={{ fontSize: 10, fontWeight: 600, color: 'var(--text-dim)', flexShrink: 0 }}>{label}</span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.9rem', flexShrink: 0 }}>
+              <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                <span style={{ fontSize: 9, fontWeight: 700, color: 'var(--text)' }}>Over</span>
+                <span style={{ fontSize: 8, fontWeight: 600, color: model.over >= 62 ? '#10b981' : model.over >= 52 ? '#f59e0b' : '#ef4444' }}>{model.over}%</span>
+              </span>
+              <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                <span style={{ fontSize: 9, fontWeight: 700, color: 'var(--text)' }}>Under</span>
+                <span style={{ fontSize: 8, fontWeight: 600, color: model.under >= 62 ? '#10b981' : model.under >= 52 ? '#f59e0b' : '#ef4444' }}>{model.under}%</span>
+              </span>
+            </div>
+          </div>
+        );
+        const BkRow = ({ cell, forLine }) => (
+          <div style={{ display: 'grid', gridTemplateColumns: shGridCols, gap: '0 0.25rem', alignItems: 'center', padding: '0.3rem 0', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+            <span style={{ fontSize: 11, color: 'var(--text)' }}>{FB_BK_LABELS.betclic ?? 'Betclic'}</span>
+            <div style={{ textAlign: 'center', fontSize: 11, fontVariantNumeric: 'tabular-nums', color: 'var(--text)' }}>
+              {(cell?.over != null || cell?.under != null) ? forLine : '—'}
+            </div>
+            <Cell val={cell?.over} edgeVal={null} isPinnacle={false} color={FB_BK_COLORS.betclic} />
+            <Cell val={cell?.under} edgeVal={null} isPinnacle={false} color={FB_BK_COLORS.betclic} />
+          </div>
+        );
+        const ColHeader = ({ name, linePicker }) => (
+          <>
+            {linePicker && (
+              <div style={{ display: 'flex', gap: '0.3rem', justifyContent: 'flex-end', marginBottom: '0.3rem' }}>
+                {linePicker.lines.map(l => (
+                  <button
+                    key={l}
+                    onClick={() => linePicker.setLine(l)}
+                    style={{
+                      padding: '0.15rem 0.4rem', borderRadius: 5, border: '1px solid', cursor: 'pointer',
+                      fontSize: 9, fontWeight: 700, whiteSpace: 'nowrap',
+                      background: linePicker.line === l ? 'rgba(251,146,60,0.25)' : 'rgba(251,146,60,0.08)',
+                      color: '#ffffff',
+                      borderColor: linePicker.line === l ? 'rgba(251,146,60,0.55)' : 'rgba(251,146,60,0.22)',
+                    }}
+                  >{l}</button>
+                ))}
+              </div>
+            )}
+            <div style={{ display: 'grid', gridTemplateColumns: shGridCols, gap: '0 0.25rem', paddingBottom: '0.3rem', borderBottom: '1px solid var(--border)', marginBottom: '0.2rem' }}>
+              <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text)', textTransform: 'uppercase', letterSpacing: '0.04em', alignSelf: 'end', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={name}>{name}</div>
+              <div style={ch}>Total</div>
+              <div style={ch}>Over</div>
+              <div style={ch}>Under</div>
+            </div>
+          </>
+        );
+        return (
+          <>
+            <div style={{ marginTop: '0.5cm' }}>
+              <ColHeader name="Total du match" />
+              <BkRow cell={bkTotal?.[line]} forLine={line} />
+              <ModelRow label={`Modèle O/U ${line}`} model={totalModel} />
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 1rem', marginTop: '0.5cm' }}>
+              {sides.map(({ key: side, name, lambda, line: sideLine, setLine: setSideLine, lines: sideLines }) => {
+                const modelP = hasModel ? computeShotsOU(lambda, parseFloat(sideLine)) : null;
+                return (
+                  <div key={side}>
+                    <ColHeader name={name} linePicker={{ lines: sideLines, line: sideLine, setLine: setSideLine }} />
+                    <BkRow cell={bkTeam?.[side]?.[sideLine]} forLine={sideLine} />
+                    <ModelRow label={`O/U ${sideLine}`} model={modelP} />
+                  </div>
+                );
+              })}
             </div>
           </>
         );
@@ -1281,6 +1480,20 @@ const normTeam = s => (s || '').toLowerCase()
   .replace(/\b(fc|sc|ac|rc|ogc|as|afc|1\. fc|club)\b/g, '')
   .replace(/\s+/g, ' ').trim();
 
+// Comparaison par ensemble de tokens, ordre indifférent (11 septembre 2026) — la sous-chaîne
+// contiguë (includes) ratait des paires pourtant valides dès qu'un mot/numéro s'intercale entre les
+// tokens communs : "Racing Santander" (api-football) vs "Real Racing Club de Santander" (dict, "de"
+// casse la contiguïté), "SV Elversberg" vs "SV 07 Elversberg" ("07"), "Atletico Madrid" vs
+// "Atlético de Madrid" ("de"). Un ensemble de tokens ⊆ l'autre capture ces 3 cas sans régression sur
+// les ~90 autres paires déjà résolues par includes() (vérifié en isolation avant d'appliquer).
+const tokenSubset = (nName, nKey) => {
+  const a = nName.split(' ').filter(Boolean);
+  const b = nKey.split(' ').filter(Boolean);
+  if (!a.length || !b.length) return false;
+  const [small, big] = a.length <= b.length ? [a, b] : [b, a];
+  return small.every(tok => big.includes(tok));
+};
+
 // ── CDM : équivalences noms anglais (football-data.org) ↔ français (cotes scrapées) ──
 const CDM_NAME_ALIASES = {
   algeria: 'algerie', algerie: 'algerie',
@@ -1384,6 +1597,13 @@ const BRESIL_TEAM_ALIASES = {
   // cas réel : "Odds N/D" Levante-Real Betis malgré des cotes Unibet bien scrapées ("Betis Séville").
   betissevilla: 'betis',
   realbetisbalompie: 'betis',
+  // Ajouts 8 septembre 2026 — miroir de la même correction côté backend (server.js, COUNTRY_ALIASES),
+  // Ligue des Champions J1 : "Odds N/D" Club Bruges/AEK Athènes/Slavia Praha malgré des cotes bien
+  // scrapées. Mêmes cibles que le backend (source api-football identique des deux côtés pour les
+  // coupes d'Europe, pas besoin d'adaptation comme atlmadrid/einfrancfort ci-dessus).
+  bruges: 'brugge',
+  athenes: 'athens',
+  praha: 'prague',
 };
 
 function findInTable(table, name) {
@@ -1405,6 +1625,32 @@ const FORMATIONS = {
   '3-5-2':   [[50],[25,50,75],[90,70,50,30,10],[65,35]],
   '5-3-2':   [[50],[10,27,50,73,90],[75,50,25],[65,35]],
   '4-1-4-1': [[50],[15,36,64,85],[50],[87,62,38,13],[50]],
+  // 21 formations ajoutées le 13 septembre 2026 (demande explicite, 26 schémas envoyés par
+  // l'utilisateur — captures d'écran d'une app de compo, portées de leur terrain vertical à notre
+  // terrain horizontal). Positions Y par ligne générées depuis un espacement standard par
+  // effectif (ROW_Y ci-dessous) plutôt que recopiées à la main ligne par ligne — les 6 formations
+  // historiques ci-dessus, elles, gardent leurs valeurs d'origine, non retouchées.
+  '3-1-4-2':    [[50],[25,50,75],[50],[13,38,62,87],[35,65]],
+  '3-2-4-1':    [[50],[25,50,75],[35,65],[13,38,62,87],[50]],
+  '3-3-1-3':    [[50],[25,50,75],[25,50,75],[50],[22,50,78]],
+  '3-3-2-2':    [[50],[25,50,75],[25,50,75],[35,65],[35,65]],
+  '3-3-3-1':    [[50],[25,50,75],[25,50,75],[22,50,78],[50]],
+  '3-4-1-2':    [[50],[25,50,75],[13,38,62,87],[50],[35,65]],
+  '3-4-2-1':    [[50],[25,50,75],[13,38,62,87],[35,65],[50]],
+  '3-4-3':      [[50],[25,50,75],[13,38,62,87],[22,50,78]],
+  '3-5-1-1':    [[50],[25,50,75],[10,30,50,70,90],[50],[50]],
+  '4-1-2-1-2':  [[50],[13,38,62,87],[50],[35,65],[50],[35,65]],
+  '4-2-1-3':    [[50],[13,38,62,87],[35,65],[50],[22,50,78]],
+  '4-2-2-2':    [[50],[13,38,62,87],[35,65],[35,65],[35,65]],
+  '4-2-4':      [[50],[13,38,62,87],[35,65],[13,38,62,87]],
+  '4-3-1-2':    [[50],[13,38,62,87],[25,50,75],[50],[35,65]],
+  '4-3-2-1':    [[50],[13,38,62,87],[25,50,75],[35,65],[50]],
+  '4-4-1-1':    [[50],[13,38,62,87],[13,38,62,87],[50],[50]],
+  '4-5-1':      [[50],[13,38,62,87],[10,30,50,70,90],[50]],
+  '5-4-1':      [[50],[10,30,50,70,90],[13,38,62,87],[50]],
+  '5-2-3':      [[50],[10,30,50,70,90],[35,65],[22,50,78]],
+  '5-2-2-1':    [[50],[10,30,50,70,90],[35,65],[35,65],[50]],
+  '5-2-1-2':    [[50],[10,30,50,70,90],[35,65],[50],[35,65]],
 };
 
 const ROLE_LABELS = {
@@ -1414,6 +1660,30 @@ const ROLE_LABELS = {
   '3-5-2':   [['GK'],['CB','CB','CB'],['RWB','CM','CM','CM','LWB'],['ST','ST']],
   '5-3-2':   [['GK'],['LWB','CB','CB','CB','RWB'],['RM','CM','LM'],['ST','ST']],
   '4-1-4-1': [['GK'],['LB','CB','CB','RB'],['DM'],['RM','CM','CM','LM'],['ST']],
+  // Labels déduits (13 septembre 2026, demande explicite — photos sans intitulé de poste, juste
+  // des numéros de maillot) selon les conventions tactiques standards par ligne/effectif — best
+  // effort, pas une donnée extraite telle quelle des captures.
+  '3-1-4-2':    [['GK'],['CB','CB','CB'],['DM'],['RM','CM','CM','LM'],['ST','ST']],
+  '3-2-4-1':    [['GK'],['CB','CB','CB'],['DM','DM'],['RM','CM','CM','LM'],['ST']],
+  '3-3-1-3':    [['GK'],['CB','CB','CB'],['CM','CM','CM'],['CAM'],['RW','ST','LW']],
+  '3-3-2-2':    [['GK'],['CB','CB','CB'],['CM','CM','CM'],['CAM','CAM'],['ST','ST']],
+  '3-3-3-1':    [['GK'],['CB','CB','CB'],['CM','CM','CM'],['RW','CAM','LW'],['ST']],
+  '3-4-1-2':    [['GK'],['CB','CB','CB'],['RM','CM','CM','LM'],['CAM'],['ST','ST']],
+  '3-4-2-1':    [['GK'],['CB','CB','CB'],['RM','CM','CM','LM'],['CAM','CAM'],['ST']],
+  '3-4-3':      [['GK'],['CB','CB','CB'],['RM','CM','CM','LM'],['RW','ST','LW']],
+  '3-5-1-1':    [['GK'],['CB','CB','CB'],['RWB','CM','CM','CM','LWB'],['SS'],['ST']],
+  '4-1-2-1-2':  [['GK'],['LB','CB','CB','RB'],['DM'],['CM','CM'],['CAM'],['ST','ST']],
+  '4-2-1-3':    [['GK'],['LB','CB','CB','RB'],['DM','DM'],['CAM'],['RW','ST','LW']],
+  '4-2-2-2':    [['GK'],['LB','CB','CB','RB'],['DM','DM'],['CAM','CAM'],['ST','ST']],
+  '4-2-4':      [['GK'],['LB','CB','CB','RB'],['CM','CM'],['RW','ST','ST','LW']],
+  '4-3-1-2':    [['GK'],['LB','CB','CB','RB'],['CM','CM','CM'],['CAM'],['ST','ST']],
+  '4-3-2-1':    [['GK'],['LB','CB','CB','RB'],['CM','CM','CM'],['CAM','CAM'],['ST']],
+  '4-4-1-1':    [['GK'],['LB','CB','CB','RB'],['RM','CM','CM','LM'],['SS'],['ST']],
+  '4-5-1':      [['GK'],['LB','CB','CB','RB'],['RM','CM','CM','CM','LM'],['ST']],
+  '5-4-1':      [['GK'],['LWB','CB','CB','CB','RWB'],['RM','CM','CM','LM'],['ST']],
+  '5-2-3':      [['GK'],['LWB','CB','CB','CB','RWB'],['DM','DM'],['RW','ST','LW']],
+  '5-2-2-1':    [['GK'],['LWB','CB','CB','CB','RWB'],['DM','DM'],['CAM','CAM'],['ST']],
+  '5-2-1-2':    [['GK'],['LWB','CB','CB','CB','RWB'],['DM','DM'],['CAM'],['ST','ST']],
 };
 
 // Terrain horizontal — home à gauche, away à droite
@@ -1462,18 +1732,110 @@ function PitchSVG() {
   );
 }
 
-function PlayerDot({ pos, name, complete }) {
+function PlayerDot({ pos, name, complete, confirmed }) {
   return (
     <div
       className="lp-player"
       style={{ left: `${pos.x}%`, top: `${pos.y}%` }}
     >
-      <div className={`lp-dot ${name ? 'lp-dot--filled' : ''} ${name && complete ? 'lp-dot--complete' : ''}`} />
+      <div className={`lp-dot ${name ? 'lp-dot--filled' : ''} ${name && complete ? 'lp-dot--complete' : ''} ${name && confirmed ? 'lp-dot--confirmed' : ''}`} />
       {name && (
         <span className="lp-player-label">
           {name.split(' ').pop()}
         </span>
       )}
+    </div>
+  );
+}
+
+// ── Compo officielle (api-football, 11 septembre 2026) ────────────────────────
+// Regroupe les titulaires par rangée réelle (`grid:"rangée:colonne"`, renvoyé par api-football)
+// plutôt que de tenter de faire correspondre la chaîne `formation` ("4-2-3-1"…) à FORMATIONS —
+// fonctionne pour n'importe quelle formation, y compris celles absentes du dictionnaire manuel.
+function groupLineupByGridRow(startXI) {
+  const rows = {};
+  for (const p of startXI) {
+    const [r, c] = (p.grid || '').split(':').map(Number);
+    if (!r) continue;
+    (rows[r] ||= []).push({ ...p, col: c || 0 });
+  }
+  return Object.keys(rows).map(Number).sort((a, b) => a - b)
+    .map(r => rows[r].sort((a, b) => a.col - b.col));
+}
+
+// Même géométrie que buildPositions (profondeur = X selon le camp, rangée étalée sur Y 12-88) —
+// dérivée de la vraie taille de chaque rangée au lieu d'un tableau FORMATIONS figé.
+function buildRealPositions(rowsShape, isHome) {
+  const n = rowsShape.length;
+  return rowsShape.flatMap((row, rowIdx) => {
+    const t = n > 1 ? rowIdx / (n - 1) : 0;
+    const x = isHome ? 7 + 38 * t : 93 - 38 * t;
+    const count = row.length;
+    return row.map((player, i) => ({
+      x, y: count > 1 ? 12 + (76 * i) / (count - 1) : 50,
+      player,
+    }));
+  });
+}
+
+// `homeSource`/`awaySource` : { kind:'official' } | { kind:'last', date } | null (aucune donnée
+// réelle pour ce côté — n'arrive que si l'équipe n'a encore joué aucun match, ex. tout début de
+// saison). Chaque côté peut avoir une source différente (compo officielle publiée pour l'une,
+// dernier match pour l'autre) — traité indépendamment plutôt que de forcer un état commun aux deux.
+function lineupBadgeLabel(source) {
+  if (!source) return null;
+  if (source.kind === 'official') return { text: 'Officielle', cls: 'lp-badge--official' };
+  const d = source.date ? new Date(source.date).toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit' }) : '';
+  return { text: `Probable · ${d}`, cls: 'lp-badge--probable' };
+}
+
+function OfficialLineupView({ home, away, homeTeam, awayTeam, homeSource, awaySource }) {
+  const homeRows = groupLineupByGridRow(homeTeam?.startXI || []);
+  const awayRows = groupLineupByGridRow(awayTeam?.startXI || []);
+  const homePosArr = buildRealPositions(homeRows, true);
+  const awayPosArr = buildRealPositions(awayRows, false);
+  const homeBadge = lineupBadgeLabel(homeSource);
+  const awayBadge = lineupBadgeLabel(awaySource);
+
+  return (
+    <div className="lp-wrap">
+      <div className="lp-controls">
+        <div className="lp-ctrl">
+          <span className="lp-team-label">{home.short}</span>
+          <span className="lp-official-formation">{homeTeam?.formation || '—'}</span>
+          {homeBadge && <span className={`lp-official-badge ${homeBadge.cls}`}>{homeBadge.text}</span>}
+        </div>
+        <div className="lp-ctrl lp-ctrl--right">
+          {awayBadge && <span className={`lp-official-badge ${awayBadge.cls}`}>{awayBadge.text}</span>}
+          <span className="lp-official-formation">{awayTeam?.formation || '—'}</span>
+          <span className="lp-team-label">{away.short}</span>
+        </div>
+      </div>
+
+      <div className="lp-pitch-wrap">
+        <PitchSVG />
+        {awayPosArr.map((p, i) => <PlayerDot key={`a${i}`} pos={p} name={p.player.name} confirmed={awaySource?.kind === 'official'} complete={awaySource?.kind === 'last'} />)}
+        {homePosArr.map((p, i) => <PlayerDot key={`h${i}`} pos={p} name={p.player.name} confirmed={homeSource?.kind === 'official'} complete={homeSource?.kind === 'last'} />)}
+      </div>
+      <div className="lp-official-subs">
+        <div className="lp-official-subs-col">
+          {homeTeam?.coach && <p className="lp-official-coach">Coach : {homeTeam.coach}</p>}
+          {(homeTeam?.substitutes || []).map(p => (
+            <span key={p.id} className="lp-official-sub-chip">{p.number ? `${p.number} ` : ''}{p.name}</span>
+          ))}
+        </div>
+        <div className="lp-official-subs-col lp-official-subs-col--right">
+          {awayTeam?.coach && <p className="lp-official-coach">Coach : {awayTeam.coach}</p>}
+          {(awayTeam?.substitutes || []).map(p => (
+            <span key={p.id} className="lp-official-sub-chip">{p.number ? `${p.number} ` : ''}{p.name}</span>
+          ))}
+        </div>
+      </div>
+      <p className="lp-hint">
+        {(homeSource?.kind === 'last' || awaySource?.kind === 'last')
+          ? "Compo probable = vraie compo du dernier match de l'équipe (api-football) — remplacée par la compo officielle du match dès sa publication, ~30-60 min avant le coup d'envoi."
+          : "Feuille de match officielle (api-football)."}
+      </p>
     </div>
   );
 }
@@ -1733,6 +2095,10 @@ export default function MatchDetailPage() {
   const [awayPlayers, setAwayPlayers] = useState(null);
   const rosterFetchedForRef = useRef(null); // fixture.id déjà fetché — voir effet Compositions plus bas
   const [rosterLoading, setRosterLoading] = useState(false);
+  const [officialLineup, setOfficialLineup] = useState(null); // { found:false } ou { found:true, teams:{} }
+  const [homeLastLineup, setHomeLastLineup] = useState(null); // compo probable = vraie compo du dernier match joué
+  const [awayLastLineup, setAwayLastLineup] = useState(null);
+  const [realH2H, setRealH2H] = useState([]); // confrontations directes réelles, via l'endpoint H2H dédié
   const [matchOdds, setMatchOdds] = useState(null);
   const [matchOddsFrozen, setMatchOddsFrozen] = useState(false);
   const [showOddsDropdown, setShowOddsDropdown] = useState(false);
@@ -1767,7 +2133,8 @@ export default function MatchDetailPage() {
       // ci-dessous (ex: "Rapid Vienne") ne devenait jamais la chaîne exacte "vienne".
       base = base.replace(/[a-z]+/g, w => CDM_NAME_ALIASES[w] || BRESIL_TEAM_ALIASES[w] || w);
       base = base
-        .replace(/\b(as|fc|sc|rc|ogc|afc|ac|stade|club|island|islands)\b/g, '')
+        // fa/fk ajoutés le 8 septembre 2026 (miroir backend, cas "Sabah FA"/"Sabah FK")
+        .replace(/\b(as|fc|sc|rc|ogc|afc|ac|fa|fk|stade|club|island|islands)\b/g, '')
         .replace(/\bst\b/g, 'saint')
         .replace(/\butd\b/g, 'united')
         .replace(/[^a-z]/g, '');
@@ -1803,12 +2170,32 @@ export default function MatchDetailPage() {
   // propre parité via computeCdmBTTS). Effet séparé/indépendant du reste : le badge "estimation
   // site" doit disparaître dès que le snapshot arrive, même si les autres fetches (standings, xG)
   // sont encore en cours ou échouent.
+  // Sondage périodique (14 septembre 2026) — avant ce fix, un seul fetch au montage (dépendance
+  // `fixture?.id` uniquement) : si l'onglet reste ouvert avant que le cycle d'arrière-plan (~20 min)
+  // n'ait encore rien calculé pour ce match (snapshot absent ou sans cotes), le badge "Odds N/D"
+  // restait bloqué indéfiniment même une fois les cotes réellement devenues disponibles côté backend
+  // — cas réel signalé (Levante-Athletic Club, une alerte réelle avait pourtant déjà les cotes en
+  // snapshot). Coût quasi nul (lecture d'un objet déjà calculé en mémoire côté backend, aucun appel
+  // externe) — fetch direct (pas `cachedFetch`, dont le cache 5 min figerait justement le résultat
+  // qu'on cherche à rafraîchir), sondé toutes les 60s jusqu'à obtention des cotes puis arrêté (elles
+  // ne peuvent plus régresser une fois figées).
   useEffect(() => {
     setFootballSnapshot(null);
     if (!fixture || fixture.league === 'cdm') return;
-    cachedFetch(`/api/football/projections-snapshot/${fixture.id}`, 5 * 60_000)
-      .then(d => { if (d.found) setFootballSnapshot(d); })
-      .catch(() => {});
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const d = await fetch(`/api/football/projections-snapshot/${fixture.id}`).then(r => r.json());
+        if (cancelled) return;
+        if (d.found) {
+          setFootballSnapshot(d);
+          if (d.odds) clearInterval(timer);
+        }
+      } catch {}
+    };
+    poll();
+    const timer = setInterval(poll, 60_000);
+    return () => { cancelled = true; clearInterval(timer); };
   }, [fixture?.id]);
 
   useEffect(() => {
@@ -1857,7 +2244,7 @@ export default function MatchDetailPage() {
     // une fois arrivé, sans attendre/bloquer l'affichage des stats standings déjà là.
     const fetchXGStats = (teamName, setter) => {
       cachedFetch(`/api/football/teamxgstats?league=${fixture.league}&team=${encodeURIComponent(teamName)}&date=${encodeURIComponent(fixture.date)}`, 6 * 3600_000)
-        .then(d => { if (d.found) setter(prev => ({ ...prev, xG: d.xG, xGA: d.xGA, shotsPerGame: d.shotsPerGame, shotsOnTarget: d.shotsOnTarget, possession: d.possession })); })
+        .then(d => { if (d.found) setter(prev => ({ ...prev, xG: d.xG, xGA: d.xGA, shotsPerGame: d.shotsPerGame, shotsOnTarget: d.shotsOnTarget, shotsAgainst: d.shotsAgainst, shotsOnTargetAgainst: d.shotsOnTargetAgainst, possession: d.possession })); })
         .catch(() => {});
     };
     fetchXGStats(fixture.home.name, setLiveHomeStats);
@@ -1886,23 +2273,39 @@ export default function MatchDetailPage() {
     setHomePlayers(null); setAwayPlayers(null);
     setHomeNames(Array(11).fill('')); setAwayNames(Array(11).fill(''));
     setRosterLoading(true);
-    async function fetchOne(name, setter) {
+    async function fetchOne(team, setter) {
       if (fixture.league === 'cdm') {
         try {
-          const d = await cachedFetch(`/api/football/cdm/squad/${encodeURIComponent(name)}`, 6 * 3600_000);
+          const d = await cachedFetch(`/api/football/cdm/squad/${encodeURIComponent(team.name)}`, 6 * 3600_000);
           setter(d.players || []);
         } catch { setter([]); }
         return;
       }
-      // Recherche floue (2 septembre 2026, migration api-football) — ESPN_FOOTBALL est indexé sur
-      // les noms exacts football-data.org ("Arsenal FC", "1. FC Union Berlin"...), qui ne
-      // correspondent plus à `name` maintenant que les fixtures viennent d'api-football ("Arsenal",
+      // Id direct api-football (11 septembre 2026) — `team.id` est désormais recopié depuis la
+      // réponse backend (mapFdTeam, useFootballFixtures.js) pour les 9 championnats live (5 grands +
+      // Brésil + Grèce + Arabie + Portugal + coupes d'Europe) : plus besoin de deviner l'équipe par
+      // nom, `/api/football/squad2` accepte directement l'id, la même route déjà utilisée par
+      // Base de données. Corrige d'un coup les compos jamais générées sur Brésil/Grèce/Arabie/
+      // Portugal/coupes d'Europe (aucune entrée ESPN_FOOTBALL n'a jamais existé pour elles) et rend
+      // la recherche par nom (ESPN_FOOTBALL, Big Five uniquement) purement un repli pour le seul cas
+      // où l'id manquerait (ex. données statiques de secours jamais réellement servies en pratique).
+      if (team.id) {
+        try {
+          const d = await cachedFetch(`/api/football/squad2/${fixture.league}/${team.id}`, 6 * 3600_000);
+          setter(d.players || []);
+          return;
+        } catch { /* repli sur la recherche par nom ci-dessous */ }
+      }
+      // Recherche floue par nom (2 septembre 2026, migration api-football ; repli depuis le 11
+      // septembre 2026) — ESPN_FOOTBALL est indexé sur les noms exacts football-data.org ("Arsenal
+      // FC", "1. FC Union Berlin"...), qui ne correspondent plus au nom api-football ("Arsenal",
       // "Union Berlin"...). normTeam/fuzzy déjà utilisés par findInTable plus haut dans ce fichier —
       // évite de reconstruire à la main les ~120 lignes du dictionnaire pour chaque championnat.
+      const name = team.name;
       const nName = normTeam(name);
       const info = ESPN_FOOTBALL[name] || Object.entries(ESPN_FOOTBALL).find(([key]) => {
         const nKey = normTeam(key);
-        return nKey === nName || nKey.includes(nName) || nName.includes(nKey);
+        return nKey === nName || nKey.includes(nName) || nName.includes(nKey) || tokenSubset(nName, nKey);
       })?.[1];
       if (!info) { setter([]); return; }
       try {
@@ -1911,10 +2314,68 @@ export default function MatchDetailPage() {
       } catch { setter([]); }
     }
     Promise.all([
-      fetchOne(fixture.home.name, setHomePlayers),
-      fetchOne(fixture.away.name, setAwayPlayers),
+      fetchOne(fixture.home, setHomePlayers),
+      fetchOne(fixture.away, setAwayPlayers),
     ]).finally(() => setRosterLoading(false));
   }, [showLineup, fixture?.id]);
+
+  // Compo officielle (11 septembre 2026) — CDM exclue (sélections nationales, pas d'id club
+  // api-football/pas de feuille de match par ce biais). Sondage toutes les 90s pendant que le
+  // panneau Compositions est ouvert : couvre à la fois "pas encore publiée → vient de l'être" et
+  // "déjà publiée → changement tardif" dans la fenêtre 30-60 min pré-match — le cache backend (5 min)
+  // absorbe l'essentiel du coût, ce sondage ne fait qu'aller le consulter à intervalle raisonnable.
+  useEffect(() => {
+    if (!fixture || !showLineup || fixture.league === 'cdm') { setOfficialLineup(null); return; }
+    setOfficialLineup(null); // évite d'afficher la compo du match précédent pendant le fetch
+    const rawId = fixture.id.replace(/^[a-z]+_/, '');
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const d = await fetch(`/api/football/lineup/${rawId}`).then(r => r.json());
+        if (!cancelled) setOfficialLineup(d);
+      } catch { if (!cancelled) setOfficialLineup(prev => prev || { found: false }); }
+    };
+    poll();
+    const timer = setInterval(poll, 90_000);
+    return () => { cancelled = true; clearInterval(timer); };
+  }, [showLineup, fixture?.id, fixture?.league]);
+
+  // Compo probable = vraie compo du dernier match joué par chaque équipe (11 septembre 2026,
+  // demande explicite) — tant que la compo officielle du match affiché n'est pas encore publiée
+  // (fenêtre 30-60 min pré-match), affiche la dernière feuille de match réelle au lieu d'un
+  // composeur vide. Un seul fetch par fixture (pas de sondage : le dernier match d'une équipe ne
+  // change qu'une fois par journée, le cache backend est déjà à 6h) ; par id d'équipe api-football
+  // (`fixture.home.id`/`away.id`, disponibles depuis le fix de la session précédente), donc absent
+  // pour la CDM (sélections nationales, pas d'id club) — géré nativement par le `if(!teamId)` ci-dessous.
+  useEffect(() => {
+    if (!fixture || !showLineup || fixture.league === 'cdm') { setHomeLastLineup(null); setAwayLastLineup(null); return; }
+    setHomeLastLineup(null); setAwayLastLineup(null);
+    let cancelled = false;
+    async function fetchLast(teamId, setter) {
+      if (!teamId) { setter({ found: false }); return; }
+      try {
+        const d = await fetch(`/api/football/lastlineup/${teamId}`).then(r => r.json());
+        if (!cancelled) setter(d);
+      } catch { if (!cancelled) setter({ found: false }); }
+    }
+    fetchLast(fixture.home?.id, setHomeLastLineup);
+    fetchLast(fixture.away?.id, setAwayLastLineup);
+    return () => { cancelled = true; };
+  }, [showLineup, fixture?.id, fixture?.league]);
+
+  // Confrontations directes réelles (11 septembre 2026) — endpoint H2H dédié plutôt que la
+  // coïncidence "l'adversaire apparaît dans les ~30 derniers matchs toutes compétitions de
+  // l'équipe domicile" (ratait des confrontations pourtant réelles, cas signalé Sevilla-Valencia
+  // n'affichant qu'1 match sur 2 dans la saison). CDM exclue (pas d'id club api-football).
+  useEffect(() => {
+    if (!fixture || !showLineup || fixture.league === 'cdm' || !fixture.home?.id || !fixture.away?.id) { setRealH2H([]); return; }
+    let cancelled = false;
+    fetch(`/api/football/h2h/${fixture.home.id}/${fixture.away.id}?last=5`)
+      .then(r => r.json())
+      .then(d => { if (!cancelled) setRealH2H(d.matches || []); })
+      .catch(() => { if (!cancelled) setRealH2H([]); });
+    return () => { cancelled = true; };
+  }, [showLineup, fixture?.id, fixture?.league]);
 
   const league = fixture ? getLeagueById(fixture.league) : null;
   const { home, away, venue, weather, round } = fixture || {};
@@ -1945,10 +2406,26 @@ export default function MatchDetailPage() {
           lambda_home: footballSnapshot.lambdaHome, lambda_away: footballSnapshot.lambdaAway,
           isSnapshot: true,
           isEarlySample: !!footballSnapshot.isEarlySample,
+          // Tirs/tirs cadrés (14 septembre 2026, marché en observation — aucune cote bookmaker
+          // trouvée pour l'instant, voir CLAUDE.md) : λ exposés tels quels, `null` si le xG était
+          // indisponible pour ce match au dernier cycle (échantillon trop court, championnat sans
+          // mapping api-football...).
+          shotsLambdaHome: footballSnapshot.shotsLambdaHome ?? null, shotsLambdaAway: footballSnapshot.shotsLambdaAway ?? null,
+          sotLambdaHome: footballSnapshot.sotLambdaHome ?? null, sotLambdaAway: footballSnapshot.sotLambdaAway ?? null,
         }
       : (homeMatches.length && awayMatches.length && liveHomeStats?.id && liveAwayStats?.id)
         ? computeBTTS(homeMatches, awayMatches, liveHomeStats.id, liveAwayStats.id)
         : computeStaticBTTS(fixture);
+
+  // Cotes figées (9 septembre 2026) — même snapshot backend que bttsResult ci-dessus, mais pour les
+  // cotes bookmaker plutôt que les probas. Générique à tous les championnats foot (aucune condition
+  // de ligue ici, contrairement à `/api/odds` qui dépendait d'un matching flou par nom) : dès que le
+  // backend a écrit un snapshot pour ce fixtureId, ses cotes priment sur `/api/odds`. Toujours
+  // affichées comme "pré-match" une fois le coup d'envoi passé, puisque le snapshot backend arrête
+  // de se mettre à jour dès que le match quitte le statut SCHEDULED.
+  const snapshotOdds = footballSnapshot?.odds || null;
+  const effectiveOdds = snapshotOdds || matchOdds;
+  const effectiveOddsFrozen = snapshotOdds ? new Date(fixture.date).getTime() <= Date.now() : matchOddsFrozen;
 
   // Générateur d'alerte BTTS côté navigateur retiré (1er septembre 2026, demande explicite) —
   // créait de vraies alertes (cloudSet direct vers Mongo) sans passer par aucun garde-fou backend
@@ -1986,7 +2463,7 @@ export default function MatchDetailPage() {
         <div className="detail-center">
           {isLive || isFinal ? (
             <>
-              {isLive && <span className="mrd-live">● LIVE</span>}
+              {isLive && <span className="mrd-live">● {fixture?.elapsed != null ? `${fixture.elapsed}'` : 'LIVE'}</span>}
               <div className="detail-time-big" style={{ fontVariantNumeric: 'tabular-nums' }}>
                 <span style={{ color: isLive ? '#c62828' : (homeWon ? '#2e7d32' : 'var(--text)') }}>{home.score ?? '–'}</span>
                 <span style={{ margin: '0 0.3em', color: 'var(--text-dim)' }}>–</span>
@@ -2055,10 +2532,10 @@ export default function MatchDetailPage() {
         </div>
         <div
           className="info-chip"
-          onClick={() => { if (!matchOdds || !Object.keys(matchOdds).length) return; setShowOddsDropdown(v => !v); setShowLineup(false); }}
-          style={{ cursor: matchOdds && Object.keys(matchOdds).length ? 'pointer' : 'default', userSelect: 'none', opacity: matchOdds === null ? 0.5 : 1 }}
+          onClick={() => { if (!effectiveOdds || !Object.keys(effectiveOdds).length) return; setShowOddsDropdown(v => !v); setShowLineup(false); }}
+          style={{ cursor: effectiveOdds && Object.keys(effectiveOdds).length ? 'pointer' : 'default', userSelect: 'none', opacity: matchOdds === null && !snapshotOdds ? 0.5 : 1 }}
         >
-          {matchOdds === null ? 'Odds…' : matchOdds && Object.keys(matchOdds).length ? (matchOddsFrozen ? 'Odds (pré-match)' : 'Odds') : 'Odds N/D'}
+          {matchOdds === null && !snapshotOdds ? 'Odds…' : effectiveOdds && Object.keys(effectiveOdds).length ? (effectiveOddsFrozen ? 'Odds (pré-match)' : 'Odds') : 'Odds N/D'}
         </div>
 
         <button
@@ -2077,9 +2554,9 @@ export default function MatchDetailPage() {
         </button>
       </div>
 
-      {showOddsDropdown && matchOdds && Object.keys(matchOdds).length > 0 && (
+      {showOddsDropdown && effectiveOdds && Object.keys(effectiveOdds).length > 0 && (
         <section className="detail-card compact-card" style={{ marginBottom: '0.5rem' }}>
-          <FootballOddsBox markets={matchOdds} bttsResult={bttsResult} home={home} away={away} frozen={matchOddsFrozen} onRefresh={handleRefreshOdds} refreshing={refreshingOdds} lastRefreshed={lastRefreshedOdds} fixtureLeague={fixture?.league} />
+          <FootballOddsBox markets={effectiveOdds} bttsResult={bttsResult} home={home} away={away} frozen={effectiveOddsFrozen} onRefresh={handleRefreshOdds} refreshing={refreshingOdds} lastRefreshed={lastRefreshedOdds} fixtureLeague={fixture?.league} />
         </section>
       )}
 
@@ -2107,13 +2584,35 @@ export default function MatchDetailPage() {
               }}
             />
             <div className="detail-card lineup-card">
-              <LineupBuilder
-                home={home} away={away}
-                homeForm={homeForm} awayForm={awayForm}
-                setHomeForm={setHomeForm} setAwayForm={setAwayForm}
-                homeNames={homeNames} awayNames={awayNames}
-                setHomeNames={setHomeNames} setAwayNames={setAwayNames}
-              />
+              {(() => {
+                // Officielle en priorité par côté, sinon compo probable (dernier match réel) —
+                // chaque équipe est évaluée indépendamment, l'une peut être "officielle" pendant
+                // que l'autre n'a encore que sa compo "probable" (demande explicite du 11 sept).
+                const homeOfficial = officialLineup?.teams?.[home?.id];
+                const awayOfficial = officialLineup?.teams?.[away?.id];
+                const homeTeamData = homeOfficial || (homeLastLineup?.found ? homeLastLineup : null);
+                const awayTeamData = awayOfficial || (awayLastLineup?.found ? awayLastLineup : null);
+                const homeSource = homeOfficial ? { kind: 'official' } : homeLastLineup?.found ? { kind: 'last', date: homeLastLineup.date } : null;
+                const awaySource = awayOfficial ? { kind: 'official' } : awayLastLineup?.found ? { kind: 'last', date: awayLastLineup.date } : null;
+                if (!homeTeamData && !awayTeamData) {
+                  return (
+                    <LineupBuilder
+                      home={home} away={away}
+                      homeForm={homeForm} awayForm={awayForm}
+                      setHomeForm={setHomeForm} setAwayForm={setAwayForm}
+                      homeNames={homeNames} awayNames={awayNames}
+                      setHomeNames={setHomeNames} setAwayNames={setAwayNames}
+                    />
+                  );
+                }
+                return (
+                  <OfficialLineupView
+                    home={home} away={away}
+                    homeTeam={homeTeamData} awayTeam={awayTeamData}
+                    homeSource={homeSource} awaySource={awaySource}
+                  />
+                );
+              })()}
             </div>
           </div>
         )}
@@ -2132,6 +2631,8 @@ export default function MatchDetailPage() {
               <StatBar label="xGA (saison)"        home={+(effHome.xGA || 0).toFixed(1)} away={+(effAway.xGA || 0).toFixed(1)} higherIsBetter={false} />
               <StatBar label="Tirs / match"        home={effHome.shotsPerGame}    away={effAway.shotsPerGame} />
               <StatBar label="Tirs cadrés / match" home={effHome.shotsOnTarget}   away={effAway.shotsOnTarget} />
+              <StatBar label="Tirs encaissés / match" home={effHome.shotsAgainst} away={effAway.shotsAgainst} higherIsBetter={false} />
+              <StatBar label="Tirs cadrés encaissés / match" home={effHome.shotsOnTargetAgainst} away={effAway.shotsOnTargetAgainst} higherIsBetter={false} />
               <StatBar label="Possession (%)"      home={effHome.possession}      away={effAway.possession} unit="%" />
             </div>
           </section>
@@ -2164,20 +2665,13 @@ export default function MatchDetailPage() {
           </section>
         )}
 
-        {showLineup && (homeMatches.length > 0 || awayMatches.length > 0) && (() => {
-          const awayId = liveAwayStats?.id;
-          const realH2H = homeMatches
-            .filter(m => m.homeId === awayId || m.awayId === awayId)
-            .slice(0, 5)
-            .map(m => ({ date: m.date.split('T')[0], home: m.homeTeam, away: m.awayTeam, scoreHome: m.scoreHome, scoreAway: m.scoreAway }));
-          return realH2H.length > 0 && (
-            <CollapsibleCard title="Confrontations directes (réelles)" className="h2h-card">
-              <div className="h2h-list">
-                {realH2H.map((m, i) => <H2HRow key={i} match={m} />)}
-              </div>
-            </CollapsibleCard>
-          );
-        })()}
+        {showLineup && realH2H.length > 0 && (
+          <CollapsibleCard title="Confrontations directes (réelles)" className="h2h-card">
+            <div className="h2h-list">
+              {realH2H.map((m, i) => <H2HRow key={i} match={{ date: m.date.split('T')[0], home: m.home, away: m.away, scoreHome: m.scoreHome, scoreAway: m.scoreAway }} />)}
+            </div>
+          </CollapsibleCard>
+        )}
 
         {showLineup && (() => {
           const upTeam    = upcomingSide === 'home' ? home : away;

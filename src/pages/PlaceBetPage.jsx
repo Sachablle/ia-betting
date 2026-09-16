@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
 import { BBALL_FIXTURES } from '../utils/basketball';
 import { syncBackgroundAlerts, syncGameTotalAlerts, syncTeamTotalAlerts, syncBasketballResultAlerts, syncBballPinnacleAlerts, syncBballPinnaclePropsAlerts, loadBballPinnaclePropsAlerts, saveBballPinnaclePropsAlerts, syncOddsDrift, syncFootballAlerts, resolveCompletedFootballAlerts, postAcceptedAlertReliably, flushPendingAlertSync, persistAlertsKey, FB_DC_BTTS_KEY, FB_DC_OU_KEY, syncTelegramActions, syncOutrightAlerts, acceptOutrightAlert, rejectOutrightAlert, dismissOutrightAlert, OUTRIGHT_ALERTS_KEY, TEAM_TOTAL_KEY } from '../utils/syncAlerts';
-import { BTTSAlertCard, FootballTotalCard, FootballResultCard, PinnacleEdgeCard, DCBTTSAlertCard, DCOUAlertCard, FootballGroupCard } from '../components/FootballAlertCards';
+import { BTTSAlertCard, FootballTotalCard, TeamGoalsAlertCard, FootballResultCard, PinnacleEdgeCard, FootballGroupCard } from '../components/FootballAlertCards';
 import { OutrightModelCard, OutrightGapCard } from '../components/OutrightAlertCards';
 import { FactorBar } from '../components/FactorBar';
 import { usePlayerNearMiss, PlayerStatBadge } from '../components/PlayerNearMissBadge';
@@ -13,11 +13,13 @@ import { groupAlerts } from '../utils/groupAlerts';
 import { loadBankrollState, getRecommendedStake } from '../utils/bankroll';
 import { StakeCalculatorWidget, NearMissPanelWidget, buildPendingItems } from '../components/PendingAlertWidgets';
 
-// Mise engagée au moment de l'acceptation — mise pleine du palier courant, sans répartition
-// automatique entre plusieurs alertes du même jour (testé puis abandonné le 16 juillet 2026,
-// cf. commentaire en tête de bankroll.js). Figée sur l'alerte pour affichage dans Running ; à
-// ajuster manuellement via le badge éditable si plusieurs alertes sortent le même jour.
-const stakeAtAccept = () => getRecommendedStake(loadBankrollState().current);
+// Mise engagée au moment de l'acceptation (8 septembre 2026, demande explicite utilisateur : la
+// mise calibrée par alerte — déjà calculée côté serveur, stakeAmountSuggested — doit s'injecter
+// automatiquement à l'accept, sans saisie manuelle) — priorité au montant calibré propre à CETTE
+// alerte ; repli sur l'ancienne mise plate du palier bankroll uniquement si l'alerte n'a pas encore
+// de stakeAmountSuggested (marché sans calibration dispo, ou alerte générée avant ce fix). Figée sur
+// l'alerte pour affichage dans Running ; à ajuster manuellement via le badge éditable si besoin.
+const stakeAtAccept = (alert) => alert?.stakeAmountSuggested ?? getRecommendedStake(loadBankrollState().current);
 
 const ALERT_KEY        = 'nba_prop_alerts';
 const HISTORY_KEY      = 'nba_bet_history';
@@ -34,6 +36,7 @@ const BASKETBALL_RESULT_MIN_ODDS_WNBA = 1.20;
 const FB_BTTS_KEY      = 'fb_btts_alerts';
 const FB_TOTAL_KEY     = 'fb_total_alerts';
 const FB_RESULT_KEY    = 'fb_result_alerts';
+const FB_TEAM_GOALS_KEY = 'fb_team_goals_alerts';
 const FB_PINNACLE_KEY  = 'fb_pinnacle_alerts';
 const BBALL_PINNACLE_KEY = 'bball_pinnacle_alerts';
 const PURGE_PLAYERS    = ['Justin Bean', 'Jack Kayil', 'Leandro Bolmaro'];
@@ -58,7 +61,7 @@ const _PB_ESPN_WNBA = {
   'Phoenix Mercury':11,'Portland Fire':132052,'Seattle Storm':14,
   'Toronto Tempo':131935,'Washington Mystics':16,
 };
-const _EU_BBALL = new Set(['acb','lnb','bbl','legaa','euroleague','nbl']);
+const _EU_BBALL = new Set(['acb','lnb','bbl','legaa','euroleague','nbl','gbl']);
 const _prefetchedPB = new Set();
 function _prefetchBballCard(homeTeam, awayTeam, league) {
   const key = `${league}__${homeTeam}__${awayTeam}`;
@@ -108,7 +111,7 @@ async function resolveCompletedBets(alerts, save) {
     if (!home || !away) continue;
     try {
       const league = matchAlerts[0]?.league;
-      const EU_LEAGUES = ['acb','lnb','bbl','legaa','nbl'];
+      const EU_LEAGUES = ['acb','lnb','bbl','legaa','nbl','gbl'];
       const bsUrl = league === 'euroleague'
         ? `/api/euroleague/boxscore?date=${encodeURIComponent(date)}&home=${home}&away=${away}`
         : league === 'wnba'
@@ -232,7 +235,7 @@ function resolveMatchId({ ids, fixture, fixtureDate, homeTeam, awayTeam, eventId
   // WNBA — l'ID ESPN est suffisant ; la page le charge via le scoreboard live
   if (league === 'wnba' && eventId) return `${eventId}?league=wnba`;
   // EU basket (ACB/BBL/LegaA/LNB) — eventId = api-sports game ID
-  const EU_BBALL = ['acb', 'lnb', 'bbl', 'legaa', 'nbl'];
+  const EU_BBALL = ['acb', 'lnb', 'bbl', 'legaa', 'nbl', 'gbl'];
   if (EU_BBALL.includes(league) && eventId) return `${eventId}?league=${league}`;
   // NBA — ID ESPN direct : la page résout alors fixture.id = ID ESPN, exactement comme via
   // le chemin de navigation normal (Sport → Match, qui clique sur la ligne du scoreboard live).
@@ -520,7 +523,7 @@ function CompactAcceptedTotalCard({ alert, onDismiss, variant = 'accepted' }) {
 }
 
 function GameTotalCard({ alert, onAccept, onReject, onDismiss }) {
-  const { id, home, away, homeShort, awayShort, date, estimated, line, edge, direction, prob, status, league, pinnacleOdds, unibetOdds, betclicOdds, winamaxOdds, eventId, keyPlayerMatchCorrelation } = alert;
+  const { id, home, away, homeShort, awayShort, date, estimated, line, edge, direction, prob, calibratedProbability, stakePct, stakeAmountSuggested, nearMissRecord, status, league, pinnacleOdds, unibetOdds, betclicOdds, winamaxOdds, eventId, keyPlayerMatchCorrelation } = alert;
   const navigate   = useNavigate();
   const isPending  = status === 'pending';
   const isAccepted = status === 'accepted';
@@ -555,6 +558,8 @@ function GameTotalCard({ alert, onAccept, onReject, onDismiss }) {
         <span className="bc-league">{leagueLabel}</span>
         <div style={{ marginLeft: 'auto', marginRight: 24, display: 'flex', alignItems: 'center', gap: 6 }}>
           {prob != null && <span className={`bc-edge-badge ${prob >= 90 ? 'high' : 'mid'}`}>{prob}%</span>}
+          {calibratedProbability != null && <span style={{ fontSize: 9, color: 'var(--text-dim)', fontWeight: 600 }}>({calibratedProbability}% calib.{nearMissRecord && (nearMissRecord.won + nearMissRecord.lost) > 0 ? ` · ${nearMissRecord.won}G/${nearMissRecord.lost}P` : ''})</span>}
+          {stakePct != null && <span style={{ fontSize: 9, fontWeight: 700, color: '#4ade80', whiteSpace: 'nowrap' }}>→ {stakePct}% BK (calib.){stakeAmountSuggested != null && stakeAmountSuggested > 0 ? ` ≈ ${stakeAmountSuggested}€` : ''}</span>}
           {!isPending && (
             <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 10, color: isAccepted ? '#4ade80' : '#f87171', background: isAccepted ? 'rgba(74,222,128,0.12)' : 'rgba(248,113,113,0.1)' }}>
               {isAccepted ? '✓ Accepté' : '✗ Rejeté'}
@@ -948,7 +953,7 @@ function ResultTeamLogo({ short, name, league, size = 22 }) {
 }
 
 function BasketballResultCard({ alert, onAccept, onReject, onDismiss }) {
-  const { id, home, away, homeShort, awayShort, date, teamName, teamShort, probability, edge, odds, bookmaker, pinnacleOdds, status, league, eventId, matchCorrelation, keyPlayerMatchCorrelation, opposingPositionWarning } = alert;
+  const { id, home, away, homeShort, awayShort, date, teamName, teamShort, probability, calibratedProbability, stakePct, stakeAmountSuggested, nearMissRecord, edge, odds, bookmaker, pinnacleOdds, status, league, eventId, matchCorrelation, keyPlayerMatchCorrelation, opposingPositionWarning } = alert;
   const navigate   = useNavigate();
   const isPending  = status === 'pending';
   const isAccepted = status === 'accepted';
@@ -980,6 +985,8 @@ function BasketballResultCard({ alert, onAccept, onReject, onDismiss }) {
         <span className="bc-league">{leagueLabel}</span>
         <div style={{ marginLeft: 'auto', marginRight: 24, display: 'flex', alignItems: 'center', gap: 6 }}>
           <span className={`bc-edge-badge ${probability >= 90 ? 'high' : 'mid'}`}>{probability}%</span>
+          {calibratedProbability != null && <span style={{ fontSize: 9, color: 'var(--text-dim)', fontWeight: 600 }}>({calibratedProbability}% calib.{nearMissRecord && (nearMissRecord.won + nearMissRecord.lost) > 0 ? ` · ${nearMissRecord.won}G/${nearMissRecord.lost}P` : ''})</span>}
+          {stakePct != null && <span style={{ fontSize: 9, fontWeight: 700, color: '#4ade80', whiteSpace: 'nowrap' }}>→ {stakePct}% BK (calib.){stakeAmountSuggested != null && stakeAmountSuggested > 0 ? ` ≈ ${stakeAmountSuggested}€` : ''}</span>}
           {!isPending && (
             <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 10, color: isAccepted ? '#4ade80' : '#f87171', background: isAccepted ? 'rgba(74,222,128,0.12)' : 'rgba(248,113,113,0.1)' }}>
               {isAccepted ? '✓ Accepté' : '✗ Rejeté'}
@@ -1104,7 +1111,7 @@ const PROP_BADGE_BANDS = {
     tpm: { high: 68, mid: 61 },
   },
 };
-const EU_PROP_LEAGUES = new Set(['acb', 'lnb', 'bbl', 'legaa', 'euroleague', 'nbl']);
+const EU_PROP_LEAGUES = new Set(['acb', 'lnb', 'bbl', 'legaa', 'euroleague', 'nbl', 'gbl']);
 function propBadgeClass(stat, league, prob) {
   const bands = (EU_PROP_LEAGUES.has(league) ? PROP_BADGE_BANDS.eu : PROP_BADGE_BANDS.nba_short)[stat];
   if (!bands) return prob >= 85 ? 'high' : 'mid';
@@ -1163,6 +1170,8 @@ function PropAlertCard({ group, onDismiss, onAccept, onReject }) {
         <span className="bc-league">{leagueLabel}</span>
         <div style={{ marginLeft: 'auto', marginRight: 24, display: 'flex', alignItems: 'center', gap: 6 }}>
           <span className={`bc-edge-badge ${propBadgeClass(primaryStat?.stat, league, maxProb)}`}>{maxProb}%</span>
+          {primaryStat?.calibratedProbability != null && <span style={{ fontSize: 9, color: 'var(--text-dim)', fontWeight: 600 }}>({primaryStat.calibratedProbability}% calib.{primaryStat.nearMissRecord && (primaryStat.nearMissRecord.won + primaryStat.nearMissRecord.lost) > 0 ? ` · ${primaryStat.nearMissRecord.won}G/${primaryStat.nearMissRecord.lost}P` : ''})</span>}
+          {primaryStat?.stakePct != null && <span style={{ fontSize: 9, fontWeight: 700, color: '#4ade80', whiteSpace: 'nowrap' }}>→ {primaryStat.stakePct}% BK (calib.){primaryStat.stakeAmountSuggested != null && primaryStat.stakeAmountSuggested > 0 ? ` ≈ ${primaryStat.stakeAmountSuggested}€` : ''}</span>}
           {/* Vraie confiance du modèle (2 août 2026) — quand le % affiché est bridé par le plafond de
               méfiance (sanityMax, écart estimation/ligne > 25%), le vrai calcul est montré entre
               parenthèses. N'apparaît que si l'écart est visible (≥3 points), sinon ça alourdit
@@ -1469,6 +1478,7 @@ export default function PlaceBetPage() {
   const [rawResultAlerts, setRawResultAlerts]   = useState([]);
   const [bttsAlerts, setBttsAlerts]             = useState([]);
   const [fbTotalAlerts, setFbTotalAlerts]       = useState([]);
+  const [fbTeamGoalsAlerts, setFbTeamGoalsAlerts] = useState([]);
   const [fbResultAlerts, setFbResultAlerts]     = useState([]);
   const [fbPinnacleAlerts, setFbPinnacleAlerts] = useState([]);
   const [dcBttsAlerts, setDcBttsAlerts]         = useState([]);
@@ -1525,7 +1535,7 @@ export default function PlaceBetPage() {
         acceptedUnibetOdds:   bk === 'unibet'   ? (odds ?? a.unibetOdds)   : null,
         acceptedBetclicOdds:  bk === 'betclic'  ? (odds ?? a.betclicOdds)  : null,
         acceptedWinamaxOdds:  bk === 'winamax'  ? (odds ?? a.winamaxOdds)  : null,
-        stakeAmount: stakeAtAccept(),
+        stakeAmount: stakeAtAccept(a),
       } : {})
     } : a);
     saveBttsAlerts(updated);
@@ -1580,7 +1590,7 @@ export default function PlaceBetPage() {
         acceptedUnibetOdds:  bk === 'unibet'  ? (odds ?? a.unibetOdds)  : null,
         acceptedBetclicOdds: bk === 'betclic' ? (odds ?? a.betclicOdds) : null,
         acceptedWinamaxOdds: bk === 'winamax' ? (odds ?? a.winamaxOdds) : null,
-        stakeAmount: stakeAtAccept(),
+        stakeAmount: stakeAtAccept(a),
       } : {})
     } : a);
     saveFbTotalAlerts(updated);
@@ -1594,6 +1604,59 @@ export default function PlaceBetPage() {
   const dismissFbTotal = (id) => {
     saveFbTotalAlerts(fbTotalAlerts.filter(a => a.id !== id));
     window.dispatchEvent(new Event('fb_total_alerts_updated'));
+  };
+
+  // Total de buts PAR ÉQUIPE (14 septembre 2026) — même patron que Over/Under ci-dessus.
+  const loadFbTeamGoalsAlerts = () => {
+    try {
+      const now = Date.now();
+      const raw = JSON.parse(localStorage.getItem(FB_TEAM_GOALS_KEY) || '[]');
+      const valid = raw.filter(a => {
+        const t = new Date(a.fixtureDate).getTime();
+        if (isNaN(t)) return false;
+        if (['accepted', 'rejected', 'won', 'lost'].includes(a.status)) return true;
+        return t > now;
+      });
+      if (valid.length !== raw.length) persistAlertsKey(FB_TEAM_GOALS_KEY, valid);
+      setFbTeamGoalsAlerts(valid);
+      resolveCompletedFootballAlerts(valid, saveFbTeamGoalsAlerts);
+    } catch { setFbTeamGoalsAlerts([]); }
+  };
+
+  const saveFbTeamGoalsAlerts = (alerts) => {
+    try { persistAlertsKey(FB_TEAM_GOALS_KEY, alerts); } catch {}
+    setFbTeamGoalsAlerts(alerts);
+  };
+
+  const updateFbTeamGoalsStatus = (id, status, bk = null, odds = null) => {
+    if (status === 'rejected') {
+      saveFbTeamGoalsAlerts(fbTeamGoalsAlerts.map(a => a.id === id ? { ...a, status: 'rejected', rejectedAt: Date.now() } : a));
+      window.dispatchEvent(new Event('fb_team_goals_alerts_updated'));
+      return;
+    }
+    const now = Date.now();
+    const updated = fbTeamGoalsAlerts.map(a => a.id === id ? {
+      ...a, status,
+      ...(status === 'accepted' && !a.acceptedAt ? {
+        acceptedAt: now,
+        acceptedProbability: a.probability,
+        acceptedBookmaker:   bk ?? null,
+        acceptedUnibetOdds:  bk === 'unibet'  ? (odds ?? a.unibetOdds)  : null,
+        acceptedBetclicOdds: bk === 'betclic' ? (odds ?? a.betclicOdds) : null,
+        stakeAmount: stakeAtAccept(a),
+      } : {})
+    } : a);
+    saveFbTeamGoalsAlerts(updated);
+    if (status === 'accepted') {
+      const a = updated.find(x => x.id === id);
+      if (a) postAcceptedAlertReliably(a);
+    }
+    window.dispatchEvent(new Event('fb_team_goals_alerts_updated'));
+  };
+
+  const dismissFbTeamGoals = (id) => {
+    saveFbTeamGoalsAlerts(fbTeamGoalsAlerts.filter(a => a.id !== id));
+    window.dispatchEvent(new Event('fb_team_goals_alerts_updated'));
   };
 
   const loadFbResultAlerts = () => {
@@ -1635,7 +1698,7 @@ export default function PlaceBetPage() {
         acceptedUnibetOdds:  bk === 'unibet'  ? (odds ?? a.unibetOdds)  : null,
         acceptedBetclicOdds: bk === 'betclic' ? (odds ?? a.betclicOdds) : null,
         acceptedWinamaxOdds: bk === 'winamax' ? (odds ?? a.winamaxOdds) : null,
-        stakeAmount: stakeAtAccept(),
+        stakeAmount: stakeAtAccept(a),
       } : {})
     } : a);
     saveFbResultAlerts(updated);
@@ -1688,7 +1751,7 @@ export default function PlaceBetPage() {
         acceptedUnibetOdds:  bk === 'unibet'  ? (odds ?? a.unibetOdds)  : null,
         acceptedBetclicOdds: bk === 'betclic' ? (odds ?? a.betclicOdds) : null,
         acceptedWinamaxOdds: bk === 'winamax' ? (odds ?? a.winamaxOdds) : null,
-        stakeAmount: stakeAtAccept(),
+        stakeAmount: stakeAtAccept(a),
       } : {})
     } : a);
     saveFbPinnacleAlerts(updated);
@@ -1725,7 +1788,7 @@ export default function PlaceBetPage() {
   const updateDcBttsStatus = (id, status, bk = null, odds = null) => {
     if (status === 'rejected') { saveDcBttsAlerts(dcBttsAlerts.map(a => a.id === id ? { ...a, status: 'rejected', rejectedAt: Date.now() } : a)); window.dispatchEvent(new Event('fb_dc_btts_alerts_updated')); return; }
     const now = Date.now();
-    const updated = dcBttsAlerts.map(a => a.id === id ? { ...a, status, ...(status === 'accepted' && !a.acceptedAt ? { acceptedAt: now, acceptedProbability: a.probability, acceptedBookmaker: bk ?? null, acceptedUnibetOdds: bk === 'unibet' ? (odds ?? a.unibetOdds) : null, acceptedBetclicOdds: bk === 'betclic' ? (odds ?? a.betclicOdds) : null, stakeAmount: stakeAtAccept() } : {}) } : a);
+    const updated = dcBttsAlerts.map(a => a.id === id ? { ...a, status, ...(status === 'accepted' && !a.acceptedAt ? { acceptedAt: now, acceptedProbability: a.probability, acceptedBookmaker: bk ?? null, acceptedUnibetOdds: bk === 'unibet' ? (odds ?? a.unibetOdds) : null, acceptedBetclicOdds: bk === 'betclic' ? (odds ?? a.betclicOdds) : null, stakeAmount: stakeAtAccept(a) } : {}) } : a);
     saveDcBttsAlerts(updated);
     if (status === 'accepted') { const a = updated.find(x => x.id === id); if (a) postAcceptedAlertReliably(a); }
     window.dispatchEvent(new Event('fb_dc_btts_alerts_updated'));
@@ -1763,7 +1826,7 @@ export default function PlaceBetPage() {
   const updateDcOuStatus = (id, status, bk = null, odds = null) => {
     if (status === 'rejected') { saveDcOuAlerts(dcOuAlerts.map(a => a.id === id ? { ...a, status: 'rejected', rejectedAt: Date.now() } : a)); window.dispatchEvent(new Event('fb_dc_ou_alerts_updated')); return; }
     const now = Date.now();
-    const updated = dcOuAlerts.map(a => a.id === id ? { ...a, status, ...(status === 'accepted' && !a.acceptedAt ? { acceptedAt: now, acceptedProbability: a.probability, acceptedBookmaker: bk ?? null, acceptedUnibetOdds: bk === 'unibet' ? (odds ?? a.unibetOdds) : null, acceptedBetclicOdds: bk === 'betclic' ? (odds ?? a.betclicOdds) : null, stakeAmount: stakeAtAccept() } : {}) } : a);
+    const updated = dcOuAlerts.map(a => a.id === id ? { ...a, status, ...(status === 'accepted' && !a.acceptedAt ? { acceptedAt: now, acceptedProbability: a.probability, acceptedBookmaker: bk ?? null, acceptedUnibetOdds: bk === 'unibet' ? (odds ?? a.unibetOdds) : null, acceptedBetclicOdds: bk === 'betclic' ? (odds ?? a.betclicOdds) : null, stakeAmount: stakeAtAccept(a) } : {}) } : a);
     saveDcOuAlerts(updated);
     if (status === 'accepted') { const a = updated.find(x => x.id === id); if (a) postAcceptedAlertReliably(a); }
     window.dispatchEvent(new Event('fb_dc_ou_alerts_updated'));
@@ -1977,7 +2040,7 @@ export default function PlaceBetPage() {
     }
 
     // ACB / LNB / BBL / Lega A — score depuis le scoreboard officiel
-    const EU_LEAGUES = new Set(['acb', 'lnb', 'bbl', 'legaa', 'nbl']);
+    const EU_LEAGUES = new Set(['acb', 'lnb', 'bbl', 'legaa', 'nbl', 'gbl']);
     const euAlerts = toResolve.filter(a => EU_LEAGUES.has(a.league));
     if (euAlerts.length) {
       const byLeague = {};
@@ -2062,7 +2125,7 @@ export default function PlaceBetPage() {
         acceptedUnibetOdds:  bk === 'unibet'  ? (odds ?? a.unibetOdds)  : null,
         acceptedBetclicOdds: bk === 'betclic' ? (odds ?? a.betclicOdds) : null,
         acceptedWinamaxOdds: bk === 'winamax' ? (odds ?? a.winamaxOdds) : null,
-        stakeAmount: stakeAtAccept(),
+        stakeAmount: stakeAtAccept(a),
       } : {})
     } : a);
     try { persistAlertsKey(GAME_TOTAL_KEY, updated); } catch {}
@@ -2119,7 +2182,7 @@ export default function PlaceBetPage() {
         acceptedOdds:        odds ?? null,
         acceptedUnibetOdds:  bk === 'unibet'  ? (odds ?? a.unibetOdds)  : null,
         acceptedBetclicOdds: bk === 'betclic' ? (odds ?? a.betclicOdds) : null,
-        stakeAmount: stakeAtAccept(),
+        stakeAmount: stakeAtAccept(a),
       } : {})
     } : a);
     try { persistAlertsKey(TEAM_TOTAL_KEY, updated); } catch {}
@@ -2179,7 +2242,7 @@ export default function PlaceBetPage() {
         acceptedBookmaker:   bk ?? null,
         acceptedUnibetOdds:  bk === 'unibet'  ? (odds ?? a.unibetOdds)  : null,
         acceptedBetclicOdds: bk === 'betclic' ? (odds ?? a.betclicOdds) : null,
-        stakeAmount: stakeAtAccept(),
+        stakeAmount: stakeAtAccept(a),
       } : {})
     } : a);
     saveBballPinnacleAlerts(updated);
@@ -2222,7 +2285,7 @@ export default function PlaceBetPage() {
         acceptedBookmaker:   bk ?? null,
         acceptedUnibetOdds:  bk === 'unibet'  ? (odds ?? a.unibetOdds)  : null,
         acceptedBetclicOdds: bk === 'betclic' ? (odds ?? a.betclicOdds) : null,
-        stakeAmount: stakeAtAccept(),
+        stakeAmount: stakeAtAccept(a),
       } : {})
     } : a);
     saveBballPinnaclePropsAlerts(updated);
@@ -2261,7 +2324,7 @@ export default function PlaceBetPage() {
   const updateResultStatus = (id, status) => {
     const updated = rawResultAlerts.map(a => a.id === id ? {
       ...a, status,
-      ...(status === 'accepted' && !a.acceptedAt ? { acceptedAt: Date.now(), stakeAmount: stakeAtAccept() } : {})
+      ...(status === 'accepted' && !a.acceptedAt ? { acceptedAt: Date.now(), stakeAmount: stakeAtAccept(a) } : {})
     } : a);
     try { persistAlertsKey(BASKETBALL_RESULT_KEY, updated); } catch {}
     setRawResultAlerts(updated);
@@ -2297,6 +2360,7 @@ export default function PlaceBetPage() {
     loadResultAlerts();
     loadBttsAlerts();
     loadFbTotalAlerts();
+    loadFbTeamGoalsAlerts();
     loadFbResultAlerts();
     loadFbPinnacleAlerts();
     loadDcBttsAlerts();
@@ -2337,7 +2401,7 @@ export default function PlaceBetPage() {
           const stored = JSON.parse(localStorage.getItem(key) || '[]');
           stored.filter(a => a.status === 'accepted').forEach(a => postAcceptedAlertReliably({ ...a, fixtureDate: a.fixtureDate || a.date }));
         });
-        [FB_BTTS_KEY, FB_TOTAL_KEY, FB_RESULT_KEY, FB_PINNACLE_KEY, BBALL_PINNACLE_KEY, FB_DC_BTTS_KEY, FB_DC_OU_KEY].forEach(key => {
+        [FB_BTTS_KEY, FB_TOTAL_KEY, FB_TEAM_GOALS_KEY, FB_RESULT_KEY, FB_PINNACLE_KEY, BBALL_PINNACLE_KEY, FB_DC_BTTS_KEY, FB_DC_OU_KEY].forEach(key => {
           const fbExisting = JSON.parse(localStorage.getItem(key) || '[]');
           fbExisting.filter(a => ['accepted', 'won', 'lost'].includes(a.status)).forEach(a => postAcceptedAlertReliably(a));
           fbExisting.filter(a => ['won', 'lost'].includes(a.status)).forEach(a =>
@@ -2352,6 +2416,7 @@ export default function PlaceBetPage() {
     window.addEventListener('nba_alerts_updated', loadResultAlerts);
     window.addEventListener('fb_btts_alerts_updated', loadBttsAlerts);
     window.addEventListener('fb_total_alerts_updated', loadFbTotalAlerts);
+    window.addEventListener('fb_team_goals_alerts_updated', loadFbTeamGoalsAlerts);
     window.addEventListener('fb_result_alerts_updated', loadFbResultAlerts);
     window.addEventListener('fb_pinnacle_alerts_updated', loadFbPinnacleAlerts);
     window.addEventListener('fb_dc_btts_alerts_updated', loadDcBttsAlerts);
@@ -2367,7 +2432,7 @@ export default function PlaceBetPage() {
     const onTelegramSync = () => {
       syncTelegramActions().then(() => {
         loadAlerts(); loadTotalAlerts(); loadTeamTotalAlerts(); loadResultAlerts();
-        loadBttsAlerts(); loadFbTotalAlerts(); loadFbResultAlerts(); loadFbPinnacleAlerts();
+        loadBttsAlerts(); loadFbTotalAlerts(); loadFbTeamGoalsAlerts(); loadFbResultAlerts(); loadFbPinnacleAlerts();
         loadDcBttsAlerts(); loadDcOuAlerts(); loadBballPinnacleAlerts(); loadBballPinnaclePropsAlertsState();
       });
       // Outrights accept/reject Telegram géré directement côté backend (_outrightAlerts, pas
@@ -2393,6 +2458,7 @@ export default function PlaceBetPage() {
       document.removeEventListener('visibilitychange', onVisible);
       window.removeEventListener('fb_btts_alerts_updated', loadBttsAlerts);
       window.removeEventListener('fb_total_alerts_updated', loadFbTotalAlerts);
+      window.removeEventListener('fb_team_goals_alerts_updated', loadFbTeamGoalsAlerts);
       window.removeEventListener('fb_result_alerts_updated', loadFbResultAlerts);
       window.removeEventListener('fb_pinnacle_alerts_updated', loadFbPinnacleAlerts);
       window.removeEventListener('fb_dc_btts_alerts_updated', loadDcBttsAlerts);
@@ -2423,7 +2489,7 @@ export default function PlaceBetPage() {
         acceptedUnibetOdds:  bk === 'unibet'  ? (odds ?? a.unibetOdds)  : (bk ? null : a.unibetOdds  ?? null),
         acceptedBetclicOdds: bk === 'betclic' ? (odds ?? a.betclicOdds) : (bk ? null : a.betclicOdds ?? null),
         acceptedWinamaxOdds: bk === 'winamax' ? (odds ?? a.winamaxOdds) : (bk ? null : a.winamaxOdds ?? null),
-        stakeAmount: stakeAtAccept(),
+        stakeAmount: stakeAtAccept(a),
         // Ligne réellement pariée (28 août 2026) — un bookmaker peut offrir une ligne différente de
         // la ligne de référence affichée en haut de carte (cas réel Jackie Young : Unibet 20.5,
         // Betclic 19.5 au même prix) ; sans ça `a.line` (la référence) restait figé comme "la" ligne
@@ -2523,6 +2589,7 @@ export default function PlaceBetPage() {
   const _allFoot = [
     ...bttsAlerts.filter(a => a.status === 'pending' || a.status === 'accepted'),
     ...fbTotalAlerts.filter(a => a.status === 'pending' || a.status === 'accepted'),
+    ...fbTeamGoalsAlerts.filter(a => a.status === 'pending' || a.status === 'accepted'),
     ...fbResultAlerts.filter(a => a.status === 'pending' || a.status === 'accepted'),
     ...fbPinnacleAlerts.filter(a => a.status === 'pending' || a.status === 'accepted'),
     ...dcBttsAlerts.filter(a => a.status === 'pending' || a.status === 'accepted'),
@@ -2542,27 +2609,25 @@ export default function PlaceBetPage() {
   const FB_SINGLE_CARD = {
     football_btts:           { Card: BTTSAlertCard,      update: updateBttsStatus },
     football_total:          { Card: FootballTotalCard,  update: updateFbTotalStatus },
+    football_team_goals:     { Card: TeamGoalsAlertCard, update: updateFbTeamGoalsStatus },
     football_result:         { Card: FootballResultCard, update: updateFbResultStatus },
     football_pinnacle_edge:  { Card: PinnacleEdgeCard,   update: updateFbPinnacleStatus },
-    football_dc_btts:        { Card: DCBTTSAlertCard,    update: updateDcBttsStatus },
-    football_dc_ou:          { Card: DCOUAlertCard,      update: updateDcOuStatus },
+    // football_dc_btts/football_dc_ou retirés le 8 septembre 2026 (marché supprimé du projet).
   };
 
   const handleFootballAccept = (alert, bk, odds) => {
     if (alert.type === 'football_btts')          updateBttsStatus(alert.id, 'accepted', bk, odds);
     else if (alert.type === 'football_total')    updateFbTotalStatus(alert.id, 'accepted', bk, odds);
+    else if (alert.type === 'football_team_goals') updateFbTeamGoalsStatus(alert.id, 'accepted', bk, odds);
     else if (alert.type === 'football_result')   updateFbResultStatus(alert.id, 'accepted', bk, odds);
     else if (alert.type === 'football_pinnacle_edge') updateFbPinnacleStatus(alert.id, 'accepted', bk, odds);
-    else if (alert.type === 'football_dc_btts')  updateDcBttsStatus(alert.id, 'accepted', bk, odds);
-    else if (alert.type === 'football_dc_ou')    updateDcOuStatus(alert.id, 'accepted', bk, odds);
   };
   const handleFootballReject = (alert) => {
     if (alert.type === 'football_btts')          updateBttsStatus(alert.id, 'rejected');
     else if (alert.type === 'football_total')    updateFbTotalStatus(alert.id, 'rejected');
+    else if (alert.type === 'football_team_goals') updateFbTeamGoalsStatus(alert.id, 'rejected');
     else if (alert.type === 'football_result')   updateFbResultStatus(alert.id, 'rejected');
     else if (alert.type === 'football_pinnacle_edge') updateFbPinnacleStatus(alert.id, 'rejected');
-    else if (alert.type === 'football_dc_btts')  updateDcBttsStatus(alert.id, 'rejected');
-    else if (alert.type === 'football_dc_ou')    updateDcOuStatus(alert.id, 'rejected');
   };
   const handleFootballDismissAll = (alerts) => {
     alerts.forEach(a => handleFootballReject(a));
@@ -2572,7 +2637,7 @@ export default function PlaceBetPage() {
   // RunningPage via buildPendingItems (PendingAlertWidgets.jsx), pour ne pas la dupliquer.
   const allPendingItems = buildPendingItems({
     rawAlerts, rawTotalAlerts, rawTeamTotalAlerts, rawResultAlerts,
-    bttsAlerts, fbTotalAlerts, fbResultAlerts, fbPinnacleAlerts, dcBttsAlerts, dcOuAlerts,
+    bttsAlerts, fbTotalAlerts, fbTeamGoalsAlerts, fbResultAlerts, fbPinnacleAlerts, dcBttsAlerts, dcOuAlerts,
     bballPinnacleAlerts, bballPinnaclePropsAlerts, outrightAlerts,
   });
   const wonTotalAlerts      = rawTotalAlerts.filter(a => a.status === 'won').sort((a, b) => (b.acceptedAt || 0) - (a.acceptedAt || 0));

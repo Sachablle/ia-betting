@@ -21,6 +21,14 @@ const COVERED = {
   '076': { name: 'Brésil',     flag: '🇧🇷', leagues: ['bresil'] },
   // Australie (NBL, 1er septembre 2026) — nouveau pays, pas de foot couvert ici (comme les USA).
   '036': { name: 'Australie',  flag: '🇦🇺', leagues: ['nbl'] },
+  // Grèce (8 septembre 2026) — 1ère des nouvelles ligues foot, 100% api-football dès le départ.
+  // 'gbl' (basket, 9 septembre 2026) ajoutée à l'image des championnats EU (ACB/BBL/Lega A) —
+  // aucune cote bookmaker confirmée pour l'instant (voir EURO_LEAGUES.gbl côté backend), calendrier/
+  // classement/effectifs déjà fonctionnels.
+  '300': { name: 'Grèce',      flag: '🇬🇷', leagues: ['grece','gbl'] },
+  '682': { name: 'Arabie Saoudite', flag: '🇸🇦', leagues: ['arabie'] },
+  // Portugal (9 septembre 2026) — 3e nouvelle ligue foot, même patron 100% api-football.
+  '620': { name: 'Portugal',   flag: '🇵🇹', leagues: ['portugal'] },
 };
 
 const LEAGUE_META = {
@@ -29,11 +37,12 @@ const LEAGUE_META = {
   ligue1: 'Ligue 1', laliga: 'La Liga', bundes: 'Bundesliga', seriea: 'Serie A', pl: 'Premier League',
   euroleague: 'EuroLeague', cdm: 'Coupe du Monde', bresil: 'Brasileirão',
   europa: 'Europa League', conference: 'Conference League', champions: 'Ligue des Champions',
+  grece: 'Super League', arabie: 'Pro League', gbl: 'Basket League', portugal: 'Liga Betclic',
 };
 
 // Coupes européennes de clubs (23 juillet 2026) — source api-football, /api/football/eucup/:comp/matches
 const EU_CUP_LEAGUES = ['europa', 'conference', 'champions'];
-const FOOTBALL_LEAGUES = new Set(['ligue1','laliga','bundes','seriea','pl','cdm','bresil', ...EU_CUP_LEAGUES]);
+const FOOTBALL_LEAGUES = new Set(['ligue1','laliga','bundes','seriea','pl','cdm','bresil','grece','arabie','portugal', ...EU_CUP_LEAGUES]);
 const sportOf = l => FOOTBALL_LEAGUES.has(l) ? 'football' : 'basket';
 
 const _ESPN_WNBA = { 'Atlanta Dream':20,'Chicago Sky':19,'Connecticut Sun':18,'Dallas Wings':3,'Golden State Valkyries':129689,'Indiana Fever':5,'Las Vegas Aces':17,'Los Angeles Sparks':6,'Minnesota Lynx':8,'New York Liberty':9,'Phoenix Mercury':11,'Portland Fire':132052,'Seattle Storm':14,'Toronto Tempo':131935,'Washington Mystics':16 };
@@ -65,6 +74,12 @@ function _prefetchCountry(country) {
       cachedFetch(`/api/football/eucup/${l}/matches`, 30_000).catch(()=>{});
     } else if (l === 'bresil') {
       cachedFetch('/api/fd/bresil', 30_000).catch(()=>{});
+    } else if (l === 'grece') {
+      cachedFetch('/api/football/grece', 30_000).catch(()=>{});
+    } else if (l === 'arabie') {
+      cachedFetch('/api/football/arabie', 30_000).catch(()=>{});
+    } else if (l === 'portugal') {
+      cachedFetch('/api/football/portugal', 30_000).catch(()=>{});
     } else if (l === 'euroleague') {
       cachedFetch('/api/euroleague/scoreboard', 20_000).catch(()=>{});
     } else if (FOOTBALL_LEAGUES.has(l)) {
@@ -112,7 +127,7 @@ function pickHighlightMatches(games, n) {
 const LEGEND_ROWS = [
   [MONDE, COVERED['840'], COVERED['076']],
   [COVERED['250'], COVERED['724'], COVERED['826'], COVERED['276'], COVERED['380']],
-  [COVERED['036']],
+  [COVERED['036'], COVERED['300'], COVERED['682'], COVERED['620']],
 ];
 
 const STAT_CATS = [
@@ -130,11 +145,11 @@ const FOOTBALL_CATS = [
 
 // Championnats basket EU (31 juillet 2026) — même overlay Classement+leaders que NBA/WNBA/ACB,
 // juste une source de données différente côté backend (/api/euro/:league/standings|leaders).
-const EURO_BASKET_STATS_LEAGUES = ['lnb', 'bbl', 'legaa', 'nbl'];
+const EURO_BASKET_STATS_LEAGUES = ['lnb', 'bbl', 'legaa', 'nbl', 'gbl'];
 // Foot (31 juillet 2026) — 5 grands championnats + Brasileirão seulement, pas les 3 coupes d'Europe
 // (LDC/Europa/Conference n'ont pas de classement unique — groupes puis élimination directe, décision
 // utilisateur explicite de ne pas leur donner cet overlay du tout).
-const FOOTBALL_STATS_LEAGUES = ['ligue1', 'pl', 'laliga', 'bundes', 'seriea', 'bresil'];
+const FOOTBALL_STATS_LEAGUES = ['ligue1', 'pl', 'laliga', 'bundes', 'seriea', 'bresil', 'grece', 'arabie', 'portugal'];
 
 function StatsOverlay({ league, onClose, standData, cats }) {
   const [standView, setStandView] = useState('ligue');
@@ -340,7 +355,13 @@ function Panel({ country, onClose, statsLeague, setStatsLeague }) {
       const splitGames = games => ({
         soon:     games.filter(g=>g.status!=='STATUS_FINAL' && g.status!=='STATUS_POSTPONED' && new Date(g.date).getTime()-Date.now() < UPCOMING_MS),
         upcoming: games.filter(g=>g.status!=='STATUS_FINAL' && g.status!=='STATUS_POSTPONED' && new Date(g.date).getTime()-Date.now() >= UPCOMING_MS),
-        done:     games.filter(g=>g.status==='STATUS_FINAL'&&Date.now()-new Date(g.date).getTime()<KEEP_MS).slice(0,8),
+        // Plus de plafond à 8 (10-11 septembre 2026, demande explicite) — safe pour la plupart des
+        // championnats (1 match/jour en général), mais coupait la liste des coupes d'Europe (format
+        // ligue unique à 36 équipes, une journée peut avoir bien plus de 8 matchs le même soir) : la
+        // Ligue des Champions n'affichait que les 8 premiers résultats de sa J1, le reste invisible
+        // malgré la fenêtre de 48h qui les couvrait déjà. La fenêtre KEEP_MS (48h) reste le seul
+        // garde-fou contre une liste illimitée.
+        done:     games.filter(g=>g.status==='STATUS_FINAL'&&Date.now()-new Date(g.date).getTime()<KEEP_MS),
       });
       if (l === 'nba')  return cachedFetch('/api/nba/scoreboard', 20_000).then(d=>{const s=splitGames(d.games||[]);return{l,...s};});
       if (l === 'wnba') return cachedFetch('/api/wnba/scoreboard', 20_000).then(d=>{const s=splitGames(d.games||[]);return{l,...s};});
@@ -354,7 +375,7 @@ function Panel({ country, onClose, statsLeague, setStatsLeague }) {
       // entrées ici pour ne pas les compter deux fois (déjà couvertes par `dr.matches` ci-dessous) ni
       // les afficher à tort dans l'onglet "À venir" (le hardcode `status:'STATUS_SCHEDULED'`
       // précédent ignorait le vrai statut renvoyé par le backend).
-      if (FOOTBALL_LEAGUES.has(l) && l !== 'cdm' && l !== 'bresil' && !EU_CUP_LEAGUES.includes(l)) return Promise.all([
+      if (FOOTBALL_LEAGUES.has(l) && l !== 'cdm' && l !== 'bresil' && l !== 'grece' && l !== 'arabie' && l !== 'portugal' && !EU_CUP_LEAGUES.includes(l)) return Promise.all([
         cachedFetch('/api/fd/matches', 30_000),
         cachedFetch('/api/fd/results', 30_000),
       ]).then(([dm, dr])=>{
@@ -381,11 +402,15 @@ function Panel({ country, onClose, statsLeague, setStatsLeague }) {
           // les matchs en cours avec leur vrai score — le hardcode n'avait jamais été retiré, un
           // match "EN COURS" affichait donc le badge mais jamais le score (cas réel : Real Sociedad-
           // Celta 0-0 affiché sans score, alors que la donnée était déjà disponible).
+          // elapsed (9 septembre 2026) — le backend le renvoie déjà depuis le 8 septembre, jamais
+          // recopié ici : la minute live n'a donc jamais atteint le panneau Monde pour AUCUN
+          // championnat malgré le badge "63'" déjà codé côté rendu (fallback "EN COURS" systématique).
+          elapsed:f.elapsed ?? null,
           home:{name:f.home?.name,short:f.home?.short,logo:f.home?.logoId,score:f.home?.score ?? null},
           away:{name:f.away?.name,short:f.away?.short,logo:f.away?.logoId,score:f.away?.score ?? null},
         }));
         const finished=(dr.matches||[]).filter(f=>f.league===l).map(f=>({
-          id:`fd_${f.id}`,date:f.date,status:f.status,round:f.round,
+          id:`fd_${f.id}`,date:f.date,status:f.status,round:f.round,elapsed:f.elapsed ?? null,
           home:{name:f.home?.name,short:f.home?.short,logo:f.home?.logo,score:f.home?.score},
           away:{name:f.away?.name,short:f.away?.short,logo:f.away?.logo,score:f.away?.score},
         }));
@@ -400,7 +425,7 @@ function Panel({ country, onClose, statsLeague, setStatsLeague }) {
       if (EU_CUP_LEAGUES.includes(l)) return cachedFetch(`/api/football/eucup/${l}/matches`, 30_000).then(d => {
         const prefix = { europa: 'afel', conference: 'afcl', champions: 'afch' }[l];
         const games = (d.matches || []).map(m => ({
-          id: `${prefix}_${m.id}`, date: m.date, status: m.status, round: m.round,
+          id: `${prefix}_${m.id}`, date: m.date, status: m.status, round: m.round, elapsed: m.elapsed ?? null,
           home: { name: m.home?.name, short: m.home?.short, logo: m.home?.logoId, score: m.home?.score ?? null },
           away: { name: m.away?.name, short: m.away?.short, logo: m.away?.logoId, score: m.away?.score ?? null },
         }));
@@ -422,7 +447,44 @@ function Panel({ country, onClose, statsLeague, setStatsLeague }) {
         const all=(d.matches||[])
           .filter(f => f.status === 'STATUS_FINAL' || (Date.now() - new Date(f.date).getTime()) < STALE_KICKOFF_MS)
           .map(f=>({
-          id:`fdbr_${f.id}`,date:f.date,status:f.status||'STATUS_SCHEDULED',round:f.round,
+          id:`fdbr_${f.id}`,date:f.date,status:f.status||'STATUS_SCHEDULED',round:f.round,elapsed:f.elapsed ?? null,
+          home:{name:f.home?.name,short:f.home?.short,logo:f.home?.logoId,score:f.home?.score ?? null},
+          away:{name:f.away?.name,short:f.away?.short,logo:f.away?.logoId,score:f.away?.score ?? null},
+        }));
+        return{l,...splitGames(all)};
+      });
+      // Grèce Super League (8 septembre 2026) — même patron que Brasileirão ci-dessus (source isolée
+      // /api/football/grece, jamais passée par football-data.org, préfixe grc_).
+      if (l === 'grece') return cachedFetch('/api/football/grece', 30_000).then(d => {
+        const STALE_KICKOFF_MS = 4 * 3600_000;
+        const all=(d.matches||[])
+          .filter(f => f.status === 'STATUS_FINAL' || (Date.now() - new Date(f.date).getTime()) < STALE_KICKOFF_MS)
+          .map(f=>({
+          id:`grc_${f.id}`,date:f.date,status:f.status||'STATUS_SCHEDULED',round:f.round,elapsed:f.elapsed ?? null,
+          home:{name:f.home?.name,short:f.home?.short,logo:f.home?.logoId,score:f.home?.score ?? null},
+          away:{name:f.away?.name,short:f.away?.short,logo:f.away?.logoId,score:f.away?.score ?? null},
+        }));
+        return{l,...splitGames(all)};
+      });
+      // Arabie Saoudite Pro League (8 septembre 2026) — même patron que la Grèce ci-dessus.
+      if (l === 'arabie') return cachedFetch('/api/football/arabie', 30_000).then(d => {
+        const STALE_KICKOFF_MS = 4 * 3600_000;
+        const all=(d.matches||[])
+          .filter(f => f.status === 'STATUS_FINAL' || (Date.now() - new Date(f.date).getTime()) < STALE_KICKOFF_MS)
+          .map(f=>({
+          id:`arb_${f.id}`,date:f.date,status:f.status||'STATUS_SCHEDULED',round:f.round,elapsed:f.elapsed ?? null,
+          home:{name:f.home?.name,short:f.home?.short,logo:f.home?.logoId,score:f.home?.score ?? null},
+          away:{name:f.away?.name,short:f.away?.short,logo:f.away?.logoId,score:f.away?.score ?? null},
+        }));
+        return{l,...splitGames(all)};
+      });
+      // Portugal Primeira Liga (9 septembre 2026) — même patron que la Grèce/l'Arabie ci-dessus.
+      if (l === 'portugal') return cachedFetch('/api/football/portugal', 30_000).then(d => {
+        const STALE_KICKOFF_MS = 4 * 3600_000;
+        const all=(d.matches||[])
+          .filter(f => f.status === 'STATUS_FINAL' || (Date.now() - new Date(f.date).getTime()) < STALE_KICKOFF_MS)
+          .map(f=>({
+          id:`por_${f.id}`,date:f.date,status:f.status||'STATUS_SCHEDULED',round:f.round,elapsed:f.elapsed ?? null,
           home:{name:f.home?.name,short:f.home?.short,logo:f.home?.logoId,score:f.home?.score ?? null},
           away:{name:f.away?.name,short:f.away?.short,logo:f.away?.logoId,score:f.away?.score ?? null},
         }));
@@ -466,6 +528,8 @@ function Panel({ country, onClose, statsLeague, setStatsLeague }) {
       country.leagues.forEach(l => {
         if (l === 'cdm') invalidateCache('/api/fd/worldcup');
         else if (l === 'bresil') invalidateCache('/api/fd/bresil');
+        else if (l === 'grece') invalidateCache('/api/football/grece');
+        else if (l === 'arabie') invalidateCache('/api/football/arabie');
         else if (EU_CUP_LEAGUES.includes(l)) invalidateCache(`/api/football/eucup/${l}/matches`);
         else if (FOOTBALL_LEAGUES.has(l)) { invalidateCache('/api/fd/matches'); invalidateCache('/api/fd/results'); }
       });
@@ -556,15 +620,17 @@ function Panel({ country, onClose, statsLeague, setStatsLeague }) {
           // un onglet "soon" vide.
           const isExplicitUpcoming = view[league] === 'upcoming';
           const mode = view[league] || (soon.length === 0 && upcoming.length > 0 ? 'upcoming' : 'soon');
-          // Panneau Monde (23 juillet 2026) : seulement 5 affiches par compétition par défaut,
-          // triées pour mettre en avant les clubs connus (cf. pickHighlightMatches) — la liste
-          // complète reste disponible en cliquant explicitement "À venir" (inchangé pour les autres
-          // pays). Le cap s'applique aussi quand le mode "upcoming" est choisi automatiquement
-          // (aucun match sous 30h) — sinon une compétition qui n'a encore aucun match imminent
-          // (ex: LDC, 1er match le 28 juillet) affichait sa liste complète non filtrée par défaut.
+          // Panneau Monde — le cap "3 affiches vedettes" (23 juillet 2026, pickHighlightMatches)
+          // s'appliquait aussi au mode "soon" normal, empêchant d'afficher tous les matchs des 2
+          // jours les plus proches (repli par jour du 31 août/9 septembre) même quand une seule
+          // journée en contient plus de 3 (ex. LDC, plusieurs affiches le même soir) — retiré le
+          // 9 septembre 2026 (demande explicite) : le repli par jour gère déjà la densité, plus
+          // besoin de ce 2e filtre par-dessus. Cap gardé UNIQUEMENT pour le repli "upcoming" (aucun
+          // match sous 30h, cf. commentaire plus haut) — sans lui, une compétition sans match proche
+          // (ex. LDC avant son 1er match) afficherait toute la liste non filtrée par défaut.
           const games = mode === 'upcoming'
             ? (country.isMonde && !isExplicitUpcoming ? pickHighlightMatches([...soon, ...upcoming], 3) : sortLiveFirst([...soon, ...upcoming]))
-            : (country.isMonde ? pickHighlightMatches(soon, 3) : sortLiveFirst(soon));
+            : sortLiveFirst(soon);
           const collapsed = !openLeagues[league];
           return (
             <div key={league} style={{marginBottom: country.isMonde ? '0.6rem' : '1.5rem'}}>
@@ -615,12 +681,13 @@ function Panel({ country, onClose, statsLeague, setStatsLeague }) {
                   });
                   return Object.entries(byDate).map(([dateLabel, dayGames], dayIdx) => {
                     const dayKey = `${league}::${dateLabel}`;
-                    const dayOpen = openDays[dayKey] ?? (dayIdx === 0);
+                    const dayOpen = openDays[dayKey] ?? (dayIdx <= 1);
                     return (
                     <div key={dateLabel}>
                       {/* Séparateur date — plus compact dans le panneau Monde (23 juillet 2026). Cliquable
-                          depuis le 31 juillet 2026 : seul le jour le plus proche (dayIdx 0) est déplié par
-                          défaut, les suivants se déroulent au clic sur le libellé. */}
+                          depuis le 31 juillet 2026 : les 2 jours les plus proches (dayIdx 0 et 1, élargi le
+                          9 septembre 2026 — auparavant un seul jour) sont dépliés par défaut, les suivants se
+                          déroulent au clic sur le libellé. */}
                       <div
                         onClick={() => setOpenDays(s => ({ ...s, [dayKey]: !dayOpen }))}
                         style={{display:'flex',alignItems:'center',gap:8,padding: country.isMonde ? '2px 4px' : '6px 4px',margin: country.isMonde ? '1px 0' : '4px 0',cursor:'pointer'}}
@@ -668,7 +735,7 @@ function Panel({ country, onClose, statsLeague, setStatsLeague }) {
                             </div>
                             <div style={{display:'flex',alignItems:'center',justifyContent:'center',gap:6}}>
                               {live
-                                ? <span style={{fontSize:8,color:'#60a5fa',fontFamily:'monospace',fontWeight:800}}>● EN COURS</span>
+                                ? <span style={{fontSize:8,color:'#60a5fa',fontFamily:'monospace',fontWeight:800}}>● {g.elapsed != null ? `${g.elapsed}'` : 'EN COURS'}</span>
                                 : <>
                                     {g.round&&!country.isMonde&&<span style={{fontSize:9,color:'rgba(255,255,255,0.3)',fontStyle:'italic'}}>{g.round}</span>}
                                     <span style={{fontSize: country.isMonde ? 8 : 9,color:'rgba(255,255,255,0.4)'}}>{new Date(g.date).toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'})}</span>
@@ -684,7 +751,35 @@ function Panel({ country, onClose, statsLeague, setStatsLeague }) {
               ) : (
                 done.length === 0 ? (
                   <p style={{fontSize:11,color:'rgba(251,146,60,0.18)',fontFamily:'monospace',margin:0,paddingLeft:13}}>Aucun match terminé récemment</p>
-                ) : done.map((g,i)=>{
+                ) : (() => {
+                  // Repli par jour (10-11 septembre 2026, demande explicite) — même principe que la
+                  // liste "À venir" (byDate/openDays plus haut), jusque-là absent de "Terminés" : une
+                  // journée de coupe d'Europe à plusieurs matchs se retrouvait tous mélangés sans
+                  // repère de date. Jours triés du plus récent au plus ancien (résultat le plus frais
+                  // en premier), tous ouverts par défaut (volume raisonnable une fois la fenêtre 48h
+                  // appliquée, contrairement à "À venir" qui peut couvrir des semaines).
+                  const byDateDone = {};
+                  done.forEach(g => {
+                    const dk = new Date(g.date).toLocaleDateString('fr-FR',{weekday:'short',day:'numeric',month:'long'});
+                    if (!byDateDone[dk]) byDateDone[dk] = [];
+                    byDateDone[dk].push(g);
+                  });
+                  const sortedDays = Object.entries(byDateDone).sort((a, b) => new Date(b[1][0].date) - new Date(a[1][0].date));
+                  return sortedDays.map(([dateLabel, dayGames]) => {
+                    const dayKey = `${league}::done::${dateLabel}`;
+                    const dayOpen = openDays[dayKey] ?? true;
+                    return (
+                    <div key={dateLabel}>
+                      <div
+                        onClick={() => setOpenDays(s => ({ ...s, [dayKey]: !dayOpen }))}
+                        style={{display:'flex',alignItems:'center',gap:8,padding: country.isMonde ? '2px 4px' : '6px 4px',margin: country.isMonde ? '1px 0' : '4px 0',cursor:'pointer'}}
+                      >
+                        <div style={{flex:1,height:'1px',background:'rgba(255,255,255,0.08)'}}/>
+                        <span style={{fontSize:7,color:'rgba(255,255,255,0.35)',transform:dayOpen?'none':'rotate(-90deg)',transition:'transform .15s',display:'inline-block'}}>▾</span>
+                        <span style={{fontSize: country.isMonde ? 8 : 9,fontWeight:700,color:'rgba(255,255,255,0.35)',textTransform:'capitalize',letterSpacing:'0.06em',whiteSpace:'nowrap'}}>{dateLabel}</span>
+                        <div style={{flex:1,height:'1px',background:'rgba(255,255,255,0.08)'}}/>
+                      </div>
+                      {dayOpen && dayGames.map((g,i)=>{
                   const lp2=league==='wnba'?'?league=wnba':['nba'].includes(league)?'':`?league=${league}`;
                   return(
                     <button key={i} onClick={()=>{
@@ -722,7 +817,11 @@ function Panel({ country, onClose, statsLeague, setStatsLeague }) {
                       {g.round&&<div style={{fontSize:9,color:'rgba(255,255,255,0.25)',textAlign:'center'}}>{g.round}</div>}
                     </button>
                   );
-                })
+                      })}
+                    </div>
+                    );
+                  });
+                })()
               )}
             </div>
           );
@@ -741,7 +840,7 @@ function useTodayCount() {
     Promise.all([
       cachedFetch('/api/nba/scoreboard', 20_000).catch(()=>({games:[]})),
       cachedFetch('/api/wnba/scoreboard', 20_000).catch(()=>({games:[]})),
-      ...['acb','lnb','bbl','legaa'].map(l=>cachedFetch(`/api/euro/${l}/scoreboard`, 20_000).catch(()=>({games:[]}))),
+      ...['acb','lnb','bbl','legaa','gbl'].map(l=>cachedFetch(`/api/euro/${l}/scoreboard`, 20_000).catch(()=>({games:[]}))),
       cachedFetch('/api/fd/matches', 30_000).catch(()=>({matches:[]})),
     ]).then(([nba,wnba,...rest]) => {
       const foot = rest.pop();

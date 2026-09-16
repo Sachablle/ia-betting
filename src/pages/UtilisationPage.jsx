@@ -227,15 +227,14 @@ export default function UtilisationPage() {
 
           <div className="util-card">
             <div className="util-card-header">
-              <span className="util-badge util-badge--key">Clé requise</span>
-              <span className="util-card-name">The Odds API</span>
+              <span className="util-card-name">Pinnacle</span>
             </div>
-            <p className="util-card-desc">Source des cotes <strong>Pinnacle</strong> — ligne de référence sharp pour le calcul des edges. Sans cette clé, les colonnes Pinnacle et les calculs d'edge ne s'affichent pas. Quota : 500 req/mois (gratuit).</p>
+            <p className="util-card-desc">Source des cotes <strong>Pinnacle</strong> — ligne de référence sharp pour le calcul des edges. Scrapée directement (pas de clé/quota externe — The Odds API, utilisée par une ancienne version du projet, a été retirée le 9 septembre 2026 : code mort, jamais réellement appelée).</p>
             <table className="util-table">
               <thead><tr><th>Donnée</th><th>Marché</th><th>Cache</th></tr></thead>
               <tbody>
-                {isFoot && <tr><td>Cotes football (H2H + BTTS)</td><td>Pinnacle, Betfair</td><td>30 min · disque</td></tr>}
-                {isBasket && <tr><td>Total Vegas NBA (over/under)</td><td>Pinnacle, DraftKings, FanDuel</td><td>30 min</td></tr>}
+                {isFoot && <tr><td>Cotes football (H2H + BTTS)</td><td>Pinnacle</td><td>30 min · disque</td></tr>}
+                {isBasket && <tr><td>Total Vegas NBA (over/under)</td><td>Pinnacle</td><td>30 min</td></tr>}
               </tbody>
             </table>
             {isFoot && <p className="util-card-desc" style={{ marginTop: '0.5rem', fontSize: 11 }}>ℹ️ Cache stocké sur disque pour économiser le quota mensuel. Partagé entre tous les appels pour un même match.</p>}
@@ -279,8 +278,8 @@ export default function UtilisationPage() {
             <div className="util-refresh-item">
               <span className="util-refresh-icon">📡</span>
               <div>
-                <div className="util-refresh-label">Pinnacle + Betfair (The Odds API)</div>
-                <div className="util-refresh-desc">Cache 30 min stocké sur disque — économise le quota mensuel (500 req/mois). Partagé entre tous les appels pour un même match.</div>
+                <div className="util-refresh-label">Pinnacle (scraping direct)</div>
+                <div className="util-refresh-desc">Cache 30 min stocké sur disque — throttle interne 15 min, pas de quota externe (The Odds API retirée le 9 septembre 2026). Partagé entre tous les appels pour un même match.</div>
               </div>
             </div>
           )}
@@ -384,9 +383,12 @@ export default function UtilisationPage() {
       </Accordion>}
 
       {/* ── LIGUES EU BASKET ── */}
-      {isBasket && <Accordion title="Ligues européennes basket — ACB · LNB · BBL · Lega A">
+      {isBasket && <Accordion title="Ligues européennes basket — ACB · LNB · BBL · Lega A · Grèce">
         <p className="util-intro">
-          Les 4 championnats européens partagent la même interface que la NBA : scoreboard live, compositions, cotes, modèle O/U et Analyse Props. Quelques différences par rapport à la NBA.
+          Les championnats européens partagent la même interface que la NBA : scoreboard live, compositions, cotes, modèle O/U et Analyse Props. Quelques différences par rapport à la NBA.
+        </p>
+        <p className="util-intro">
+          <strong>Grèce (Basket League, ajoutée le 9 septembre 2026)</strong> : calendrier/classement/effectifs/gamelogs disponibles dès maintenant (même source api-sports.io que LNB/BBL/Lega A), widgets Modèle 1X2/O-U/Props fonctionnels. <strong>Sans cote bookmaker pour l'instant</strong> — aucune couverture Betclic/Unibet confirmée à ce jour, donc pas d'alerte réelle (props ou équipe) sur ce championnat tant qu'un marché n'existe pas côté bookmaker. Se réactivera automatiquement dès qu'une cote apparaît.
         </p>
 
         <div className="util-subsection">
@@ -401,6 +403,7 @@ export default function UtilisationPage() {
               <tr><td>BBL</td><td>82 pts</td><td>×1.40</td></tr>
               <tr><td>Lega A</td><td>80 pts</td><td>×1.43</td></tr>
               <tr><td>LNB (Betclic Élite)</td><td>79 pts</td><td>×1.45</td></tr>
+              <tr><td>Grèce (Basket League)</td><td>83.7 pts</td><td>×1.37</td></tr>
             </tbody>
           </table>
         </div>
@@ -764,6 +767,9 @@ export default function UtilisationPage() {
           <p className="util-intro">
             Les widgets "Modèle O/U" et "Modèle 1X2" de la page du match appellent désormais les <strong>mêmes fonctions serveur</strong> que les alertes (<code>/api/basketball/total</code>, <code>/api/basketball/result</code>) — le % affiché sur la page est donc garanti identique à celui de l'alerte. Avant le 22 juin, le Total O/U avait un calcul local séparé côté page qui pouvait légèrement diverger du serveur (corrigé) ; le Résultat équipe était déjà unifié depuis le 19 juin.
           </p>
+          <p className="util-intro" style={{ marginTop: '0.5rem' }}>
+            <strong>Cotes et probas figées au dernier cycle pré-match (9 septembre 2026)</strong> — une fois le match live ou terminé, ces deux widgets basculent automatiquement sur un snapshot serveur (dernier cycle avant le direct) au lieu de disparaître (avant ce fix, "Modèle 1X2"/Total étaient carrément masqués une fois le match terminé). Générique à NBA/WNBA/ACB/BBL/LegaA. Les props joueurs avaient déjà ce système depuis longtemps (<code>_projectionsSnapshot</code>) ; c'est désormais aussi le cas pour Résultat/Total équipe.
+          </p>
         </div>
 
         <div className="util-subsection">
@@ -820,8 +826,8 @@ export default function UtilisationPage() {
             { name: 'Lieu (domicile/extérieur)', range: '×0.96 – ×1.04 (PO) / ×0.975 – ×1.025 (RS)', desc: 'En playoffs : domicile +4%, extérieur −4% — l\'avantage du terrain est amplifié par la pression et le public partisan. En saison régulière : ±2.5%.' },
             { name: 'Match dans la série (PO)', range: '×0.94 – ×1.03', desc: 'Facteur spécifique aux playoffs. À domicile : légère montée en G4–G7 pour les stars (pression du public). À l\'extérieur : pression croissante G3–G6 (risque élimination ou fermer la série). Appliqué uniquement aux joueurs à fort USG%.' },
             { name: 'Période (playoffs)', range: '×0.93 – ×1.00', desc: 'Appliqué uniquement quand aucune donnée série n\'est disponible (G1). Finales ×0.93 | CF ×0.95 | 2e tour ×0.96 | 1er tour ×0.97. Si des boxscores série existent, ce facteur est désactivé (EWA playoff encode déjà l\'intensité défensive).' },
-            { name: 'Total Vegas', range: '×0.85 – ×1.10', desc: 'Over/under du match posé par les bookmakers (DraftKings, FanDuel, Pinnacle), comparé à la moyenne ligue (227 pts). Un total de 215 = marché anticipe un match lent → tous les joueurs ajustés en baisse. Nécessite une clé The Odds API.' },
-            { name: 'Blowout / garbage time', range: '×0.92 – ×1.00', desc: 'Basé sur les cotes Pinnacle H2H : si l\'un des deux camps a une probabilité implicite > 82%, le match risque d\'être plié tôt → minutes réduites pour les deux équipes. Appliqué à tous les joueurs. Nécessite une clé The Odds API.' },
+            { name: 'Total Vegas', range: '×0.85 – ×1.10', desc: 'Over/under du match posé par les bookmakers (Unibet/Betclic, comparé à Pinnacle), comparé à la moyenne ligue (227 pts). Un total de 215 = marché anticipe un match lent → tous les joueurs ajustés en baisse.' },
+            { name: 'Blowout / garbage time', range: '×0.92 – ×1.00', desc: 'Basé sur les cotes Pinnacle H2H (scrapées directement) : si l\'un des deux camps a une probabilité implicite > 82%, le match risque d\'être plié tôt → minutes réduites pour les deux équipes. Appliqué à tous les joueurs.' },
             { name: 'Normalisation de rôle', range: '×0.55 – ×1.00', desc: 'Détecte les joueurs remplaçants qui ont joué titulaire en remplacement d\'un blessé : si les minutes récentes (L3) dépassent de +25% la moyenne de saison, la projection est ramenée vers la moyenne habituelle.' },
           ].map(f => (
             <div key={f.name} className="util-factor-row">
@@ -972,7 +978,7 @@ export default function UtilisationPage() {
       {/* ── VALUE BETS FOOT ── */}
       {isFoot && <Accordion title="Calcul des value bets (football)">
         <p className="util-intro">
-          La probabilité implicite "juste" d'un résultat est calculée depuis les cotes Pinnacle en retirant la marge (vig). L'edge représente l'avantage théorique du parieur sur un autre bookmaker.
+          La probabilité implicite "juste" d'un résultat est calculée depuis les cotes Pinnacle (scrapées directement, pas de clé/quota externe) en retirant la marge (vig). L'edge représente l'avantage théorique du parieur sur un autre bookmaker.
         </p>
         <div className="util-formula-box">
           <code>prob_juste = (1 / cote_pinnacle) / overround</code>
@@ -982,32 +988,50 @@ export default function UtilisationPage() {
           <code>edge = cote_bookmaker × prob_juste − 1</code>
         </div>
         <p className="util-intro" style={{ marginTop: '0.5rem' }}>
-          Un edge positif (ex. +3.5%) signifie que la cote proposée est supérieure à la valeur "juste" selon Pinnacle. Le seuil d'alerte est configuré via <code>VALUE_THRESHOLD</code> dans <code>.env</code> (défaut : 2%).
+          Un edge positif (ex. +20%) déclenche l'alerte <code>football_pinnacle_edge</code> — seuil <code>PINNACLE_EDGE_THRESHOLD = 20%</code> (volontairement haut : ne remonte qu'une vraie erreur de cote franche, pas un simple écart de marge), cote minimum <code>1,60</code>. Méthode indépendante du modèle Poisson de la section suivante — compare directement les cotes à la ligne Pinnacle, sans passer par nos propres probabilités.
+        </p>
+        <p className="util-intro" style={{ marginTop: '0.5rem' }}>
+          <strong>Portée actuelle : uniquement la Coupe du Monde</strong> (seule compétition où un h2h Pinnacle complet était scrapé) — la CDM 2026 étant terminée, ce mécanisme est réel dans le code mais dormant en pratique. Pas encore étendu aux autres championnats.
         </p>
       </Accordion>}
 
-      {isFoot && <Accordion title="Alertes — BTTS / Over-Under / Résultat / DC combinés (background, toutes les 20 min)">
+      {isFoot && <Accordion title="Alertes — BTTS / Over-Under / Résultat (background, toutes les 20 min)">
         <p className="util-intro">
           Générées automatiquement par le serveur, aucune action nécessaire. Couverture : <strong>Ligue 1, Premier League, La Liga, Bundesliga, Serie A</strong>, <strong>Coupe du Monde</strong>, <strong>Brasileirão</strong> (17 juillet 2026) et <strong>Ligue des Champions, Europa League, Conference League</strong> (23 juillet 2026, phase de groupes/finale seulement — voir plus bas). Modèle de Poisson sur les buts attendus (<code>computeLambdas</code>) — attaque/défense de chaque équipe normalisées, λ rescalé par la moyenne de buts de la ligue et l'avantage du terrain.
         </p>
 
         <div className="util-subsection">
-          <h3 className="util-subsection-title">Les 5 alertes</h3>
+          <h3 className="util-subsection-title">Les 3 alertes</h3>
+          <p className="util-intro" style={{ marginBottom: '0.5rem' }}>
+            <strong>DC &amp; BTTS / DC &amp; Over 1,5 supprimées le 8 septembre 2026</strong> (demande explicite, pari perdant Lille-Betis + audit du jour même confirmant que DC ne dépasse jamais ~55% de réussite réelle quel que soit le seuil affiché, contre 65-84% pour BTTS/Total). Marché retiré entièrement : génération, cartes, onglets de la fiche match, near-miss.
+          </p>
           <table className="util-table">
             <thead><tr><th>Alerte</th><th>Calcul</th><th>Seuil</th><th>Cote min</th></tr></thead>
             <tbody>
-              <tr><td><strong>BTTS</strong></td><td>Grille jointe Dixon-Coles — somme des cases i≥1 et j≥1</td><td>≥ 70%</td><td>1,60</td></tr>
-              <tr><td><strong>Over/Under</strong></td><td>Ligne 2.5 testée d'abord, repli sur 1.5</td><td>≥ 65%</td><td>1,30</td></tr>
+              <tr><td><strong>BTTS</strong></td><td>Grille jointe Dixon-Coles — somme des cases i≥1 et j≥1</td><td>48-70% par championnat (7 sept, était 70% uniforme)</td><td>1,40-1,60</td></tr>
+              <tr><td><strong>Over/Under</strong></td><td>Ligne 2.5 testée d'abord, repli sur 1.5</td><td>75% (60% ligne 1,5 Big Five ; ligne 2,5 : 62% Ligue 1, 60% Bundesliga, 11 sept)</td><td>1,30 (ligne 1,5) · 1,50 (ligne 2,5, toutes ligues, 11 sept)</td></tr>
               <tr><td><strong>Résultat (1X2)</strong></td><td>Même grille — domicile/nul/extérieur traités comme 3 paris oui/non indépendants</td><td>≥ 70% par issue</td><td>1,50</td></tr>
-              <tr><td><strong>DC &amp; BTTS</strong> (29 juin 2026)</td><td><code>computeDCBTTSProbs</code> — même grille, somme des cases où DC ET BTTS sont vérifiés (3 combinaisons : 1X/X2/12)</td><td>≥ 50%</td><td>1,45</td></tr>
-              <tr><td><strong>DC &amp; Over 1,5</strong> (29 juin 2026)</td><td><code>computeDCOverProbs</code> — même grille, somme des cases où DC ET total &gt; 1,5 buts</td><td>≥ 55%</td><td>1,45</td></tr>
             </tbody>
           </table>
           <p className="util-intro" style={{ marginTop: '0.5rem' }}>
-            Cotes comparées : Unibet/Betclic uniquement. Une alerte par match et par catégorie. Les DC combinés sont des marchés scrappés via gRPC Betclic (<code>ca_ftb_rslt</code>) + HTML Unibet — les probabilités modèle sont aussi affichées directement dans les onglets "Double chance &amp; BTTS" / "Double chance &amp; Over 1,5" de chaque page match.
+            Cotes comparées : Unibet/Betclic uniquement. Une alerte par match et par catégorie. Détail complet par championnat (BTTS notamment, très hétérogène) : voir l'artifact <strong>Règles du moteur</strong>.
+          </p>
+        </div>
+
+        <div className="util-subsection">
+          <h3 className="util-subsection-title">Buts par équipe (production, 14 septembre 2026)</h3>
+          <p className="util-intro">
+            4e alerte foot, indépendante de BTTS/Total/Résultat — "Plus de X buts marqués par UNE équipe" (0,5 / 1,5 / 2,5), domicile et extérieur séparément. Seuils calibrés sur 641 cas résolus, différents des deux côtés (l'avantage du terrain décale la distribution de buts à domicile vers le haut) : 0,5 but domicile 65%/extérieur 68% (cote min 1,30) ; 1,5 but domicile 72%/extérieur 65% (1,50) ; 2,5 buts domicile 72%/extérieur 78% (1,60). Les lignes 1,5/2,5 restent structurellement rares côté "Plus de" (l'équipe dépasse peu souvent ce niveau de confiance) — assumé, pas un bug.
           </p>
           <p className="util-intro" style={{ marginTop: '0.4rem' }}>
-            <strong>Pourquoi des seuils plus bas pour DC ?</strong> C'est un pari combiné : même pour un fort favori offensif (λh=1.9, λa=1.3), DC &amp; BTTS plafonne à ~46% sur la meilleure combinaison. Les seuils 50%/55% restent sélectifs par rapport à ce plafond naturel.
+            <strong>Priorité stricte sur BTTS</strong> : la ligne 0,5-Over (domicile ET extérieur, qui recomposent ensemble exactement "les 2 équipes marquent") ne s'alerte jamais tant que BTTS qualifie déjà sur ce match — même raisonnement que le fix DC vs BTTS/Total du 8 septembre ("un but à domicile" est une question mécaniquement plus facile que BTTS, une comparaison de probabilité brute ferait perdre BTTS presque à chaque fois). Détail complet : artifact <strong>Règles du moteur</strong>, section "Buts par équipe".
+          </p>
+        </div>
+
+        <div className="util-subsection">
+          <h3 className="util-subsection-title">Tirs / Tirs cadrés (observation, 14-15 septembre 2026)</h3>
+          <p className="util-intro">
+            Marché total et par équipe (tirs et tirs cadrés) — <strong>toujours aucune alerte réelle</strong> (pas de seuil calibré sur les vraies lignes pour l'instant), mais les <strong>vraies cotes Betclic sont désormais affichées</strong> depuis le 15 septembre : la source technique (requête gRPC <code>GetMatchWithNotification</code>, categoryId <code>ca_ftb_prp</code>) a été trouvée sans risque via une inspection manuelle de l'utilisateur dans son propre navigateur, plutôt qu'une automatisation qui avait déclenché 2 blocages anti-bot les jours précédents. Unibet (simple widget informatif sans marché) et Pinnacle n'ont structurellement rien sur ce marché — Betclic reste la seule source, comme pour un marché mono-bookmaker. Le modèle (mêmes fonctions d'attaque/défense que les buts, conversion Poisson indépendante sans corrélation Dixon-Coles) tourne en continu et journalise le near-miss sur les <strong>vraies lignes Betclic</strong> quand disponibles (repli sur des lignes fixes sinon : 22,5/25,5/28,5 tirs, 6,5/8,5/10,5 tirs cadrés au total ; 9,5/12,5/15,5 et 2,5/4,5/6,5 par équipe). L'onglet "Tirs" de la fiche match affiche désormais un vrai tableau de cote Betclic à côté de l'estimation du modèle, avec des lignes indépendantes par équipe (domicile et extérieur n'ont pas forcément les mêmes lignes réelles). Détail complet : artifact <strong>Règles du moteur</strong>, section "Tirs / Tirs cadrés".
           </p>
         </div>
 
@@ -1019,13 +1043,17 @@ export default function UtilisationPage() {
           <table className="util-table" style={{ marginTop: '0.5rem' }}>
             <thead><tr><th>Championnat</th><th>Marché</th><th>Seuil global</th><th>Nouveau seuil</th></tr></thead>
             <tbody>
-              <tr><td rowSpan={3}><strong>Big Five</strong><br />(L1/PL/Liga/SerieA/Bundes)</td><td>BTTS</td><td>≥ 70% · 1,60</td><td>≥ 58% · 1,50</td></tr>
-              <tr><td>Total "Plus de 1,5" (ligne 2,5 inchangée)</td><td>≥ 65% · 1,30</td><td>≥ 60% · 1,30</td></tr>
-              <tr><td>DC &amp; Over 1,5 (1X et X2)</td><td>≥ 55% · 1,45</td><td>≥ 45% · 1,50</td></tr>
-              <tr><td rowSpan={2}><strong>Brésil</strong></td><td>BTTS</td><td>≥ 70% · 1,60</td><td>≥ 45% · 1,40</td></tr>
-              <tr><td>DC &amp; BTTS "1X" (X2 inchangé)</td><td>≥ 50% · 1,45</td><td>≥ 20% · 1,40</td></tr>
+              <tr><td rowSpan={3}><strong>Big Five</strong><br />(L1/PL/Liga/SerieA/Bundes)</td><td>BTTS</td><td>≥ 70% · 1,60</td><td>L1 62% · PL 58% · Liga 58% · SerieA 61% · Bundes 67% (14 sept, propre à chaque championnat — cote 1,50)</td></tr>
+              <tr><td>Total "Plus de 1,5" (ligne 2,5 désormais à 75%, 8 sept)</td><td>≥ 75% · 1,30</td><td>L1 82% · PL 77% · Liga 75% · Bundes 79% · SerieA 71% (14 sept, propre à chaque championnat — cote 1,30)</td></tr>
+              <tr><td>Total "Plus de 2,5" — Ligue 1, Bundesliga &amp; Serie A (14 sept, propre à chaque championnat)</td><td>≥ 75% · 1,30</td><td>L1 63% · Bundes 71% · SerieA 54% · 1,50</td></tr>
+              <tr><td><strong>Brésil</strong></td><td>BTTS</td><td>≥ 70% · 1,60</td><td>≥ 48% · 1,40 (7 sept, était 45%)</td></tr>
+              <tr><td rowSpan={2}><strong>Coupes d'Europe</strong></td><td>BTTS Europa</td><td>≥ 70% · 1,60</td><td>≥ 53% · 1,60 (7 sept, propre à Europa)</td></tr>
+              <tr><td>BTTS Conference (LDC inchangée, pas assez de données)</td><td>≥ 70% · 1,60</td><td>≥ 58% · 1,60 (7 sept)</td></tr>
             </tbody>
           </table>
+          <p className="util-intro" style={{ marginTop: '0.4rem' }}>
+            <strong>Cote minimum ligne 2,5 relevée à 1,50 — 11 septembre 2026 (demande explicite, toutes ligues) :</strong> distincte de la ligne 1,5 (restée à 1,30 partout) — s'applique aussi bien à Ligue 1/Bundesliga (nouveau seuil de proba ci-dessus) qu'aux championnats restés au seuil global 75% (PL, La Liga, Serie A, Brésil, coupes d'Europe, Grèce, Arabie, Portugal).
+          </p>
           <p className="util-intro" style={{ marginTop: '0.5rem' }}>
             <strong>Constat inversé entre les deux groupes</strong> : sur le Big Five, Total/DC&amp;Over sont les marchés rentables (bookmakers efficients, l'edge se cache dans les paris "quasi-évidents" à cote basse) — BTTS/Résultat/DC&amp;BTTS n'ont jamais montré de signal fiable, même à seuil bas. Sur le Brésil, c'est l'inverse : BTTS/DC&amp;BTTS/Résultat-Nul rentables, Total/DC&amp;Over plats ou négatifs. Cohérent avec des bookmakers qui se trompent différemment selon la ligue couverte.
           </p>
@@ -1046,6 +1074,15 @@ export default function UtilisationPage() {
           </p>
           <p className="util-intro" style={{ marginTop: '0.3rem' }}>
             <strong>BTTS Big Five et Brésil resserrés le 4 septembre 2026</strong> — nouvel outil de calibration interactif (winrate cumulé point de probabilité par point, sans chevauchement entre les %) construit pour trouver précisément où la courbe décroche plutôt qu'un seuil deviné à l'aveugle. Big Five : 45%→58% (41 cas à 45% pour 58,5% de réussite réelle, contre 9 cas à 58% pour 77,8% — le point de coupure le plus haut avec assez de volume pour être défendable). Brésil : 25%→45% (le plancher de 25% n'avait en fait jamais été atteint par un seul cas résolu depuis sa création — 45% est le premier seuil qui corresponde à un vrai comportement observé, 65,4% de réussite sur 26 cas).
+          </p>
+          <p className="util-intro" style={{ marginTop: '0.3rem' }}>
+            <strong>BTTS éclaté par championnat individuel le 7 septembre 2026</strong> — le plancher "Big Five" uniforme (58% pour les 5 grands championnats à la fois) remplacé par un seuil propre à chacun, trouvé par l'utilisateur directement sur l'artifact "Seuils par marché" : Ligue 1 57%, Premier League 58%, La Liga 58%, Serie A 55%, Bundesliga 62%. Brésil remonté 45%→48%. Coupes d'Europe (jusque-là toutes les 3 au seuil global 70%, jamais atteint en pratique) éclatées aussi : Europa League 53%, Conference League 58% — Ligue des Champions laissée au seuil global, pas assez de cas résolus pour trancher. Échantillons encore fins par championnat (7 à 40 cas) — à resurveiller au fil de l'accumulation, cf. <code>FB_BTTS_LEAGUE_PROB</code> dans <code>server.js</code>.
+          </p>
+          <p className="util-intro" style={{ marginTop: '0.3rem' }}>
+            <strong>Recalibration BTTS/Total O-U du 14 septembre 2026</strong> — nouvelle analyse near-miss de l'utilisateur sur l'artifact "Seuils par marché". BTTS : Ligue 1 57%→62%, Bundesliga 62%→67%, Serie A 55%→56%, remontée à 61% le même jour (demande explicite complémentaire) (PL et La Liga inchangées). Total "Plus de 1,5" : passé d'un plancher unique 60% partagé par les 5 grands championnats à un seuil propre à chacun — Ligue 1 82%, Premier League 77%, La Liga 75%, Bundesliga 79%, Serie A 71% (<code>FB_TOTAL15_LEAGUE_PROB</code>, remplace l'ancienne <code>FB_BIG5_TOTAL15_PROB</code> plate). Total "Plus de 2,5" : Ligue 1 62%→63%, Bundesliga 60%→71%, Serie A ajoutée pour la première fois à 54% (était sur le seuil global 75% jusqu'ici) — PL et La Liga toujours génériques. Échantillons par championnat toujours fins (8 à 20 cas) — à resurveiller au fil de l'accumulation, comme les recalibrations précédentes.
+          </p>
+          <p className="util-intro" style={{ marginTop: '0.3rem' }}>
+            <strong>Même jour, 2e vague — Brésil, coupes d'Europe, Grèce, Arabie Saoudite, Portugal</strong> : BTTS Brésil 48%→51%, Conference League 58%→63%, Portugal ajoutée à 48% (était générique 70%). Total "Plus de 1,5" étendu à Brésil (72%), Europa League (76%), Grèce (73%). Total "Plus de 2,5" étendu à Brésil (62%), Conference League (68%), Ligue des Champions (64%), Arabie Saoudite (64%), Portugal (65%). <strong>Point important</strong> : Grèce et Portugal ont désormais de vrais seuils calibrés, mais restent sous le garde-fou <code>isNewLeague</code> ("championnat trop récent") qui coupe l'émission de toute alerte réelle indépendamment du seuil — calibrer ne suffit pas à faire repartir des alertes tant que ce flag n'est pas retiré à la main (voir section "Garde-fous — matchs &amp; ligues" ci-dessus).
           </p>
         </div>
 
@@ -1115,7 +1152,7 @@ export default function UtilisationPage() {
         <div className="util-subsection">
           <h3 className="util-subsection-title">Stockage et affichage</h3>
           <p className="util-intro">
-            localStorage : <code>fb_btts_alerts</code> / <code>fb_total_alerts</code> / <code>fb_result_alerts</code> / <code>fb_dc_btts_alerts</code> / <code>fb_dc_ou_alerts</code>. Affichées dans Alertes (pending), puis converties en groupe compact dans Running une fois acceptées (logo, badge de ligue, équipes, heure du match, nombre d'alertes). Règlement des DC uniquement au coup de sifflet final (<code>STATUS_FINAL</code>) — les deux conditions (DC + BTTS/Over) ne peuvent être actées que lorsque le score est définitif.
+            localStorage : <code>fb_btts_alerts</code> / <code>fb_total_alerts</code> / <code>fb_result_alerts</code>. Affichées dans Alertes (pending), puis converties en groupe compact dans Running une fois acceptées (logo, badge de ligue, équipes, heure du match, nombre d'alertes).
           </p>
         </div>
       </Accordion>}
@@ -1125,6 +1162,9 @@ export default function UtilisationPage() {
         <p className="util-intro">
           Le composant <strong>FootballOddsBox</strong> (dans <code>MatchDetailPage.jsx</code>) s'affiche sur chaque page match, derrière le bouton "Odds" de la barre d'info. Trois onglets : <strong>Résultat</strong> (1X2), <strong>Buts</strong> (Over/Under, ligne 1.5 ou 2.5 au choix) et <strong>BTTS</strong>. Remplace l'ancien composant <code>OddsTable.jsx</code>, qui n'est plus utilisé par aucune page depuis cette refonte.
         </p>
+        <p className="util-intro" style={{ marginTop: '0.5rem' }}>
+          <strong>Cotes et probas figées au dernier cycle pré-match (9 septembre 2026)</strong> — une fois un match live ou terminé, la fiche affiche automatiquement les cotes/probabilités telles qu'elles étaient juste avant le coup d'envoi (badge "Odds (pré-match)"), pour comparer à ce qui s'est réellement passé. Générique à tous les championnats foot (5 grands, Brésil, Grèce, Arabie, Portugal, CDM, coupes d'Europe) — pas rétroactif sur un match déjà terminé avant ce déploiement.
+        </p>
 
         <div className="util-subsection">
           <h3 className="util-subsection-title">Bookmakers affichés</h3>
@@ -1133,11 +1173,11 @@ export default function UtilisationPage() {
             <tbody>
               <tr><td><strong>Unibet</strong></td><td>Scraping HTML</td><td>Résultat + Buts + BTTS</td><td>Ligne affichée</td></tr>
               <tr><td><strong>Betclic</strong></td><td>Scraping HTML</td><td>Résultat + Buts + BTTS</td><td>Ligne affichée</td></tr>
-              <tr><td><strong>Pinnacle</strong></td><td>The Odds API</td><td>Résultat + Buts + BTTS</td><td>Jamais affiché en ligne — sert uniquement de référence "juste" cachée (label <strong>vs Pinnacle X%</strong> sous chaque modèle, voir plus bas)</td></tr>
+              <tr><td><strong>Pinnacle</strong></td><td>Scraping direct</td><td>Résultat + Buts + BTTS</td><td>Jamais affiché en ligne — sert uniquement de référence "juste" cachée (label <strong>vs Pinnacle X%</strong> sous chaque modèle, voir plus bas)</td></tr>
             </tbody>
           </table>
           <p className="util-intro" style={{ marginTop: '0.5rem' }}>
-            Betfair n'apparaît plus dans ce composant (seulement encore utilisé côté <code>GET /api/alerts</code>, voir "Calcul des value bets" ci-dessus). Quand aucune des 3 cotes 1X2 d'un bookmaker scrappé n'est disponible pour comparer au marché, le modèle 1X2 utilise le premier bookmaker scrappé qui a les 3 cotes — Pinnacle n'a pas de marché 1X2 foot fiable trouvé à date.
+            Quand aucune des 3 cotes 1X2 d'un bookmaker scrappé n'est disponible pour comparer au marché, le modèle 1X2 utilise le premier bookmaker scrappé qui a les 3 cotes — Pinnacle n'a pas de marché 1X2 foot fiable trouvé à date.
           </p>
         </div>
 
@@ -1208,6 +1248,9 @@ export default function UtilisationPage() {
               <tr><td><strong>Serie A</strong></td><td>Italie</td><td>Bleu foncé</td></tr>
               <tr><td><strong>Coupe du Monde</strong></td><td>International</td><td>—</td></tr>
               <tr><td><strong>Brasileirão Série A</strong></td><td>Brésil</td><td>Vert (17 juillet 2026)</td></tr>
+              <tr><td><strong>Super League</strong></td><td>Grèce</td><td>Bleu clair (8 septembre 2026)</td></tr>
+              <tr><td><strong>Pro League</strong></td><td>Arabie Saoudite</td><td>Vert (8 septembre 2026)</td></tr>
+              <tr><td><strong>Liga Betclic</strong></td><td>Portugal</td><td>Vert foncé (9 septembre 2026)</td></tr>
             </tbody>
           </table>
         </div>
@@ -1247,9 +1290,9 @@ export default function UtilisationPage() {
         </div>
 
         <div className="util-subsection">
-          <h3 className="util-subsection-title">Alertes value bets</h3>
+          <h3 className="util-subsection-title">Alertes value bets vs Pinnacle</h3>
           <p className="util-intro">
-            L'endpoint <code>GET /api/alerts</code> scanne en temps réel tous les matchs football disponibles via The Odds API. Pour chaque marché H2H et BTTS, il compare les cotes de Unibet et Betclic à la ligne Pinnacle démarginée. Toute cote générant un edge supérieur à <code>VALUE_THRESHOLD</code> (2% par défaut dans <code>.env</code>) remonte dans la page <strong>Alertes</strong>.
+            Alerte <code>football_pinnacle_edge</code> (voir "Calcul des value bets" plus haut) — méthode indépendante du modèle Poisson, compare directement les cotes Unibet/Betclic à la ligne Pinnacle démarginée (h2h uniquement). Seuil volontairement haut (edge ≥ 20%, cote min 1,60) : ne remonte qu'une vraie erreur de cote, pas un simple écart de marge. <strong>Réservée à la Coupe du Monde</strong> à ce jour (seule compétition où Pinnacle était scrapé en h2h complet) — CDM terminée, mécanisme dormant en pratique. La page <strong>Alertes</strong> n'affiche jamais de "value bet" générique toutes compétitions confondues — <code>GET /api/alerts</code>, qui décrivait ça, n'existe plus (route retirée, jamais branchée au frontend).
           </p>
         </div>
       </Accordion>}

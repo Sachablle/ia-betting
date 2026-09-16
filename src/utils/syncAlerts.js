@@ -32,9 +32,16 @@ const BASKETBALL_RESULT_KEY = 'basketball_result_alerts';
 const FB_BTTS_KEY   = 'fb_btts_alerts';
 const FB_TOTAL_KEY  = 'fb_total_alerts';
 const FB_RESULT_KEY = 'fb_result_alerts';
+// Total de buts PAR ÉQUIPE (14 septembre 2026) — passé en production, même patron de sync que
+// football_total (id inclut side+ligne, `${fixtureId}_teamgoals_${side}_${line}`).
+const FB_TEAM_GOALS_KEY = 'fb_team_goals_alerts';
 const FB_PINNACLE_KEY = 'fb_pinnacle_alerts';
 const FB_DC_BTTS_KEY = 'fb_dc_btts_alerts';
 const FB_DC_OU_KEY   = 'fb_dc_ou_alerts';
+// Préfixes fixtureId réellement suivis en live côté backend (10 septembre 2026) — utilisé par la
+// purge orpheline BTTS ci-dessous. Doit rester synchro avec FOOTBALL_SETTLEMENT_SOURCES plus bas
+// dans ce fichier (même liste de préfixes, panorama complet des championnats foot en direct).
+const LIVE_FOOTBALL_FIXTURE_PREFIX = /^(fd_|fdcdm_|fdbr_|afel_|afcl_|afch_|grc_|arb_|por_)/;
 const BBALL_PINNACLE_KEY = 'bball_pinnacle_alerts';
 const PURGE_PLAYERS = ['Justin Bean', 'Jack Kayil', 'Leandro Bolmaro'];
 
@@ -42,7 +49,7 @@ const PURGE_PLAYERS = ['Justin Bean', 'Jack Kayil', 'Leandro Bolmaro'];
 // quelle page. Boucle sur toutes les clés d'alertes connues (props, total, résultat équipe, foot)
 // pour que chaque type bénéficie du même règlement serveur — un seul endroit à étendre pour un
 // futur type d'alerte (22 juin 2026, avant ça seul ALERT_KEY/props était couvert ici).
-const SETTLEABLE_KEYS = [ALERT_KEY, GAME_TOTAL_KEY, TEAM_TOTAL_KEY, BASKETBALL_RESULT_KEY, FB_BTTS_KEY, FB_TOTAL_KEY, FB_RESULT_KEY, FB_PINNACLE_KEY, BBALL_PINNACLE_KEY, FB_DC_BTTS_KEY, FB_DC_OU_KEY];
+const SETTLEABLE_KEYS = [ALERT_KEY, GAME_TOTAL_KEY, TEAM_TOTAL_KEY, BASKETBALL_RESULT_KEY, FB_BTTS_KEY, FB_TOTAL_KEY, FB_RESULT_KEY, FB_PINNACLE_KEY, BBALL_PINNACLE_KEY, FB_DC_BTTS_KEY, FB_DC_OU_KEY, FB_TEAM_GOALS_KEY];
 
 const PENDING_SYNC_KEY = 'pending_alert_sync';
 const readPendingSync  = () => { try { return JSON.parse(localStorage.getItem(PENDING_SYNC_KEY) || '[]'); } catch { return []; } };
@@ -940,14 +947,22 @@ export async function syncFootballAlerts() {
           changed = true;
         }
       });
-      // Purge des "pending" orphelins — uniquement pour les fixtures suivies en live (fd_*/fdcdm_*) :
-      // les alertes générées côté client sur des fixtures statiques (hors-saison) n'ont pas
-      // d'équivalent backend et ne doivent pas être purgées (comportement historique préservé).
+      // Purge des "pending" orphelins — uniquement pour les fixtures suivies en live (n'importe quel
+      // championnat foot backend, cf. LIVE_FOOTBALL_FIXTURE_PREFIX ci-dessus) : les alertes générées
+      // côté client sur des fixtures statiques (hors-saison) n'ont pas d'équivalent backend et ne
+      // doivent pas être purgées (comportement historique préservé).
+      // Bug trouvé le 10 septembre 2026 (cas réel Coritiba-Atletico Paranaense, Brasileirão) : cette
+      // regex ne couvrait que `fd_`/`fdcdm_` depuis sa création — jamais étendue aux championnats
+      // ajoutés depuis (Brésil `fdbr_`, coupes d'Europe `afel_/afcl_/afch_`, Grèce/Arabie/Portugal
+      // `grc_/arb_/por_`). Une alerte BTTS pending sur l'un de ces championnats qui disparaît côté
+      // backend (ex: remplacée par une alerte Total via `goalsFamilyChampion`) restait donc affichée
+      // indéfiniment dans l'app — visible et "acceptable" localement alors que Telegram (qui interroge
+      // le vrai état serveur) répondait déjà "alerte introuvable" sur le même message.
       const liveIds = new Set(bttsAlerts.map(a => a.id));
       const purged = result.filter(a => {
         if ((a.status || 'pending') !== 'pending') return true;
         if (Date.now() - (a.savedAt || 0) < ORPHAN_GRACE_MS) return true;
-        if (!/^(fd_|fdcdm_)/.test(a.fixtureId || '')) return true;
+        if (!LIVE_FOOTBALL_FIXTURE_PREFIX.test(a.fixtureId || '')) return true;
         if (isCdmBeyondWindow(a)) return true;
         return liveIds.has(a.id);
       });
@@ -1054,6 +1069,50 @@ export async function syncFootballAlerts() {
       if (changed) {
         cloudSet(FB_RESULT_KEY, JSON.stringify(purged));
         window.dispatchEvent(new Event('fb_result_alerts_updated'));
+      }
+    }
+
+    // Total de buts PAR ÉQUIPE (14 septembre 2026) — passé en production, même patron de sync que
+    // Over/Under (id inclut side+ligne : `${fixtureId}_teamgoals_${side}_${line}`, plusieurs lignes
+    // peuvent alerter simultanément sur un même match/équipe).
+    const teamGoalsAlerts = bgAlerts.filter(a => a.type === 'football_team_goals' && a.probability > 0);
+    {
+      const existing = JSON.parse(localStorage.getItem(FB_TEAM_GOALS_KEY) || '[]');
+      let changed = false;
+      const result = [...existing];
+      teamGoalsAlerts.forEach(a => {
+        const idx = result.findIndex(p => p.id === a.id);
+        if (idx === -1) {
+          result.push({ ...a, status: a.status || 'pending' });
+          changed = true;
+          return;
+        }
+        const prev = result[idx];
+        if ((prev.status || 'pending') !== 'pending') {
+          return; // accepté/rejeté/réglé : ne jamais toucher
+        }
+        if (prev.probability !== a.probability || prev.unibetOdds !== a.unibetOdds || prev.betclicOdds !== a.betclicOdds || prev.edge !== a.edge) {
+          result[idx] = {
+            ...prev,
+            probability: a.probability, edge: a.edge,
+            unibetOdds: a.unibetOdds ?? prev.unibetOdds,
+            betclicOdds: a.betclicOdds ?? prev.betclicOdds,
+          };
+          changed = true;
+        }
+      });
+      const liveIds = new Set(teamGoalsAlerts.map(a => a.id));
+      const liveFixtureIds = new Set(teamGoalsAlerts.map(a => a.fixtureId));
+      const purged = result.filter(a => {
+        if ((a.status || 'pending') !== 'pending') return true;
+        if (!liveIds.has(a.id) && liveFixtureIds.has(a.fixtureId)) return false;
+        if (Date.now() - (a.savedAt || 0) < ORPHAN_GRACE_MS) return true;
+        return liveIds.has(a.id);
+      });
+      if (purged.length !== result.length) changed = true;
+      if (changed) {
+        cloudSet(FB_TEAM_GOALS_KEY, JSON.stringify(purged));
+        window.dispatchEvent(new Event('fb_team_goals_alerts_updated'));
       }
     }
 
@@ -1214,6 +1273,14 @@ export function resolveFootballAlertResult(a, game) {
     if (a.direction === 'away') return as_ > hs ? 'won' : 'lost';
     return hs === as_ ? 'won' : 'lost'; // draw
   }
+  if (a.type === 'football_team_goals') {
+    // Total de buts PAR ÉQUIPE (14 septembre 2026) — même logique que football_total mais sur le
+    // score d'UNE SEULE équipe (a.side), pas le cumul des deux. Même fonction côté backend
+    // (server.js, footballMarketStatus) — garder les deux synchro si cette logique change un jour.
+    const teamScore = a.side === 'home' ? hs : as_;
+    if (a.direction === 'over') return teamScore > a.line ? 'won' : (isFinal ? 'lost' : null);
+    return teamScore > a.line ? 'lost' : (isFinal ? 'won' : null);
+  }
   const total = hs + as_;
   if (a.direction === 'over') {
     if (total > a.line) return 'won';
@@ -1236,6 +1303,12 @@ const FOOTBALL_SETTLEMENT_SOURCES = [
   { prefix: 'afcl_',  endpoint: '/api/football/eucup/conference/matches', gamesKey: 'matches' },
   { prefix: 'afch_',  endpoint: '/api/football/eucup/champions/matches', gamesKey: 'matches' },
   { prefix: 'fd_',    endpoint: '/api/fd/results', gamesKey: 'matches' },
+  // Grèce Super League (8 septembre 2026) — jamais passée par football-data.org, préfixe dédié
+  // `grc_` (pas de faux héritage `fd`, contrairement aux 6 championnats migrés depuis FD).
+  { prefix: 'grc_',   endpoint: '/api/football/grece', gamesKey: 'matches' },
+  { prefix: 'arb_',   endpoint: '/api/football/arabie', gamesKey: 'matches' },
+  // Portugal Primeira Liga (9 septembre 2026) — même patron que Grèce/Arabie ci-dessus.
+  { prefix: 'por_',   endpoint: '/api/football/portugal', gamesKey: 'matches' },
 ];
 
 export async function resolveCompletedFootballAlerts(alerts, save) {
@@ -1301,7 +1374,7 @@ export async function resolveCompletedFootballAlerts(alerts, save) {
 // d'alerte live sur ce joueur (cas où la ligne a trop bougé pour rester rentable) : le backend
 // calcule à chaque cycle, pour TOUS les joueurs, la ligne/cotes/probas courantes dans
 // _projectionsSnapshot — exposé via /api/{nba|wnba|euro/<league>}/projections-snapshot/:eventId.
-const EU_PROJ_LEAGUES = ['acb', 'lnb', 'bbl', 'legaa', 'euroleague', 'nbl'];
+const EU_PROJ_LEAGUES = ['acb', 'lnb', 'bbl', 'legaa', 'euroleague', 'nbl', 'gbl'];
 const projectionsSnapshotUrl = (league, eventId) => {
   if (league === 'wnba') return `/api/wnba/projections-snapshot/${eventId}`;
   if (EU_PROJ_LEAGUES.includes(league)) return `/api/euro/${league}/projections-snapshot/${eventId}`;
@@ -1418,6 +1491,7 @@ const TELEGRAM_TYPE_TO_KEY = {
   football_dc_btts: FB_DC_BTTS_KEY,
   football_dc_ou: FB_DC_OU_KEY,
   football_pinnacle_edge: FB_PINNACLE_KEY,
+  football_team_goals: FB_TEAM_GOALS_KEY,
 };
 
 export async function syncTelegramActions() {
@@ -1463,8 +1537,11 @@ export async function syncTelegramActions() {
         // (acceptedBookmaker/acceptedUnibetOdds/acceptedBetclicOdds/...), transporté depuis
         // recordAction() côté serveur. Sans ça, la carte Running/Backtesting n'affichait aucune
         // cote pour un accept fait depuis Telegram (cas réel : Total SEA-MIN, cote Betclic absente).
+        // stakeAmountSuggested (8 septembre 2026, demande explicite) — même priorité que le chemin
+        // d'accept direct sur l'app (PlaceBetPage.jsx, stakeAtAccept()) : la mise calibrée propre à
+        // CETTE alerte d'abord, repli sur l'ancienne mise plate du palier seulement si absente.
         const dateExtra = act.action === 'accepted' && !list[idx].acceptedAt
-          ? { acceptedAt: Date.now(), stakeAmount: list[idx].stakeAmount ?? getRecommendedStake(loadBankrollState().current) }
+          ? { acceptedAt: Date.now(), stakeAmount: list[idx].stakeAmount ?? list[idx].stakeAmountSuggested ?? getRecommendedStake(loadBankrollState().current) }
           : {};
         list[idx] = { ...list[idx], status: act.action, ...dateExtra, ...(act.extra || {}) };
         changed = true;

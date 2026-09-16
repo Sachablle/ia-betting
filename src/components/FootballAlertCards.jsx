@@ -1,17 +1,21 @@
 import { useNavigate } from 'react-router-dom';
 import { cachedFetch, invalidateCache } from '../utils/fetchCache';
 import TeamLogo from './TeamLogo';
-import { stakeSuggestionLabel, bestPlayableOdds } from '../utils/stakeSuggestion';
+import { bestPlayableOdds } from '../utils/stakeSuggestion';
 
-// Suggestion de mise par alerte (3 septembre 2026, demande explicite) — affichée dans l'en-tête de
-// chaque carte, à côté du badge de probabilité. Voir stakeSuggestion.js pour la formule (Kelly÷12,
-// plafond 10%) et pourquoi elle coexiste avec le Calculateur de mise (PendingAlertWidgets.jsx).
-function StakeBadge({ probability, odds }) {
-  const label = stakeSuggestionLabel(probability, odds);
-  if (!label) return null;
+// Suggestion de mise par alerte — remplacée le 7 septembre 2026 (demande explicite) par `stakePct`,
+// calculé côté backend UNIQUEMENT à partir du % calibré de cette alerte précise (÷12, plafond 10% —
+// mêmes constantes que l'ancienne suggestion locale Kelly÷12/cote, gardées pour cohérence, mais le
+// calcul ne dépend plus de la cote du tout : "on cherche pas à être rentable sur la cote, juste à
+// faire en sorte que l'alerte soit gagnante"). Plus de repli sur une suggestion locale basée sur la
+// cote — TOUTES les alertes de tous les marchés doivent suivre la même règle (demande explicite) ;
+// sans % calibré disponible pour ce marché/cette ligue, aucun badge ne s'affiche, plutôt que de
+// remontrer l'ancien calcul incohérent avec le reste.
+function StakeBadge({ stakePct, stakeAmount }) {
+  if (stakePct == null) return null;
   return (
     <span style={{ fontSize: 9, fontWeight: 700, color: '#4ade80', whiteSpace: 'nowrap' }}>
-      → {label}
+      → {stakePct}% BK (calib.){stakeAmount != null && stakeAmount > 0 ? ` ≈ ${stakeAmount}€` : ''}
     </span>
   );
 }
@@ -51,6 +55,9 @@ export const FB_LEAGUE_META = {
   europa:     { name: 'Europa League',  flag: '🏆' },
   conference: { name: 'Conference League', flag: '🥉' },
   champions:  { name: 'Ligue des Champions', flag: '⭐' },
+  grece:      { name: 'Super League Grèce', flag: '🇬🇷' },
+  arabie:     { name: 'Pro League Arabie Saoudite', flag: '🇸🇦' },
+  portugal:   { name: 'Liga Betclic', flag: '🇵🇹' },
 };
 
 export function BTTSAlertCard({ alert, onAccept, onReject, onDismiss }) {
@@ -83,8 +90,8 @@ export function BTTSAlertCard({ alert, onAccept, onReject, onDismiss }) {
         <span className="bc-flag">{meta.flag}</span>
         <span className="bc-league">{meta.name}</span>
         <div style={{ marginLeft: 'auto', marginRight: 24, display: 'flex', alignItems: 'center', gap: 6 }}>
-          <span className={`bc-edge-badge ${alert.probability >= 85 ? 'high' : 'mid'}`}>{alert.probability}%</span>
-          <StakeBadge probability={alert.probability} odds={bestPlayableOdds(alert.unibetOdds, alert.betclicOdds, alert.winamaxOdds)} />
+          <span className={`bc-edge-badge ${alert.probability >= 85 ? 'high' : 'mid'}`}>{alert.probability}%</span>{alert.calibratedProbability != null && <span style={{ fontSize: 9, color: 'var(--text-dim)', fontWeight: 600, marginLeft: 2 }}>({alert.calibratedProbability}% calib.{alert.nearMissRecord && (alert.nearMissRecord.won + alert.nearMissRecord.lost) > 0 ? ` · ${alert.nearMissRecord.won}G/${alert.nearMissRecord.lost}P` : ''})</span>}
+          <StakeBadge probability={alert.probability} odds={bestPlayableOdds(alert.unibetOdds, alert.betclicOdds, alert.winamaxOdds)} stakePct={alert.stakePct} stakeAmount={alert.stakeAmountSuggested} />
           {!isPending && (
             <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 10, color: isAccepted ? '#4ade80' : '#f87171', background: isAccepted ? 'rgba(74,222,128,0.12)' : 'rgba(248,113,113,0.1)' }}>
               {isAccepted ? '✓ Accepté' : '✗ Rejeté'}
@@ -126,7 +133,6 @@ export function BTTSAlertCard({ alert, onAccept, onReject, onDismiss }) {
           <span className="bc-prob-pct" style={{ color: '#60a5fa', fontSize: 10 }}>{timeLabel}</span>
         </div>
       </div>
-
       <div style={{ display: 'flex', gap: '0.5rem' }}>
         {[{ label: 'Pinnacle', odds: alert.pinnacleOdds, color: 'var(--text)' }, { label: 'Unibet', odds: alert.unibetOdds, color: '#1db954' }, { label: 'Betclic', odds: alert.betclicOdds, color: '#e0292e' }, { label: 'Winamax', odds: alert.winamaxOdds, color: '#e5e7eb' }]
           .filter(b => b.odds)
@@ -178,8 +184,8 @@ export function FootballTotalCard({ alert, onAccept, onReject, onDismiss }) {
         <span className="bc-flag">{meta.flag}</span>
         <span className="bc-league">{meta.name}</span>
         <div style={{ marginLeft: 'auto', marginRight: 24, display: 'flex', alignItems: 'center', gap: 6 }}>
-          <span className={`bc-edge-badge ${alert.probability >= 85 ? 'high' : 'mid'}`}>{alert.probability}%</span>
-          <StakeBadge probability={alert.probability} odds={bestPlayableOdds(alert.unibetOdds, alert.betclicOdds, alert.winamaxOdds)} />
+          <span className={`bc-edge-badge ${alert.probability >= 85 ? 'high' : 'mid'}`}>{alert.probability}%</span>{alert.calibratedProbability != null && <span style={{ fontSize: 9, color: 'var(--text-dim)', fontWeight: 600, marginLeft: 2 }}>({alert.calibratedProbability}% calib.{alert.nearMissRecord && (alert.nearMissRecord.won + alert.nearMissRecord.lost) > 0 ? ` · ${alert.nearMissRecord.won}G/${alert.nearMissRecord.lost}P` : ''})</span>}
+          <StakeBadge probability={alert.probability} odds={bestPlayableOdds(alert.unibetOdds, alert.betclicOdds, alert.winamaxOdds)} stakePct={alert.stakePct} stakeAmount={alert.stakeAmountSuggested} />
           {!isPending && (
             <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 10, color: isAccepted ? '#4ade80' : '#f87171', background: isAccepted ? 'rgba(74,222,128,0.12)' : 'rgba(248,113,113,0.1)' }}>
               {isAccepted ? '✓ Accepté' : '✗ Rejeté'}
@@ -222,7 +228,6 @@ export function FootballTotalCard({ alert, onAccept, onReject, onDismiss }) {
           <span className="bc-prob-pct" style={{ color: '#60a5fa', fontSize: 10 }}>{timeLabel}</span>
         </div>
       </div>
-
       {(alert.pinnacleOdds || alert.unibetOdds || alert.betclicOdds || alert.winamaxOdds) && (
         <div style={{ display: 'flex', gap: '0.5rem' }}>
           {[
@@ -230,6 +235,110 @@ export function FootballTotalCard({ alert, onAccept, onReject, onDismiss }) {
             { label: 'Unibet',  odds: alert.unibetOdds,  color: '#1db954' },
             { label: 'Betclic', odds: alert.betclicOdds, color: '#e0292e' },
             { label: 'Winamax', odds: alert.winamaxOdds, color: '#e5e7eb' },
+          ].filter(b => b.odds).map(({ label, odds, color }) => (
+            <div key={label}
+              onClick={isPending ? e => { e.stopPropagation(); onAccept(alert.id, label.toLowerCase(), odds); } : undefined}
+              style={{ flex: 1, textAlign: 'center', background: 'rgba(255,255,255,0.04)', borderRadius: 6, padding: '0.3rem', cursor: isPending ? 'pointer' : 'default', transition: 'background 0.15s' }}
+              onMouseEnter={isPending ? e => e.currentTarget.style.background = 'rgba(255,255,255,0.1)' : undefined}
+              onMouseLeave={isPending ? e => e.currentTarget.style.background = 'rgba(255,255,255,0.04)' : undefined}
+            >
+              <div style={{ fontSize: 9, color: 'var(--text-dim)', marginBottom: 2 }}>{label}</div>
+              <div style={{ fontSize: 13, fontWeight: 700, color, fontVariantNumeric: 'tabular-nums' }}>{odds.toFixed(2)}</div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Total de buts PAR ÉQUIPE — passé en production le 14 septembre 2026 (voir CLAUDE.md pour
+// l'historique de calibration). Même patron que FootballTotalCard ci-dessus, adapté à une seule
+// équipe (side) plutôt qu'au cumul des deux — le libellé du pari nomme l'équipe concernée.
+export function TeamGoalsAlertCard({ alert, onAccept, onReject, onDismiss }) {
+  const navigate = useNavigate();
+  const meta = FB_LEAGUE_META[alert.league] || { name: alert.league, flag: '⚽' };
+  const isPending  = alert.status === 'pending';
+  const isAccepted = alert.status === 'accepted';
+  const isOver     = alert.direction === 'over';
+  const accent     = isOver ? '#4ade80' : '#f87171';
+  const team       = alert.side === 'home' ? (alert.home || alert.homeShort) : (alert.away || alert.awayShort);
+
+  const now = Date.now();
+  const msLeft    = new Date(alert.fixtureDate).getTime() - now;
+  const hoursLeft = msLeft / 3_600_000;
+  const daysLeft  = Math.floor(hoursLeft / 24);
+  const hRem      = Math.floor(hoursLeft % 24);
+  const mRem      = Math.floor((msLeft % 3_600_000) / 60_000);
+  const timeLabel = msLeft <= 0 ? 'Imminent' : daysLeft > 0 ? `${daysLeft}j ${hRem}h` : hoursLeft >= 1 ? `${Math.floor(hoursLeft)}h ${mRem}m` : `${mRem}m`;
+  const barPct    = Math.min(Math.max(msLeft / (7 * 24 * 3_600_000) * 100, 0), 100);
+
+  return (
+    <div
+      className="bet-card"
+      style={{ position: 'relative', '--league-accent': '#10b981', borderColor: 'rgba(16,185,129,0.25)', cursor: alert.fixtureId ? 'pointer' : 'default' }}
+      onClick={() => _gotoFbMatch(navigate, alert.fixtureId)}
+      onMouseEnter={alert.fixtureId ? () => _prefetchFbMatch(alert) : undefined}
+    >
+      {isPending
+        ? <button onClick={e => { e.stopPropagation(); onReject(alert.id); }} style={{ position: 'absolute', top: 8, right: 10, background: 'none', border: 'none', cursor: 'pointer', padding: 0, lineHeight: 1 }}><svg width="14" height="14" viewBox="0 0 18 18" fill="none"><circle cx="9" cy="9" r="7.5" stroke="#ef4444" strokeWidth="1.5"/><path d="M6 6l6 6M12 6l-6 6" stroke="#ef4444" strokeWidth="1.75" strokeLinecap="round"/></svg></button>
+        : <button onClick={e => { e.stopPropagation(); onDismiss(alert.id); }} style={{ position: 'absolute', top: 8, right: 10, background: 'none', border: 'none', color: 'var(--text-dim)', cursor: 'pointer', fontSize: 16, lineHeight: 1, padding: 0 }}>×</button>
+      }
+      <div className="bc-header">
+        <span className="bc-flag">{meta.flag}</span>
+        <span className="bc-league">{meta.name}</span>
+        <div style={{ marginLeft: 'auto', marginRight: 24, display: 'flex', alignItems: 'center', gap: 6 }}>
+          <span className={`bc-edge-badge ${alert.probability >= 85 ? 'high' : 'mid'}`}>{alert.probability}%</span>{alert.calibratedProbability != null && <span style={{ fontSize: 9, color: 'var(--text-dim)', fontWeight: 600, marginLeft: 2 }}>({alert.calibratedProbability}% calib.{alert.nearMissRecord && (alert.nearMissRecord.won + alert.nearMissRecord.lost) > 0 ? ` · ${alert.nearMissRecord.won}G/${alert.nearMissRecord.lost}P` : ''})</span>}
+          <StakeBadge stakePct={alert.stakePct} stakeAmount={alert.stakeAmountSuggested} />
+          {!isPending && (
+            <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 10, color: isAccepted ? '#4ade80' : '#f87171', background: isAccepted ? 'rgba(74,222,128,0.12)' : 'rgba(248,113,113,0.1)' }}>
+              {isAccepted ? '✓ Accepté' : '✗ Rejeté'}
+            </span>
+          )}
+          {isPending && alert.obsolete && (
+            <span style={{ fontSize: 9, fontWeight: 800, padding: '2px 6px', borderRadius: 4, background: 'rgba(148,163,184,0.15)', color: '#94a3b8', border: '1px solid rgba(148,163,184,0.4)', flexShrink: 0 }}>OBSOLÈTE</span>
+          )}
+        </div>
+      </div>
+
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem', marginTop: '0.35rem', minWidth: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', flexShrink: 0 }}>
+          <TeamLogo name={alert.home || alert.homeShort || ''} logoId={alert.homeLogo} size={16} />
+          <span className="bc-team bc-team-home" style={{ whiteSpace: 'nowrap' }}>{alert.home || alert.homeShort}</span>
+          <span className="bc-vs">vs</span>
+          <TeamLogo name={alert.away || alert.awayShort || ''} logoId={alert.awayLogo} size={16} />
+          <span className="bc-team bc-team-away" style={{ whiteSpace: 'nowrap' }}>{alert.away || alert.awayShort}</span>
+        </div>
+        <span style={{ fontSize: 10, color: 'var(--text-dim)', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {new Date(alert.fixtureDate).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}{alert.round ? ` · ${alert.round}` : ''}
+        </span>
+      </div>
+
+      <div style={{ margin: '0.3rem 0', display: 'flex', alignItems: 'center', gap: 6 }}>
+        <span style={{ fontSize: 12, fontWeight: 700, color: accent, background: isOver ? 'rgba(74,222,128,0.1)' : 'rgba(248,113,113,0.1)', padding: '0.25rem 0.5rem', borderRadius: 6, whiteSpace: 'nowrap' }}>
+          {team} — {isOver ? '▲ Plus' : '▼ Moins'} de {alert.line} but(s)
+        </span>
+        {alert.edge != null && (
+          <span style={{ marginLeft: 'auto', fontSize: 10, color: 'var(--text-dim)', flexShrink: 0, whiteSpace: 'nowrap' }}>
+            <b style={{ color: accent }}>{alert.edge >= 0 ? '+' : ''}{alert.edge}%</b> vs {alert.unibetOdds && alert.betclicOdds ? 'cote' : 'marché'}
+          </span>
+        )}
+      </div>
+
+      <div className="bc-stats" style={{ margin: '0 0 0.35rem' }}>
+        <div className="bc-prob">
+          <div className="bc-prob-bar-track">
+            <div className="bc-prob-bar-fill" style={{ width: `${barPct}%`, background: '#60a5fa' }} />
+          </div>
+          <span className="bc-prob-pct" style={{ color: '#60a5fa', fontSize: 10 }}>{timeLabel}</span>
+        </div>
+      </div>
+      {(alert.pinnacleOdds || alert.unibetOdds || alert.betclicOdds) && (
+        <div style={{ display: 'flex', gap: '0.5rem' }}>
+          {[
+            { label: 'Pinnacle', odds: alert.pinnacleOdds, color: 'var(--text)' },
+            { label: 'Unibet',  odds: alert.unibetOdds,  color: '#1db954' },
+            { label: 'Betclic', odds: alert.betclicOdds, color: '#e0292e' },
           ].filter(b => b.odds).map(({ label, odds, color }) => (
             <div key={label}
               onClick={isPending ? e => { e.stopPropagation(); onAccept(alert.id, label.toLowerCase(), odds); } : undefined}
@@ -282,8 +391,8 @@ export function FootballResultCard({ alert, onAccept, onReject, onDismiss }) {
         <span className="bc-flag">{meta.flag}</span>
         <span className="bc-league">{meta.name}</span>
         <div style={{ marginLeft: 'auto', marginRight: 24, display: 'flex', alignItems: 'center', gap: 6 }}>
-          <span className={`bc-edge-badge ${alert.probability >= 85 ? 'high' : 'mid'}`}>{alert.probability}%</span>
-          <StakeBadge probability={alert.probability} odds={bestPlayableOdds(alert.unibetOdds, alert.betclicOdds, alert.winamaxOdds)} />
+          <span className={`bc-edge-badge ${alert.probability >= 85 ? 'high' : 'mid'}`}>{alert.probability}%</span>{alert.calibratedProbability != null && <span style={{ fontSize: 9, color: 'var(--text-dim)', fontWeight: 600, marginLeft: 2 }}>({alert.calibratedProbability}% calib.{alert.nearMissRecord && (alert.nearMissRecord.won + alert.nearMissRecord.lost) > 0 ? ` · ${alert.nearMissRecord.won}G/${alert.nearMissRecord.lost}P` : ''})</span>}
+          <StakeBadge probability={alert.probability} odds={bestPlayableOdds(alert.unibetOdds, alert.betclicOdds, alert.winamaxOdds)} stakePct={alert.stakePct} stakeAmount={alert.stakeAmountSuggested} />
           {!isPending && (
             <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 10, color: isAccepted ? '#4ade80' : '#f87171', background: isAccepted ? 'rgba(74,222,128,0.12)' : 'rgba(248,113,113,0.1)' }}>
               {isAccepted ? '✓ Accepté' : '✗ Rejeté'}
@@ -327,7 +436,6 @@ export function FootballResultCard({ alert, onAccept, onReject, onDismiss }) {
           <span className="bc-prob-pct" style={{ color: '#60a5fa', fontSize: 10 }}>{timeLabel}</span>
         </div>
       </div>
-
       {(alert.pinnacleOdds || alert.unibetOdds || alert.betclicOdds || alert.winamaxOdds) && (
         <div style={{ display: 'flex', gap: '0.5rem' }}>
           {[
@@ -395,8 +503,8 @@ export function PinnacleEdgeCard({ alert, onAccept, onReject, onDismiss }) {
         <span className="bc-league">{meta.name}</span>
         <span style={{ fontSize: 8, fontWeight: 700, color: accent, border: `1px solid ${accent}55`, background: 'rgba(34,211,238,0.1)', borderRadius: 4, padding: '1px 5px', marginLeft: 6 }}>VS PINNACLE</span>
         <div style={{ marginLeft: 'auto', marginRight: 24, display: 'flex', alignItems: 'center', gap: 6 }}>
-          <span className={`bc-edge-badge ${alert.probability >= 85 ? 'high' : 'mid'}`}>{alert.probability}%</span>
-          <StakeBadge probability={alert.probability} odds={alert[`${alert.bookmaker}Odds`]} />
+          <span className={`bc-edge-badge ${alert.probability >= 85 ? 'high' : 'mid'}`}>{alert.probability}%</span>{alert.calibratedProbability != null && <span style={{ fontSize: 9, color: 'var(--text-dim)', fontWeight: 600, marginLeft: 2 }}>({alert.calibratedProbability}% calib.{alert.nearMissRecord && (alert.nearMissRecord.won + alert.nearMissRecord.lost) > 0 ? ` · ${alert.nearMissRecord.won}G/${alert.nearMissRecord.lost}P` : ''})</span>}
+          <StakeBadge probability={alert.probability} odds={alert[`${alert.bookmaker}Odds`]} stakePct={alert.stakePct} stakeAmount={alert.stakeAmountSuggested} />
           {!isPending && (
             <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 10, color: isAccepted ? '#4ade80' : '#f87171', background: isAccepted ? 'rgba(74,222,128,0.12)' : 'rgba(248,113,113,0.1)' }}>
               {isAccepted ? '✓ Accepté' : '✗ Rejeté'}
@@ -468,111 +576,17 @@ export function PinnacleEdgeCard({ alert, onAccept, onReject, onDismiss }) {
   );
 }
 
-const DC_DIR_LABEL = { '1x': '1X', 'x2': 'X2', '12': '12' };
-const DC_DIR_DESC  = { '1x': 'Dom. ou Nul', 'x2': 'Nul ou Ext.', '12': 'Dom. ou Ext.' };
 // Violet plutôt qu'orange (6 septembre 2026, demande explicite) — l'orange est déjà le liseret
 // sport du basket partout ailleurs dans l'app (RunningPage.jsx MatchGroup, Outrights...) ; le
 // réutiliser ici pour un TYPE de marché foot créait une confusion visuelle. #a78bfa est déjà
 // l'accent "secondaire/spécial" établi juste à côté (éditeur de mise Running/Backtesting).
 const DC_ACCENT    = '#a78bfa';
 
-function DCBaseCard({ alert, suffix, onAccept, onReject, onDismiss }) {
-  const navigate = useNavigate();
-  const meta     = FB_LEAGUE_META[alert.league] || { name: alert.league, flag: '⚽' };
-  const isPending  = alert.status === 'pending';
-  const isAccepted = alert.status === 'accepted';
-  const dir        = alert.direction || '1x';
-  const now        = Date.now();
-  const msLeft     = new Date(alert.fixtureDate).getTime() - now;
-  const hoursLeft  = msLeft / 3_600_000;
-  const daysLeft   = Math.floor(hoursLeft / 24);
-  const hRem       = Math.floor(hoursLeft % 24);
-  const mRem       = Math.floor((msLeft % 3_600_000) / 60_000);
-  const timeLabel  = msLeft <= 0 ? 'Imminent' : daysLeft > 0 ? `${daysLeft}j ${hRem}h` : hoursLeft >= 1 ? `${Math.floor(hoursLeft)}h ${mRem}m` : `${mRem}m`;
-  const barPct     = Math.min(Math.max(msLeft / (7 * 24 * 3_600_000) * 100, 0), 100);
-
-  return (
-    <div
-      className="bet-card"
-      style={{ position: 'relative', '--league-accent': DC_ACCENT, borderColor: 'rgba(167,139,250,0.25)', cursor: alert.fixtureId ? 'pointer' : 'default' }}
-      onClick={() => _gotoFbMatch(navigate, alert.fixtureId)}
-      onMouseEnter={alert.fixtureId ? () => _prefetchFbMatch(alert) : undefined}
-    >
-      {isPending
-        ? <button onClick={e => { e.stopPropagation(); onReject(alert.id); }} style={{ position: 'absolute', top: 8, right: 10, background: 'none', border: 'none', cursor: 'pointer', padding: 0, lineHeight: 1 }}><svg width="14" height="14" viewBox="0 0 18 18" fill="none"><circle cx="9" cy="9" r="7.5" stroke="#ef4444" strokeWidth="1.5"/><path d="M6 6l6 6M12 6l-6 6" stroke="#ef4444" strokeWidth="1.75" strokeLinecap="round"/></svg></button>
-        : <button onClick={e => { e.stopPropagation(); onDismiss(alert.id); }} style={{ position: 'absolute', top: 8, right: 10, background: 'none', border: 'none', color: 'var(--text-dim)', cursor: 'pointer', fontSize: 16, lineHeight: 1, padding: 0 }}>×</button>
-      }
-      <div className="bc-header">
-        <span className="bc-flag">{meta.flag}</span>
-        <span className="bc-league">{meta.name}</span>
-        <div style={{ marginLeft: 'auto', marginRight: 24, display: 'flex', alignItems: 'center', gap: 6 }}>
-          <span className={`bc-edge-badge ${alert.probability >= 75 ? 'high' : 'mid'}`}>{alert.probability}%</span>
-          <StakeBadge probability={alert.probability} odds={bestPlayableOdds(alert.unibetOdds, alert.betclicOdds)} />
-          {!isPending && (
-            <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 10, color: isAccepted ? '#4ade80' : '#f87171', background: isAccepted ? 'rgba(74,222,128,0.12)' : 'rgba(248,113,113,0.1)' }}>
-              {isAccepted ? '✓ Accepté' : '✗ Rejeté'}
-            </span>
-          )}
-          {isPending && alert.obsolete && (
-            <span style={{ fontSize: 9, fontWeight: 800, padding: '2px 6px', borderRadius: 4, background: 'rgba(148,163,184,0.15)', color: '#94a3b8', border: '1px solid rgba(148,163,184,0.4)', flexShrink: 0 }}>OBSOLÈTE</span>
-          )}
-        </div>
-      </div>
-
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem', marginTop: '0.35rem', minWidth: 0 }}>
-        <span style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', minWidth: 0, overflow: 'hidden' }}>
-          <TeamLogo name={alert.home || alert.fixture || ''} logoId={alert.homeLogo} size={16} />
-          <span className="bc-team bc-team-home" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{alert.home ?? alert.fixture}</span>
-          <span style={{ color: 'var(--text-dim)', fontWeight: 400 }}>vs</span>
-          <TeamLogo name={alert.away || ''} logoId={alert.awayLogo} size={16} />
-          <span className="bc-team bc-team-away" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{alert.away}</span>
-        </span>
-        <span style={{ fontSize: 10, color: 'var(--text-dim)', flexShrink: 0, whiteSpace: 'nowrap' }}>
-          {new Date(alert.fixtureDate).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}{alert.round ? ` · ${alert.round}` : ''}
-        </span>
-      </div>
-
-      <div style={{ margin: '0.3rem 0' }}>
-        <span style={{ fontSize: 12, fontWeight: 700, color: DC_ACCENT, background: 'rgba(167,139,250,0.1)', padding: '0.25rem 0.5rem', borderRadius: 6, display: 'inline-block' }}>
-          {DC_DIR_LABEL[dir]} ({DC_DIR_DESC[dir]}) &amp; {suffix}
-        </span>
-      </div>
-
-      <div className="bc-stats" style={{ margin: '0 0 0.35rem' }}>
-        <div className="bc-prob">
-          <div className="bc-prob-bar-track">
-            <div className="bc-prob-bar-fill" style={{ width: `${barPct}%`, background: '#60a5fa' }} />
-          </div>
-          <span className="bc-prob-pct" style={{ color: '#60a5fa', fontSize: 10 }}>{timeLabel}</span>
-        </div>
-      </div>
-
-      <div style={{ display: 'flex', gap: '0.5rem' }}>
-        {[{ label: 'Unibet', odds: alert.unibetOdds, color: '#1db954' }, { label: 'Betclic', odds: alert.betclicOdds, color: '#e0292e' }]
-          .filter(b => b.odds)
-          .map(({ label, odds, color }) => (
-            <div key={label}
-              onClick={isPending ? e => { e.stopPropagation(); onAccept(alert.id, label.toLowerCase(), odds); } : undefined}
-              style={{ flex: 1, textAlign: 'center', background: 'rgba(255,255,255,0.04)', borderRadius: 6, padding: '0.3rem', cursor: isPending ? 'pointer' : 'default', transition: 'background 0.15s' }}
-              onMouseEnter={isPending ? e => e.currentTarget.style.background = 'rgba(255,255,255,0.1)' : undefined}
-              onMouseLeave={isPending ? e => e.currentTarget.style.background = 'rgba(255,255,255,0.04)' : undefined}
-            >
-              <div style={{ fontSize: 9, color: 'var(--text-dim)', marginBottom: 2 }}>{label}</div>
-              <div style={{ fontSize: 13, fontWeight: 700, color, fontVariantNumeric: 'tabular-nums' }}>{odds.toFixed(2)}</div>
-            </div>
-          ))}
-      </div>
-    </div>
-  );
-}
-
-export function DCBTTSAlertCard({ alert, onAccept, onReject, onDismiss }) {
-  return <DCBaseCard alert={alert} suffix="BTTS Oui" onAccept={onAccept} onReject={onReject} onDismiss={onDismiss} />;
-}
-
-export function DCOUAlertCard({ alert, onAccept, onReject, onDismiss }) {
-  return <DCBaseCard alert={alert} suffix={`+${alert.line ?? 1.5} buts`} onAccept={onAccept} onReject={onReject} onDismiss={onDismiss} />;
-}
+// DCBaseCard/DCBTTSAlertCard/DCOUAlertCard (cartes de pari "DC & BTTS"/"DC & +1,5 buts") supprimées
+// le 8 septembre 2026 — marché retiré du projet (demande explicite, pari perdant Lille-Betis + audit
+// confirmant ~55% de réussite réelle max quel que soit le seuil affiché). DC_ACCENT/DC_DIR_LABEL_G
+// restent utilisées par alertRowMeta ci-dessous pour l'affichage en lecture seule des paris DC déjà
+// acceptés avant la suppression, le temps qu'ils se règlent.
 
 // ─── Helpers pour FootballGroupCard ───────────────────────────────────────────
 const DC_DIR_LABEL_G = { '1x': '1X', 'x2': 'X2', '12': '12' };
@@ -592,6 +606,11 @@ function alertRowMeta(alert) {
       const dir = alert.direction;
       const name = dir === 'draw' ? 'Match nul' : `Victoire ${dir === 'home' ? (alert.homeShort || alert.home) : (alert.awayShort || alert.away)}`;
       return { label: name, accent: '#fbbf24' };
+    }
+    case 'football_team_goals': {
+      const over = alert.direction === 'over';
+      const team = alert.side === 'home' ? (alert.homeShort || alert.home) : (alert.awayShort || alert.away);
+      return { label: `${team} — ${over ? 'Plus' : 'Moins'} de ${alert.line} but(s)`, accent: over ? '#4ade80' : '#f87171' };
     }
     case 'football_pinnacle_edge': {
       const isTot = alert.market === 'totals';

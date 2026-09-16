@@ -8,6 +8,7 @@ const GAME_TOTAL_KEY  = 'nba_game_total_alerts';
 const TEAM_TOTAL_KEY  = 'basketball_teamtotal_alerts';
 const FB_BTTS_KEY     = 'fb_btts_alerts';
 const FB_TOTAL_KEY    = 'fb_total_alerts';
+const FB_TEAM_GOALS_KEY = 'fb_team_goals_alerts';
 const FB_RESULT_KEY   = 'fb_result_alerts';
 const FB_DC_BTTS_KEY  = 'fb_dc_btts_alerts';
 const FB_DC_OU_KEY    = 'fb_dc_ou_alerts';
@@ -46,6 +47,11 @@ function betLabel(a) {
       const dir = a.direction === 'over' ? 'Over' : 'Under';
       return `${dir} ${a.line} buts — ${a.home} vs ${a.away}`;
     }
+    case 'football_team_goals': {
+      const dir = a.direction === 'over' ? 'Over' : 'Under';
+      const team = a.side === 'home' ? (a.homeShort ?? a.home) : (a.awayShort ?? a.away);
+      return `${dir} ${a.line} but(s) — ${team}`;
+    }
     case 'football_result': {
       const team = a.direction === 'home' ? a.home : a.direction === 'away' ? a.away : 'Match nul';
       return a.direction === 'draw' ? team : `Victoire ${team}`;
@@ -82,6 +88,7 @@ function CountdownWidget() {
       try { local = [...local, ...JSON.parse(localStorage.getItem(TEAM_TOTAL_KEY) || '[]')]; } catch {}
       try { local = [...local, ...JSON.parse(localStorage.getItem(FB_BTTS_KEY) || '[]')]; } catch {}
       try { local = [...local, ...JSON.parse(localStorage.getItem(FB_TOTAL_KEY) || '[]')]; } catch {}
+      try { local = [...local, ...JSON.parse(localStorage.getItem(FB_TEAM_GOALS_KEY) || '[]')]; } catch {}
       try { local = [...local, ...JSON.parse(localStorage.getItem(FB_RESULT_KEY) || '[]')]; } catch {}
       try { local = [...local, ...JSON.parse(localStorage.getItem(FB_DC_BTTS_KEY) || '[]')]; } catch {}
       try { local = [...local, ...JSON.parse(localStorage.getItem(FB_DC_OU_KEY) || '[]')]; } catch {}
@@ -178,7 +185,7 @@ function CountdownWidget() {
   const dim    = 'var(--text-dim)';
 
   // Couleur décompte selon le sport du prochain match
-  const isFootball = l => ['cdm','ligue1','pl','laliga','bundes','seriea','foot'].includes(l?.toLowerCase());
+  const isFootball = l => ['cdm','ligue1','pl','laliga','bundes','seriea','bresil','grece','arabie','portugal','europa','conference','champions','foot'].includes(l?.toLowerCase());
   const isBasket   = l => !isFootball(l);
   const nextTs = next?.ts ?? null;
   // Tous les matchs qui démarrent en même temps que le prochain (tolérance 1min)
@@ -744,7 +751,7 @@ function QuotasWidget() {
                       title="Réveil automatique toutes les 6h : le backend redépause seul le temps d'un cycle pour rafraîchir, puis se repause"
                       style={{ fontSize: 7.5, fontWeight: 400, color: footCacheMsLeft > 0 ? '#fff' : '#fbbf24' }}
                     >
-                      {footCacheMsLeft > 0 ? `Dernier cycle - ${footCacheH}h${String(footCacheM).padStart(2, '0')}` : 'cache possiblement périmé'}
+                      {footCacheMsLeft > 0 ? `Prochain cycle - ${footCacheH}h${String(footCacheM).padStart(2, '0')}` : 'cache possiblement périmé'}
                     </div>
                   )}
                   {footCyclePct != null && (
@@ -766,7 +773,7 @@ function QuotasWidget() {
                       title="Réveil automatique toutes les 2h : le backend redépause seul le temps d'un cycle pour rafraîchir, puis se repause"
                       style={{ fontSize: 7.5, fontWeight: 400, color: bballCacheMsLeft > 0 ? '#fff' : '#fbbf24' }}
                     >
-                      {bballCacheMsLeft > 0 ? `Dernier cycle - ${bballCacheH}h${String(bballCacheM).padStart(2, '0')}` : 'cache possiblement périmé'}
+                      {bballCacheMsLeft > 0 ? `Prochain cycle - ${bballCacheH}h${String(bballCacheM).padStart(2, '0')}` : 'cache possiblement périmé'}
                     </div>
                   )}
                   {bballCyclePct != null && (
@@ -1123,7 +1130,7 @@ function SportStatsTable({ allAlerts, allTotals }) {
 }
 
 function AlertsChart({ accepted, days: numDays = 30 }) {
-  const W = 1000, H = 300;
+  const W = 1000, H = 260;
   const padL = 52, padR = 10, padT = 20, padB = 36;
   const cW = W - padL - padR;
   const cH = H - padT - padB;
@@ -1148,12 +1155,13 @@ function AlertsChart({ accepted, days: numDays = 30 }) {
   // alerte plutôt que de toucher la règle de bucketing générale (qui reste correcte pour tout le reste).
   const DASHBOARD_DAY_OVERRIDE = { fdbr_554987_btts_yes: '2026-08-31' };
   accepted.forEach(a => {
-    // Priorité : acceptedAt → savedAt → settledAt → fixtureDate (si déjà réglé, donc forcément
-    // dans le passé) → maintenant en tout dernier recours. D'anciennes alertes foot n'ont ni
-    // acceptedAt ni savedAt enregistré ; les compter sur "maintenant" les faisait apparaître comme
-    // acceptées aujourd'hui alors qu'elles datent de plusieurs semaines (bug du 7 juillet 2026).
-    const resolved = ['won', 'lost', 'void'].includes(a.status);
-    const ts = a.acceptedAt ?? a.savedAt ?? a.settledAt ?? (resolved ? (a.fixtureDate ?? a.date) : null) ?? Date.now();
+    // Priorité : fixtureDate/date (date du match joué) → acceptedAt → savedAt → settledAt →
+    // maintenant en tout dernier recours. Basculé sur la date du match en priorité le 15 septembre
+    // 2026 (demande explicite utilisateur — le point/l'infobulle du graphique doit refléter quand
+    // le match a eu lieu, pas quand le pari a été accepté, qui peut être n'importe quel jour avant).
+    // acceptedAt/savedAt/settledAt restent en repli pour les (rares) alertes sans fixtureDate/date
+    // enregistré (anciennes alertes foot, cf. bug du 7 juillet 2026 réglé à l'époque).
+    const ts = a.fixtureDate ?? a.date ?? a.acceptedAt ?? a.savedAt ?? a.settledAt ?? Date.now();
     const raw = new Date(ts);
     const day = DASHBOARD_DAY_OVERRIDE[a.id] || new Date(raw.getTime() - raw.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
     byDay[day] = (byDay[day] || 0) + 1;
@@ -1276,7 +1284,7 @@ function AlertsChart({ accepted, days: numDays = 30 }) {
 
 // ── Widget : Matchs à venir ──────────────────────────────────────────────────
 
-const FOOT_LEAGUES_SET = new Set(['ligue1','pl','laliga','bundes','seriea','cdm']);
+const FOOT_LEAGUES_SET = new Set(['ligue1','pl','laliga','bundes','seriea','cdm','bresil','grece','arabie','portugal','europa','conference','champions']);
 
 // Nettoyage nom club (Dashboard, 24 août 2026) — football-data.org renvoie la dénomination
 // officielle complète ("Bologna FC 1909", "SS Lazio", "1. FC Union Berlin") ; on retire les
@@ -1307,13 +1315,15 @@ function cleanFootballTeamName(raw) {
 
 const LEAGUE_LABEL_MAP = {
   nba:'NBA', wnba:'WNBA', cdm:'CDM', euroleague:'EL',
-  acb:'ACB', lnb:'LNB', bbl:'BBL', legaa:'LegA', nbl:'NBL',
+  acb:'ACB', lnb:'LNB', bbl:'BBL', legaa:'LegA', nbl:'NBL', gbl:'GBL',
   ligue1:'L1', pl:'PL', laliga:'Liga', bundes:'BL', seriea:'SA',
+  bresil:'BSA', grece:'GR', arabie:'KSA', portugal:'POR', europa:'UEL', conference:'UECL', champions:'UCL',
 };
 const LEAGUE_COLOR_MAP = {
   nba:'#fb923c', wnba:'#fb923c', cdm:'#facc15', euroleague:'#c084fc',
-  acb:'#60a5fa', lnb:'#60a5fa', bbl:'#60a5fa', legaa:'#60a5fa', nbl:'#60a5fa',
+  acb:'#60a5fa', lnb:'#60a5fa', bbl:'#60a5fa', legaa:'#60a5fa', nbl:'#60a5fa', gbl:'#60a5fa',
   ligue1:'#3b82f6', pl:'#a78bfa', laliga:'#f97316', bundes:'#e11d48', seriea:'#10b981',
+  bresil:'#fbbf24', grece:'#0ea5e9', arabie:'#16a34a', portugal:'#006600', europa:'#f472b6', conference:'#2dd4bf', champions:'#6366f1',
 };
 
 function UpcomingMatchesWidget() {
@@ -1370,6 +1380,17 @@ function UpcomingMatchesWidget() {
               away:{name:f.away?.name, short:f.away?.short},
             }, f.league))
         ),
+        // Brésil/Grèce/Arabie/coupes d'Europe (9 septembre 2026) — manquaient entièrement de ce
+        // widget alors qu'elles sont couvertes partout ailleurs dans l'app (cas réel signalé :
+        // "Matchs à venir" vide alors que "Prochain match" trouvait bien un match de Ligue des
+        // Champions via les alertes acceptées, sources différentes).
+        cachedFetch('/api/fd/bresil', 30_000).then(d=>(d.matches||[]).map(f=>norm({...f, id:`fdbr_${f.id}`}, 'bresil'))),
+        cachedFetch('/api/football/grece', 30_000).then(d=>(d.matches||[]).map(f=>norm({...f, id:`grc_${f.id}`}, 'grece'))),
+        cachedFetch('/api/football/arabie', 30_000).then(d=>(d.matches||[]).map(f=>norm({...f, id:`arb_${f.id}`}, 'arabie'))),
+        cachedFetch('/api/football/portugal', 30_000).then(d=>(d.matches||[]).map(f=>norm({...f, id:`por_${f.id}`}, 'portugal'))),
+        ...[['europa','afel'],['conference','afcl'],['champions','afch']].map(([comp,prefix])=>
+          cachedFetch(`/api/football/eucup/${comp}/matches`, 30_000).then(d=>(d.matches||[]).map(f=>norm({...f, id:`${prefix}_${f.id}`}, comp)))
+        ),
       ]);
 
       const now = Date.now();
@@ -1416,6 +1437,14 @@ function UpcomingMatchesWidget() {
   const hasAlert = g => alertedIds.has(g.id);
 
   const fmtTime = date => new Date(date).toLocaleTimeString('fr-FR', { hour:'2-digit', minute:'2-digit' });
+  // Date JJ/MM/AAAA à côté de l'heure (15 septembre 2026, demande explicite utilisateur) — format
+  // fixe plutôt que toLocaleDateString('fr-FR') pour garantir 2 chiffres/jour-mois et le séparateur
+  // "/" quel que soit le navigateur.
+  const fmtDate = date => {
+    const d = new Date(date);
+    const pad = n => String(n).padStart(2, '0');
+    return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()}`;
+  };
   const dayLabel = date => {
     const d = new Date(date); const t = new Date();
     if (d.toDateString() === t.toDateString()) return "Aujourd'hui";
@@ -1492,14 +1521,19 @@ function UpcomingMatchesWidget() {
                 onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.04)'}
                 onMouseLeave={e => e.currentTarget.style.background = alert && !live ? 'rgba(251,146,60,0.03)' : 'transparent'}
                 >
-                  {/* Live dot ou heure */}
+                  {/* Date + Live dot ou heure — date JJ/MM/AAAA ajoutée à gauche de l'heure (15
+                      septembre 2026, demande explicite utilisateur) */}
                   {live ? (
-                    <span style={{ display:'flex', alignItems:'center', gap:3, width:36, flexShrink:0 }}>
+                    <span style={{ display:'flex', alignItems:'center', gap:3, width:88, flexShrink:0 }}>
+                      <span style={{ fontSize:9, color:dim, fontVariantNumeric:'tabular-nums' }}>{fmtDate(g.date)}</span>
                       <span style={{ width:5, height:5, borderRadius:'50%', background:'#60a5fa', flexShrink:0, boxShadow:'0 0 4px #60a5fa' }} />
                       <span style={{ fontSize:9, fontWeight:700, color:'#60a5fa', fontVariantNumeric:'tabular-nums' }}>{fmtTime(g.date)}</span>
                     </span>
                   ) : (
-                    <span style={{ fontSize:9, color:dim, width:36, flexShrink:0, fontVariantNumeric:'tabular-nums' }}>{fmtTime(g.date)}</span>
+                    <span style={{ display:'flex', alignItems:'center', gap:5, width:88, flexShrink:0 }}>
+                      <span style={{ fontSize:9, color:dim, fontVariantNumeric:'tabular-nums' }}>{fmtDate(g.date)}</span>
+                      <span style={{ fontSize:9, color:dim, fontVariantNumeric:'tabular-nums' }}>{fmtTime(g.date)}</span>
+                    </span>
                   )}
                   {/* Badge ligue — pill coloré */}
                   {g.league === 'cdm' ? (
@@ -1632,15 +1666,15 @@ export default function DashboardPage() {
     <div className="page" style={{ padding: '0.9rem 2.5rem 2rem' }}>
 
       {/* Header */}
-      <div style={{ marginBottom: '2.5rem', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+      <div style={{ marginBottom: '1.2rem', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
         <div>
-          <p id="vue-ensemble" style={{ fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.12em', color: '#3b82f6', marginBottom: '0.6rem' }}>
+          <p id="vue-ensemble" style={{ fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.12em', color: '#3b82f6', marginBottom: '0.4rem' }}>
             Vue d'ensemble
           </p>
           <h1 style={{ fontSize: '1.7rem', fontWeight: 800, letterSpacing: '-0.04em', color: 'var(--text)', lineHeight: 1.1 }}>
             Tableau de bord
           </h1>
-          <p style={{ color: 'var(--text-sub)', marginTop: '0.6rem', fontSize: 14, maxWidth: 420, lineHeight: 1.6 }}>
+          <p style={{ color: 'var(--text-sub)', marginTop: '0.4rem', fontSize: 14, maxWidth: 420, lineHeight: 1.6 }}>
             Suivi des alertes
           </p>
         </div>
@@ -1652,9 +1686,9 @@ export default function DashboardPage() {
         border: '1px solid var(--border)',
         borderRadius: 16,
         overflow: 'hidden',
-        marginBottom: '1.5rem',
+        marginBottom: '1rem',
       }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', padding: '1.25rem 1.5rem 0' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', padding: '0.9rem 1.5rem 0' }}>
           <span style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--text-dim)' }}>
             Paris acceptés
           </span>

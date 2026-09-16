@@ -12,7 +12,11 @@ export function EdgeBadge({ val }) {
 }
 
 export function OddsCell({ value, edge, isPinnacle, fairProb, color, trend }) {
-  if (value == null) return <div style={{ textAlign: 'center', color: 'var(--text-dim)' }}>—</div>;
+  // fontSize explicite (14 septembre 2026) — sans lui, ce "—" hérite de la taille de police ambiante
+  // (plus grande que le 11px du cas normal ci-dessous), ce qui rend UNIQUEMENT cette ligne plus haute
+  // quand une cote manque — décale tout ce qui suit sur ce côté d'une colonne à deux équipes (ex.
+  // "Buts par équipe") dès qu'un bookmaker manque des deux côtés Over ET Under à la fois.
+  if (value == null) return <div style={{ textAlign: 'center', color: 'var(--text-dim)', fontSize: 11 }}>—</div>;
   return (
     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
       <span style={{ fontWeight: isPinnacle ? 700 : 500, fontVariantNumeric: 'tabular-nums', fontSize: 11, color: isPinnacle ? '#60a5fa' : (color ?? undefined) }}>

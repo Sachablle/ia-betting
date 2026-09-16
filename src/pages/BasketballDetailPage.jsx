@@ -380,8 +380,11 @@ const EU_LEAGUE_CONST = {
   bbl:   { avg: 82.0, total: 164.0 },
   legaa: { avg: 80.0, total: 160.0 },
   nbl:   { avg: 91.6, total: 183.2 },
+  // Grèce (9 septembre 2026) — vraie moyenne calculée sur le classement api-basketball 2025-2026
+  // (13 équipes, somme points/somme matchs joués = 83,7).
+  gbl:   { avg: 83.7, total: 167.4 },
 };
-const EURO_LEAGUES_IDS = ['acb', 'lnb', 'bbl', 'legaa', 'nbl'];
+const EURO_LEAGUES_IDS = ['acb', 'lnb', 'bbl', 'legaa', 'nbl', 'gbl'];
 const getEuroConst = league => EU_LEAGUE_CONST[league] || null;
 
 // api-sports.io ne renvoie pas toujours les noms EU dans le même ordre (Prénom Nom vs Nom Prénom)
@@ -407,7 +410,7 @@ const PROP_CONF_BANDS = {
     tpm: { high: 80, mid: 70 },
   },
 };
-const EU_PROP_LEAGUES = new Set(['acb', 'lnb', 'bbl', 'legaa', 'euroleague', 'nbl']);
+const EU_PROP_LEAGUES = new Set(['acb', 'lnb', 'bbl', 'legaa', 'euroleague', 'nbl', 'gbl']);
 // Vert/cyan/ambre — mêmes couleurs que les badges .bc-edge-badge.high/.mid/.low (PlaceBetPage/index.css)
 function propConfColor(stat, league, pct) {
   const bands = (EU_PROP_LEAGUES.has(league) ? PROP_CONF_BANDS.eu : PROP_CONF_BANDS.nba_short)[stat];
@@ -1573,7 +1576,7 @@ function PropsSection({ fixture, homePlayers, awayPlayers, rosterLoading, isComp
   // pour les 5 ligues qui ont un vrai moteur d'alertes props (NBA/WNBA/ACB/BBL/Lega A). Euroleague
   // et LNB n'ont aucun équivalent backend (jamais couvertes par generateBackgroundAlerts/
   // runEUPropsAlerts) — gardent le calcul local historique ci-dessous, seule source disponible.
-  const BACKEND_MODEL_LEAGUES = ['nba', 'wnba', 'acb', 'bbl', 'legaa'];
+  const BACKEND_MODEL_LEAGUES = ['nba', 'wnba', 'acb', 'bbl', 'legaa', 'gbl'];
   const [backendProjections, setBackendProjections] = useState(null);
 
   // Classement ligue par catégorie — clic sur une stat projetée dans Analyse Props (22 juin 2026).
@@ -1817,7 +1820,7 @@ function PropsSection({ fixture, homePlayers, awayPlayers, rosterLoading, isComp
   // Fetch team schedules (pace / défense / repos)
   useEffect(() => {
     if (isCompleted) return;
-    const EURO_L = ['acb','lnb','bbl','legaa','nbl'];
+    const EURO_L = ['acb','lnb','bbl','legaa','nbl','gbl'];
     if (EURO_L.includes(fixture.league)) {
       Promise.all([
         cachedFetch(`/api/euro/${fixture.league}/teamschedule/${fixture.home.id}`, 30 * 60_000).catch(() => ({ games: [] })),
@@ -1858,7 +1861,7 @@ function PropsSection({ fixture, homePlayers, awayPlayers, rosterLoading, isComp
     if (!players?.length) return;
     const toFetch = players.slice(0, 15).filter(p => p.id && !(p.id in gamelogs));
     if (!toFetch.length) return;
-    const EURO = ['acb','lnb','bbl','legaa','nbl'];
+    const EURO = ['acb','lnb','bbl','legaa','nbl','gbl'];
     const endpoint = fixture.league === 'euroleague'
       ? (id) => `/api/euroleague/playergamelog/${id}`
       : EURO.includes(fixture.league)
@@ -2076,7 +2079,7 @@ function PropsSection({ fixture, homePlayers, awayPlayers, rosterLoading, isComp
       } catch {}
       // Pas de cache local → on appelle l'API qui sert le snapshot backend
     }
-    const EURO_BBALL_LEAGUES = ['acb', 'lnb', 'bbl', 'legaa', 'nbl'];
+    const EURO_BBALL_LEAGUES = ['acb', 'lnb', 'bbl', 'legaa', 'nbl', 'gbl'];
     const league = fixture.league === 'euroleague' ? 'euroleague'
       : fixture.league === 'wnba' ? 'wnba'
       : EURO_BBALL_LEAGUES.includes(fixture.league) ? fixture.league
@@ -2258,7 +2261,7 @@ function PropsSection({ fixture, homePlayers, awayPlayers, rosterLoading, isComp
   useEffect(() => {
     if (!isCompleted) return;
     setBsLoading(true);
-    const EURO_L2 = ['acb','lnb','bbl','legaa','nbl'];
+    const EURO_L2 = ['acb','lnb','bbl','legaa','nbl','gbl'];
     const bsBase = EURO_L2.includes(fixture.league) ? `/api/euro/${fixture.league}/boxscore` : fixture.league === 'euroleague' ? '/api/euroleague/boxscore' : fixture.league === 'wnba' ? '/api/wnba/boxscore' : '/api/nba/boxscore';
     const isEuroLeagueBS = EURO_L2.includes(fixture.league) || fixture.league === 'euroleague';
     const bsH = isEuroLeagueBS ? fixture.home.name : fixture.home.short;
@@ -2772,7 +2775,7 @@ function OddsCard({ odds, home, away, league, homePlayers, awayPlayers, onRefres
     setPropsLoading(true);
     const _propsFetchStart = force ? Date.now() : null;
     const propsKey = `eu_props_${fixture?.id}`;
-    const isEU = ['acb','lnb','bbl','legaa','euroleague','nbl'].includes(league);
+    const isEU = ['acb','lnb','bbl','legaa','euroleague','nbl','gbl'].includes(league);
     const isMatchDone = fixture?.status === 'STATUS_FINAL';
 
     // EU + terminé + pas de refresh forcé → servir depuis localStorage si dispo
@@ -3026,7 +3029,7 @@ function OddsCard({ odds, home, away, league, homePlayers, awayPlayers, onRefres
           return hScore >= aScore ? 'home' : 'away';
         };
 
-        const isEuroLeagueProps = ['acb','lnb','bbl','legaa','euroleague','nbl'].includes(league);
+        const isEuroLeagueProps = ['acb','lnb','bbl','legaa','euroleague','nbl','gbl'].includes(league);
         const entries = Object.values(mergedMap)
           .filter(([name]) => {
             if (!playerProps?.found) return true;
@@ -3322,8 +3325,8 @@ export default function BasketballDetailPage() {
   const [searchParams] = useSearchParams();
   const fromAlert = searchParams.get('props') === '1';
   const isWNBA    = searchParams.get('league') === 'wnba';
-  const euroLeague = searchParams.get('league'); // 'acb' | 'lnb' | 'bbl' | 'legaa' | 'nbl' | null
-  const isEuro    = ['acb','lnb','bbl','legaa','nbl'].includes(euroLeague);
+  const euroLeague = searchParams.get('league'); // 'acb' | 'lnb' | 'bbl' | 'legaa' | 'nbl' | 'gbl' | null
+  const isEuro    = ['acb','lnb','bbl','legaa','nbl','gbl'].includes(euroLeague);
   const propsSectionRef = useRef(null);
   const rankSlotRef = useRef(null);
   const dropRef = useRef(null);
@@ -3347,6 +3350,7 @@ export default function BasketballDetailPage() {
   const [gameSchedules, setGameSchedules]     = useState(null);
   const [gameTotalEstimate, setGameTotalEstimate] = useState(null);
   const [resultEstimate, setResultEstimate] = useState(null);
+  const [teamSnapshot, setTeamSnapshot] = useState(null); // cotes+probas figées serveur (9 septembre 2026), voir effet dédié plus bas
   const [showOddsDropdown, setShowOddsDropdown] = useState(fromAlert);
   const [oddsTab, setOddsTab] = useState(fromAlert ? 'joueurs' : 'all'); // onglet actif de la boîte Odds — pilote l'affichage des cartes en dessous
   const [oddsLegendOpen, setOddsLegendOpen] = useState(false); // légende "?" de la boîte Odds ouverte — force aussi celle d'Analyse Props sur l'onglet Joueurs
@@ -3538,6 +3542,12 @@ export default function BasketballDetailPage() {
     elapsed >= LIVE_WINDOW_MS
   );
   const isEuroleague = fixture?.league === 'euroleague';
+  // Remontée ici le 10 septembre 2026 — déclarée plus bas (juste avant le `return`) mais utilisée
+  // dès la ligne ~3865 (effectiveResultEstimate/effectiveGameTotalEstimate, ajoutées le 9 septembre
+  // pour le snapshot basket) : `const` n'est pas hissée avant son initialisation en JS (temporal
+  // dead zone) — plantait tout le composant ("Cannot access 'isLive' before initialization") dès
+  // l'ouverture d'une fiche match basket, WNBA comme n'importe quelle autre ligue.
+  const isLive = !!fixture && (fixture.isLive || fixture.status === 'STATUS_IN_PROGRESS');
 
   // ACB/LNB/BBL uniquement : un joueur retiré au moment d'Enregistrer doit être qualifié
   // OUT (redistribution complète) ou BENCH (toujours sur le terrain, pas de redistribution)
@@ -3839,13 +3849,49 @@ export default function BasketballDetailPage() {
     }).then(r => r.json()).then(d => setResultEstimate(d?.error ? null : d)).catch(() => setResultEstimate(null));
   }, [gameSchedules, bballOdds, outerInjuryData]);
 
+  // Snapshot serveur cotes+probas figées — Résultat & Total équipe (9 septembre 2026, demande
+  // explicite : "le même système qu'au basket" généralisé à toutes les ligues des deux sports).
+  // Remplace le gel purement côté navigateur ci-dessous (bball_odds_${fixture.id} en localStorage,
+  // qui ne renvoyait rien si ce match n'avait jamais été ouvert avant le direct) — écrit à chaque
+  // cycle par generateBackgroundAlerts() tant que le match est à venir, donc valable peu importe
+  // l'appareil/navigateur. Générique à NBA/WNBA/ACB/BBL/LegaA et toute ligue ajoutée plus tard.
+  useEffect(() => {
+    setTeamSnapshot(null);
+    if (!fixture) return;
+    fetch(`/api/basketball/team-snapshot/${fixture.id}?league=${fixture.league}`)
+      .then(r => r.json())
+      .then(d => setTeamSnapshot(d))
+      .catch(() => {});
+  }, [fixture?.id, fixture?.league]);
+
+  // Une fois le match live/terminé, priorité au snapshot figé (dernier cycle avant le direct) sur le
+  // recalcul live (qui utiliserait des rosters/formes à jour, plus le même chiffre que l'alerte
+  // d'origine) — remplace le `null` forcé ici avant ce fix, qui faisait disparaître purement et
+  // simplement le widget "Modèle 1X2"/Total une fois le match terminé (9 septembre 2026).
+  const effectiveResultEstimate = (isLive || isCompleted) && teamSnapshot?.result ? teamSnapshot.result : resultEstimate;
+  const effectiveGameTotalEstimate = (isLive || isCompleted) && teamSnapshot?.total ? teamSnapshot.total : gameTotalEstimate;
+
   // Reset + fetch cotes quand le match change
   useEffect(() => {
     if (!fixture) return;
     setBballOdds(null);
     const oddsKey = `bball_odds_${fixture.id}`;
-    // Live ou terminé → cotes gelées depuis localStorage (pas de fetch live)
+    // Live ou terminé → cotes gelées : snapshot serveur en priorité, localStorage en repli (ancien
+    // mécanisme, gardé pour ne rien casser sur un match déjà en cache avant ce fix).
     if (isLive || isCompleted) {
+      const snapH2h = teamSnapshot?.result?.odds;
+      const snapTotals = teamSnapshot?.total?.odds;
+      if (snapH2h || snapTotals) {
+        setBballOdds({
+          found: true,
+          markets: {
+            ...(snapH2h ? { h2h: { bookmakers: snapH2h } } : {}),
+            ...(snapTotals ? { totals: { bookmakers: snapTotals } } : {}),
+          },
+          eventId: fixture.id, frozen: true,
+        });
+        return;
+      }
       try {
         const saved = JSON.parse(localStorage.getItem(oddsKey) || 'null');
         if (saved?.found) { setBballOdds(saved); return; }
@@ -3872,7 +3918,7 @@ export default function BasketballDetailPage() {
         } catch {}
         setBballOdds({ found: false });
       });
-  }, [fixture?.id]);
+  }, [fixture?.id, teamSnapshot]);
 
   function refreshOdds() {
     if (!fixture || oddsRefreshing || isLive) return;
@@ -3991,7 +4037,6 @@ export default function BasketballDetailPage() {
     ? { ...fixture.away, ppg: euroTeamStats.away.ppg, oppg: euroTeamStats.away.oppg, wins: euroTeamStats.away.wins ?? fixture.away.wins, losses: euroTeamStats.away.losses ?? fixture.away.losses, form: dynamicAwayForm || fixture.away.form, rpg: teamStat(awayPlayers, 'reb'), apg: teamStat(awayPlayers, 'ast') }
     : { ...fixture.away, form: dynamicAwayForm || fixture.away.form };
   const h2h = isWNBA ? wnbaH2H : isEuro ? euroH2H : (nbaH2H.length > 0 ? nbaH2H : (fixture.h2h || []));
-  const isLive = fixture.isLive || fixture.status === 'STATUS_IN_PROGRESS';
 
   return (
     <div className="page detail-page">
@@ -4179,7 +4224,7 @@ export default function BasketballDetailPage() {
 
       {showOddsDropdown && (bballOdds?.found || (isEuroleague && bballOdds !== null)) && (
         <section className="detail-card compact-card" style={{ marginBottom: '0.5rem' }}>
-          <OddsCard key={fixture?.id} odds={bballOdds} home={home} away={away} league={fixture.league} homePlayers={homePlayers} awayPlayers={(awayPlayers||[]).filter(p=>!new Set((homePlayers||[]).map(p=>String(p.id))).has(String(p.id)))} onRefresh={refreshOdds} refreshing={oddsRefreshing} defaultTab={fromAlert ? 'joueurs' : 'all'} gameTotalEstimate={!isCompleted ? gameTotalEstimate : null} resultEstimate={!isCompleted ? resultEstimate : null} fixture={fixture} onTabChange={(id) => { setOddsTab(id); if (id === 'joueurs') { setShowProps(true); setPropsCollapsed(false); } else { setPropsCollapsed(true); } }} onTeamChange={setOddsTeam} showHomeOverride={oddsTeam} eventId={bballOdds?.eventId ?? null} onLegendToggle={setOddsLegendOpen} />
+          <OddsCard key={fixture?.id} odds={bballOdds} home={home} away={away} league={fixture.league} homePlayers={homePlayers} awayPlayers={(awayPlayers||[]).filter(p=>!new Set((homePlayers||[]).map(p=>String(p.id))).has(String(p.id)))} onRefresh={refreshOdds} refreshing={oddsRefreshing} defaultTab={fromAlert ? 'joueurs' : 'all'} gameTotalEstimate={effectiveGameTotalEstimate} resultEstimate={effectiveResultEstimate} fixture={fixture} onTabChange={(id) => { setOddsTab(id); if (id === 'joueurs') { setShowProps(true); setPropsCollapsed(false); } else { setPropsCollapsed(true); } }} onTeamChange={setOddsTeam} showHomeOverride={oddsTeam} eventId={bballOdds?.eventId ?? null} onLegendToggle={setOddsLegendOpen} />
         </section>
       )}
 

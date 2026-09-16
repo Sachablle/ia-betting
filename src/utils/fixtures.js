@@ -8,6 +8,14 @@ export const LEAGUES = [
   { id: 'eredivisie', name: 'Eredivisie',      country: 'Netherlands', accent: '#ff6600', flag: '🇳🇱', standingsUrl: 'https://www.eredivisie.nl/stand' },
   { id: 'cdm',        name: 'Coupe du Monde', country: 'International', accent: '#FFD700', flag: '🌍', standingsUrl: 'https://www.fifa.com/en/tournaments/mens/worldcup/canadamexicousa2026' },
   { id: 'bresil',     name: 'Brasileirão',    country: 'Brazil',        accent: '#009c3b', flag: '🇧🇷', standingsUrl: 'https://ge.globo.com/futebol/brasileirao-serie-a/' },
+  // Grèce (8 septembre 2026) — pas de fixtures statiques (source live dès le départ, cf.
+  // useGreceFixtures), entrée gardée ici uniquement pour le flag/nom/couleur (getLeagueById,
+  // utilisé par MatchDetailPage.jsx pour l'en-tête de la fiche match), même rôle que CDM/Brésil.
+  { id: 'grece',      name: 'Super League',   country: 'Greece',        accent: '#0D5EAF', flag: '🇬🇷', standingsUrl: 'https://superleaguegreece.net' },
+  // Arabie Saoudite (8 septembre 2026) — même rôle que Grèce ci-dessus, aucune fixture statique.
+  { id: 'arabie',     name: 'Pro League',     country: 'Saudi Arabia',  accent: '#006C35', flag: '🇸🇦', standingsUrl: 'https://www.spl.com.sa' },
+  // Portugal (9 septembre 2026) — même rôle que Grèce/Arabie ci-dessus, aucune fixture statique.
+  { id: 'portugal',   name: 'Liga Betclic',   country: 'Portugal',      accent: '#006600', flag: '🇵🇹', standingsUrl: 'https://www.ligaportugal.pt/pt/liga/classificacao' },
 ];
 
 function team(name, short, logoId, position, points, played, wins, draws, losses, gf, ga, xG, xGA, spg, sot, poss, form, upcoming) {

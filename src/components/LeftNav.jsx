@@ -239,7 +239,48 @@ export default function LeftNav({ alertCounts = { total: 0, basket: 0, foot: 0, 
         </div>
       ))}
       {/* Utilisation — bas de nav */}
-      <div style={{ marginTop: 'auto', paddingTop: '0.75rem', paddingBottom: '0.3cm', marginRight: '-0.9rem', borderBottom: '1px solid rgba(255,255,255,0.07)', display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 2 }}>
+      <div style={{ marginTop: 'auto', paddingTop: '0.75rem', paddingBottom: '0.3cm', marginRight: '-0.9rem', borderBottom: '1px solid rgba(255,255,255,0.07)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+      <NavLink
+          to="/utilisation"
+          title="Utilisation"
+          style={({ isActive }) => ({
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            width: 26, height: 26, borderRadius: 8,
+            color: isActive ? 'var(--green)' : 'rgba(255,255,255,0.3)',
+            background: isActive ? 'var(--green-bg)' : 'transparent',
+            transition: 'color 0.15s, background 0.15s',
+          })}
+        >
+          <svg width="13" height="13" viewBox="0 0 15 15" fill="none">
+            <circle cx="7.5" cy="7.5" r="6.5" stroke="currentColor" strokeWidth="1.2"/>
+            <line x1="7.5" y1="6" x2="7.5" y2="11" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
+            <circle cx="7.5" cy="4" r="0.8" fill="currentColor"/>
+          </svg>
+        </NavLink>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 2 }}>
+        {/* Règles du moteur (9 septembre 2026, demande explicite) — même principe que le lien
+            Calibration Near-Miss juste après : artifact externe, pas une route interne, lien fixe
+            tant que l'artifact est republié sur le même file_path. */}
+        <a
+          href="https://claude.ai/code/artifact/774719be-da83-4a72-b59b-8382c76d9f5c"
+          target="_blank"
+          rel="noopener noreferrer"
+          title="Règles du moteur"
+          style={{
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            width: 34, height: 34, borderRadius: 8,
+            color: 'rgba(255,255,255,0.3)',
+            background: 'transparent',
+            transition: 'color 0.15s, background 0.15s',
+          }}
+          onMouseEnter={e => { e.currentTarget.style.color = 'var(--green)'; e.currentTarget.style.background = 'var(--green-bg)'; }}
+          onMouseLeave={e => { e.currentTarget.style.color = 'rgba(255,255,255,0.3)'; e.currentTarget.style.background = 'transparent'; }}
+        >
+          <svg width="16" height="16" viewBox="0 0 20 20" fill="none">
+            <path d="M10 12.5A2.5 2.5 0 1 0 10 7.5a2.5 2.5 0 0 0 0 5Z" stroke="currentColor" strokeWidth="1.5"/>
+            <path d="M10 2.5v1.8M10 15.7v1.8M17.5 10h-1.8M4.3 10H2.5M15.1 4.9l-1.27 1.27M6.16 13.84l-1.27 1.27M15.1 15.1l-1.27-1.27M6.16 6.16 4.9 4.9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+          </svg>
+        </a>
         {/* Calibration Near-Miss (3 septembre 2026, demande explicite) — page d'analyse publiée en
             artifact (pas une route interne à l'app), donc lien externe nouvel onglet plutôt qu'un
             NavLink. URL fixe : republier l'artifact avec le même file_path garde ce lien valide. */}
@@ -263,23 +304,7 @@ export default function LeftNav({ alertCounts = { total: 0, basket: 0, foot: 0, 
             <circle cx="18" cy="4" r="1.8" fill="currentColor"/>
           </svg>
         </a>
-        <NavLink
-          to="/utilisation"
-          title="Utilisation"
-          style={({ isActive }) => ({
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            width: 34, height: 34, borderRadius: 8,
-            color: isActive ? 'var(--green)' : 'rgba(255,255,255,0.3)',
-            background: isActive ? 'var(--green-bg)' : 'transparent',
-            transition: 'color 0.15s, background 0.15s',
-          })}
-        >
-          <svg width="17" height="17" viewBox="0 0 15 15" fill="none">
-            <circle cx="7.5" cy="7.5" r="6.5" stroke="currentColor" strokeWidth="1.2"/>
-            <line x1="7.5" y1="6" x2="7.5" y2="11" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
-            <circle cx="7.5" cy="4" r="0.8" fill="currentColor"/>
-          </svg>
-        </NavLink>
+      </div>
       </div>
     </aside>
   );
