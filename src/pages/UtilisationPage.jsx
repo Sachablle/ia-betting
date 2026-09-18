@@ -136,15 +136,15 @@ export default function UtilisationPage() {
                 <span className="util-badge util-badge--key">Clé requise</span>
                 <span className="util-card-name">api-sports.io Basketball v1 — Ligues EU</span>
               </div>
-              <p className="util-card-desc">Source principale pour ACB, LNB, BBL et Lega A — rosters, gamelogs et boxscores inclus depuis la migration du 22 juin 2026 (Bzzoiro coupé pour ces 4 ligues, jugé peu fiable). ACB garde en plus le scraping direct acb.com (gamelogs plus riches : steals/blocks/turnovers). Quota : 7 500 req/jour.</p>
+              <p className="util-card-desc">Source principale pour ACB, LNB, BBL, Lega A et <strong>EuroLeague</strong> (migrée le 1er septembre 2026, dernière à quitter Bzzoiro) — rosters, gamelogs et boxscores. ACB garde en plus le scraping direct acb.com (gamelogs plus riches : steals/blocks/turnovers). Quota : 7 500 req/jour.</p>
               <table className="util-table">
                 <thead><tr><th>Donnée</th><th>Ligues</th><th>Cache</th></tr></thead>
                 <tbody>
-                  <tr><td>Scoreboard live (matchs + scores)</td><td>ACB, LNB, BBL, Lega A</td><td>30s (live) / 5min</td></tr>
+                  <tr><td>Scoreboard live (matchs + scores)</td><td>ACB, LNB, BBL, Lega A, EuroLeague</td><td>30s (live) / 5min</td></tr>
                   <tr><td>Classements standings (ppg / oppg)</td><td>Toutes ligues EU</td><td>6h</td></tr>
                   <tr><td>H2H (saison en cours + précédente)</td><td>Toutes ligues EU</td><td>6h</td></tr>
-                  <tr><td>Rosters + gamelogs joueurs</td><td>LNB, BBL, Lega A (+ compléments ACB)</td><td>6h</td></tr>
-                  <tr><td>Boxscores (matchs terminés)</td><td>ACB, LNB, BBL, Lega A</td><td>5min</td></tr>
+                  <tr><td>Rosters + gamelogs joueurs</td><td>LNB, BBL, Lega A, EuroLeague (+ compléments ACB)</td><td>6h</td></tr>
+                  <tr><td>Boxscores (matchs terminés)</td><td>ACB, LNB, BBL, Lega A, EuroLeague</td><td>5min</td></tr>
                   <tr><td>Compos probables (titularisations récentes, pas de lineups pré-match natif)</td><td>ACB, LNB, BBL</td><td>15min</td></tr>
                   <tr><td>Team schedule (ptsScored / ptsAllowed)</td><td>Toutes ligues EU</td><td>6h</td></tr>
                 </tbody>
@@ -153,18 +153,10 @@ export default function UtilisationPage() {
 
             <div className="util-card">
               <div className="util-card-header">
-                <span className="util-badge util-badge--key">Clé requise</span>
-                <span className="util-card-name">Bzzoiro API — EuroLeague uniquement</span>
+                <span className="util-badge util-badge--free">Retirée du projet</span>
+                <span className="util-card-name">Bzzoiro API — supprimée le 1er septembre 2026</span>
               </div>
-              <p className="util-card-desc">Source des rosters, gamelogs et boxscores pour l'EuroLeague. Depuis le 22 juin 2026, plus utilisée pour ACB/LNB/BBL/Lega A (migrées vers api-sports.io).</p>
-              <table className="util-table">
-                <thead><tr><th>Donnée</th><th>Ligues</th><th>Cache</th></tr></thead>
-                <tbody>
-                  <tr><td>Rosters + stats saison EWA L15 (pts/reb/ast)</td><td>EuroLeague</td><td>6h</td></tr>
-                  <tr><td>Gamelogs joueurs</td><td>EuroLeague</td><td>6h</td></tr>
-                  <tr><td>Boxscores (matchs en cours ou terminés)</td><td>EuroLeague</td><td>5min</td></tr>
-                </tbody>
-              </table>
+              <p className="util-card-desc">Utilisée uniquement pour l'EuroLeague jusqu'au 1er septembre 2026 (ACB/LNB/BBL/Lega A avaient déjà migré vers api-sports.io le 22 juin). L'EuroLeague a ensuite migré à son tour vers api-sports.io (id 120) — rosters, gamelogs, boxscores. Bzzoiro n'est plus appelée nulle part dans le backend.</p>
             </div>
 
             <div className="util-card">
@@ -306,7 +298,7 @@ export default function UtilisationPage() {
               <span className="util-refresh-icon">🕕</span>
               <div>
                 <div className="util-refresh-label">Rosters, gamelogs, schedules</div>
-                <div className="util-refresh-desc">Cache 6h — ESPN (NBA/WNBA), Bzzoiro (EL uniquement), api-sports.io (ACB/LNB/BBL/Lega A), acb.com scraping (ACB principal)</div>
+                <div className="util-refresh-desc">Cache 6h — ESPN (NBA/WNBA), api-sports.io (ACB/LNB/BBL/Lega A/EuroLeague), acb.com scraping (ACB principal). Bzzoiro entièrement retiré du projet depuis le 1er septembre 2026.</div>
               </div>
             </div>
           )}
@@ -331,7 +323,7 @@ export default function UtilisationPage() {
         <div className="util-subsection">
           <h3 className="util-subsection-title">Pause manuelle API-Football / API-Basketball + réveil automatique (30 août 2026)</h3>
           <p className="util-intro">
-            Sur le Dashboard, la case <strong>API-Football</strong> (blessures/xG, 5 grands championnats + coupes d'Europe) et la case <strong>API-Basketball</strong> (rosters/gamelogs/défense par poste, ACB/LNB/BBL/Lega A uniquement — NBA/WNBA passent par ESPN, EuroLeague par Bzzoiro, jamais concernées) ont chacune un bouton ⏸/▶ pour couper temporairement la récupération de données neuves quand le quota journalier est sous tension.
+            Sur le Dashboard, la case <strong>API-Football</strong> (blessures/xG, 5 grands championnats + coupes d'Europe) et la case <strong>API-Basketball</strong> (rosters/gamelogs/défense par poste, ACB/LNB/BBL/Lega A/EuroLeague — NBA/WNBA passent par ESPN, jamais concernées) ont chacune un bouton ⏸/▶ pour couper temporairement la récupération de données neuves quand le quota journalier est sous tension.
           </p>
           <table className="util-table">
             <tbody>
@@ -390,6 +382,12 @@ export default function UtilisationPage() {
         <p className="util-intro">
           <strong>Grèce (Basket League, ajoutée le 9 septembre 2026)</strong> : calendrier/classement/effectifs/gamelogs disponibles dès maintenant (même source api-sports.io que LNB/BBL/Lega A), widgets Modèle 1X2/O-U/Props fonctionnels. <strong>Sans cote bookmaker pour l'instant</strong> — aucune couverture Betclic/Unibet confirmée à ce jour, donc pas d'alerte réelle (props ou équipe) sur ce championnat tant qu'un marché n'existe pas côté bookmaker. Se réactivera automatiquement dès qu'une cote apparaît.
         </p>
+        <p className="util-intro">
+          <strong>LNB et EuroLeague ajoutées au moteur de props le 16 septembre 2026</strong> — jusque-là exclues (LNB : gamelogs jugés peu fiables via Bzzoiro ; EuroLeague : jamais couverte du tout). Motif périmé depuis les migrations vers api-sports.io (LNB le 22 juin, EuroLeague le 1er septembre) : vérifié en direct avant activation, 20 matchs complets pour un joueur LNB testé et 18 pour un joueur EuroLeague, même qualité que ACB/BBL/Lega A.
+        </p>
+        <p className="util-intro">
+          <strong>ACB/BBL/Lega A/LNB/EuroLeague passées en observation seule le 16 septembre 2026</strong> (demande explicite) — le modèle et le near-miss continuent de tourner normalement sur les 5 ligues (seuil générique 80% inchangé), mais <strong>aucune alerte réelle n'est plus émise</strong> tant qu'un volume suffisant de cas résolus n'aura pas confirmé la fiabilité de ce seuil, ligue par ligue. Même logique que <code>isNewLeague</code> côté foot. La légende de la boîte de cotes (icône <strong>?</strong> sur l'onglet Props) l'indique désormais explicitement sur ces 5 ligues.
+        </p>
 
         <div className="util-subsection">
           <h3 className="util-subsection-title">Modèle Props — calibration par ligue</h3>
@@ -442,7 +440,7 @@ export default function UtilisationPage() {
             <thead><tr><th>Ligue</th><th>Betclic gRPC</th><th>Unibet</th></tr></thead>
             <tbody>
               <tr><td>LNB (Betclic Élite)</td><td>✅ Props individuels</td><td>❌ Non disponible</td></tr>
-              <tr><td>ACB / BBL / Lega A</td><td>❌ Totaux équipe uniquement</td><td>❌</td></tr>
+              <tr><td>ACB / BBL / Lega A / EuroLeague</td><td>❌ Totaux équipe uniquement</td><td>❌</td></tr>
             </tbody>
           </table>
           <p className="util-intro" style={{ marginTop: '0.5rem', fontSize: 11 }}>ℹ️ Si un bookmaker commence à offrir des props individuels pour une ligue EU, ils apparaîtront automatiquement — le matching est générique.</p>
@@ -482,7 +480,7 @@ export default function UtilisationPage() {
             <thead><tr><th>Colonne</th><th>Contenu</th><th>Couleur</th></tr></thead>
             <tbody>
               <tr><td><strong>Stats projetées</strong></td><td>Pts / Rebs / Ast — modèle complet. Sous chaque valeur : badge ▲/▼ + % de confiance (probabilité Over ou Under vs ligne bookmaker)</td><td>Blanc</td></tr>
-              <tr><td><strong>Stats réalisées</strong></td><td>Stats du match joué — box score ESPN (NBA/WNBA), api-sports.io (LNB/BBL/Lega A), acb.com (ACB) ou Bzzoiro (EuroLeague)</td><td>Vert</td></tr>
+              <tr><td><strong>Stats réalisées</strong></td><td>Stats du match joué — box score ESPN (NBA/WNBA), api-sports.io (LNB/BBL/Lega A/EuroLeague) ou acb.com (ACB)</td><td>Vert</td></tr>
             </tbody>
           </table>
           <p className="util-intro" style={{ marginTop: '0.5rem' }}>
@@ -1021,7 +1019,7 @@ export default function UtilisationPage() {
         <div className="util-subsection">
           <h3 className="util-subsection-title">Buts par équipe (production, 14 septembre 2026)</h3>
           <p className="util-intro">
-            4e alerte foot, indépendante de BTTS/Total/Résultat — "Plus de X buts marqués par UNE équipe" (0,5 / 1,5 / 2,5), domicile et extérieur séparément. Seuils calibrés sur 641 cas résolus, différents des deux côtés (l'avantage du terrain décale la distribution de buts à domicile vers le haut) : 0,5 but domicile 65%/extérieur 68% (cote min 1,30) ; 1,5 but domicile 72%/extérieur 65% (1,50) ; 2,5 buts domicile 72%/extérieur 78% (1,60). Les lignes 1,5/2,5 restent structurellement rares côté "Plus de" (l'équipe dépasse peu souvent ce niveau de confiance) — assumé, pas un bug.
+            4e alerte foot, indépendante de BTTS/Total/Résultat — "Plus de X buts marqués par UNE équipe" (0,5 / 1,5 / 2,5), domicile et extérieur séparément. Seuils calibrés sur 641 cas résolus, différents des deux côtés (l'avantage du terrain décale la distribution de buts à domicile vers le haut) : 0,5 but domicile 65%/extérieur 68% (cote min 1,40, relevée de 1,30 le 18 septembre 2026, demande explicite, tous championnats) ; 1,5 but domicile 72%/extérieur 65% (1,50) ; 2,5 buts domicile 72%/extérieur 78% (1,60). Les lignes 1,5/2,5 restent structurellement rares côté "Plus de" (l'équipe dépasse peu souvent ce niveau de confiance) — assumé, pas un bug.
           </p>
           <p className="util-intro" style={{ marginTop: '0.4rem' }}>
             <strong>Priorité stricte sur BTTS</strong> : la ligne 0,5-Over (domicile ET extérieur, qui recomposent ensemble exactement "les 2 équipes marquent") ne s'alerte jamais tant que BTTS qualifie déjà sur ce match — même raisonnement que le fix DC vs BTTS/Total du 8 septembre ("un but à domicile" est une question mécaniquement plus facile que BTTS, une comparaison de probabilité brute ferait perdre BTTS presque à chaque fois). Détail complet : artifact <strong>Règles du moteur</strong>, section "Buts par équipe".
@@ -1083,6 +1081,27 @@ export default function UtilisationPage() {
           </p>
           <p className="util-intro" style={{ marginTop: '0.3rem' }}>
             <strong>Même jour, 2e vague — Brésil, coupes d'Europe, Grèce, Arabie Saoudite, Portugal</strong> : BTTS Brésil 48%→51%, Conference League 58%→63%, Portugal ajoutée à 48% (était générique 70%). Total "Plus de 1,5" étendu à Brésil (72%), Europa League (76%), Grèce (73%). Total "Plus de 2,5" étendu à Brésil (62%), Conference League (68%), Ligue des Champions (64%), Arabie Saoudite (64%), Portugal (65%). <strong>Point important</strong> : Grèce et Portugal ont désormais de vrais seuils calibrés, mais restent sous le garde-fou <code>isNewLeague</code> ("championnat trop récent") qui coupe l'émission de toute alerte réelle indépendamment du seuil — calibrer ne suffit pas à faire repartir des alertes tant que ce flag n'est pas retiré à la main (voir section "Garde-fous — matchs &amp; ligues" ci-dessus).
+          </p>
+          <p className="util-intro" style={{ marginTop: '0.3rem' }}>
+            <strong>17 septembre 2026 — activation/désactivation par championnat, fin d'<code>isNewLeague</code> comme verrou unique pour BTTS/Total</strong> : jusqu'ici Grèce/Arabie Saoudite/Portugal étaient actives ou coupées en bloc pour tous les marchés à la fois. Demande explicite : leur donner des marchés actifs sur certaines lignes/sens et désactivés sur d'autres, comme n'importe quel autre championnat — <code>isNewLeague</code> ne pouvait plus servir de verrou unique. Chaque marché a désormais sa propre liste de championnats "en observation" (<code>BTTS_DISABLED_LEAGUES</code>/<code>TOTAL15_DISABLED_LEAGUES</code>/<code>TOTAL25_OVER_DISABLED_LEAGUES</code>/<code>TOTAL25_UNDER_DISABLED_LEAGUES</code> dans <code>server.js</code>) — <code>isNewLeague</code> reste posé sur les fixtures Grèce/Arabie/Portugal mais n'est plus lu que par Résultat 1X2 et Buts par équipe (pas encore reconfigurés à la même granularité).
+          </p>
+          <p className="util-intro" style={{ marginTop: '0.3rem' }}>
+            <strong>BTTS</strong> — Arabie Saoudite activée à 63%, Portugal relevé 48%→58% (activé). Ligue 1 et Premier League passent en observation (seuils inchangés, 62%/58%). Europa League/Conference League/Ligue des Champions/Grèce en observation. La Liga/Bundesliga/Serie A/Brésil inchangés, actifs. <strong>Cote minimum unifiée à 1,50 partout</strong> (était 1,40 à 1,60 selon la ligue).
+          </p>
+          <p className="util-intro" style={{ marginTop: '0.3rem' }}>
+            <strong>Total "Plus de 1,5"</strong> — La Liga relevée 75%→78%, Portugal ajouté à 70% (activé). Europa League/Conference League passent en observation. Ligue des Champions/Grèce/Arabie Saoudite restent actives. <strong>Cote minimum relevée à 1,35 partout</strong> (était 1,30). <strong>Nouvelle règle absolue : plus aucune alerte "Moins de 1,5" n'est émise</strong>, quel que soit le championnat — le modèle et le near-miss continuent de suivre les deux sens, seule l'alerte Under est coupée.
+          </p>
+          <p className="util-intro" style={{ marginTop: '0.3rem' }}>
+            <strong>Total "Plus de/Moins de 2,5" — scindé en 2 seuils indépendants Over/Under</strong> (nouveauté structurelle, jusqu'ici un seul seuil s'appliquait au sens que le modèle favorisait). <strong>Over</strong> : Premier League (66%) et La Liga (66%) activées, Serie A relevée 54%→68%, Portugal abaissé 65%→63%. Ligue 1 passe en observation (63%, inchangé). Europa/Conference/Ligue des Champions/Grèce en observation. Bundesliga/Brésil/Arabie Saoudite inchangés, actifs. Cote mini inchangée (1,50). <strong>Under</strong> (nouvelle table) : La Liga (60%), Europa League (73%), Ligue des Champions (63%) et Grèce (67%) activées — les 4 seules ligues avec un seuil Under réel, toutes les autres en observation. Nouvelle cote minimum dédiée : <strong>1,60</strong>.
+          </p>
+          <p className="util-intro" style={{ marginTop: '0.3rem' }}>
+            <strong>Piège corrigé avant déploiement</strong> : l'arbitrage "famille buts" (qui décide si BTTS ou Total sort sur un même match) a été mis à jour pour ne plus jamais laisser un marché désactivé "gagner" et bloquer l'autre, actif, sur la même ligue. <strong>Pas encore fait</strong> (annoncé par l'utilisateur, à suivre) : Résultat 1X2, Buts par équipe et Tirs/Tirs cadrés n'ont pas reçu cette configuration par championnat aujourd'hui.
+          </p>
+          <p className="util-intro" style={{ marginTop: '0.3rem' }}>
+            <strong>Même jour, suite — règle "aucun marché ne tourne sur un seuil générique actif"</strong> : en construisant la légende ★/! demandée pour l'artifact "Seuils par marché", décision de fond de l'utilisateur — plus 3 états mais 2 seulement (⭐ calibré et actif / ! tout le reste, y compris un championnat calibré mais désactivé). Conséquence : Ligue des Champions et Arabie Saoudite tournaient encore actives sur Total "Plus de 1,5" avec un seuil <strong>générique</strong> (75%, jamais calibré pour elles précisément) — basculées en observation le même jour, seuls cas trouvés sur toute la matrice (12 championnats × 4 marchés).
+          </p>
+          <p className="util-intro" style={{ marginTop: '0.3rem' }}>
+            <strong>Même jour, suite — badge ★/! directement sur la fiche match</strong> : demande explicite ("ça me permet de savoir ce qui est configuré et actif ou non"). Chaque onglet de la boîte de cotes (Résultat/Buts/Buts par équipe/BTTS/Tirs/Tirs cadrés) porte désormais un badge en coin (même code visuel que les artifacts moteur) reflétant l'état RÉEL pour le championnat du match affiché — ★ si calibré et actif pour ce championnat précis, ! sinon (seuil générique, marché désactivé, ou observation pure comme Tirs/Tirs cadrés). Un coup d'œil suffit désormais pour savoir si un marché alerte vraiment sur ce match, sans avoir à ouvrir un artifact.
           </p>
         </div>
 
@@ -1251,8 +1270,14 @@ export default function UtilisationPage() {
               <tr><td><strong>Super League</strong></td><td>Grèce</td><td>Bleu clair (8 septembre 2026)</td></tr>
               <tr><td><strong>Pro League</strong></td><td>Arabie Saoudite</td><td>Vert (8 septembre 2026)</td></tr>
               <tr><td><strong>Liga Betclic</strong></td><td>Portugal</td><td>Vert foncé (9 septembre 2026)</td></tr>
+              <tr><td><strong>Eredivisie</strong></td><td>Pays-Bas</td><td>Orange (17 septembre 2026)</td></tr>
+              <tr><td><strong>Pro League</strong></td><td>Belgique</td><td>Jaune (17 septembre 2026)</td></tr>
+              <tr><td><strong>Super League</strong></td><td>Suisse</td><td>Rouge (17 septembre 2026)</td></tr>
+              <tr><td><strong>Eliteserien</strong></td><td>Norvège</td><td>Rouge bordeaux (17 septembre 2026)</td></tr>
+              <tr><td><strong>Süper Lig</strong></td><td>Turquie</td><td>Rouge vif (17 septembre 2026)</td></tr>
             </tbody>
           </table>
+          <p className="util-note">Pays-Bas/Belgique/Suisse/Norvège/Turquie ajoutées le 17 septembre 2026 sur le même patron 100% api-football que Grèce/Arabie/Portugal — modèle et near-miss actifs, mais <code>isNewLeague</code> coupe toute alerte réelle en attendant assez de recul (voir "Garde-fous — matchs &amp; ligues" plus haut).</p>
         </div>
 
         <div className="util-subsection">
@@ -1395,7 +1420,7 @@ export default function UtilisationPage() {
           <div className="util-lex-grid">
             {[
               ['/Projetbetting', 'Reprend le contexte du projet ValueBet en début de session — lit CLAUDE.md, trouve les fichiers récemment modifiés, résume la dernière session et demande sur quoi travailler.'],
-              ['/lanceapp', 'Démarre le backend (port 3001) et le frontend (port 5173) en arrière-plan, puis affiche le lien de l\'app et confirme que le backend répond.'],
+              ['/lanceapp', 'Lance d\'abord les 87 tests du moteur de calcul (16 septembre 2026), puis démarre le backend (port 3001) et le frontend (port 5173) en arrière-plan, et affiche le lien de l\'app + confirme que le backend répond.'],
               ['/MAJ', 'Review rapide de l\'app sur les prochaines 24h — compare les fixtures statiques avec le scoreboard ESPN live, vérifie les dates/équipes, contrôle la disponibilité des cotes Pinnacle, et liste les anomalies détectées.'],
               ['/audit', 'Audit complet de la section Basketball — scoreboards, cotes, props, données live, anomalies. Nécessite l\'app lancée (/lanceapp d\'abord).'],
               ['/controlscrapper', 'Audit complet du système de scraping — scrapers cotes + props + données live, vérifie les sources et détecte les pannes. Nécessite l\'app lancée.'],
@@ -1415,6 +1440,7 @@ export default function UtilisationPage() {
               ['/simplify', 'Analyse le code modifié pour détecter les duplications, inefficacités et mauvaises pratiques, puis corrige automatiquement les problèmes trouvés.'],
               ['/security-review', 'Audit de sécurité complet des changements en cours sur la branche — vérifie les injections, XSS, exposition de clés API, et autres vulnérabilités OWASP.'],
               ['/review', 'Revue d\'une pull request GitHub.'],
+              ['! npm run test', '87 tests automatiques (16 septembre 2026) sur le moteur de calcul — Poisson/Dixon-Coles foot (computeFootball.js) et probabilités props basket (compute.js). Répond en ~2 secondes ; si un calcul a été cassé par un changement, le test correspondant devient rouge et dit précisément lequel. Le "!" au début exécute la commande directement, sans passer par un agent. Lancé automatiquement à chaque git push par la CI (voir GitHub Actions).'],
             ].map(([cmd, def]) => (
               <div key={cmd} className="util-lex-row">
                 <span className="util-lex-term" style={{ fontFamily: 'monospace', color: 'var(--accent)', fontSize: 11 }}>{cmd}</span>

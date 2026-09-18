@@ -1,0 +1,45 @@
+name: CI
+
+# Vérification automatique avant que le code n'atteigne réellement Render/Vercel (16 septembre
+# 2026, demande explicite utilisateur — le projet n'avait jusqu'ici aucun filet entre `git push`
+# et la production réelle). Ne bloque pas le déploiement lui-même (Render/Vercel restent
+# indépendants, branchés directement sur GitHub) : sert à être prévenu si un push casse quelque
+# chose, avant de devoir le découvrir en production.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test-and-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Installer les dépendances (frontend)
+        run: npm ci
+
+      - name: Installer les dépendances (backend)
+        # Skip le téléchargement des navigateurs Playwright — inutile ici, on ne fait que
+        # vérifier la syntaxe du backend, pas lancer de vrai scraping.
+        run: npm ci
+        working-directory: backend
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+
+      - name: Lancer les tests (moteur de probabilité foot + basket)
+        run: npm test
+
+      - name: Vérifier que le frontend build sans erreur
+        run: npm run build
+
+      - name: Vérifier la syntaxe du backend
+        run: node --check server.js
+        working-directory: backend

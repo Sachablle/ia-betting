@@ -45,11 +45,26 @@ const writePendingUserData = list => { try { localStorage.setItem(PENDING_USERDA
 // jour, onglet normal resté bloqué sur d'anciennes données malgré un rechargement complet).
 const PENDING_BLOCK_MS = 30_000;
 
+// fetch() brut n'a pas de timeout par défaut : si une requête reste bloquée côté réseau (ne serait-ce
+// qu'une fois), sa promesse ne se résout jamais et occupe une des 6 connexions HTTP par origine du
+// navigateur pour toujours — plus aucune autre page de l'app ne peut alors charger de données tant que
+// l'onglet n'est pas rechargé entièrement (18 septembre 2026, cas réel : Dashboard bloqué sur
+// "—"/"Chargement..." partout). `/api/userdata` est le fetch le plus sollicité de l'app (montage,
+// toutes les 2min, focus, SSE) et le seul document complet (~450 Ko, ~4,5s de transfert mesuré à cause
+// d'un débit bridé côté cluster MongoDB — voir CLAUDE.md) — timeout généreux pour ne jamais couper une
+// requête qui allait de toute façon aboutir.
+const USERDATA_FETCH_TIMEOUT_MS = 15_000;
+function fetchUserDataWithTimeout(url, opts) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), USERDATA_FETCH_TIMEOUT_MS);
+  return fetch(url, { ...opts, signal: controller.signal }).finally(() => clearTimeout(timeoutId));
+}
+
 async function postUserDataReliably(key, parsed) {
   for (const delay of [0, 1500, 4000]) {
     if (delay) await new Promise(r => setTimeout(r, delay));
     try {
-      const res = await fetch('/api/userdata', {
+      const res = await fetchUserDataWithTimeout('/api/userdata', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ key, value: parsed }),
@@ -72,7 +87,7 @@ export async function flushPendingUserData() {
     let fresh = value;
     try { const raw = localStorage.getItem(key); if (raw != null) fresh = JSON.parse(raw); } catch {}
     try {
-      const res = await fetch('/api/userdata', {
+      const res = await fetchUserDataWithTimeout('/api/userdata', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ key, value: fresh }),
@@ -95,12 +110,26 @@ const _initialSyncPromise = new Promise(resolve => { _resolveInitialSync = resol
 let _initialSyncSettled = false;
 export function waitForInitialCloudSync() { return _initialSyncPromise; }
 
+// Déduplication anti-doublon (18 septembre 2026) — cette fonction est déclenchée depuis plusieurs
+// sources indépendantes qui peuvent se chevaucher (montage de App.jsx, focus de fenêtre, message SSE)
+// sans aucun garde-fou avant ce fix : confirmé en direct (Playwright), jusqu'à 3 appels à
+// `/api/userdata` en 5s au premier chargement du Dashboard — le fetch le plus lent de l'app (~4,5s,
+// débit bridé côté cluster MongoDB, cf. CLAUDE.md), payé 3 fois pour la même donnée. Un appel déjà en
+// vol est réutilisé tel quel, même patron que la déduplication déjà en place dans `cachedFetch`
+// (fetchCache.js).
+let _loadFromCloudInFlight = null;
+export function loadFromCloud() {
+  if (_loadFromCloudInFlight) return _loadFromCloudInFlight;
+  _loadFromCloudInFlight = _loadFromCloudImpl().finally(() => { _loadFromCloudInFlight = null; });
+  return _loadFromCloudInFlight;
+}
+
 // Charge toutes les données depuis MongoDB dans localStorage au démarrage.
-export async function loadFromCloud() {
+async function _loadFromCloudImpl() {
   try {
     await flushPendingUserData();
     try {
-      const res = await fetch('/api/userdata');
+      const res = await fetchUserDataWithTimeout('/api/userdata');
       if (!res.ok) return;
       const data = await res.json();
       const now = Date.now();

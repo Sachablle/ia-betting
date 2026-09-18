@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
 import { BBALL_FIXTURES } from '../utils/basketball';
-import { syncBackgroundAlerts, syncSettlements, syncGameTotalAlerts, syncTeamTotalAlerts, syncBballPinnacleAlerts, syncBasketballResultAlerts, syncOddsDrift, syncFootballAlerts, resolveCompletedFootballAlerts, postAcceptedAlertReliably, persistAlertsKey, FB_DC_BTTS_KEY, FB_DC_OU_KEY, syncTelegramActions, TEAM_TOTAL_KEY } from '../utils/syncAlerts';
+import { syncBackgroundAlerts, syncSettlements, syncGameTotalAlerts, syncTeamTotalAlerts, syncBballPinnacleAlerts, syncBasketballResultAlerts, syncOddsDrift, syncFootballAlerts, resolveCompletedFootballAlerts, postAcceptedAlertReliably, persistAlertsKey, FB_DC_BTTS_KEY, FB_DC_OU_KEY, syncTelegramActions, TEAM_TOTAL_KEY, syncHistoryOnce } from '../utils/syncAlerts';
 import { setItem as cloudSet, waitForInitialCloudSync } from '../utils/cloudStorage';
 import { cachedFetch, invalidateCache } from '../utils/fetchCache';
 import { StakeCalculatorWidget, NearMissPanelWidget, buildPendingItems } from '../components/PendingAlertWidgets';
@@ -24,8 +24,8 @@ const EU_CUP_LEAGUES = ['europa', 'conference', 'champions'];
 // Grèce/Arabie/Portugal ajoutées le 9 septembre 2026 — absentes de ce Set depuis leur ajout initial
 // (8 septembre pour les 2 premières), oubli trouvé en ajoutant le Portugal : sans ça, un match de
 // ces 3 championnats aurait la bordure orange "basket" et le mauvais fallback logo dans Running.
-const FB_LEAGUES = new Set(['cdm', 'ligue1', 'pl', 'laliga', 'bundes', 'seriea', 'bresil', 'grece', 'arabie', 'portugal', ...EU_CUP_LEAGUES]);
-const FB_LEAGUE_LABEL = { cdm: 'CDM', ligue1: 'L1', pl: 'PL', laliga: 'Liga', bundes: 'BL', seriea: 'SA', bresil: 'BRA', europa: 'UEL', conference: 'UECL', champions: 'LDC', grece: 'GRE', arabie: 'KSA', portugal: 'POR' };
+const FB_LEAGUES = new Set(['cdm', 'ligue1', 'pl', 'laliga', 'bundes', 'seriea', 'bresil', 'grece', 'arabie', 'portugal', 'paysbas', 'belgique', 'suisse', 'norvege', 'turquie', ...EU_CUP_LEAGUES]);
+const FB_LEAGUE_LABEL = { cdm: 'CDM', ligue1: 'L1', pl: 'PL', laliga: 'Liga', bundes: 'BL', seriea: 'SA', bresil: 'BRA', europa: 'UEL', conference: 'UECL', champions: 'LDC', grece: 'GRE', arabie: 'KSA', portugal: 'POR', paysbas: 'NED', belgique: 'BEL', suisse: 'SUI', norvege: 'NOR', turquie: 'TUR' };
 
 const IN_GAME = s => s === 'STATUS_IN_PROGRESS' || s === 'STATUS_END_PERIOD' || s === 'STATUS_HALFTIME' || s === 'STATUS_END_OF_PERIOD';
 
@@ -486,6 +486,96 @@ function useLiveScores(matchGroups) {
             }
             continue;
           }
+          // 🇳🇱 Pays-Bas Eredivisie (17 septembre 2026) — même patron que Grèce/Arabie/Portugal ci-dessus.
+          if (league === 'paysbas') {
+            const d = await fetch('/api/football/paysbas').then(r => r.ok ? r.json() : null).catch(() => null);
+            const games = d?.matches || [];
+            for (const m of matches) {
+              const gid = String(m.eventId || '').replace('nl_', '');
+              const g = games.find(g => String(g.id) === gid);
+              if (g) result[m.matchKey] = {
+                homeScore: g.home?.score ?? null,
+                awayScore: g.away?.score ?? null,
+                homeLogo: g.home?.logoId || null,
+                awayLogo: g.away?.logoId || null,
+                status: g.status,
+                statusDetail: g.elapsed != null ? `${g.elapsed}'` : (g.round || ''),
+              };
+            }
+            continue;
+          }
+          // 🇧🇪 Belgique Pro League (17 septembre 2026) — même patron que Grèce/Arabie/Portugal ci-dessus.
+          if (league === 'belgique') {
+            const d = await fetch('/api/football/belgique').then(r => r.ok ? r.json() : null).catch(() => null);
+            const games = d?.matches || [];
+            for (const m of matches) {
+              const gid = String(m.eventId || '').replace('be_', '');
+              const g = games.find(g => String(g.id) === gid);
+              if (g) result[m.matchKey] = {
+                homeScore: g.home?.score ?? null,
+                awayScore: g.away?.score ?? null,
+                homeLogo: g.home?.logoId || null,
+                awayLogo: g.away?.logoId || null,
+                status: g.status,
+                statusDetail: g.elapsed != null ? `${g.elapsed}'` : (g.round || ''),
+              };
+            }
+            continue;
+          }
+          // 🇨🇭 Suisse Super League (17 septembre 2026) — même patron que Grèce/Arabie/Portugal ci-dessus.
+          if (league === 'suisse') {
+            const d = await fetch('/api/football/suisse').then(r => r.ok ? r.json() : null).catch(() => null);
+            const games = d?.matches || [];
+            for (const m of matches) {
+              const gid = String(m.eventId || '').replace('ch_', '');
+              const g = games.find(g => String(g.id) === gid);
+              if (g) result[m.matchKey] = {
+                homeScore: g.home?.score ?? null,
+                awayScore: g.away?.score ?? null,
+                homeLogo: g.home?.logoId || null,
+                awayLogo: g.away?.logoId || null,
+                status: g.status,
+                statusDetail: g.elapsed != null ? `${g.elapsed}'` : (g.round || ''),
+              };
+            }
+            continue;
+          }
+          // 🇳🇴 Norvège Eliteserien (17 septembre 2026) — même patron que Grèce/Arabie/Portugal ci-dessus.
+          if (league === 'norvege') {
+            const d = await fetch('/api/football/norvege').then(r => r.ok ? r.json() : null).catch(() => null);
+            const games = d?.matches || [];
+            for (const m of matches) {
+              const gid = String(m.eventId || '').replace('no_', '');
+              const g = games.find(g => String(g.id) === gid);
+              if (g) result[m.matchKey] = {
+                homeScore: g.home?.score ?? null,
+                awayScore: g.away?.score ?? null,
+                homeLogo: g.home?.logoId || null,
+                awayLogo: g.away?.logoId || null,
+                status: g.status,
+                statusDetail: g.elapsed != null ? `${g.elapsed}'` : (g.round || ''),
+              };
+            }
+            continue;
+          }
+          // 🇹🇷 Turquie Süper Lig (17 septembre 2026) — même patron que Grèce/Arabie/Portugal ci-dessus.
+          if (league === 'turquie') {
+            const d = await fetch('/api/football/turquie').then(r => r.ok ? r.json() : null).catch(() => null);
+            const games = d?.matches || [];
+            for (const m of matches) {
+              const gid = String(m.eventId || '').replace('tr_', '');
+              const g = games.find(g => String(g.id) === gid);
+              if (g) result[m.matchKey] = {
+                homeScore: g.home?.score ?? null,
+                awayScore: g.away?.score ?? null,
+                homeLogo: g.home?.logoId || null,
+                awayLogo: g.away?.logoId || null,
+                status: g.status,
+                statusDetail: g.elapsed != null ? `${g.elapsed}'` : (g.round || ''),
+              };
+            }
+            continue;
+          }
           // Big Five (Ligue 1/PL/La Liga/Bundesliga/Serie A) : live scores + crests via
           // /api/fd/matches, migrées vers api-football depuis le 2 septembre 2026 — une vraie source
           // live existe désormais (`status`/scores en direct), contrairement au commentaire précédent
@@ -712,7 +802,12 @@ function AlertCard({ group, playerStats, onDismiss, onEditStake }) {
       onMouseLeave={e => e.currentTarget.style.background = 'rgba(255,255,255,0.03)'}
     >
       <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.4rem 0.75rem' }}>
-        <span style={{ fontSize: 12, fontWeight: 700, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{group.player}</span>
+        {/* Fix 18 septembre 2026 — `overflow:hidden` sans `minWidth` sur un flex-item change son minimum
+            automatique à 0 (spec CSS flexbox) : dès que les voisins flexShrink:0 (badge/cote/mise/%/×)
+            dépassaient la largeur de la carte, ce libellé s'écrasait entièrement à 0px — invisible ET
+            non cliquable, alors que tout le reste de la ligne déclenche goToMatch au clic. Repéré en
+            mesurant la vraie largeur rendue (0px confirmé), pas visible à l'œil sans le mesurer. */}
+        <span style={{ fontSize: 12, fontWeight: 700, flex: 1, minWidth: 40, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{group.player}</span>
         {s && s.stat === 'btts' ? (
           <span style={{ fontSize: 11, fontWeight: 700, color: '#4ade80', flexShrink: 0 }}>✓ BTTS</span>
         ) : s && s.stat === 'result' ? (
@@ -1005,7 +1100,22 @@ export default function RunningPage() {
       // été synchronisées (POST raté à l'acceptation) — sinon elles ne sont jamais settle.
       try {
         const existing = JSON.parse(localStorage.getItem(ALERT_KEY) || '[]');
-        existing.filter(a => a.status === 'accepted').forEach(a => postAcceptedAlertReliably(a));
+        syncHistoryOnce(existing.filter(a => a.status === 'accepted'), postAcceptedAlertReliably);
+      } catch {}
+      // Même filet côté foot — PlaceBetPage.jsx l'a depuis le 17 septembre 2026, RunningPage.jsx ne
+      // l'avait pas (gap documenté en mémoire project_runningpage_synchistoryonce_gap_sept17) : sans
+      // lui, un backlog d'alertes déjà won/lost jamais confirmées côté serveur pouvait rester silencieux
+      // pour toujours au lieu d'être rattrapé au 1er montage de cette page.
+      try {
+        [FB_BTTS_KEY, FB_TOTAL_KEY, FB_TEAM_GOALS_KEY, FB_RESULT_KEY, FB_PINNACLE_KEY, BBALL_PINNACLE_KEY, FB_DC_BTTS_KEY, FB_DC_OU_KEY].forEach(key => {
+          const fbExisting = JSON.parse(localStorage.getItem(key) || '[]');
+          syncHistoryOnce(fbExisting.filter(a => ['accepted', 'won', 'lost'].includes(a.status)), postAcceptedAlertReliably);
+          const settleItems = fbExisting.filter(a => ['won', 'lost'].includes(a.status)).map(a => ({ ...a, _syncKey: `settle:${a.id}` }));
+          syncHistoryOnce(settleItems, a =>
+            fetch('/api/settlements', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: a.id, status: a.status, settledAt: a.settledAt || Date.now() }) }).catch(() => {}),
+            '_syncKey'
+          );
+        });
       } catch {}
       syncSettlements().then(reloadFromStorage);
 

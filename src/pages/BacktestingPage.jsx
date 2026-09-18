@@ -607,7 +607,7 @@ function BankrollTracker() {
             <span style={{ fontSize: 30, fontWeight: 800, color: bkNotEnough ? '#3b82f6' : 'var(--text)', fontVariantNumeric: 'tabular-nums' }}>
               {bkNotEnough ? '—' : `${bk.toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}€`}
             </span>
-            <span style={{ fontSize: 13, color: 'var(--text-dim)' }}>{bkNotEnough ? '(trop peu de données)' : `/ objectif ${BANKROLL_TARGET.toLocaleString('fr-FR')}€`}</span>
+            {bkNotEnough && <span style={{ fontSize: 13, color: 'var(--text-dim)' }}>(trop peu de données)</span>}
           </div>
           {pendingEngaged.stakes.length > 0 && (
             <div title={pendingEngaged.stakes.map(s => `${s}€`).join(' + ')} style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 2 }}>

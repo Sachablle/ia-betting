@@ -16,6 +16,14 @@ export const LEAGUES = [
   { id: 'arabie',     name: 'Pro League',     country: 'Saudi Arabia',  accent: '#006C35', flag: '🇸🇦', standingsUrl: 'https://www.spl.com.sa' },
   // Portugal (9 septembre 2026) — même rôle que Grèce/Arabie ci-dessus, aucune fixture statique.
   { id: 'portugal',   name: 'Liga Betclic',   country: 'Portugal',      accent: '#006600', flag: '🇵🇹', standingsUrl: 'https://www.ligaportugal.pt/pt/liga/classificacao' },
+  // Pays-Bas/Belgique/Suisse/Norvège/Turquie (17 septembre 2026) — même rôle que Grèce/Arabie/
+  // Portugal ci-dessus, aucune fixture statique (source live dès le départ). Id 'paysbas' choisi
+  // délibérément (pas 'eredivisie', déjà pris par l'ancienne entrée à fixtures statiques ligne 8).
+  { id: 'paysbas',    name: 'Eredivisie',     country: 'Netherlands',   accent: '#ff6600', flag: '🇳🇱', standingsUrl: 'https://eredivisie.nl/stand' },
+  { id: 'belgique',   name: 'Pro League',     country: 'Belgium',       accent: '#f9c700', flag: '🇧🇪', standingsUrl: 'https://www.proleague.be/nl/stand' },
+  { id: 'suisse',     name: 'Super League',   country: 'Switzerland',   accent: '#ff0000', flag: '🇨🇭', standingsUrl: 'https://www.sfl.ch/super-league/rangliste' },
+  { id: 'norvege',    name: 'Eliteserien',    country: 'Norway',        accent: '#ba0c2f', flag: '🇳🇴', standingsUrl: 'https://www.eliteserien.no/tabell' },
+  { id: 'turquie',    name: 'Süper Lig',      country: 'Turkey',        accent: '#e30a17', flag: '🇹🇷', standingsUrl: 'https://www.tff.org/default.aspx?pageID=198' },
 ];
 
 function team(name, short, logoId, position, points, played, wins, draws, losses, gf, ga, xG, xGA, spg, sot, poss, form, upcoming) {

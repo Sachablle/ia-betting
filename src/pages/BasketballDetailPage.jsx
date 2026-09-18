@@ -411,6 +411,12 @@ const PROP_CONF_BANDS = {
   },
 };
 const EU_PROP_LEAGUES = new Set(['acb', 'lnb', 'bbl', 'legaa', 'euroleague', 'nbl', 'gbl']);
+// Observation seule (16 septembre 2026, demande explicite utilisateur) — pas assez de near-miss réel
+// sur aucune des 5 ligues pour faire confiance au seuil générique 80% (ACB/BBL/Lega A quasi inactives
+// cet été, LNB/EuroLeague tout juste activées). Le modèle continue de tourner (props affichées comme
+// avant), seule l'émission d'alerte backend est coupée (voir EU_PROPS_OBSERVATION_ONLY, server.js) —
+// ce Set sert uniquement à ajuster le texte de la légende ci-dessous, aucun effet sur le calcul.
+const EU_PROPS_OBSERVATION_LEAGUES = new Set(['acb', 'bbl', 'legaa', 'lnb', 'euroleague']);
 // Vert/cyan/ambre — mêmes couleurs que les badges .bc-edge-badge.high/.mid/.low (PlaceBetPage/index.css)
 function propConfColor(stat, league, pct) {
   const bands = (EU_PROP_LEAGUES.has(league) ? PROP_CONF_BANDS.eu : PROP_CONF_BANDS.nba_short)[stat];
@@ -483,6 +489,17 @@ function OddsLegendCard({ tab, isWNBA = false }) {
 }
 
 // Légende cliquable — explique le code couleur des % projetés et le seuil d'alerte par stat.
+// Badge ★/! par stat sur les onglets Pts/Reb/Ast/3pts — même convention que le foot
+// (tabCalibStatus, MatchDetailPage.jsx) : ★ = calibré individuellement ET alertes actives, ! =
+// tout le reste (jamais calibré par stat/ligue, ou calibré mais désactivé). 17 septembre 2026 :
+// pts/reb/ast WNBA recalibrés et actifs → ★ ; 3pts WNBA désactivé (observation) → ! ; NBA (seuil
+// générique jamais recalibré par stat) et les 5 ligues EU (observation, cf. EU_PROPS_OBSERVATION_LEAGUES)
+// restent ! partout.
+function propTabCalibStatus(statId, league) {
+  if (league === 'wnba') return statId === 'tpm' ? 'warn' : 'star';
+  return 'warn';
+}
+
 function PropLegendCard({ league }) {
   const bands = EU_PROP_LEAGUES.has(league) ? PROP_CONF_BANDS.eu : PROP_CONF_BANDS.nba_short;
   const STATS = [['pts', 'Pts'], ['reb', 'Rebs'], ['ast', 'Passes'], ['tpm', '3pts']];
@@ -497,16 +514,16 @@ function PropLegendCard({ league }) {
         {isWNBA ? (
           <>
             <span style={{ display: 'flex', alignItems: 'center', fontSize: 9.5, whiteSpace: 'nowrap' }}>
-              <Dot color="#4a9b6f" /><b style={{ color: '#4a9b6f' }}>≥ 65%</b>&nbsp;— seuil pts (spé. 62%)
+              <Dot color="#4a9b6f" /><b style={{ color: '#4a9b6f' }}>≥ 61%</b>&nbsp;— seuil pts (spé. 59%)
             </span>
             <span style={{ display: 'flex', alignItems: 'center', fontSize: 9.5, whiteSpace: 'nowrap' }}>
-              <Dot color="#4a9b6f" style={{ opacity: 0.9 }} /><b style={{ color: '#4a9b6f', opacity: 0.95 }}>≥ 77%</b>&nbsp;— seuil reb (spé. 72%)
+              <Dot color="#4a9b6f" style={{ opacity: 0.9 }} /><b style={{ color: '#4a9b6f', opacity: 0.95 }}>≥ 65%</b>&nbsp;— seuil reb (spé. 61%)
             </span>
             <span style={{ display: 'flex', alignItems: 'center', fontSize: 9.5, whiteSpace: 'nowrap' }}>
-              <Dot color="#4a9b6f" style={{ opacity: 0.8 }} /><b style={{ color: '#4a9b6f', opacity: 0.85 }}>≥ 80%</b>&nbsp;— seuil ast (spé. 72%)
+              <Dot color="#4a9b6f" style={{ opacity: 0.8 }} /><b style={{ color: '#4a9b6f', opacity: 0.85 }}>≥ 61%</b>&nbsp;— seuil ast (spé. 58%)
             </span>
-            <span style={{ display: 'flex', alignItems: 'center', fontSize: 9.5, whiteSpace: 'nowrap' }}>
-              <Dot color="#4a9b6f" style={{ opacity: 0.7 }} /><b style={{ color: '#4a9b6f', opacity: 0.75 }}>≥ 73%</b>&nbsp;— seuil 3pts (spé. 72%)
+            <span style={{ display: 'flex', alignItems: 'center', fontSize: 9.5, whiteSpace: 'nowrap', color: 'var(--text-dim)' }}>
+              <Dot color="#ef4444" /><b style={{ color: '#ef4444' }}>3pts</b>&nbsp;— observation seule, alertes coupées (17 septembre 2026)
             </span>
           </>
         ) : (
@@ -519,16 +536,22 @@ function PropLegendCard({ league }) {
             </span>
           </>
         )}
-        <span style={{ display: 'flex', alignItems: 'center', fontSize: 9.5, color: 'var(--text-dim)', whiteSpace: 'nowrap' }}><Dot color="#00d4ff" />{isWNBA ? '65–71%' : '70–79%'} moyen</span>
-        <span style={{ display: 'flex', alignItems: 'center', fontSize: 9.5, color: 'var(--text-dim)', whiteSpace: 'nowrap' }}><Dot color="#ffb400" />&lt;{isWNBA ? '65%' : '70%'} faible</span>
+        <span style={{ display: 'flex', alignItems: 'center', fontSize: 9.5, color: 'var(--text-dim)', whiteSpace: 'nowrap' }}><Dot color="#00d4ff" />{isWNBA ? '58–60%' : '70–79%'} moyen</span>
+        <span style={{ display: 'flex', alignItems: 'center', fontSize: 9.5, color: 'var(--text-dim)', whiteSpace: 'nowrap' }}><Dot color="#ffb400" />&lt;{isWNBA ? '58%' : '70%'} faible</span>
       </div>
       <div style={{ fontSize: 9, lineHeight: 1.5, color: 'var(--text-dim)', borderTop: '1px solid var(--border)', paddingTop: '0.4rem' }}>
-        🚨 Alerte props si <b style={{ color: '#4a9b6f' }}>seuil vert</b> atteint (+ cotes {isWNBA ? '' : 'Unibet/Betclic '}≥ 1,60, minutes ≥ 10/match).
-        <br />
-        {isWNBA
-          ? <>(Over assist bloqué si ligne ≥ 4,5 / Over 3pts requiert moy ≥ 1,2/match)</>
-          : <>(Over 3pts requiert moy ≥ 1,5/match)</>
-        }
+        {EU_PROPS_OBSERVATION_LEAGUES.has(league) ? (
+          <>🔬 Marché en observation — pas assez de near-miss accumulé sur cette ligue pour faire confiance au seuil générique 80% sans historique propre. <b>Aucune alerte réelle</b> n'est envoyée ; le modèle continue de tourner et de journaliser (near-miss) pour calibrer plus tard.</>
+        ) : (
+          <>
+            🚨 Alerte props si <b style={{ color: '#4a9b6f' }}>seuil vert</b> atteint (+ cotes {isWNBA ? '' : 'Unibet/Betclic '}≥ {isWNBA ? '1,45 (17 sept.)' : '1,60'}, minutes ≥ 10/match).
+            <br />
+            {isWNBA
+              ? <>(Over assist bloqué si ligne ≥ 4,5 — <b style={{ color: '#ef4444' }}>3pts désactivé</b>, observation seule depuis le 17 septembre 2026)</>
+              : <>(Over 3pts requiert moy ≥ 1,5/match)</>
+            }
+          </>
+        )}
       </div>
       <div style={{ fontSize: 9, lineHeight: 1.5, color: 'var(--text-dim)', borderTop: '1px solid var(--border)', paddingTop: '0.4rem', marginTop: '0.4rem' }}>
         <b style={{ color: 'var(--text)' }}>✔ n/N</b> — Historique réel de la joueuse sur cette stat sur les 90 derniers jours (Source : Near-miss de fond).
@@ -884,7 +907,11 @@ function getHomeAwaySplitFactor(gamelogs, isHome, isPlayoff = false) {
 }
 
 // Facteur blessure / retour — détecte gap dans les gamelogs ou statut injury ESPN
-function getInjuryReturnFactor(player, gamelogs, gameDate) {
+// Fix 18 septembre 2026 (même bug/même correctif que compute.js, cf. son commentaire détaillé —
+// cas réel Jonquel Jones/Napheesa Collier faussement "blessées" à cause d'une pause de calendrier
+// équipe entière, pas d'une absence personnelle) : `teamDaysSinceLast` (calculé par l'appelant
+// depuis `myGames`) permet de distinguer les deux cas.
+function getInjuryReturnFactor(player, gamelogs, gameDate, teamDaysSinceLast = null) {
   const g      = gamelogs || [];
   const injury = player.injury; // null | 'Day-To-Day' | 'Out' | 'Questionable'
 
@@ -903,7 +930,8 @@ function getInjuryReturnFactor(player, gamelogs, gameDate) {
   const typicalMin = typical5.length ? typical5.reduce((s, x) => s + (x.min || 0), 0) / typical5.length : recentMin;
   const minRatio = (recentMin && typicalMin && typicalMin > 10) ? recentMin / typicalMin : 1.0;
 
-  const missedRecent = daysSinceLast > 8; // au moins 2 matchs de playoffs manqués
+  const isTeamPause = teamDaysSinceLast != null && daysSinceLast <= teamDaysSinceLast + 4;
+  const missedRecent = daysSinceLast > 8 && !isTeamPause; // au moins 2 matchs de playoffs manqués
 
   if (missedRecent && injury) return { val: 0.78, desc: `Retour blessure (${Math.round(daysSinceLast)}j) · ${injury}`, isInjured: true, isOut: false };
   if (missedRecent)           return { val: 0.82, desc: `${Math.round(daysSinceLast)}j sans jouer`,                     isInjured: true, isOut: false };
@@ -998,7 +1026,12 @@ function computeEstimate(player, isHome, oppGames, myGames, gamelogs, oppAbbr, g
   const inPO = isPlayoffRound(round);
   const g    = gamelogs || [];
 
-  const injRet = getInjuryReturnFactor(player, g, gameDate);
+  let teamDaysSinceLast = null;
+  if (myGames?.length) {
+    const teamSorted = [...myGames].sort((a, b) => new Date(b.date) - new Date(a.date));
+    teamDaysSinceLast = (new Date(gameDate) - new Date(teamSorted[0].date)) / 86400000;
+  }
+  const injRet = getInjuryReturnFactor(player, g, gameDate, teamDaysSinceLast);
   if (injRet.isOut) return null;
 
   // Nombre de vrais matchs PO dans le gamelog (date >= début playoffs)
@@ -1504,7 +1537,7 @@ function BetLine({ label, estimated, line, onChange }) {
 
 const ALERT_KEY = 'nba_prop_alerts';
 
-function PropsSection({ fixture, homePlayers, awayPlayers, rosterLoading, isCompleted, projLineup, gameTotal, eventId, onClose, pinnacleH2H, showHomeOverride, onTeamChange, homeNames, awayNames, rankSlotRef, forceLegendOpen = false }) {
+function PropsSection({ fixture, homePlayers, awayPlayers, rosterLoading, isCompleted, projLineup, gameTotal, eventId, onClose, pinnacleH2H, showHomeOverride, onTeamChange, homeNames, awayNames, rankSlotRef, forceLegendOpen = false, injuryData = {} }) {
   const isWNBA = fixture?.league === 'wnba';
   const [showLegend, setShowLegend]      = useState(false);
   // Ouverte soit par son propre bouton "?", soit forcée par le "?" de la boîte cotes (onglet
@@ -1570,7 +1603,10 @@ function PropsSection({ fixture, homePlayers, awayPlayers, rosterLoading, isComp
   const [playerProps,   setPlayerProps]   = useState(null);
   const [probabilities, setProbabilities] = useState({});
   const [expandedId,  setExpandedId]  = useState(null);
-  const [injuryData,  setInjuryData]  = useState({});
+  // Copie locale du prop `injuryData`, augmentée du signal EU "compo confirmée" ci-dessous (pas
+  // fetché par un effet séparé ici — vient du parent, cf. commentaire plus bas).
+  const [mergedInjuryData, setMergedInjuryData] = useState(injuryData);
+  useEffect(() => { setMergedInjuryData(injuryData); }, [injuryData]);
   // Modèle backend réel (1er août 2026) — mêmes fonctions que le moteur d'alertes
   // (computeEstimate/computeEUEstimate + displayProb), via /api/basketball/player-projections,
   // pour les 5 ligues qui ont un vrai moteur d'alertes props (NBA/WNBA/ACB/BBL/Lega A). Euroleague
@@ -1649,8 +1685,8 @@ function PropsSection({ fixture, homePlayers, awayPlayers, rosterLoading, isComp
   }, [rankPlayer]);
   // Lookup insensible à l'ordre des mots (api-sports.io n'est pas cohérent Prénom/Nom selon l'endpoint)
   const getInjury = name => {
-    const key = Object.keys(injuryData).find(k => euNameEq(k, name));
-    return key ? injuryData[key] : undefined;
+    const key = Object.keys(mergedInjuryData).find(k => euNameEq(k, name));
+    return key ? mergedInjuryData[key] : undefined;
   };
 
   // Charge les probabilités gelées (après le match)
@@ -1775,25 +1811,10 @@ function PropsSection({ fixture, homePlayers, awayPlayers, rosterLoading, isComp
     });
   }, [fixture.id]);
 
-  // Fetch rapport de blessures (RotoWire injuries page + MAY NOT PLAY lineups).
-  // Rafraîchi toutes les 5 min tant que le match n'est pas terminé — sinon un statut Q qui
-  // se résout (ex: Caitlin Clark repassée disponible) reste figé dans Analyse Props tant que
-  // l'utilisateur ne quitte pas et ne revient pas sur la page (16 juil. 2026).
-  useEffect(() => {
-    if (isCompleted || fixture.league === 'euroleague' || EURO_LEAGUES_IDS.includes(fixture.league)) return;
-    const injBase = fixture.league === 'wnba' ? '/api/wnba' : '/api/nba';
-    const url = `${injBase}/injuries`;
-    // invalidateCache force un vrai fetch réseau à chaque tick — sinon le cache client (TTL 10 min,
-    // partagé entre tous les composants qui appellent cette URL) sert la même réponse périmée à
-    // chaque poll de 5 min, rendant l'auto-refresh inopérant (cas Caitlin Clark, 16 juil. 2026).
-    const fetchInjuries = (fresh = false) => {
-      if (fresh) invalidateCache(url);
-      return cachedFetch(url, 10 * 60_000).then(d => setInjuryData(d || {})).catch(() => {});
-    };
-    fetchInjuries();
-    const id = setInterval(() => fetchInjuries(true), 5 * 60_000);
-    return () => clearInterval(id);
-  }, [fixture.id, isCompleted]);
+  // Rapport de blessures (RotoWire) — reçu en prop depuis BasketballDetailPage (18 septembre 2026).
+  // Avant ce fix, ce composant faisait son propre fetch/poll 5min indépendant du même endpoint que
+  // le composant parent (`outerInjuryData`) — deux pollings identiques en parallèle dès que "Analyse
+  // Props" est ouvert, doublant le trafic sur /api/{nba|wnba}/injuries pour rien (même donnée).
 
   // Compo EU confirmée (ACB/LNB/BBL) : joueur déclaré OUT au moment du remplacement — merge
   // dans injuryData pour réutiliser la redistribution déjà existante (même mécanisme que
@@ -1813,7 +1834,7 @@ function PropsSection({ fixture, homePlayers, awayPlayers, rosterLoading, isComp
           if (o.status === 'out') out[o.name] = { status: 'Out' };
         }
       }
-      if (Object.keys(out).length) setInjuryData(prev => ({ ...prev, ...out }));
+      if (Object.keys(out).length) setMergedInjuryData(prev => ({ ...prev, ...out }));
     });
   }, [fixture.id]);
 
@@ -2066,7 +2087,7 @@ function PropsSection({ fixture, homePlayers, awayPlayers, rosterLoading, isComp
       }
       return merged;
     });
-  }, [gamelogs, seriesGamelogs, schedules, homePlayers, awayPlayers, pinnacleH2H, injuryData]);
+  }, [gamelogs, seriesGamelogs, schedules, homePlayers, awayPlayers, pinnacleH2H, mergedInjuryData]);
 
   // Fetch lignes bookmaker (Pinnacle pts/reb/ast) — fallback Kambi si pas d'eventId
   // Pour les matchs terminés : localStorage d'abord, sinon API (backend sert le snapshot pré-tipoff)
@@ -2237,7 +2258,7 @@ function PropsSection({ fixture, homePlayers, awayPlayers, rosterLoading, isComp
 
   // Détecte les transitions Q→OUT sur les alertes pending de ce fixture
   useEffect(() => {
-    if (!Object.keys(injuryData).length) return;
+    if (!Object.keys(mergedInjuryData).length) return;
     try {
       const stored = JSON.parse(localStorage.getItem(ALERT_KEY) || '[]');
       let changed = false;
@@ -2256,7 +2277,7 @@ function PropsSection({ fixture, homePlayers, awayPlayers, rosterLoading, isComp
         window.dispatchEvent(new Event('nba_alerts_updated'));
       }
     } catch {}
-  }, [injuryData]);
+  }, [mergedInjuryData]);
 
   useEffect(() => {
     if (!isCompleted) return;
@@ -3066,15 +3087,31 @@ function OddsCard({ odds, home, away, league, homePlayers, awayPlayers, onRefres
               <>
                 {/* Stat selector */}
                 <div style={{ display: 'flex', gap: '0.3rem', marginBottom: '0.5rem' }}>
-                  {STAT_TABS.map(t => (
-                    <button key={t.id} onClick={() => setPropStat(t.id)} style={{
-                      padding: '0.15rem 0.55rem', borderRadius: 4, border: '1px solid',
-                      fontSize: 10, fontWeight: 700, cursor: 'pointer',
-                      background: propStat === t.id ? 'rgba(251,146,60,0.25)' : 'transparent',
-                      color: '#ffffff',
-                      borderColor: propStat === t.id ? 'rgba(251,146,60,0.55)' : 'rgba(255,255,255,0.15)',
-                    }}>{t.label}</button>
-                  ))}
+                  {STAT_TABS.map(t => {
+                    const calibStatus = propTabCalibStatus(t.id, league);
+                    return (
+                      <button key={t.id} onClick={() => setPropStat(t.id)} style={{
+                        position: 'relative',
+                        padding: '0.15rem 0.55rem', borderRadius: 4, border: '1px solid',
+                        fontSize: 10, fontWeight: 700, cursor: 'pointer',
+                        background: propStat === t.id ? 'rgba(251,146,60,0.25)' : 'transparent',
+                        color: '#ffffff',
+                        borderColor: propStat === t.id ? 'rgba(251,146,60,0.55)' : 'rgba(255,255,255,0.15)',
+                      }}>
+                        {t.label}
+                        <span
+                          title={calibStatus === 'star' ? 'Calibré et actif' : 'À calibrer / branché'}
+                          style={{
+                            position: 'absolute', top: -6, right: -5, fontSize: 10, lineHeight: 1,
+                            fontWeight: 900, textShadow: '0 0 3px #0a0e16, 0 0 3px #0a0e16',
+                            color: calibStatus === 'star' ? '#facc15' : '#ef4444',
+                          }}
+                        >
+                          {calibStatus === 'star' ? '★' : '!'}
+                        </span>
+                      </button>
+                    );
+                  })}
                 </div>
                 {/* Headers */}
                 {(() => {
@@ -4256,6 +4293,7 @@ export default function BasketballDetailPage() {
             awayNames={awayNames}
             rankSlotRef={rankSlotRef}
             forceLegendOpen={oddsTab === 'joueurs' && oddsLegendOpen}
+            injuryData={outerInjuryData}
           />
         </div>
       )}

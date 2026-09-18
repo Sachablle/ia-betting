@@ -4,7 +4,7 @@ import GEO_DATA from 'world-atlas/countries-110m.json';
 import { LEAGUES, renderLeagueItem } from './EffectifPage';
 
 const GEO_URL = GEO_DATA;
-const FOOTBALL_IDS = new Set(['ligue1', 'pl', 'laliga', 'bundes', 'seriea', 'bresil', 'grece', 'arabie', 'portugal']);
+const FOOTBALL_IDS = new Set(['ligue1', 'pl', 'laliga', 'bundes', 'seriea', 'bresil', 'grece', 'arabie', 'portugal', 'paysbas', 'belgique', 'suisse', 'norvege', 'turquie']);
 
 // LNB/BBL/Lega A n'ont pas de liste d'équipes statique dans EffectifPage (seul l'ACB y était) —
 // on la récupère dynamiquement via /api/euro/:league/standings (même source que les alertes props
@@ -30,6 +30,13 @@ const COVERED = {
   '300': { name: 'Grèce',      flag: '🇬🇷' },
   '682': { name: 'Arabie Saoudite', flag: '🇸🇦' },
   '620': { name: 'Portugal',   flag: '🇵🇹' },
+  // Pays-Bas/Belgique/Suisse/Norvège/Turquie (17 septembre 2026) — mêmes noms que `country:` dans
+  // EffectifPage.jsx (LEAGUES), utilisés pour le filtre `l.country === selected.name` plus bas.
+  '528': { name: 'Pays-Bas',   flag: '🇳🇱' },
+  '056': { name: 'Belgique',   flag: '🇧🇪' },
+  '756': { name: 'Suisse',     flag: '🇨🇭' },
+  '578': { name: 'Norvège',    flag: '🇳🇴' },
+  '792': { name: 'Turquie',    flag: '🇹🇷' },
 };
 
 // Même ordre/mise en page que la légende de la Carte du Monde (Sports) : 2 lignes — États-Unis/Brésil,
@@ -40,6 +47,8 @@ const LEGEND_ROWS = [
   [['840', COVERED['840']], ['076', COVERED['076']]],
   [['250', COVERED['250']], ['724', COVERED['724']], ['826', COVERED['826']], ['276', COVERED['276']], ['380', COVERED['380']]],
   [['036', COVERED['036']], ['300', COVERED['300']], ['682', COVERED['682']], ['620', COVERED['620']]],
+  // Pays-Bas/Belgique/Suisse/Norvège/Turquie (17 septembre 2026) — 4e ligne.
+  [['528', COVERED['528']], ['056', COVERED['056']], ['756', COVERED['756']], ['578', COVERED['578']], ['792', COVERED['792']]],
 ];
 
 // EuroLeague (15 septembre 2026, signalé "on a pas les effectifs de l'Europe pour le basket") —

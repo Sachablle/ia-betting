@@ -17,6 +17,15 @@
   to   { transform: rotate(360deg); }
 }
 
+/* Fondu au changement de marché dans la boîte Odds (18 septembre 2026, demande explicite) — pur
+   fondu d'opacité (pas de scaleX comme l'ancien effet flip d'ouverture/fermeture, retiré le même
+   jour car jugé trop brusque). Rejoué à chaque clic d'onglet via `key={tab}` sur le conteneur. */
+@keyframes oddsTabFade {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+.odds-tab-fade { animation: oddsTabFade 0.22s ease; }
+
 :root {
   --bg:           #07090f;
   --bg-card:      rgba(13,17,23,0.75);

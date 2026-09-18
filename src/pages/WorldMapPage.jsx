@@ -29,6 +29,13 @@ const COVERED = {
   '682': { name: 'Arabie Saoudite', flag: '🇸🇦', leagues: ['arabie'] },
   // Portugal (9 septembre 2026) — 3e nouvelle ligue foot, même patron 100% api-football.
   '620': { name: 'Portugal',   flag: '🇵🇹', leagues: ['portugal'] },
+  // Pays-Bas/Belgique/Suisse/Norvège/Turquie (17 septembre 2026) — même patron 100% api-football,
+  // isNewLeague actif (observation seule, pas d'alerte réelle) le temps d'accumuler du near-miss.
+  '528': { name: 'Pays-Bas',   flag: '🇳🇱', leagues: ['paysbas'] },
+  '056': { name: 'Belgique',   flag: '🇧🇪', leagues: ['belgique'] },
+  '756': { name: 'Suisse',     flag: '🇨🇭', leagues: ['suisse'] },
+  '578': { name: 'Norvège',    flag: '🇳🇴', leagues: ['norvege'] },
+  '792': { name: 'Turquie',    flag: '🇹🇷', leagues: ['turquie'] },
 };
 
 const LEAGUE_META = {
@@ -38,11 +45,12 @@ const LEAGUE_META = {
   euroleague: 'EuroLeague', cdm: 'Coupe du Monde', bresil: 'Brasileirão',
   europa: 'Europa League', conference: 'Conference League', champions: 'Ligue des Champions',
   grece: 'Super League', arabie: 'Pro League', gbl: 'Basket League', portugal: 'Liga Betclic',
+  paysbas: 'Eredivisie', belgique: 'Pro League', suisse: 'Super League', norvege: 'Eliteserien', turquie: 'Süper Lig',
 };
 
 // Coupes européennes de clubs (23 juillet 2026) — source api-football, /api/football/eucup/:comp/matches
 const EU_CUP_LEAGUES = ['europa', 'conference', 'champions'];
-const FOOTBALL_LEAGUES = new Set(['ligue1','laliga','bundes','seriea','pl','cdm','bresil','grece','arabie','portugal', ...EU_CUP_LEAGUES]);
+const FOOTBALL_LEAGUES = new Set(['ligue1','laliga','bundes','seriea','pl','cdm','bresil','grece','arabie','portugal','paysbas','belgique','suisse','norvege','turquie', ...EU_CUP_LEAGUES]);
 const sportOf = l => FOOTBALL_LEAGUES.has(l) ? 'football' : 'basket';
 
 const _ESPN_WNBA = { 'Atlanta Dream':20,'Chicago Sky':19,'Connecticut Sun':18,'Dallas Wings':3,'Golden State Valkyries':129689,'Indiana Fever':5,'Las Vegas Aces':17,'Los Angeles Sparks':6,'Minnesota Lynx':8,'New York Liberty':9,'Phoenix Mercury':11,'Portland Fire':132052,'Seattle Storm':14,'Toronto Tempo':131935,'Washington Mystics':16 };
@@ -80,6 +88,16 @@ function _prefetchCountry(country) {
       cachedFetch('/api/football/arabie', 30_000).catch(()=>{});
     } else if (l === 'portugal') {
       cachedFetch('/api/football/portugal', 30_000).catch(()=>{});
+    } else if (l === 'paysbas') {
+      cachedFetch('/api/football/paysbas', 30_000).catch(()=>{});
+    } else if (l === 'belgique') {
+      cachedFetch('/api/football/belgique', 30_000).catch(()=>{});
+    } else if (l === 'suisse') {
+      cachedFetch('/api/football/suisse', 30_000).catch(()=>{});
+    } else if (l === 'norvege') {
+      cachedFetch('/api/football/norvege', 30_000).catch(()=>{});
+    } else if (l === 'turquie') {
+      cachedFetch('/api/football/turquie', 30_000).catch(()=>{});
     } else if (l === 'euroleague') {
       cachedFetch('/api/euroleague/scoreboard', 20_000).catch(()=>{});
     } else if (FOOTBALL_LEAGUES.has(l)) {
@@ -128,6 +146,8 @@ const LEGEND_ROWS = [
   [MONDE, COVERED['840'], COVERED['076']],
   [COVERED['250'], COVERED['724'], COVERED['826'], COVERED['276'], COVERED['380']],
   [COVERED['036'], COVERED['300'], COVERED['682'], COVERED['620']],
+  // Pays-Bas/Belgique/Suisse/Norvège/Turquie (17 septembre 2026) — 4e ligne.
+  [COVERED['528'], COVERED['056'], COVERED['756'], COVERED['578'], COVERED['792']],
 ];
 
 const STAT_CATS = [
@@ -149,7 +169,7 @@ const EURO_BASKET_STATS_LEAGUES = ['lnb', 'bbl', 'legaa', 'nbl', 'gbl'];
 // Foot (31 juillet 2026) — 5 grands championnats + Brasileirão seulement, pas les 3 coupes d'Europe
 // (LDC/Europa/Conference n'ont pas de classement unique — groupes puis élimination directe, décision
 // utilisateur explicite de ne pas leur donner cet overlay du tout).
-const FOOTBALL_STATS_LEAGUES = ['ligue1', 'pl', 'laliga', 'bundes', 'seriea', 'bresil', 'grece', 'arabie', 'portugal'];
+const FOOTBALL_STATS_LEAGUES = ['ligue1', 'pl', 'laliga', 'bundes', 'seriea', 'bresil', 'grece', 'arabie', 'portugal', 'paysbas', 'belgique', 'suisse', 'norvege', 'turquie'];
 
 function StatsOverlay({ league, onClose, standData, cats }) {
   const [standView, setStandView] = useState('ligue');
@@ -310,6 +330,15 @@ function Panel({ country, onClose, statsLeague, setStatsLeague }) {
   // true seulement pour le déclenchement du bouton manuel — évite de replaquer l'écran "CHARGEMENT..."
   // (prévu pour le tout 1er montage/changement de pays) sur un simple refresh de quelques matchs déjà affichés.
   const isManualRefreshRef = useRef(false);
+  // Fix 17 septembre 2026 — filet contre "aucun match" affiché à tort malgré de vrais matchs à venir.
+  // Avant ce fix, une seule ligue en échec réseau transitoire (timeout 5s de cachedFetch, cf.
+  // fetchCache.js) sur un cycle de 60s faisait retomber son panneau sur {soon:[],upcoming:[],done:[]}
+  // — cachedFetch garde pourtant les bonnes données en interne, mais le `.then()` qui les
+  // consommerait n'est jamais atteint puisque la promesse est rejetée. Persiste le dernier split
+  // réussi par ligue (indépendant du pays affiché — une clé de ligue est globalement unique) pour
+  // que le panneau reste sur la dernière vraie donnée connue plutôt que de se vider, jusqu'au
+  // prochain cycle réussi (60s).
+  const lastGoodMatchesRef = useRef({});
   const _hasFootball = country.leagues.some(l => sportOf(l) === 'football');
   const _hasBasket   = country.leagues.some(l => sportOf(l) === 'basket');
   // Par défaut : sport de la première ligue du pays (acb avant laliga → basket ; cdm avant euroleague
@@ -375,7 +404,7 @@ function Panel({ country, onClose, statsLeague, setStatsLeague }) {
       // entrées ici pour ne pas les compter deux fois (déjà couvertes par `dr.matches` ci-dessous) ni
       // les afficher à tort dans l'onglet "À venir" (le hardcode `status:'STATUS_SCHEDULED'`
       // précédent ignorait le vrai statut renvoyé par le backend).
-      if (FOOTBALL_LEAGUES.has(l) && l !== 'cdm' && l !== 'bresil' && l !== 'grece' && l !== 'arabie' && l !== 'portugal' && !EU_CUP_LEAGUES.includes(l)) return Promise.all([
+      if (FOOTBALL_LEAGUES.has(l) && l !== 'cdm' && l !== 'bresil' && l !== 'grece' && l !== 'arabie' && l !== 'portugal' && l !== 'paysbas' && l !== 'belgique' && l !== 'suisse' && l !== 'norvege' && l !== 'turquie' && !EU_CUP_LEAGUES.includes(l)) return Promise.all([
         cachedFetch('/api/fd/matches', 30_000),
         cachedFetch('/api/fd/results', 30_000),
       ]).then(([dm, dr])=>{
@@ -490,19 +519,79 @@ function Panel({ country, onClose, statsLeague, setStatsLeague }) {
         }));
         return{l,...splitGames(all)};
       });
+      // Pays-Bas/Belgique/Suisse/Norvège/Turquie (17 septembre 2026) — même patron que Grèce/Arabie/
+      // Portugal ci-dessus.
+      if (l === 'paysbas') return cachedFetch('/api/football/paysbas', 30_000).then(d => {
+        const STALE_KICKOFF_MS = 4 * 3600_000;
+        const all=(d.matches||[])
+          .filter(f => f.status === 'STATUS_FINAL' || (Date.now() - new Date(f.date).getTime()) < STALE_KICKOFF_MS)
+          .map(f=>({
+          id:`nl_${f.id}`,date:f.date,status:f.status||'STATUS_SCHEDULED',round:f.round,elapsed:f.elapsed ?? null,
+          home:{name:f.home?.name,short:f.home?.short,logo:f.home?.logoId,score:f.home?.score ?? null},
+          away:{name:f.away?.name,short:f.away?.short,logo:f.away?.logoId,score:f.away?.score ?? null},
+        }));
+        return{l,...splitGames(all)};
+      });
+      if (l === 'belgique') return cachedFetch('/api/football/belgique', 30_000).then(d => {
+        const STALE_KICKOFF_MS = 4 * 3600_000;
+        const all=(d.matches||[])
+          .filter(f => f.status === 'STATUS_FINAL' || (Date.now() - new Date(f.date).getTime()) < STALE_KICKOFF_MS)
+          .map(f=>({
+          id:`be_${f.id}`,date:f.date,status:f.status||'STATUS_SCHEDULED',round:f.round,elapsed:f.elapsed ?? null,
+          home:{name:f.home?.name,short:f.home?.short,logo:f.home?.logoId,score:f.home?.score ?? null},
+          away:{name:f.away?.name,short:f.away?.short,logo:f.away?.logoId,score:f.away?.score ?? null},
+        }));
+        return{l,...splitGames(all)};
+      });
+      if (l === 'suisse') return cachedFetch('/api/football/suisse', 30_000).then(d => {
+        const STALE_KICKOFF_MS = 4 * 3600_000;
+        const all=(d.matches||[])
+          .filter(f => f.status === 'STATUS_FINAL' || (Date.now() - new Date(f.date).getTime()) < STALE_KICKOFF_MS)
+          .map(f=>({
+          id:`ch_${f.id}`,date:f.date,status:f.status||'STATUS_SCHEDULED',round:f.round,elapsed:f.elapsed ?? null,
+          home:{name:f.home?.name,short:f.home?.short,logo:f.home?.logoId,score:f.home?.score ?? null},
+          away:{name:f.away?.name,short:f.away?.short,logo:f.away?.logoId,score:f.away?.score ?? null},
+        }));
+        return{l,...splitGames(all)};
+      });
+      if (l === 'norvege') return cachedFetch('/api/football/norvege', 30_000).then(d => {
+        const STALE_KICKOFF_MS = 4 * 3600_000;
+        const all=(d.matches||[])
+          .filter(f => f.status === 'STATUS_FINAL' || (Date.now() - new Date(f.date).getTime()) < STALE_KICKOFF_MS)
+          .map(f=>({
+          id:`no_${f.id}`,date:f.date,status:f.status||'STATUS_SCHEDULED',round:f.round,elapsed:f.elapsed ?? null,
+          home:{name:f.home?.name,short:f.home?.short,logo:f.home?.logoId,score:f.home?.score ?? null},
+          away:{name:f.away?.name,short:f.away?.short,logo:f.away?.logoId,score:f.away?.score ?? null},
+        }));
+        return{l,...splitGames(all)};
+      });
+      if (l === 'turquie') return cachedFetch('/api/football/turquie', 30_000).then(d => {
+        const STALE_KICKOFF_MS = 4 * 3600_000;
+        const all=(d.matches||[])
+          .filter(f => f.status === 'STATUS_FINAL' || (Date.now() - new Date(f.date).getTime()) < STALE_KICKOFF_MS)
+          .map(f=>({
+          id:`tr_${f.id}`,date:f.date,status:f.status||'STATUS_SCHEDULED',round:f.round,elapsed:f.elapsed ?? null,
+          home:{name:f.home?.name,short:f.home?.short,logo:f.home?.logoId,score:f.home?.score ?? null},
+          away:{name:f.away?.name,short:f.away?.short,logo:f.away?.logoId,score:f.away?.score ?? null},
+        }));
+        return{l,...splitGames(all)};
+      });
       return cachedFetch(`/api/euro/${l}/scoreboard`, 20_000).then(d=>{const s=splitGames(d.games||[]);return{l,...s};});
     };
-    const load = (first=false) => Promise.all(country.leagues.map(l => fetchLeague(l).catch(()=>({l,soon:[],upcoming:[],done:[]})))).then(res => {
+    const load = (first=false) => Promise.all(country.leagues.map(l => fetchLeague(l).catch(()=>lastGoodMatchesRef.current[l] ? {l,...lastGoodMatchesRef.current[l]} : {l,soon:[],upcoming:[],done:[]}))).then(res => {
       if (cancelled) return;
       const m={};
-      res.forEach(({l,soon=[],upcoming=[],done=[]})=>{m[l]={soon,upcoming,done};});
+      res.forEach(({l,soon=[],upcoming=[],done=[]})=>{m[l]={soon,upcoming,done};lastGoodMatchesRef.current[l]={soon,upcoming,done};});
       setMatches(m);
       if (first) {
         clearTimeout(loadTimer); setLoading(false);
-        // Pré-charge les données de tous les matchs visibles dès l'ouverture du panneau
-        Object.entries(m).forEach(([l, { soon=[], upcoming=[] }]) => {
-          [...soon, ...upcoming].forEach(g => _prefetchMatch(g, l));
-        });
+        // Le préchargement "tous les matchs visibles d'un coup" (jusqu'à ~30 requêtes de 800ms+ pour
+        // un pays avec beaucoup de matchs, ex. WNBA) a été retiré le 18 septembre 2026 — il saturait
+        // les 6 connexions HTTP par origine du navigateur dès l'ouverture d'un pays, retardant TOUT
+        // le reste de la page (y compris le classement/leaders de StatsOverlay, pourtant déjà rapides
+        // — 3-4ms en cache — mais coincés en file d'attente derrière cette rafale). Le préchargement
+        // au survol (onMouseEnter, cf. _prefetchMatch plus bas) suffit largement à garder un clic
+        // réactif sans bloquer le chargement initial du panneau.
       } else setLoading(false);
     });
     const wasManual = isManualRefreshRef.current;
@@ -530,6 +619,14 @@ function Panel({ country, onClose, statsLeague, setStatsLeague }) {
         else if (l === 'bresil') invalidateCache('/api/fd/bresil');
         else if (l === 'grece') invalidateCache('/api/football/grece');
         else if (l === 'arabie') invalidateCache('/api/football/arabie');
+        // 'portugal' ajouté ici le 17 septembre 2026 — bug pré-existant trouvé en passant (jamais
+        // dans cette liste depuis son ajout le 9 septembre), retombait à tort sur /api/fd/matches.
+        else if (l === 'portugal') invalidateCache('/api/football/portugal');
+        else if (l === 'paysbas') invalidateCache('/api/football/paysbas');
+        else if (l === 'belgique') invalidateCache('/api/football/belgique');
+        else if (l === 'suisse') invalidateCache('/api/football/suisse');
+        else if (l === 'norvege') invalidateCache('/api/football/norvege');
+        else if (l === 'turquie') invalidateCache('/api/football/turquie');
         else if (EU_CUP_LEAGUES.includes(l)) invalidateCache(`/api/football/eucup/${l}/matches`);
         else if (FOOTBALL_LEAGUES.has(l)) { invalidateCache('/api/fd/matches'); invalidateCache('/api/fd/results'); }
       });

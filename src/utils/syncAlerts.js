@@ -6,6 +6,28 @@
 
 import { setItem as cloudSet } from './cloudStorage.js';
 import { getRecommendedStake, loadBankrollState } from './bankroll.js';
+import { cachedFetch } from './fetchCache.js';
+
+// fetch() brut n'a pas de timeout par défaut : si une requête reste bloquée côté réseau (ne serait-ce
+// qu'une fois), sa promesse ne se résout jamais et occupe une des 6 connexions HTTP par origine du
+// navigateur pour toujours — plus aucune autre page de l'app ne peut alors charger de données tant que
+// l'onglet n'est pas rechargé entièrement (nouvelles connexions). Même correctif que celui déjà
+// appliqué à `cachedFetch` (fetchCache.js, 4 septembre 2026) pour la même raison. Fix du 18 septembre
+// 2026 (cas réel : Dashboard qui reste bloqué sur "—"/"Chargement..." partout jusqu'à un rechargement
+// manuel) — appliqué à TOUS les fetch bruts de ce fichier, pas seulement resolveCompletedFootballAlerts
+// (la plus fréquemment appelée : chaque arrivée sur Running/Alertes, jusqu'à ~9 sources foot).
+// 20s (pas 5-8s) : au 1er montage d'une page avec un gros backlog, une requête peut légitimement
+// rester en file d'attente derrière les 6 connexions déjà occupées du navigateur pendant plusieurs
+// secondes avant même de partir — un timeout trop court l'annule alors qu'elle n'a pas encore eu sa
+// chance (constaté en testant ce fix : plusieurs AbortError sur /api/nba/background-alerts à 8s,
+// simplement en attente de connexion, jamais réellement parties). Toujours fini par se résoudre
+// puisque le but est d'éviter un blocage INFINI, pas de forcer une vitesse donnée.
+const FETCH_TIMEOUT_MS = 20_000;
+function fetchWithTimeout(url, opts) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  return fetch(url, { ...opts, signal: controller.signal }).finally(() => clearTimeout(timeoutId));
+}
 
 // Écrit `alerts` dans la clé localStorage `key` en préservant toute entrée déjà en storage dont le
 // statut est décisif (accepted/rejected/won/lost/void) et absente du sous-ensemble écrit. Sans ça,
@@ -41,7 +63,7 @@ const FB_DC_OU_KEY   = 'fb_dc_ou_alerts';
 // Préfixes fixtureId réellement suivis en live côté backend (10 septembre 2026) — utilisé par la
 // purge orpheline BTTS ci-dessous. Doit rester synchro avec FOOTBALL_SETTLEMENT_SOURCES plus bas
 // dans ce fichier (même liste de préfixes, panorama complet des championnats foot en direct).
-const LIVE_FOOTBALL_FIXTURE_PREFIX = /^(fd_|fdcdm_|fdbr_|afel_|afcl_|afch_|grc_|arb_|por_)/;
+const LIVE_FOOTBALL_FIXTURE_PREFIX = /^(fd_|fdcdm_|fdbr_|afel_|afcl_|afch_|grc_|arb_|por_|nl_|be_|ch_|no_|tr_)/;
 const BBALL_PINNACLE_KEY = 'bball_pinnacle_alerts';
 const PURGE_PLAYERS = ['Justin Bean', 'Jack Kayil', 'Leandro Bolmaro'];
 
@@ -55,6 +77,51 @@ const PENDING_SYNC_KEY = 'pending_alert_sync';
 const readPendingSync  = () => { try { return JSON.parse(localStorage.getItem(PENDING_SYNC_KEY) || '[]'); } catch { return []; } };
 const writePendingSync = list => { try { localStorage.setItem(PENDING_SYNC_KEY, JSON.stringify(list)); } catch {} };
 
+// Fix perf 17 septembre 2026 — le "filet de rattrapage" au montage de PlaceBetPage/RunningPage
+// (plus bas dans ce fichier / dans les pages) renvoyait TOUTES les alertes accepted/won/lost
+// trouvées en localStorage à CHAQUE visite de la page, pas juste les nouvelles — avec des mois
+// d'historique accumulé (300+ items toutes clés confondues), ça déclenchait une rafale de 300+
+// requêtes /api/accepted-alerts+/api/settlements en parallèle à chaque ouverture, ralentissant le
+// premier rendu de la page (signalé par l'utilisateur : "ça met du temps à charger"). `syncHistoryOnce`
+// mémorise les ids déjà renvoyés une fois pour toutes (localStorage, survit aux rechargements) et ne
+// renvoie plus que la différence à chaque nouvelle visite — `postAcceptedAlertReliably` garde son
+// propre filet (pending_alert_sync) pour les échecs réseau réels, donc rien n'est perdu.
+const HISTORY_SYNC_KEY = 'history_sync_sent_ids';
+const readHistorySyncedIds = () => { try { return new Set(JSON.parse(localStorage.getItem(HISTORY_SYNC_KEY) || '[]')); } catch { return new Set(); } };
+const addHistorySyncedIds = ids => {
+  try {
+    const set = readHistorySyncedIds();
+    ids.forEach(id => set.add(id));
+    localStorage.setItem(HISTORY_SYNC_KEY, JSON.stringify([...set]));
+  } catch {}
+};
+// Concurrence volontairement limitée (18 septembre 2026) — un backlog jamais synchronisé avant ce
+// garde-fou (ex: RunningPage.jsx qui n'avait ce filet sur aucune clé foot avant ce jour) peut compter
+// des dizaines d'entrées d'un coup au premier passage. Un `toSend.forEach(a => sendFn(a))` les tirait
+// TOUTES en même temps, saturant les 6 connexions HTTP par origine du navigateur — plus aucune autre
+// requête de la page (y compris celles d'autres composants comme le Dashboard) ne pouvait passer
+// pendant que ce lot se vidait (cas réel reproduit : 62 requêtes /api/accepted-alerts + 29
+// /api/settlements d'un coup, page restée vide plusieurs secondes). `SYNC_HISTORY_CONCURRENCY` limite
+// le nombre d'envois simultanés — le rattrapage prend un peu plus de temps total mais laisse la place
+// au reste de l'app pendant qu'il se déroule.
+const SYNC_HISTORY_CONCURRENCY = 3;
+export function syncHistoryOnce(items, sendFn, idKey = 'id') {
+  const synced = readHistorySyncedIds();
+  const toSend = (items || []).filter(a => a?.[idKey] && !synced.has(a[idKey]));
+  if (!toSend.length) return;
+  addHistorySyncedIds(toSend.map(a => a[idKey]));
+  (async () => {
+    let i = 0;
+    async function worker() {
+      while (i < toSend.length) {
+        const item = toSend[i++];
+        try { await sendFn(item); } catch {}
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(SYNC_HISTORY_CONCURRENCY, toSend.length) }, worker));
+  })();
+}
+
 // Envoie une alerte acceptée au serveur avec retry — avant ce fix (22 juin 2026), un .catch(()=>{})
 // silencieux laissait le pari invisible côté serveur (jamais réglé automatiquement par
 // runAutoSettle) si la requête échouait une seule fois, ex. redémarrage backend (node --watch)
@@ -66,7 +133,7 @@ export async function postAcceptedAlertReliably(alert) {
   for (const delay of [0, 1500, 4000]) {
     if (delay) await new Promise(r => setTimeout(r, delay));
     try {
-      const res = await fetch('/api/accepted-alerts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(alert) });
+      const res = await fetchWithTimeout('/api/accepted-alerts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(alert) });
       if (res.ok) { writePendingSync(readPendingSync().filter(a => a.id !== alert.id)); return; }
     } catch {}
   }
@@ -97,7 +164,7 @@ export async function flushPendingAlertSync() {
   for (const alert of pending) {
     if (isNowRevoked(alert.id)) { writePendingSync(readPendingSync().filter(a => a.id !== alert.id)); continue; }
     try {
-      const res = await fetch('/api/accepted-alerts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(alert) });
+      const res = await fetchWithTimeout('/api/accepted-alerts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(alert) });
       if (res.ok) writePendingSync(readPendingSync().filter(a => a.id !== alert.id));
     } catch {}
   }
@@ -117,7 +184,7 @@ async function postSettlementReliably(payload) {
   for (const delay of [0, 1500, 4000]) {
     if (delay) await new Promise(r => setTimeout(r, delay));
     try {
-      const res = await fetch('/api/settlements', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      const res = await fetchWithTimeout('/api/settlements', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
       if (res.ok) { writePendingSettlements(readPendingSettlements().filter(p => p.id !== payload.id)); return; }
     } catch {}
   }
@@ -129,7 +196,7 @@ export async function flushPendingSettlementSync() {
   const pending = readPendingSettlements();
   for (const payload of pending) {
     try {
-      const res = await fetch('/api/settlements', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      const res = await fetchWithTimeout('/api/settlements', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
       if (res.ok) writePendingSettlements(readPendingSettlements().filter(p => p.id !== payload.id));
     } catch {}
   }
@@ -139,7 +206,7 @@ export async function syncSettlements() {
   try {
     await flushPendingAlertSync();
     await flushPendingSettlementSync();
-    const settlements = await fetch('/api/settlements').then(r => r.ok ? r.json() : []).catch(() => []);
+    const settlements = await fetchWithTimeout('/api/settlements').then(r => r.ok ? r.json() : []).catch(() => []);
     if (!settlements?.length) return;
     const purges = settlements.filter(s => s.purge);
     let anyChanged = false;
@@ -168,7 +235,7 @@ export async function syncSettlements() {
 
 export async function syncBackgroundAlerts() {
   try {
-    const { alerts: bgAlerts } = await fetch('/api/nba/background-alerts').then(r => r.json());
+    const { alerts: bgAlerts } = await cachedFetch('/api/nba/background-alerts', 5000);
     // bgAlerts=[] est une réponse valide (aucune alerte ne qualifie ce cycle) et doit quand même
     // atteindre la purge des orphelins pending plus bas — seul un fetch/parse raté (bgAlerts
     // null/undefined) doit court-circuiter. Avant ce fix (14 juillet 2026), une réponse totalement
@@ -516,7 +583,7 @@ export async function syncBackgroundAlerts() {
 // revérifie pas ici, on fait juste confiance au champ `prob` retourné.
 export async function syncGameTotalAlerts() {
   try {
-    const { alerts: bgAlerts } = await fetch('/api/nba/background-alerts').then(r => r.json());
+    const { alerts: bgAlerts } = await cachedFetch('/api/nba/background-alerts', 5000);
     // bgAlerts=[] est une réponse valide (aucune alerte ne qualifie ce cycle) et doit quand même
     // atteindre la purge des orphelins pending plus bas — seul un fetch/parse raté (bgAlerts
     // null/undefined) doit court-circuiter. Avant ce fix (14 juillet 2026), une réponse totalement
@@ -606,7 +673,7 @@ export async function syncGameTotalAlerts() {
 // (une par équipe) contrairement à game_total qui n'en a qu'une.
 export async function syncTeamTotalAlerts() {
   try {
-    const { alerts: bgAlerts } = await fetch('/api/nba/background-alerts').then(r => r.json());
+    const { alerts: bgAlerts } = await cachedFetch('/api/nba/background-alerts', 5000);
     if (!bgAlerts) return;
     const ttAlerts = bgAlerts.filter(a => a.type === 'team_total' && a.prob > 0);
 
@@ -673,7 +740,7 @@ export async function syncTeamTotalAlerts() {
 // Pinnacle, pas à notre modèle).
 export async function syncBballPinnacleAlerts() {
   try {
-    const { alerts: bgAlerts } = await fetch('/api/nba/background-alerts').then(r => r.json());
+    const { alerts: bgAlerts } = await cachedFetch('/api/nba/background-alerts', 5000);
     // bgAlerts=[] est une réponse valide (aucune alerte ne qualifie ce cycle) et doit quand même
     // atteindre la purge des orphelins pending plus bas — seul un fetch/parse raté (bgAlerts
     // null/undefined) doit court-circuiter. Avant ce fix (14 juillet 2026), une réponse totalement
@@ -746,7 +813,7 @@ const BBALL_PINNACLE_PROPS_KEY = 'bball_pinnacle_props_alerts';
 
 export async function syncBballPinnaclePropsAlerts() {
   try {
-    const { alerts: bgAlerts } = await fetch('/api/nba/background-alerts').then(r => r.json());
+    const { alerts: bgAlerts } = await cachedFetch('/api/nba/background-alerts', 5000);
     // bgAlerts=[] est une réponse valide (aucune alerte ne qualifie ce cycle) et doit quand même
     // atteindre la purge des orphelins pending plus bas — seul un fetch/parse raté (bgAlerts
     // null/undefined) doit court-circuiter. Avant ce fix (14 juillet 2026), une réponse totalement
@@ -802,7 +869,7 @@ export function saveBballPinnaclePropsAlerts(arr) {
 // (computeTeamWinProb), plus de génération côté client dans BasketballDetailPage.
 export async function syncBasketballResultAlerts() {
   try {
-    const { alerts: bgAlerts } = await fetch('/api/nba/background-alerts').then(r => r.json());
+    const { alerts: bgAlerts } = await cachedFetch('/api/nba/background-alerts', 5000);
     // bgAlerts=[] est une réponse valide (aucune alerte ne qualifie ce cycle) et doit quand même
     // atteindre la purge des orphelins pending plus bas — seul un fetch/parse raté (bgAlerts
     // null/undefined) doit court-circuiter. Avant ce fix (14 juillet 2026), une réponse totalement
@@ -875,7 +942,7 @@ export async function syncBasketballResultAlerts() {
 // `${fixtureId}_btts_yes` → dédup naturelle) et fb_total_alerts (nouvelle clé).
 export async function syncFootballAlerts() {
   try {
-    const { alerts: bgAlerts } = await fetch('/api/nba/background-alerts').then(r => r.json());
+    const { alerts: bgAlerts } = await cachedFetch('/api/nba/background-alerts', 5000);
     // bgAlerts=[] est une réponse valide (aucune alerte ne qualifie ce cycle) et doit quand même
     // atteindre la purge des orphelins pending plus bas — seul un fetch/parse raté (bgAlerts
     // null/undefined) doit court-circuiter. Avant ce fix (14 juillet 2026), une réponse totalement
@@ -1309,6 +1376,13 @@ const FOOTBALL_SETTLEMENT_SOURCES = [
   { prefix: 'arb_',   endpoint: '/api/football/arabie', gamesKey: 'matches' },
   // Portugal Primeira Liga (9 septembre 2026) — même patron que Grèce/Arabie ci-dessus.
   { prefix: 'por_',   endpoint: '/api/football/portugal', gamesKey: 'matches' },
+  // Pays-Bas/Belgique/Suisse/Norvège/Turquie (17 septembre 2026) — branchées dès l'ajout cette fois
+  // (audit du 10 septembre appliqué immédiatement, pas après coup comme Grèce/Arabie/Portugal).
+  { prefix: 'nl_',    endpoint: '/api/football/paysbas', gamesKey: 'matches' },
+  { prefix: 'be_',    endpoint: '/api/football/belgique', gamesKey: 'matches' },
+  { prefix: 'ch_',    endpoint: '/api/football/suisse', gamesKey: 'matches' },
+  { prefix: 'no_',    endpoint: '/api/football/norvege', gamesKey: 'matches' },
+  { prefix: 'tr_',    endpoint: '/api/football/turquie', gamesKey: 'matches' },
 ];
 
 export async function resolveCompletedFootballAlerts(alerts, save) {
@@ -1323,7 +1397,7 @@ export async function resolveCompletedFootballAlerts(alerts, save) {
     const items = toResolve.filter(a => (a.fixtureId || '').startsWith(source.prefix));
     if (!items.length) continue;
     try {
-      const d = await fetch(source.endpoint).then(r => r.json());
+      const d = await fetchWithTimeout(source.endpoint).then(r => r.json());
       const games = d[source.gamesKey] || [];
       for (const a of items) {
         const gid = a.fixtureId.replace(source.prefix, '');
@@ -1332,7 +1406,7 @@ export async function resolveCompletedFootballAlerts(alerts, save) {
         // pour ne pas laisser un pari accepted bloqué indéfiniment (cf. server.js /api/fd/match/:id,
         // bug du 7 juillet 2026 : alerte DC Suisse-Algérie du 3 juillet jamais réglée).
         if (!game && source.prefix === 'fdcdm_') {
-          const single = await fetch(`/api/fd/match/${gid}`).then(r => r.ok ? r.json() : null).catch(() => null);
+          const single = await fetchWithTimeout(`/api/fd/match/${gid}`).then(r => r.ok ? r.json() : null).catch(() => null);
           if (single && ['STATUS_IN_PROGRESS', 'STATUS_FINAL'].includes(single.status)) game = single;
         }
         // Migration football-data.org → api-football (2 septembre 2026) — une alerte fd_/fdbr_ créée
@@ -1340,13 +1414,23 @@ export async function resolveCompletedFootballAlerts(alerts, save) {
         // renvoient désormais des ids api-football). Résolution une fois via la table de
         // correspondance (server.js), mémorisée sur l'alerte pour ne pas la redemander à chaque
         // cycle. À retirer une fois qu'aucune alerte fd_/fdbr_ n'est plus pending/accepted.
+        // Fix 17 septembre 2026 — `migrationAttempted` ajouté : sans lui, une alerte fd_/fdbr_ dont
+        // l'id est en fait DÉJÀ un id api-football courant (créée après la migration, mais absente
+        // de `games` pour une autre raison — hors fenêtre 48h, vrai trou de settlement) déclenchait
+        // cette résolution à CHAQUE cycle pour toujours : `/api/fd/resolve-legacy-id` interroge
+        // football-data.org avec un id qui n'a jamais existé chez eux, 404 systématique,
+        // `migratedFixtureId` jamais posé donc jamais mémorisé — boucle infinie de 404 (cas réel
+        // signalé par l'utilisateur, alerte La Liga fd_1570389, Running "chargeait sans fin").
+        // Un seul essai, réussi ou pas, mémorisé sur l'alerte comme `migratedFixtureId`.
         if (!game && (source.prefix === 'fd_' || source.prefix === 'fdbr_') && a.league) {
           const legacyLeague = source.prefix === 'fdbr_' ? 'bresil' : a.league;
-          if (!a.migratedFixtureId) {
+          if (!a.migratedFixtureId && !a.migrationAttempted) {
             try {
-              const resolved = await fetch(`/api/fd/resolve-legacy-id?league=${legacyLeague}&oldId=${gid}`).then(r => r.ok ? r.json() : null);
-              if (resolved?.newId) { a.migratedFixtureId = resolved.newId; changed = true; }
+              const resolved = await fetchWithTimeout(`/api/fd/resolve-legacy-id?league=${legacyLeague}&oldId=${gid}`).then(r => r.ok ? r.json() : null);
+              if (resolved?.newId) { a.migratedFixtureId = resolved.newId; }
             } catch {}
+            a.migrationAttempted = true;
+            changed = true;
           }
           if (a.migratedFixtureId) {
             game = games.find(g => String(g.id) === a.migratedFixtureId && ['STATUS_IN_PROGRESS', 'STATUS_FINAL'].includes(g.status));
@@ -1414,7 +1498,7 @@ export async function syncOddsDrift() {
 
     for (const [key, alerts] of Object.entries(groups)) {
       const [league, eventId] = key.split('__');
-      const snap = await fetch(projectionsSnapshotUrl(league, eventId)).then(r => r.json()).catch(() => null);
+      const snap = await fetchWithTimeout(projectionsSnapshotUrl(league, eventId)).then(r => r.json()).catch(() => null);
       if (!snap?.found) continue;
 
       alerts.forEach(a => {
@@ -1497,7 +1581,7 @@ const TELEGRAM_TYPE_TO_KEY = {
 export async function syncTelegramActions() {
   try {
     const lastTs = Number(localStorage.getItem(TELEGRAM_ACTIONS_TS_KEY) || '0');
-    const res = await fetch(`/api/telegram/actions?since=${lastTs}`);
+    const res = await fetchWithTimeout(`/api/telegram/actions?since=${lastTs}`);
     if (!res.ok) return;
     const { actions, now } = await res.json();
     if (!actions?.length) { localStorage.setItem(TELEGRAM_ACTIONS_TS_KEY, String(now)); return; }
@@ -1561,7 +1645,7 @@ export const OUTRIGHT_ALERTS_KEY = 'outright_alerts';
 
 export async function syncOutrightAlerts() {
   try {
-    const alerts = await fetch('/api/outrights/alerts').then(r => r.json());
+    const alerts = await fetchWithTimeout('/api/outrights/alerts').then(r => r.json());
     if (!Array.isArray(alerts)) return;
     persistAlertsKey(OUTRIGHT_ALERTS_KEY, alerts);
     window.dispatchEvent(new Event('outright_alerts_updated'));
@@ -1579,19 +1663,19 @@ function _updateOutrightLocal(id, patch) {
 
 export async function acceptOutrightAlert(id, bookmaker, odds) {
   _updateOutrightLocal(id, { status: 'accepted', acceptedAt: Date.now(), acceptedBookmaker: bookmaker, acceptedOdds: odds });
-  try { await fetch(`/api/outrights/alerts/${id}/accept`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ bookmaker, odds }) }); } catch {}
+  try { await fetchWithTimeout(`/api/outrights/alerts/${id}/accept`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ bookmaker, odds }) }); } catch {}
 }
 
 export async function rejectOutrightAlert(id) {
   _updateOutrightLocal(id, { status: 'rejected' });
-  try { await fetch(`/api/outrights/alerts/${id}/reject`, { method: 'POST' }); } catch {}
+  try { await fetchWithTimeout(`/api/outrights/alerts/${id}/reject`, { method: 'POST' }); } catch {}
 }
 
 // status : 'won' | 'lost' — règlement manuel (pas de scraping fiable du vainqueur final sur
 // plusieurs mois/7 compétitions, décision actée avec l'utilisateur le 28 juillet 2026).
 export async function settleOutrightAlert(id, status) {
   _updateOutrightLocal(id, { status, settledAt: Date.now() });
-  try { await fetch(`/api/outrights/alerts/${id}/settle`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status }) }); } catch {}
+  try { await fetchWithTimeout(`/api/outrights/alerts/${id}/settle`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status }) }); } catch {}
 }
 
 export function dismissOutrightAlert(id) {

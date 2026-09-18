@@ -58,6 +58,11 @@ export const FB_LEAGUE_META = {
   grece:      { name: 'Super League Grèce', flag: '🇬🇷' },
   arabie:     { name: 'Pro League Arabie Saoudite', flag: '🇸🇦' },
   portugal:   { name: 'Liga Betclic', flag: '🇵🇹' },
+  paysbas:    { name: 'Eredivisie', flag: '🇳🇱' },
+  belgique:   { name: 'Pro League Belgique', flag: '🇧🇪' },
+  suisse:     { name: 'Super League Suisse', flag: '🇨🇭' },
+  norvege:    { name: 'Eliteserien', flag: '🇳🇴' },
+  turquie:    { name: 'Süper Lig', flag: '🇹🇷' },
 };
 
 export function BTTSAlertCard({ alert, onAccept, onReject, onDismiss }) {

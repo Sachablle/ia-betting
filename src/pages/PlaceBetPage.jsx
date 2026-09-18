@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, Fragment } from 'react';
 import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
 import { BBALL_FIXTURES } from '../utils/basketball';
-import { syncBackgroundAlerts, syncGameTotalAlerts, syncTeamTotalAlerts, syncBasketballResultAlerts, syncBballPinnacleAlerts, syncBballPinnaclePropsAlerts, loadBballPinnaclePropsAlerts, saveBballPinnaclePropsAlerts, syncOddsDrift, syncFootballAlerts, resolveCompletedFootballAlerts, postAcceptedAlertReliably, flushPendingAlertSync, persistAlertsKey, FB_DC_BTTS_KEY, FB_DC_OU_KEY, syncTelegramActions, syncOutrightAlerts, acceptOutrightAlert, rejectOutrightAlert, dismissOutrightAlert, OUTRIGHT_ALERTS_KEY, TEAM_TOTAL_KEY } from '../utils/syncAlerts';
+import { syncBackgroundAlerts, syncGameTotalAlerts, syncTeamTotalAlerts, syncBasketballResultAlerts, syncBballPinnacleAlerts, syncBballPinnaclePropsAlerts, loadBballPinnaclePropsAlerts, saveBballPinnaclePropsAlerts, syncOddsDrift, syncFootballAlerts, resolveCompletedFootballAlerts, postAcceptedAlertReliably, flushPendingAlertSync, persistAlertsKey, FB_DC_BTTS_KEY, FB_DC_OU_KEY, syncTelegramActions, syncOutrightAlerts, acceptOutrightAlert, rejectOutrightAlert, dismissOutrightAlert, OUTRIGHT_ALERTS_KEY, TEAM_TOTAL_KEY, syncHistoryOnce } from '../utils/syncAlerts';
 import { BTTSAlertCard, FootballTotalCard, TeamGoalsAlertCard, FootballResultCard, PinnacleEdgeCard, FootballGroupCard } from '../components/FootballAlertCards';
 import { OutrightModelCard, OutrightGapCard } from '../components/OutrightAlertCards';
 import { FactorBar } from '../components/FactorBar';
@@ -2392,20 +2392,25 @@ export default function PlaceBetPage() {
       syncTelegramActions();
       syncOddsDrift().then(loadAlerts);
       applySettlements();
-      // Sync initiale : remonte toutes les alertes accepted du localStorage vers le backend
+      // Sync initiale : remonte toutes les alertes accepted du localStorage vers le backend.
+      // syncHistoryOnce (17 septembre 2026) ne renvoie que les ids jamais encore renvoyés — sans
+      // ça, chaque visite de la page resendait TOUT l'historique (300+ items toutes clés confondues
+      // au bout de quelques mois), une rafale qui ralentissait le premier rendu de la page.
       try {
         const existing = JSON.parse(localStorage.getItem(ALERT_KEY) || '[]');
-        existing.filter(a => a.status === 'accepted').forEach(a => postAcceptedAlertReliably(a));
+        syncHistoryOnce(existing.filter(a => a.status === 'accepted'), postAcceptedAlertReliably);
         // game_total et basketball_result stockent la date dans `date` (pas fixtureDate) — normaliser avant envoi
         [GAME_TOTAL_KEY, TEAM_TOTAL_KEY, BASKETBALL_RESULT_KEY].forEach(key => {
           const stored = JSON.parse(localStorage.getItem(key) || '[]');
-          stored.filter(a => a.status === 'accepted').forEach(a => postAcceptedAlertReliably({ ...a, fixtureDate: a.fixtureDate || a.date }));
+          syncHistoryOnce(stored.filter(a => a.status === 'accepted'), a => postAcceptedAlertReliably({ ...a, fixtureDate: a.fixtureDate || a.date }));
         });
         [FB_BTTS_KEY, FB_TOTAL_KEY, FB_TEAM_GOALS_KEY, FB_RESULT_KEY, FB_PINNACLE_KEY, BBALL_PINNACLE_KEY, FB_DC_BTTS_KEY, FB_DC_OU_KEY].forEach(key => {
           const fbExisting = JSON.parse(localStorage.getItem(key) || '[]');
-          fbExisting.filter(a => ['accepted', 'won', 'lost'].includes(a.status)).forEach(a => postAcceptedAlertReliably(a));
-          fbExisting.filter(a => ['won', 'lost'].includes(a.status)).forEach(a =>
-            fetch('/api/settlements', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: a.id, status: a.status, settledAt: a.settledAt || Date.now() }) }).catch(() => {})
+          syncHistoryOnce(fbExisting.filter(a => ['accepted', 'won', 'lost'].includes(a.status)), postAcceptedAlertReliably);
+          const settleItems = fbExisting.filter(a => ['won', 'lost'].includes(a.status)).map(a => ({ ...a, _syncKey: `settle:${a.id}` }));
+          syncHistoryOnce(settleItems, a =>
+            fetch('/api/settlements', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: a.id, status: a.status, settledAt: a.settledAt || Date.now() }) }).catch(() => {}),
+            '_syncKey'
           );
         });
       } catch {}

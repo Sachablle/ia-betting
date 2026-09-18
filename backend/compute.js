@@ -321,7 +321,23 @@ function getBlowoutFactor(homeImpliedProb, isHome = null) {
   return { val: isUnderdog ? 0.92 : 0.97 };
 }
 
-function getInjuryReturnFactor(player, gamelogs, gameDate) {
+// Fix 18 septembre 2026 (bug réel signalé par l'utilisateur — cas Jonquel Jones/Napheesa Collier
+// faussement marquées "Blessure/retour" isInjured:true alors qu'aucune des deux n'était dans le
+// rapport RotoWire). Cause : `missedRecent` (daysSinceLast > 8) pénalisait UN joueur comme s'il
+// revenait d'une absence individuelle, alors que le vrai motif était une pause de CALENDRIER ÉQUIPE/
+// LIGUE ENTIÈRE (fin de saison régulière → reprise, ~3 semaines de battement) — vérifié en direct :
+// les 17 joueuses évaluées pour le même match affichaient TOUTES exactement le même `daysSinceLast`
+// et la même pénalité 0.82, aucun signal individuel réel derrière. Effet de bord découvert au
+// passage : cette pénalité systémique (18% de baisse sur quasi toutes les projections en même temps)
+// explique aussi le biais Under/Over signalé le même jour (72% Under sur Points parmi les candidats
+// qualifiants) — un Under franchit mécaniquement plus souvent un seuil élevé quand toutes les
+// projections sont poussées vers le bas en même temps.
+// Fix retenu : `teamDaysSinceLast` (calculé par l'appelant depuis `myGames`, déjà disponible et déjà
+// utilisé pour getRestFactor juste à côté) — si l'ÉQUIPE elle-même n'a pas joué depuis presque aussi
+// longtemps que la joueuse, la pause est celle du calendrier, pas une absence personnelle. `inPO`
+// gardé en filet secondaire (utile côté NBA où `round` est réellement renseigné — jamais le cas côté
+// WNBA, toujours passé en chaîne vide, donc `teamDaysSinceLast` est le signal qui compte vraiment ici).
+function getInjuryReturnFactor(player, gamelogs, gameDate, inPO = false, teamDaysSinceLast = null) {
   const g      = gamelogs || [];
   const injury = player.injury;
   if (injury === 'Out') return { val: 0, isInjured: true, isOut: true };
@@ -332,7 +348,8 @@ function getInjuryReturnFactor(player, gamelogs, gameDate) {
   const recentMin  = recent3.length  ? recent3.reduce((s, x) => s + (x.min || 0), 0) / recent3.length  : null;
   const typicalMin = typical5.length ? typical5.reduce((s, x) => s + (x.min || 0), 0) / typical5.length : recentMin;
   const minRatio   = (recentMin && typicalMin && typicalMin > 10) ? recentMin / typicalMin : 1.0;
-  const missedRecent = daysSinceLast > 8;
+  const isTeamPause = teamDaysSinceLast != null && daysSinceLast <= teamDaysSinceLast + 4;
+  const missedRecent = daysSinceLast > 8 && !inPO && !isTeamPause;
   if (missedRecent && injury) return { val: 0.78, isInjured: true, isOut: false };
   if (missedRecent)           return { val: 0.82, isInjured: true, isOut: false };
   if (injury && minRatio < 0.78) return { val: Math.max(0.72, minRatio), isInjured: true, isOut: false };
@@ -432,7 +449,14 @@ function computeEstimate(player, isHome, oppGames, myGames, gamelogs, oppAbbr, g
   const inPO = isPlayoffRound(round);
   const g    = gamelogs || [];
 
-  const injRet = getInjuryReturnFactor(player, g, gameDate);
+  // `teamDaysSinceLast` — même calcul que getRestFactor (myGames déjà trié par date ailleurs, on ne
+  // suppose pas l'ordre ici pour rester correct peu importe comment l'appelant construit ce tableau).
+  let teamDaysSinceLast = null;
+  if (myGames?.length) {
+    const teamSorted = [...myGames].sort((a, b) => new Date(b.date) - new Date(a.date));
+    teamDaysSinceLast = (new Date(gameDate) - new Date(teamSorted[0].date)) / 86400000;
+  }
+  const injRet = getInjuryReturnFactor(player, g, gameDate, inPO, teamDaysSinceLast);
   if (injRet.isOut) return null;
 
   const poStart   = inPO ? new Date(`${new Date(gameDate).getFullYear()}-04-01`) : null;

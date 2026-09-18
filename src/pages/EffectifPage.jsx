@@ -63,6 +63,12 @@ const LEAGUES = [
   { id: 'arabie', flag: '🇸🇦', logo: 'https://media.api-sports.io/football/leagues/307.png', name: 'Pro League', country: 'Arabie Saoudite', apiFootball: true, teams: [] },
   // Portugal (9 septembre 2026) — 3e championnat à profiter du système dynamique.
   { id: 'portugal', flag: '🇵🇹', logo: 'https://media.api-sports.io/football/leagues/94.png', name: 'Liga Betclic', country: 'Portugal', apiFootball: true, teams: [] },
+  // Pays-Bas/Belgique/Suisse/Norvège/Turquie (17 septembre 2026) — même système dynamique.
+  { id: 'paysbas',  flag: '🇳🇱', logo: 'https://media.api-sports.io/football/leagues/88.png', name: 'Eredivisie', country: 'Pays-Bas', apiFootball: true, teams: [] },
+  { id: 'belgique', flag: '🇧🇪', logo: 'https://media.api-sports.io/football/leagues/144.png', name: 'Pro League', country: 'Belgique', apiFootball: true, teams: [] },
+  { id: 'suisse',   flag: '🇨🇭', logo: 'https://media.api-sports.io/football/leagues/207.png', name: 'Super League', country: 'Suisse', apiFootball: true, teams: [] },
+  { id: 'norvege',  flag: '🇳🇴', logo: 'https://media.api-sports.io/football/leagues/103.png', name: 'Eliteserien', country: 'Norvège', apiFootball: true, teams: [] },
+  { id: 'turquie',  flag: '🇹🇷', logo: 'https://media.api-sports.io/football/leagues/203.png', name: 'Süper Lig', country: 'Turquie', apiFootball: true, teams: [] },
   {
     id: 'nba', flag: '🇺🇸', logo: 'https://a.espncdn.com/i/teamlogos/leagues/500/nba.png', name: 'NBA', country: 'États-Unis',
     teams: NBA_TEAMS,

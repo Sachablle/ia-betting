@@ -8,6 +8,7 @@
     "dev": "UV_THREADPOOL_SIZE=16 nodemon server.js"
   },
   "dependencies": {
+    "@sentry/node": "^10.75.0",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.21.0",

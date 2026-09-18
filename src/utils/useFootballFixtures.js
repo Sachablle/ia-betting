@@ -442,6 +442,310 @@ function usePortugalFixtures() {
   return { fixtures, loaded };
 }
 
+// ── Pays-Bas (live, api-football) — 17 septembre 2026 ───────────
+// Même schéma que le Portugal ci-dessus, préfixe nl_ dédié.
+function mapNlMatch(m) {
+  return {
+    id: `nl_${m.id}`,
+    league: 'paysbas',
+    round: m.round || '',
+    date: m.date,
+    status: m.status || 'STATUS_SCHEDULED',
+    elapsed: m.elapsed ?? null,
+    venue: { name: 'À définir', city: '', capacity: 0 },
+    weather: { icon: '⚽', temp: 0, condition: '—', wind: 0, humidity: 0 },
+    home: mapFdTeam(m.home),
+    away: mapFdTeam(m.away),
+    h2h: m.h2h || [],
+  };
+}
+
+let _nlFixtures = null;
+let _nlLoaded = false;
+let _nlFetching = false;
+let _nlListeners = new Set();
+
+function notifyNl() {
+  _nlListeners.forEach(fn => fn(_nlFixtures));
+}
+
+async function fetchAndApplyNl() {
+  if (_nlFetching) return;
+  _nlFetching = true;
+  try {
+    const d = await fetch('/api/football/paysbas').then(r => r.json());
+    _nlFixtures = (d.matches || []).map(mapNlMatch);
+  } catch {
+    _nlFixtures = _nlFixtures || [];
+  }
+  _nlFetching = false;
+  _nlLoaded = true;
+  notifyNl();
+}
+
+let _nlPollTimer = null;
+function useNlFixtures() {
+  const [fixtures, setFixtures] = useState(_nlFixtures || []);
+  const [loaded, setLoaded] = useState(_nlLoaded);
+
+  useEffect(() => {
+    const update = (f) => { setFixtures(f); setLoaded(true); };
+    _nlListeners.add(update);
+    if (_nlFixtures) { setFixtures(_nlFixtures); setLoaded(true); }
+    else if (!_nlFetching) fetchAndApplyNl();
+    if (!_nlPollTimer) _nlPollTimer = setInterval(fetchAndApplyNl, LIVE_FIXTURES_POLL_MS);
+    return () => {
+      _nlListeners.delete(update);
+      if (_nlListeners.size === 0 && _nlPollTimer) { clearInterval(_nlPollTimer); _nlPollTimer = null; }
+    };
+  }, []);
+
+  return { fixtures, loaded };
+}
+
+// ── Belgique (live, api-football) — 17 septembre 2026 ───────────
+// Même schéma que le Portugal ci-dessus, préfixe be_ dédié.
+function mapBeMatch(m) {
+  return {
+    id: `be_${m.id}`,
+    league: 'belgique',
+    round: m.round || '',
+    date: m.date,
+    status: m.status || 'STATUS_SCHEDULED',
+    elapsed: m.elapsed ?? null,
+    venue: { name: 'À définir', city: '', capacity: 0 },
+    weather: { icon: '⚽', temp: 0, condition: '—', wind: 0, humidity: 0 },
+    home: mapFdTeam(m.home),
+    away: mapFdTeam(m.away),
+    h2h: m.h2h || [],
+  };
+}
+
+let _beFixtures = null;
+let _beLoaded = false;
+let _beFetching = false;
+let _beListeners = new Set();
+
+function notifyBe() {
+  _beListeners.forEach(fn => fn(_beFixtures));
+}
+
+async function fetchAndApplyBe() {
+  if (_beFetching) return;
+  _beFetching = true;
+  try {
+    const d = await fetch('/api/football/belgique').then(r => r.json());
+    _beFixtures = (d.matches || []).map(mapBeMatch);
+  } catch {
+    _beFixtures = _beFixtures || [];
+  }
+  _beFetching = false;
+  _beLoaded = true;
+  notifyBe();
+}
+
+let _bePollTimer = null;
+function useBeFixtures() {
+  const [fixtures, setFixtures] = useState(_beFixtures || []);
+  const [loaded, setLoaded] = useState(_beLoaded);
+
+  useEffect(() => {
+    const update = (f) => { setFixtures(f); setLoaded(true); };
+    _beListeners.add(update);
+    if (_beFixtures) { setFixtures(_beFixtures); setLoaded(true); }
+    else if (!_beFetching) fetchAndApplyBe();
+    if (!_bePollTimer) _bePollTimer = setInterval(fetchAndApplyBe, LIVE_FIXTURES_POLL_MS);
+    return () => {
+      _beListeners.delete(update);
+      if (_beListeners.size === 0 && _bePollTimer) { clearInterval(_bePollTimer); _bePollTimer = null; }
+    };
+  }, []);
+
+  return { fixtures, loaded };
+}
+
+// ── Suisse (live, api-football) — 17 septembre 2026 ───────────
+// Même schéma que le Portugal ci-dessus, préfixe ch_ dédié.
+function mapChMatch(m) {
+  return {
+    id: `ch_${m.id}`,
+    league: 'suisse',
+    round: m.round || '',
+    date: m.date,
+    status: m.status || 'STATUS_SCHEDULED',
+    elapsed: m.elapsed ?? null,
+    venue: { name: 'À définir', city: '', capacity: 0 },
+    weather: { icon: '⚽', temp: 0, condition: '—', wind: 0, humidity: 0 },
+    home: mapFdTeam(m.home),
+    away: mapFdTeam(m.away),
+    h2h: m.h2h || [],
+  };
+}
+
+let _chFixtures = null;
+let _chLoaded = false;
+let _chFetching = false;
+let _chListeners = new Set();
+
+function notifyCh() {
+  _chListeners.forEach(fn => fn(_chFixtures));
+}
+
+async function fetchAndApplyCh() {
+  if (_chFetching) return;
+  _chFetching = true;
+  try {
+    const d = await fetch('/api/football/suisse').then(r => r.json());
+    _chFixtures = (d.matches || []).map(mapChMatch);
+  } catch {
+    _chFixtures = _chFixtures || [];
+  }
+  _chFetching = false;
+  _chLoaded = true;
+  notifyCh();
+}
+
+let _chPollTimer = null;
+function useChFixtures() {
+  const [fixtures, setFixtures] = useState(_chFixtures || []);
+  const [loaded, setLoaded] = useState(_chLoaded);
+
+  useEffect(() => {
+    const update = (f) => { setFixtures(f); setLoaded(true); };
+    _chListeners.add(update);
+    if (_chFixtures) { setFixtures(_chFixtures); setLoaded(true); }
+    else if (!_chFetching) fetchAndApplyCh();
+    if (!_chPollTimer) _chPollTimer = setInterval(fetchAndApplyCh, LIVE_FIXTURES_POLL_MS);
+    return () => {
+      _chListeners.delete(update);
+      if (_chListeners.size === 0 && _chPollTimer) { clearInterval(_chPollTimer); _chPollTimer = null; }
+    };
+  }, []);
+
+  return { fixtures, loaded };
+}
+
+// ── Norvège (live, api-football) — 17 septembre 2026 ───────────
+// Même schéma que le Portugal ci-dessus, préfixe no_ dédié.
+function mapNoMatch(m) {
+  return {
+    id: `no_${m.id}`,
+    league: 'norvege',
+    round: m.round || '',
+    date: m.date,
+    status: m.status || 'STATUS_SCHEDULED',
+    elapsed: m.elapsed ?? null,
+    venue: { name: 'À définir', city: '', capacity: 0 },
+    weather: { icon: '⚽', temp: 0, condition: '—', wind: 0, humidity: 0 },
+    home: mapFdTeam(m.home),
+    away: mapFdTeam(m.away),
+    h2h: m.h2h || [],
+  };
+}
+
+let _noFixtures = null;
+let _noLoaded = false;
+let _noFetching = false;
+let _noListeners = new Set();
+
+function notifyNo() {
+  _noListeners.forEach(fn => fn(_noFixtures));
+}
+
+async function fetchAndApplyNo() {
+  if (_noFetching) return;
+  _noFetching = true;
+  try {
+    const d = await fetch('/api/football/norvege').then(r => r.json());
+    _noFixtures = (d.matches || []).map(mapNoMatch);
+  } catch {
+    _noFixtures = _noFixtures || [];
+  }
+  _noFetching = false;
+  _noLoaded = true;
+  notifyNo();
+}
+
+let _noPollTimer = null;
+function useNoFixtures() {
+  const [fixtures, setFixtures] = useState(_noFixtures || []);
+  const [loaded, setLoaded] = useState(_noLoaded);
+
+  useEffect(() => {
+    const update = (f) => { setFixtures(f); setLoaded(true); };
+    _noListeners.add(update);
+    if (_noFixtures) { setFixtures(_noFixtures); setLoaded(true); }
+    else if (!_noFetching) fetchAndApplyNo();
+    if (!_noPollTimer) _noPollTimer = setInterval(fetchAndApplyNo, LIVE_FIXTURES_POLL_MS);
+    return () => {
+      _noListeners.delete(update);
+      if (_noListeners.size === 0 && _noPollTimer) { clearInterval(_noPollTimer); _noPollTimer = null; }
+    };
+  }, []);
+
+  return { fixtures, loaded };
+}
+
+// ── Turquie (live, api-football) — 17 septembre 2026 ───────────
+// Même schéma que le Portugal ci-dessus, préfixe tr_ dédié.
+function mapTrMatch(m) {
+  return {
+    id: `tr_${m.id}`,
+    league: 'turquie',
+    round: m.round || '',
+    date: m.date,
+    status: m.status || 'STATUS_SCHEDULED',
+    elapsed: m.elapsed ?? null,
+    venue: { name: 'À définir', city: '', capacity: 0 },
+    weather: { icon: '⚽', temp: 0, condition: '—', wind: 0, humidity: 0 },
+    home: mapFdTeam(m.home),
+    away: mapFdTeam(m.away),
+    h2h: m.h2h || [],
+  };
+}
+
+let _trFixtures = null;
+let _trLoaded = false;
+let _trFetching = false;
+let _trListeners = new Set();
+
+function notifyTr() {
+  _trListeners.forEach(fn => fn(_trFixtures));
+}
+
+async function fetchAndApplyTr() {
+  if (_trFetching) return;
+  _trFetching = true;
+  try {
+    const d = await fetch('/api/football/turquie').then(r => r.json());
+    _trFixtures = (d.matches || []).map(mapTrMatch);
+  } catch {
+    _trFixtures = _trFixtures || [];
+  }
+  _trFetching = false;
+  _trLoaded = true;
+  notifyTr();
+}
+
+let _trPollTimer = null;
+function useTrFixtures() {
+  const [fixtures, setFixtures] = useState(_trFixtures || []);
+  const [loaded, setLoaded] = useState(_trLoaded);
+
+  useEffect(() => {
+    const update = (f) => { setFixtures(f); setLoaded(true); };
+    _trListeners.add(update);
+    if (_trFixtures) { setFixtures(_trFixtures); setLoaded(true); }
+    else if (!_trFetching) fetchAndApplyTr();
+    if (!_trPollTimer) _trPollTimer = setInterval(fetchAndApplyTr, LIVE_FIXTURES_POLL_MS);
+    return () => {
+      _trListeners.delete(update);
+      if (_trListeners.size === 0 && _trPollTimer) { clearInterval(_trPollTimer); _trPollTimer = null; }
+    };
+  }, []);
+
+  return { fixtures, loaded };
+}
 // ── Coupes européennes de clubs (live, api-football) — 23 juillet 2026 ────────
 // Même schéma que Brasileirão ci-dessus : source séparée /api/football/eucup/<comp>/matches,
 // même préfixe que generateBackgroundAlerts (server.js) et WorldMapPage. Factory réutilisée pour
@@ -521,7 +825,14 @@ export function useFootballFixtures() {
   const { fixtures: europa, loaded: europaLoaded } = useEuropaFixtures();
   const { fixtures: conference, loaded: conferenceLoaded } = useConferenceFixtures();
   const { fixtures: champions, loaded: championsLoaded } = useChampionsFixtures();
-  const liveLeagues = new Set([...fd.map(f => f.league), ...br.map(f => f.league), ...gr.map(f => f.league), ...ar.map(f => f.league), ...pt.map(f => f.league), ...europa.map(f => f.league), ...conference.map(f => f.league), ...champions.map(f => f.league)]);
+  // Pays-Bas/Belgique/Suisse/Norvège/Turquie (17 septembre 2026) — même patron que Grèce/Arabie/
+  // Portugal, ajoutées au même flux `loading`/fixtures pour ne pas reproduire le bug du 13 septembre.
+  const { fixtures: nl, loaded: nlLoaded } = useNlFixtures();
+  const { fixtures: be, loaded: beLoaded } = useBeFixtures();
+  const { fixtures: ch, loaded: chLoaded } = useChFixtures();
+  const { fixtures: no, loaded: noLoaded } = useNoFixtures();
+  const { fixtures: tr, loaded: trLoaded } = useTrFixtures();
+  const liveLeagues = new Set([...fd.map(f => f.league), ...br.map(f => f.league), ...gr.map(f => f.league), ...ar.map(f => f.league), ...pt.map(f => f.league), ...europa.map(f => f.league), ...conference.map(f => f.league), ...champions.map(f => f.league), ...nl.map(f => f.league), ...be.map(f => f.league), ...ch.map(f => f.league), ...no.map(f => f.league), ...tr.map(f => f.league)]);
   const staticFixtures = FIXTURES.filter(f => !liveLeagues.has(f.league));
   // Fix 13 septembre 2026 — `loading` ne dépendait que de `cdmLoaded` (CDM = compétition terminée
   // depuis longtemps, prochaine édition en 2030, son fetch est minuscule et se termine quasi
@@ -531,7 +842,8 @@ export function useFootballFixtures() {
   // en production où /api/fd/matches traite 6 championnats par requête) n'avait pas encore livré ses
   // données. Cas réel signalé : clic sur Alaves-Valencia (La Liga) depuis Running → "Match
   // introuvable" transitoire, imperceptible en local (latence quasi nulle) mais bien réel en
-  // production. `loading` attend désormais que LES 9 sources aient fini leur 1er chargement.
-  const loading = !cdmLoaded || !fdLoaded || !brLoaded || !grLoaded || !arLoaded || !ptLoaded || !europaLoaded || !conferenceLoaded || !championsLoaded;
-  return { fixtures: [...staticFixtures, ...fd, ...br, ...gr, ...ar, ...pt, ...europa, ...conference, ...champions, ...cdm], loading };
+  // production. `loading` attend désormais que LES 14 sources aient fini leur 1er chargement
+  // (9 → 14 le 17 septembre 2026 avec l'ajout de Pays-Bas/Belgique/Suisse/Norvège/Turquie).
+  const loading = !cdmLoaded || !fdLoaded || !brLoaded || !grLoaded || !arLoaded || !ptLoaded || !europaLoaded || !conferenceLoaded || !championsLoaded || !nlLoaded || !beLoaded || !chLoaded || !noLoaded || !trLoaded;
+  return { fixtures: [...staticFixtures, ...fd, ...br, ...gr, ...ar, ...pt, ...europa, ...conference, ...champions, ...nl, ...be, ...ch, ...no, ...tr, ...cdm], loading };
 }

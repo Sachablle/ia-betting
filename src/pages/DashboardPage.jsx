@@ -185,7 +185,7 @@ function CountdownWidget() {
   const dim    = 'var(--text-dim)';
 
   // Couleur décompte selon le sport du prochain match
-  const isFootball = l => ['cdm','ligue1','pl','laliga','bundes','seriea','bresil','grece','arabie','portugal','europa','conference','champions','foot'].includes(l?.toLowerCase());
+  const isFootball = l => ['cdm','ligue1','pl','laliga','bundes','seriea','bresil','grece','arabie','portugal','paysbas','belgique','suisse','norvege','turquie','europa','conference','champions','foot'].includes(l?.toLowerCase());
   const isBasket   = l => !isFootball(l);
   const nextTs = next?.ts ?? null;
   // Tous les matchs qui démarrent en même temps que le prochain (tolérance 1min)
@@ -1284,7 +1284,7 @@ function AlertsChart({ accepted, days: numDays = 30 }) {
 
 // ── Widget : Matchs à venir ──────────────────────────────────────────────────
 
-const FOOT_LEAGUES_SET = new Set(['ligue1','pl','laliga','bundes','seriea','cdm','bresil','grece','arabie','portugal','europa','conference','champions']);
+const FOOT_LEAGUES_SET = new Set(['ligue1','pl','laliga','bundes','seriea','cdm','bresil','grece','arabie','portugal','paysbas','belgique','suisse','norvege','turquie','europa','conference','champions']);
 
 // Nettoyage nom club (Dashboard, 24 août 2026) — football-data.org renvoie la dénomination
 // officielle complète ("Bologna FC 1909", "SS Lazio", "1. FC Union Berlin") ; on retire les
@@ -1318,12 +1318,14 @@ const LEAGUE_LABEL_MAP = {
   acb:'ACB', lnb:'LNB', bbl:'BBL', legaa:'LegA', nbl:'NBL', gbl:'GBL',
   ligue1:'L1', pl:'PL', laliga:'Liga', bundes:'BL', seriea:'SA',
   bresil:'BSA', grece:'GR', arabie:'KSA', portugal:'POR', europa:'UEL', conference:'UECL', champions:'UCL',
+  paysbas:'NED', belgique:'BEL', suisse:'SUI', norvege:'NOR', turquie:'TUR',
 };
 const LEAGUE_COLOR_MAP = {
   nba:'#fb923c', wnba:'#fb923c', cdm:'#facc15', euroleague:'#c084fc',
   acb:'#60a5fa', lnb:'#60a5fa', bbl:'#60a5fa', legaa:'#60a5fa', nbl:'#60a5fa', gbl:'#60a5fa',
   ligue1:'#3b82f6', pl:'#a78bfa', laliga:'#f97316', bundes:'#e11d48', seriea:'#10b981',
   bresil:'#fbbf24', grece:'#0ea5e9', arabie:'#16a34a', portugal:'#006600', europa:'#f472b6', conference:'#2dd4bf', champions:'#6366f1',
+  paysbas:'#ff6600', belgique:'#f9c700', suisse:'#ff0000', norvege:'#ba0c2f', turquie:'#e30a17',
 };
 
 function UpcomingMatchesWidget() {
@@ -1388,6 +1390,12 @@ function UpcomingMatchesWidget() {
         cachedFetch('/api/football/grece', 30_000).then(d=>(d.matches||[]).map(f=>norm({...f, id:`grc_${f.id}`}, 'grece'))),
         cachedFetch('/api/football/arabie', 30_000).then(d=>(d.matches||[]).map(f=>norm({...f, id:`arb_${f.id}`}, 'arabie'))),
         cachedFetch('/api/football/portugal', 30_000).then(d=>(d.matches||[]).map(f=>norm({...f, id:`por_${f.id}`}, 'portugal'))),
+        // Pays-Bas/Belgique/Suisse/Norvège/Turquie (17 septembre 2026) — même patron.
+        cachedFetch('/api/football/paysbas', 30_000).then(d=>(d.matches||[]).map(f=>norm({...f, id:`nl_${f.id}`}, 'paysbas'))),
+        cachedFetch('/api/football/belgique', 30_000).then(d=>(d.matches||[]).map(f=>norm({...f, id:`be_${f.id}`}, 'belgique'))),
+        cachedFetch('/api/football/suisse', 30_000).then(d=>(d.matches||[]).map(f=>norm({...f, id:`ch_${f.id}`}, 'suisse'))),
+        cachedFetch('/api/football/norvege', 30_000).then(d=>(d.matches||[]).map(f=>norm({...f, id:`no_${f.id}`}, 'norvege'))),
+        cachedFetch('/api/football/turquie', 30_000).then(d=>(d.matches||[]).map(f=>norm({...f, id:`tr_${f.id}`}, 'turquie'))),
         ...[['europa','afel'],['conference','afcl'],['champions','afch']].map(([comp,prefix])=>
           cachedFetch(`/api/football/eucup/${comp}/matches`, 30_000).then(d=>(d.matches||[]).map(f=>norm({...f, id:`${prefix}_${f.id}`}, comp)))
         ),
@@ -1419,7 +1427,10 @@ function UpcomingMatchesWidget() {
     // alertes actives sans pastille). Complétée avec tous les types d'alerte liés à un match
     // précis (fb_pinnacle_alerts/bball_pinnacle_alerts = value bet Pinnacle, fb_dc_btts/ou =
     // Double Chance) — voir src/utils/syncAlerts.js pour la liste faisant foi.
-    const KEYS = ['nba_prop_alerts','nba_game_total_alerts','basketball_teamtotal_alerts','basketball_result_alerts','basketball_spread_alerts','fb_btts_alerts','fb_total_alerts','fb_result_alerts','fb_pinnacle_alerts','fb_dc_btts_alerts','fb_dc_ou_alerts','bball_pinnacle_alerts','bball_pinnacle_props_alerts'];
+    // `fb_team_goals_alerts` ajoutée le 16 septembre 2026 — marché "Buts par équipe" passé en
+    // production le 14 sept, jamais ajouté ici depuis : même famille de bug que basketball_spread_alerts
+    // le 26 août (registre de clés jamais tenu à jour au fil des nouveaux marchés).
+    const KEYS = ['nba_prop_alerts','nba_game_total_alerts','basketball_teamtotal_alerts','basketball_result_alerts','basketball_spread_alerts','fb_btts_alerts','fb_total_alerts','fb_team_goals_alerts','fb_result_alerts','fb_pinnacle_alerts','fb_dc_btts_alerts','fb_dc_ou_alerts','bball_pinnacle_alerts','bball_pinnacle_props_alerts'];
     for (const key of KEYS) {
       try {
         JSON.parse(localStorage.getItem(key)||'[]')

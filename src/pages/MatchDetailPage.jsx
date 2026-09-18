@@ -507,16 +507,52 @@ const FB_BK_COLORS = { unibet: '#1db954', betclic: '#e0292e' };
 const FB_BK_ORDER  = ['pinnacle', 'unibet', 'betclic'];
 
 const BIG5_LEAGUES = new Set(['ligue1', 'pl', 'laliga', 'seriea', 'bundes']);
-// Recalibration BTTS par championnat individuel (7 puis 14 septembre 2026) — miroir des constantes
-// backend (FB_BTTS_LEAGUE_PROB, server.js), pour que la légende affiche le vrai seuil actif.
-const FB_BTTS_LEAGUE_PROB_PCT = { ligue1: 62, pl: 58, bundes: 67, seriea: 61, laliga: 58, bresil: 51, europa: 53, conference: 63, portugal: 48 };
-// Recalibration Total "Plus de 1,5" par championnat (14 septembre 2026, miroir de server.js
+// Recalibration BTTS par championnat individuel (7, 14 puis 17 septembre 2026) — miroir des
+// constantes backend (FB_BTTS_LEAGUE_PROB, server.js), pour que la légende affiche le vrai seuil actif.
+const FB_BTTS_LEAGUE_PROB_PCT = { ligue1: 62, pl: 58, bundes: 67, seriea: 61, laliga: 58, bresil: 51, europa: 53, conference: 63, portugal: 58, arabie: 63 };
+// Recalibration Total "Plus de 1,5" par championnat (14 puis 17 septembre 2026, miroir de server.js
 // FB_TOTAL15_LEAGUE_PROB) — remplace l'ancien plancher plat 60% partagé par les 5 grands
 // championnats. Championnats non listés restent au seuil global 75% (repli ci-dessous).
-const FB_TOTAL15_LEAGUE_PROB_PCT = { ligue1: 82, pl: 77, bundes: 79, seriea: 71, laliga: 75, bresil: 72, europa: 76, grece: 73 };
-// Recalibration Total "Plus de 2,5" par championnat (11 puis 14 septembre 2026, miroir de server.js
-// FB_TOTAL25_LEAGUE_PROB) — championnats non listés restent au seuil global 75% (repli ci-dessous).
-const FB_TOTAL25_LEAGUE_PROB_PCT = { ligue1: 63, bundes: 71, seriea: 54, bresil: 62, conference: 68, champions: 64, arabie: 64, portugal: 65 };
+const FB_TOTAL15_LEAGUE_PROB_PCT = { ligue1: 82, pl: 77, bundes: 79, seriea: 71, laliga: 78, bresil: 72, europa: 76, grece: 73, portugal: 70 };
+// Recalibration Total "Plus de 2,5" OVER par championnat (11, 14 puis 17 septembre 2026, miroir de
+// server.js FB_TOTAL25_LEAGUE_PROB) — championnats non listés restent au seuil global 75%.
+const FB_TOTAL25_LEAGUE_PROB_PCT = { ligue1: 63, pl: 66, bundes: 71, seriea: 68, laliga: 66, bresil: 62, conference: 68, champions: 64, arabie: 64, portugal: 63 };
+// Table séparée pour le sens UNDER de la ligne 2,5 (17 septembre 2026, miroir de server.js
+// FB_TOTAL25_UNDER_LEAGUE_PROB) — jusqu'ici un seul seuil s'appliquait aux deux sens.
+const FB_TOTAL25_UNDER_LEAGUE_PROB_PCT = { laliga: 60, europa: 73, champions: 63, grece: 67 };
+// Marchés en observation par championnat (17 septembre 2026, miroir de server.js
+// BTTS_DISABLED_LEAGUES/TOTAL15_DISABLED_LEAGUES/TOTAL25_OVER_DISABLED_LEAGUES/
+// TOTAL25_UNDER_DISABLED_LEAGUES) — remplace `isNewLeague` pour décider si la légende affiche une
+// vraie alerte 🚨 ou une note d'observation, championnat par championnat et marché par marché.
+// Pays-Bas/Belgique/Suisse/Norvège/Turquie (17 septembre 2026, soir) ajoutées aux 4 Sets — même fix
+// que côté server.js (voir son commentaire) : BTTS/Total ne vérifient plus isNewLeague, ces 5
+// championnats doivent donc être explicitement listés ici pour rester en observation.
+const BTTS_DISABLED_LEAGUES = new Set(['ligue1', 'pl', 'europa', 'conference', 'champions', 'grece', 'paysbas', 'belgique', 'suisse', 'norvege', 'turquie']);
+// Ligue des Champions et Arabie Saoudite ajoutées le 17 septembre 2026 (même jour — elles étaient
+// actives sur un seuil générique jamais calibré individuellement, désormais interdit).
+const TOTAL15_DISABLED_LEAGUES = new Set(['europa', 'conference', 'champions', 'arabie', 'paysbas', 'belgique', 'suisse', 'norvege', 'turquie']);
+const TOTAL25_OVER_DISABLED_LEAGUES = new Set(['ligue1', 'europa', 'conference', 'champions', 'grece', 'paysbas', 'belgique', 'suisse', 'norvege', 'turquie']);
+const TOTAL25_UNDER_DISABLED_LEAGUES = new Set(['ligue1', 'pl', 'bundes', 'seriea', 'bresil', 'conference', 'arabie', 'portugal', 'paysbas', 'belgique', 'suisse', 'norvege', 'turquie']);
+// Championnats encore sous le verrou isNewLeague côté serveur (17 septembre 2026) — Résultat 1X2 et
+// Buts par équipe n'ont pas reçu la même configuration par marché que BTTS/Total aujourd'hui, ils
+// dépendent donc toujours de ce flag unique par championnat (server.js, f.isNewLeague).
+const NEW_LEAGUES = new Set(['grece', 'arabie', 'portugal', 'paysbas', 'belgique', 'suisse', 'norvege', 'turquie']);
+// Statut ★/! par onglet, affiché en badge sur le coin de chaque bouton (17 septembre 2026, demande
+// explicite — "ça me permet de savoir ce qui est configuré et actif ou non"), même code visuel que
+// les badges de l'artifact "Règles du moteur"/"Seuils par marché". Résultat reste sur un seuil
+// unique jamais calibré par championnat (toujours "!") ; Tirs/Tirs cadrés sont purement en
+// observation (jamais d'alerte réelle possible, toujours "!") ; Buts par équipe est calibré
+// globalement mais encore bloqué par isNewLeague sur Grèce/Arabie/Portugal ; BTTS et Total (Buts)
+// ont chacun leur propre config par championnat depuis aujourd'hui.
+function tabCalibStatus(tabId, league) {
+  if (tabId === 'btts') return BTTS_DISABLED_LEAGUES.has(league) ? 'warn' : 'star';
+  if (tabId === 'buts') {
+    const anyActive = !TOTAL15_DISABLED_LEAGUES.has(league) || !TOTAL25_OVER_DISABLED_LEAGUES.has(league) || !TOTAL25_UNDER_DISABLED_LEAGUES.has(league);
+    return anyActive ? 'star' : 'warn';
+  }
+  if (tabId === 'team_goals') return NEW_LEAGUES.has(league) ? 'warn' : 'star';
+  return 'warn'; // result, shots, sot — jamais calibrés individuellement par championnat
+}
 
 function FootballOddsBox({ markets, bttsResult, home, away, frozen, onRefresh, refreshing, lastRefreshed, fixtureLeague }) {
   const [tab, setTab] = useState('result');
@@ -678,6 +714,7 @@ function FootballOddsBox({ markets, bttsResult, home, away, frozen, onRefresh, r
   // SUIVANTE en entier plutôt que de s'écraser sur place — visible sur tous les championnats, pas
   // propre à un seul.
   const tabStyle = id => ({
+    position: 'relative',
     padding: '0.25rem 0.75rem', borderRadius: 5, border: '1px solid', cursor: 'pointer',
     fontSize: 10, fontWeight: 700, letterSpacing: '0.05em', textTransform: 'uppercase',
     background: tab === id ? 'rgba(74,222,128,0.25)' : 'rgba(74,222,128,0.08)',
@@ -757,7 +794,24 @@ function FootballOddsBox({ markets, bttsResult, home, away, frozen, onRefresh, r
         </div>
       )}
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.4rem 0.6rem', marginBottom: '0.75rem', alignItems: 'center', position: 'relative' }}>
-        {TABS.map(t => <button key={t.id} style={tabStyle(t.id)} onClick={() => setTab(t.id)}>{t.label}</button>)}
+        {TABS.map(t => {
+          const calibStatus = tabCalibStatus(t.id, fixtureLeague);
+          return (
+            <button key={t.id} style={tabStyle(t.id)} onClick={() => setTab(t.id)}>
+              {t.label}
+              <span
+                title={calibStatus === 'star' ? 'Calibré et actif' : 'À calibrer / branché'}
+                style={{
+                  position: 'absolute', top: -6, right: -5, fontSize: 10, lineHeight: 1,
+                  fontWeight: 900, textShadow: '0 0 3px #0a0e16, 0 0 3px #0a0e16',
+                  color: calibStatus === 'star' ? '#facc15' : '#ef4444',
+                }}
+              >
+                {calibStatus === 'star' ? '★' : '!'}
+              </span>
+            </button>
+          );
+        })}
         {(tab === 'buts' || tab === 'team_goals' || (tab === 'shots' && hasShotsBk) || (tab === 'sot' && hasSotBk)) && (() => {
           // Même toggle que l'onglet Buts (1,5/2,5), étendu à "Buts par équipe" le 14 septembre puis
           // à "Tirs"/"Tirs cadrés" le 15 septembre 2026 (demande explicite — même format partout).
@@ -830,6 +884,42 @@ function FootballOddsBox({ markets, bttsResult, home, away, frozen, onRefresh, r
               // recalibrés le 31 août). Volontairement différent du format à puces des autres ligues
               // (CDM/Brésil/coupes d'Europe, seuils globaux inchangés) plutôt qu'unifié en un seul style.
               const AlertLine = ({ children }) => <div style={{ fontSize: 9.5, lineHeight: 1.5 }}>🚨 {children}</div>;
+              const ObsLine = ({ children }) => <div style={{ fontSize: 9.5, lineHeight: 1.5, color: 'var(--text-dim)' }}>📊 {children}</div>;
+              // Contenu BTTS/Buts partagé par les 3 formats (Big Five/Brésil/Générique) — construit
+              // une seule fois ici (17 septembre 2026) pour ne jamais risquer une divergence entre les
+              // 3 gabarits sur l'état actif/observation d'un championnat. Chaque ligne devient soit une
+              // vraie alerte 🚨 (championnat actif sur ce marché+sens), soit une note d'observation 📊
+              // (championnat désactivé — mentionne le seuil calibré s'il existe, cf. demande explicite
+              // "si le championnat est calibré mais les alertes pas activées, mentionne-le").
+              const bttsContent = (() => {
+                const pct = FB_BTTS_LEAGUE_PROB_PCT[fixtureLeague] ?? 70;
+                const calibrated = FB_BTTS_LEAGUE_PROB_PCT[fixtureLeague] != null;
+                if (BTTS_DISABLED_LEAGUES.has(fixtureLeague)) {
+                  return <ObsLine>BTTS en observation sur ce championnat{calibrated ? <> (seuil calibré {pct}%, alertes non activées)</> : ''} — le modèle et le near-miss continuent de tourner, aucune alerte réelle n'est envoyée.</ObsLine>;
+                }
+                return <AlertLine>Alerte BTTS si probabilité ≥ {pct}% · Cote ≥ 1,50</AlertLine>;
+              })();
+              const butsContent = (() => {
+                const t15pct = FB_TOTAL15_LEAGUE_PROB_PCT[fixtureLeague] ?? 75;
+                const t15cal = FB_TOTAL15_LEAGUE_PROB_PCT[fixtureLeague] != null;
+                const t25oPct = FB_TOTAL25_LEAGUE_PROB_PCT[fixtureLeague] ?? 75;
+                const t25oCal = FB_TOTAL25_LEAGUE_PROB_PCT[fixtureLeague] != null;
+                const t25uPct = FB_TOTAL25_UNDER_LEAGUE_PROB_PCT[fixtureLeague] ?? 75;
+                const t25uCal = FB_TOTAL25_UNDER_LEAGUE_PROB_PCT[fixtureLeague] != null;
+                return (
+                  <>
+                    {TOTAL15_DISABLED_LEAGUES.has(fixtureLeague)
+                      ? <ObsLine>Plus de 1,5 but(s) en observation sur ce championnat{t15cal ? <> (seuil calibré {t15pct}%, alertes non activées)</> : ''}.</ObsLine>
+                      : <AlertLine>Alerte Plus de 1,5 but(s) si probabilité ≥ {t15pct}% · Cote ≥ 1,35 <span style={{ opacity: 0.7 }}>(jamais côté Moins de)</span></AlertLine>}
+                    {TOTAL25_OVER_DISABLED_LEAGUES.has(fixtureLeague)
+                      ? <ObsLine>Plus de 2,5 buts en observation sur ce championnat{t25oCal ? <> (seuil calibré {t25oPct}%, alertes non activées)</> : ''}.</ObsLine>
+                      : <AlertLine>Alerte Plus de 2,5 buts si probabilité ≥ {t25oPct}% · Cote ≥ 1,50</AlertLine>}
+                    {TOTAL25_UNDER_DISABLED_LEAGUES.has(fixtureLeague)
+                      ? <ObsLine>Moins de 2,5 buts en observation sur ce championnat{t25uCal ? <> (seuil calibré {t25uPct}%, alertes non activées)</> : ''}.</ObsLine>
+                      : <AlertLine>Alerte Moins de 2,5 buts si probabilité ≥ {t25uPct}% · Cote ≥ 1,60</AlertLine>}
+                  </>
+                );
+              })();
               const Infos = ({ items }) => (
                 <div style={{ marginTop: '0.5rem', fontSize: 9, lineHeight: 1.5, color: 'var(--text-dim)', borderTop: '1px solid var(--border)', paddingTop: '0.4rem' }}>
                   <div style={{ fontWeight: 700, color: 'var(--text)', marginBottom: '0.25rem' }}>Infos ⬇️📝</div>
@@ -850,14 +940,13 @@ function FootballOddsBox({ markets, bttsResult, home, away, frozen, onRefresh, r
                 ),
                 buts: (
                   <>
-                    <AlertLine>Alerte Over/Under 1,5 buts si probabilité ≥ {FB_TOTAL15_LEAGUE_PROB_PCT[fixtureLeague] ?? 75}% · Cote 1,30</AlertLine>
-                    <AlertLine>Alerte Over/Under 2,5 buts si probabilité ≥ {FB_TOTAL25_LEAGUE_PROB_PCT[fixtureLeague] ?? 75}% · Cote 1,50</AlertLine>
+                    {butsContent}
                     <Infos items={[estimSiteShort]} />
                   </>
                 ),
                 btts: (
                   <>
-                    <AlertLine>Alerte BTTS si probabilité ≥ {FB_BTTS_LEAGUE_PROB_PCT[fixtureLeague] ?? 58}% · Cote 1,50</AlertLine>
+                    {bttsContent}
                     <Infos items={[estimSiteShort]} />
                   </>
                 ),
@@ -882,14 +971,13 @@ function FootballOddsBox({ markets, bttsResult, home, away, frozen, onRefresh, r
                 ),
                 buts: (
                   <>
-                    <AlertLine>Alerte Over/Under 1,5 buts si probabilité ≥ {FB_TOTAL15_LEAGUE_PROB_PCT.bresil}% · Cote ≥ 1,30</AlertLine>
-                    <AlertLine>Alerte Over/Under 2,5 buts si probabilité ≥ {FB_TOTAL25_LEAGUE_PROB_PCT.bresil}% · Cote ≥ 1,50</AlertLine>
+                    {butsContent}
                     <Infos items={[estimSiteShort]} />
                   </>
                 ),
                 btts: (
                   <>
-                    <AlertLine>Alerte BTTS si probabilité ≥ {FB_BTTS_LEAGUE_PROB_PCT.bresil ?? 51}% · Cote ≥ 1,40</AlertLine>
+                    {bttsContent}
                     <Infos items={[estimSiteShort]} />
                   </>
                 ),
@@ -915,14 +1003,13 @@ function FootballOddsBox({ markets, bttsResult, home, away, frozen, onRefresh, r
                 ),
                 buts: (
                   <>
-                    <AlertLine>Alerte Over/Under 1,5 buts si probabilité ≥ 75% · Cote ≥ 1,30</AlertLine>
-                    <AlertLine>Alerte Over/Under 2,5 buts si probabilité ≥ 75% · Cote ≥ 1,50</AlertLine>
+                    {butsContent}
                     <Infos items={[estimSiteShort]} />
                   </>
                 ),
                 btts: (
                   <>
-                    <AlertLine>Alerte BTTS si probabilité ≥ {FB_BTTS_LEAGUE_PROB_PCT[fixtureLeague] ?? 70}% · Cote ≥ 1,60</AlertLine>
+                    {bttsContent}
                     <Infos items={[estimSiteShort]} />
                   </>
                 ),
@@ -945,6 +1032,7 @@ function FootballOddsBox({ markets, bttsResult, home, away, frozen, onRefresh, r
         )}
       </div>
 
+      <div key={tab} className="odds-tab-fade">
       {tab === 'result' && (
         <div style={{ display: 'grid', gridTemplateColumns: gridCols, gap: '0 0.25rem', paddingBottom: '0.35rem', borderBottom: '1px solid var(--border)', marginBottom: '0.2rem' }}>
           <div /><div style={ch}>1</div><div style={ch}>N</div><div style={ch}>2</div>
@@ -1354,6 +1442,7 @@ function FootballOddsBox({ markets, bttsResult, home, away, frozen, onRefresh, r
           </div>
         );
       })()}
+      </div>
     </div>
   );
 }
@@ -1922,10 +2011,10 @@ function UpcomingRow({ teamId, matches }) {
   );
 }
 
-function CollapsibleCard({ title, children, className = '', defaultOpen = false }) {
+function CollapsibleCard({ title, children, className = '', defaultOpen = false, style }) {
   const [open, setOpen] = useState(defaultOpen);
   return (
-    <section className={`detail-card collapsible-card ${className}`}>
+    <section className={`detail-card collapsible-card ${className}`} style={style}>
       <button className="collapsible-header" onClick={() => setOpen(o => !o)}>
         <span className="card-title">{title}</span>
         <span className={`collapsible-chevron ${open ? 'open' : ''}`}>▾</span>
@@ -2020,6 +2109,15 @@ export default function MatchDetailPage() {
   const handleUpcomingToggle = () => {
     setUpcomingFlipping(true);
     setTimeout(() => { setUpcomingSide(s => s === 'home' ? 'away' : 'home'); setUpcomingFlipping(false); }, 280);
+  };
+  const handleOddsToggle = () => {
+    if (!effectiveOdds || !Object.keys(effectiveOdds).length) return;
+    setShowLineup(false);
+    setShowOddsDropdown(v => !v);
+  };
+  const handleLineupToggle = () => {
+    setShowOddsDropdown(false);
+    setShowLineup(v => !v);
   };
   const [footballSnapshot, setFootballSnapshot] = useState(null);
 
@@ -2436,17 +2534,16 @@ export default function MatchDetailPage() {
         </div>
         <div
           className="info-chip"
-          onClick={() => { if (!effectiveOdds || !Object.keys(effectiveOdds).length) return; setShowOddsDropdown(v => !v); setShowLineup(false); }}
-          style={{ cursor: effectiveOdds && Object.keys(effectiveOdds).length ? 'pointer' : 'default', userSelect: 'none', opacity: matchOdds === null && !snapshotOdds ? 0.5 : 1 }}
+          onClick={handleOddsToggle}
+          style={{ cursor: effectiveOdds && Object.keys(effectiveOdds).length ? 'pointer' : 'default', userSelect: 'none', opacity: matchOdds === null && !snapshotOdds ? 0.5 : 1, marginLeft: 'auto' }}
         >
           {matchOdds === null && !snapshotOdds ? 'Odds…' : effectiveOdds && Object.keys(effectiveOdds).length ? (effectiveOddsFrozen ? 'Odds (pré-match)' : 'Odds') : 'Odds N/D'}
         </div>
 
         <button
           className={`info-chip info-chip--btn info-chip--pitch ${showLineup ? 'active' : ''}`}
-          onClick={() => { setShowLineup(v => !v); setShowOddsDropdown(false); }}
+          onClick={handleLineupToggle}
           title="Compositions"
-          style={{ marginLeft: 'auto' }}
         >
           <svg width="28" height="20" viewBox="0 0 28 20" fill="none">
             <rect x="1" y="1" width="26" height="18" rx="1" fill="none" stroke="white" strokeWidth="0.8"/>
@@ -2458,16 +2555,63 @@ export default function MatchDetailPage() {
         </button>
       </div>
 
-      {showOddsDropdown && effectiveOdds && Object.keys(effectiveOdds).length > 0 && (
-        <section className="detail-card compact-card" style={{ marginBottom: '0.5rem' }}>
-          <FootballOddsBox markets={effectiveOdds} bttsResult={bttsResult} home={home} away={away} frozen={effectiveOddsFrozen} onRefresh={handleRefreshOdds} refreshing={refreshingOdds} lastRefreshed={lastRefreshedOdds} fixtureLeague={fixture?.league} />
-        </section>
+      {/* ── Groupe Odds (Cotes + Statistiques saison + Derniers résultats) ── */}
+      {showOddsDropdown && (
+        <>
+          {effectiveOdds && Object.keys(effectiveOdds).length > 0 && (
+            <section className="detail-card compact-card" style={{ marginBottom: '0.5rem' }}>
+              <FootballOddsBox markets={effectiveOdds} bttsResult={bttsResult} home={home} away={away} frozen={effectiveOddsFrozen} onRefresh={handleRefreshOdds} refreshing={refreshingOdds} lastRefreshed={lastRefreshedOdds} fixtureLeague={fixture?.league} />
+            </section>
+          )}
+          <div className="detail-grid">
+            <section className="detail-card compact-card">
+              <h2 className="card-title">Statistiques saison</h2>
+              <div className="stats-teams-header">
+                <span>{effHome.tla || home.short}</span>
+                <span>{effAway.tla || away.short}</span>
+              </div>
+              <div className="stat-bars">
+                <StatBar label="Buts marqués"       home={+(effHome.goalsFor || 0).toFixed(2)}     away={+(effAway.goalsFor || 0).toFixed(2)} />
+                <StatBar label="Buts encaissés"      home={+(effHome.goalsAgainst || 0).toFixed(2)} away={+(effAway.goalsAgainst || 0).toFixed(2)} higherIsBetter={false} />
+                <StatBar label="xG (saison)"         home={+(effHome.xG || 0).toFixed(1)}  away={+(effAway.xG || 0).toFixed(1)} />
+                <StatBar label="xGA (saison)"        home={+(effHome.xGA || 0).toFixed(1)} away={+(effAway.xGA || 0).toFixed(1)} higherIsBetter={false} />
+                <StatBar label="Tirs / match"        home={effHome.shotsPerGame}    away={effAway.shotsPerGame} />
+                <StatBar label="Tirs cadrés / match" home={effHome.shotsOnTarget}   away={effAway.shotsOnTarget} />
+                <StatBar label="Tirs encaissés / match" home={effHome.shotsAgainst} away={effAway.shotsAgainst} higherIsBetter={false} />
+                <StatBar label="Tirs cadrés encaissés / match" home={effHome.shotsOnTargetAgainst} away={effAway.shotsOnTargetAgainst} higherIsBetter={false} />
+                <StatBar label="Possession (%)"      home={effHome.possession}      away={effAway.possession} unit="%" />
+              </div>
+            </section>
+
+            {/* Derniers résultats — déplacé ici le 30 juillet 2026 (demande utilisateur) : à côté de
+                "Statistiques saison". Données déjà génériques à tous les championnats
+                football-data.org (fdGet('/teams/:id/matches')), pas spécifiques au Brasileirão —
+                seul le placement changeait. */}
+            <section className="detail-card compact-card">
+              <h2 className="card-title">Derniers résultats</h2>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1px 1fr', gap: '0 1rem' }}>
+                <div>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-sub)', marginBottom: '0.4rem' }}>{home.short}</div>
+                  {homeMatches.length > 0
+                    ? homeMatches.slice(0, 6).map((m, i) => <RecentMatchLine key={i} match={m} teamId={liveHomeStats?.id} />)
+                    : <div style={{ fontSize: 11, color: 'var(--text-dim)' }}>Aucun match disponible</div>}
+                </div>
+                <div style={{ background: 'var(--border)' }} />
+                <div>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-sub)', marginBottom: '0.4rem' }}>{away.short}</div>
+                  {awayMatches.length > 0
+                    ? awayMatches.slice(0, 6).map((m, i) => <RecentMatchLine key={i} match={m} teamId={liveAwayStats?.id} />)
+                    : <div style={{ fontSize: 11, color: 'var(--text-dim)' }}>Aucun match disponible</div>}
+                </div>
+              </div>
+            </section>
+          </div>
+        </>
       )}
 
-      {/* ── Grid ── */}
-      <div className="detail-grid">
-
-        {showLineup && (
+      {/* ── Groupe Compositions (Compos+terrain, Confrontations directes, Prochains matchs) ── */}
+      {showLineup && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
           <div className="lineup-row-wrap">
             <RosterPanel
               home={home} away={away}
@@ -2519,111 +2663,60 @@ export default function MatchDetailPage() {
               })()}
             </div>
           </div>
-        )}
 
-        {showOddsDropdown && (
-          <section className="detail-card compact-card">
-            <h2 className="card-title">Statistiques saison</h2>
-            <div className="stats-teams-header">
-              <span>{effHome.tla || home.short}</span>
-              <span>{effAway.tla || away.short}</span>
-            </div>
-            <div className="stat-bars">
-              <StatBar label="Buts marqués"       home={+(effHome.goalsFor || 0).toFixed(2)}     away={+(effAway.goalsFor || 0).toFixed(2)} />
-              <StatBar label="Buts encaissés"      home={+(effHome.goalsAgainst || 0).toFixed(2)} away={+(effAway.goalsAgainst || 0).toFixed(2)} higherIsBetter={false} />
-              <StatBar label="xG (saison)"         home={+(effHome.xG || 0).toFixed(1)}  away={+(effAway.xG || 0).toFixed(1)} />
-              <StatBar label="xGA (saison)"        home={+(effHome.xGA || 0).toFixed(1)} away={+(effAway.xGA || 0).toFixed(1)} higherIsBetter={false} />
-              <StatBar label="Tirs / match"        home={effHome.shotsPerGame}    away={effAway.shotsPerGame} />
-              <StatBar label="Tirs cadrés / match" home={effHome.shotsOnTarget}   away={effAway.shotsOnTarget} />
-              <StatBar label="Tirs encaissés / match" home={effHome.shotsAgainst} away={effAway.shotsAgainst} higherIsBetter={false} />
-              <StatBar label="Tirs cadrés encaissés / match" home={effHome.shotsOnTargetAgainst} away={effAway.shotsOnTargetAgainst} higherIsBetter={false} />
-              <StatBar label="Possession (%)"      home={effHome.possession}      away={effAway.possession} unit="%" />
-            </div>
-          </section>
-        )}
-
-        {/* Derniers résultats — déplacé ici le 30 juillet 2026 (demande utilisateur) : à côté de
-            "Statistiques saison" plutôt que sous l'onglet Compositions (showLineup). Frère direct
-            dans .detail-grid (pas de grille imbriquée) pour occuper une colonne pleine comme le
-            reste de la page — la 1ère tentative les avait réduits à un quart de largeur chacun.
-            Données déjà génériques à tous les championnats football-data.org
-            (fdGet('/teams/:id/matches')), pas spécifiques au Brasileirão — seul le placement changeait. */}
-        {showOddsDropdown && (
-          <section className="detail-card compact-card">
-            <h2 className="card-title">Derniers résultats</h2>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1px 1fr', gap: '0 1rem' }}>
-              <div>
-                <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-sub)', marginBottom: '0.4rem' }}>{home.short}</div>
-                {homeMatches.length > 0
-                  ? homeMatches.slice(0, 6).map((m, i) => <RecentMatchLine key={i} match={m} teamId={liveHomeStats?.id} />)
-                  : <div style={{ fontSize: 11, color: 'var(--text-dim)' }}>Aucun match disponible</div>}
+          {realH2H.length > 0 && (
+            <CollapsibleCard title="Confrontations directes (réelles)" className="h2h-card">
+              <div className="h2h-list">
+                {realH2H.map((m, i) => <H2HRow key={i} match={{ date: m.date.split('T')[0], home: m.home, away: m.away, scoreHome: m.scoreHome, scoreAway: m.scoreAway }} />)}
               </div>
-              <div style={{ background: 'var(--border)' }} />
-              <div>
-                <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-sub)', marginBottom: '0.4rem' }}>{away.short}</div>
-                {awayMatches.length > 0
-                  ? awayMatches.slice(0, 6).map((m, i) => <RecentMatchLine key={i} match={m} teamId={liveAwayStats?.id} />)
-                  : <div style={{ fontSize: 11, color: 'var(--text-dim)' }}>Aucun match disponible</div>}
-              </div>
-            </div>
-          </section>
-        )}
+            </CollapsibleCard>
+          )}
 
-        {showLineup && realH2H.length > 0 && (
-          <CollapsibleCard title="Confrontations directes (réelles)" className="h2h-card">
-            <div className="h2h-list">
-              {realH2H.map((m, i) => <H2HRow key={i} match={{ date: m.date.split('T')[0], home: m.home, away: m.away, scoreHome: m.scoreHome, scoreAway: m.scoreAway }} />)}
-            </div>
-          </CollapsibleCard>
-        )}
-
-        {showLineup && (() => {
-          const upTeam    = upcomingSide === 'home' ? home : away;
-          const upTeamId  = upcomingSide === 'home' ? liveHomeStats?.id : liveAwayStats?.id;
-          const upMatches = upcomingSide === 'home' ? homeUpcoming : awayUpcoming;
-          return (
-            <section className="detail-card upcoming-card">
-              <div className="upcoming-header-row">
-                <span className="card-title upcoming-title-with-logo">
-                  5 prochains matchs
-                  <span
-                    style={{
-                      transition: 'transform 0.28s ease, opacity 0.28s ease',
-                      transform: upcomingFlipping ? 'scaleX(0)' : 'scaleX(1)',
-                      opacity: upcomingFlipping ? 0 : 1,
-                      display: 'inline-flex',
-                    }}
-                  >
-                    <TeamLogo name={upTeam.name} logoId={upTeam.logoId} size={16} />
+          {(() => {
+            const upTeam    = upcomingSide === 'home' ? home : away;
+            const upTeamId  = upcomingSide === 'home' ? liveHomeStats?.id : liveAwayStats?.id;
+            const upMatches = upcomingSide === 'home' ? homeUpcoming : awayUpcoming;
+            return (
+              <section className="detail-card upcoming-card">
+                <div className="upcoming-header-row">
+                  <span className="card-title upcoming-title-with-logo">
+                    5 prochains matchs
+                    <span
+                      style={{
+                        transition: 'transform 0.28s ease, opacity 0.28s ease',
+                        transform: upcomingFlipping ? 'scaleX(0)' : 'scaleX(1)',
+                        opacity: upcomingFlipping ? 0 : 1,
+                        display: 'inline-flex',
+                      }}
+                    >
+                      <TeamLogo name={upTeam.name} logoId={upTeam.logoId} size={16} />
+                    </span>
                   </span>
-                </span>
-                <div className="upcoming-header-right">
-                  <div
-                    className="upcoming-flip-wrap"
-                    style={{
-                      transition: 'transform 0.28s ease, opacity 0.28s ease',
-                      transform: upcomingFlipping ? 'scaleX(0)' : 'scaleX(1)',
-                      opacity: upcomingFlipping ? 0 : 1,
-                    }}
-                  >
-                    <UpcomingRow teamId={upTeamId} matches={upMatches} />
+                  <div className="upcoming-header-right">
+                    <div
+                      className="upcoming-flip-wrap"
+                      style={{
+                        transition: 'transform 0.28s ease, opacity 0.28s ease',
+                        transform: upcomingFlipping ? 'scaleX(0)' : 'scaleX(1)',
+                        opacity: upcomingFlipping ? 0 : 1,
+                      }}
+                    >
+                      <UpcomingRow teamId={upTeamId} matches={upMatches} />
+                    </div>
+                    <button
+                      className="upcoming-toggle-btn"
+                      onClick={handleUpcomingToggle}
+                      title={`Voir les prochains matchs de ${upcomingSide === 'home' ? away.short : home.short}`}
+                    >
+                      ⇄
+                    </button>
                   </div>
-                  <button
-                    className="upcoming-toggle-btn"
-                    onClick={handleUpcomingToggle}
-                    title={`Voir les prochains matchs de ${upcomingSide === 'home' ? away.short : home.short}`}
-                  >
-                    ⇄
-                  </button>
                 </div>
-              </div>
-            </section>
-          );
-        })()}
-
-
-
-      </div>
+              </section>
+            );
+          })()}
+        </div>
+      )}
     </div>
   );
 }
