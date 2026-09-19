@@ -23,7 +23,14 @@ import { cachedFetch } from './fetchCache.js';
 // simplement en attente de connexion, jamais réellement parties). Toujours fini par se résoudre
 // puisque le but est d'éviter un blocage INFINI, pas de forcer une vitesse donnée.
 const FETCH_TIMEOUT_MS = 20_000;
-function fetchWithTimeout(url, opts) {
+// Exportée le 19 septembre 2026 — le même trou existait dans `useLiveScores()` (RunningPage.jsx),
+// une fonction totalement séparée de ce fichier avec sa propre quinzaine de `fetch()` bruts (un par
+// championnat foot/basket). Le fix du 18 septembre n'avait couvert que CE fichier, jamais cette
+// 2e implémentation — cas réel confirmé (WNBA Minnesota-New York restée affichée "01:30" en carte
+// compacte malgré un match réellement en direct, `/api/wnba/scoreboard` renvoyant pourtant la bonne
+// donnée) : un `fetch()` bloqué sur une AUTRE ligue de la même boucle séquentielle gelait tout le
+// pipeline de scores pour toutes les ligues suivantes, indéfiniment, jusqu'à un rechargement complet.
+export function fetchWithTimeout(url, opts) {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
   return fetch(url, { ...opts, signal: controller.signal }).finally(() => clearTimeout(timeoutId));
@@ -159,15 +166,21 @@ function isNowRevoked(id) {
   return false;
 }
 
+// Tentatives en PARALLÈLE (19 septembre 2026, était un `for...of` séquentiel — même fix que
+// flushPendingUserData dans cloudStorage.js, même jour, même raison) : chaque tentative peut
+// légitimement attendre jusqu'à `FETCH_TIMEOUT_MS` (20s) avant d'échouer ; en séquentiel, une file de
+// plusieurs alertes jamais confirmées faisait grimper le pire cas à plusieurs dizaines de secondes,
+// répété à chaque synchro (montage, cycle 2min, retour de focus). Cas réel : Backtesting/Running
+// restés bloqués sur "Synchronisation..."/"Chargement..." après plusieurs heures de session.
 export async function flushPendingAlertSync() {
   const pending = readPendingSync();
-  for (const alert of pending) {
-    if (isNowRevoked(alert.id)) { writePendingSync(readPendingSync().filter(a => a.id !== alert.id)); continue; }
+  await Promise.allSettled(pending.map(async alert => {
+    if (isNowRevoked(alert.id)) { writePendingSync(readPendingSync().filter(a => a.id !== alert.id)); return; }
     try {
       const res = await fetchWithTimeout('/api/accepted-alerts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(alert) });
       if (res.ok) writePendingSync(readPendingSync().filter(a => a.id !== alert.id));
     } catch {}
-  }
+  }));
 }
 
 const PENDING_SETTLEMENT_KEY = 'pending_settlement_sync';
@@ -192,14 +205,15 @@ async function postSettlementReliably(payload) {
 }
 
 // Réessaie les résultats foot jamais confirmés côté serveur — appelé au chargement via syncSettlements.
+// Parallèle (19 septembre 2026) — même fix/même raison que flushPendingAlertSync ci-dessus.
 export async function flushPendingSettlementSync() {
   const pending = readPendingSettlements();
-  for (const payload of pending) {
+  await Promise.allSettled(pending.map(async payload => {
     try {
       const res = await fetchWithTimeout('/api/settlements', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
       if (res.ok) writePendingSettlements(readPendingSettlements().filter(p => p.id !== payload.id));
     } catch {}
-  }
+  }));
 }
 
 export async function syncSettlements() {
@@ -1393,9 +1407,16 @@ export async function resolveCompletedFootballAlerts(alerts, save) {
   );
   if (!toResolve.length) return;
   let changed = false;
-  for (const source of FOOTBALL_SETTLEMENT_SOURCES) {
+  // Sources en PARALLÈLE (19 septembre 2026, était un `for...of` séquentiel — même famille de fix que
+  // flushPendingUserData/flushPendingAlertSync/flushPendingSettlementSync le même jour) : jusqu'à 14
+  // championnats foot possibles ici, chacun avec un `fetchWithTimeout` pouvant légitimement attendre
+  // jusqu'à 20s — en séquentiel, un utilisateur avec des alertes acceptées sur plusieurs championnats
+  // (cas courant, cf. Running) pouvait payer cette attente plusieurs fois de suite à chaque appel.
+  // Chaque `source` traite un sous-ensemble disjoint d'alertes (filtré par préfixe) — aucun partage
+  // d'état entre itérations, sûr à paralléliser.
+  await Promise.allSettled(FOOTBALL_SETTLEMENT_SOURCES.map(async source => {
     const items = toResolve.filter(a => (a.fixtureId || '').startsWith(source.prefix));
-    if (!items.length) continue;
+    if (!items.length) return;
     try {
       const d = await fetchWithTimeout(source.endpoint).then(r => r.json());
       const games = d[source.gamesKey] || [];
@@ -1450,7 +1471,7 @@ export async function resolveCompletedFootballAlerts(alerts, save) {
         postSettlementReliably({ id: a.id, status: result, probability: a.acceptedProbability ?? a.probability, line: a.line, edge: a.edge, settledAt: a.settledAt });
       }
     } catch {}
-  }
+  }));
   if (changed) save([...alerts]);
 }
 

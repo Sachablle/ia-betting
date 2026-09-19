@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
 import { BBALL_FIXTURES } from '../utils/basketball';
-import { syncBackgroundAlerts, syncSettlements, syncGameTotalAlerts, syncTeamTotalAlerts, syncBballPinnacleAlerts, syncBasketballResultAlerts, syncOddsDrift, syncFootballAlerts, resolveCompletedFootballAlerts, postAcceptedAlertReliably, persistAlertsKey, FB_DC_BTTS_KEY, FB_DC_OU_KEY, syncTelegramActions, TEAM_TOTAL_KEY, syncHistoryOnce } from '../utils/syncAlerts';
+import { syncBackgroundAlerts, syncSettlements, syncGameTotalAlerts, syncTeamTotalAlerts, syncBballPinnacleAlerts, syncBasketballResultAlerts, syncOddsDrift, syncFootballAlerts, resolveCompletedFootballAlerts, postAcceptedAlertReliably, persistAlertsKey, FB_DC_BTTS_KEY, FB_DC_OU_KEY, syncTelegramActions, TEAM_TOTAL_KEY, syncHistoryOnce, fetchWithTimeout } from '../utils/syncAlerts';
 import { setItem as cloudSet, waitForInitialCloudSync } from '../utils/cloudStorage';
 import { cachedFetch, invalidateCache } from '../utils/fetchCache';
 import { StakeCalculatorWidget, NearMissPanelWidget, buildPendingItems } from '../components/PendingAlertWidgets';
@@ -324,9 +324,34 @@ function groupByMatch(acceptedGroups) {
 }
 
 // ── Hook scores live ──────────────────────────────────────────────────────────
+// Tous les `fetch()` de cette fonction passent par `fetchWithTimeout` (19 septembre 2026, importée
+// de syncAlerts.js) — bug réel trouvé et corrigé : un `fetch()` brut n'a aucun timeout, donc si UNE
+// SEULE requête (parmi ~15 championnats interrogés séquentiellement) restait bloquée côté réseau, la
+// boucle entière se figeait pour toujours à cette étape, empêchant `setScores`/`setLoaded` de jamais
+// s'exécuter — même pour les championnats déjà traités AVANT le blocage. Cas réel diagnostiqué en
+// direct (instrumentation temporaire + retirée) : WNBA Minnesota Lynx-New York Liberty restait
+// affichée "01:30" (carte "à venir") plusieurs minutes après le vrai coup d'envoi, alors que
+// `/api/wnba/scoreboard` renvoyait déjà STATUS_IN_PROGRESS avec le bon score — le fetch pour CETTE
+// ligue avait bien abouti, mais un autre fetch plus loin dans la même boucle ne s'était jamais résolu,
+// empêchant `setScores` d'être appelé du tout. Même classe de bug que celle déjà corrigée le 18
+// septembre pour `/api/userdata` (cloudStorage.js) et pour syncAlerts.js — jamais étendue à cette 2e
+// implémentation séparée avant aujourd'hui.
+// Gèle le dernier statut/score connu par match dans localStorage (19 septembre 2026, demande
+// explicite — "dès que je clique sur Running, si un match est en live, l'alerte est instantanément
+// en position live") : sans ce cache, `scores`/`loaded` repartent vides à chaque montage du hook
+// (changement de page, rechargement) — le tout premier rendu classe alors TOUJOURS tous les matchs
+// en "scheduledGroups" (`!scoresLoaded` dans le filtre plus bas) le temps que `doFetch()` boucle sur
+// ~15 championnats, même pour un match qu'on sait déjà être en direct depuis une visite précédente
+// il y a quelques secondes. Lu de façon synchrone à l'initialisation du state (donc dès le tout 1er
+// rendu, avant tout fetch réseau) puis réécrit à chaque `doFetch()` réussi — la fraîcheur réelle est
+// de toute façon revérifiée dans la foulée par le fetch normal, ce cache ne sert qu'à éviter le flash
+// visuel "à venir" sur un match qu'on sait déjà en direct.
+const LIVE_SCORES_CACHE_KEY = 'running_live_scores_cache';
+const readLiveScoresCache = () => { try { return JSON.parse(localStorage.getItem(LIVE_SCORES_CACHE_KEY) || '{}'); } catch { return {}; } };
+
 function useLiveScores(matchGroups) {
-  const [scores, setScores] = useState({});
-  const [loaded, setLoaded] = useState(false);
+  const [scores, setScores] = useState(readLiveScoresCache);
+  const [loaded, setLoaded] = useState(() => Object.keys(readLiveScoresCache()).length > 0);
   const timerRef = useRef(null);
 
   useEffect(() => {
@@ -339,12 +364,11 @@ function useLiveScores(matchGroups) {
         if (!byLeague[m.league]) byLeague[m.league] = [];
         byLeague[m.league].push(m);
       }
-
       for (const [league, matches] of Object.entries(byLeague)) {
         try {
           // CDM : live scores via /api/fd/worldcup, matché par id (fdcdm_${g.id})
           if (league === 'cdm') {
-            const d = await fetch('/api/fd/worldcup').then(r => r.ok ? r.json() : null).catch(() => null);
+            const d = await fetchWithTimeout('/api/fd/worldcup').then(r => r.ok ? r.json() : null).catch(() => null);
             const games = d?.games || [];
             for (const m of matches) {
               const gid = String(m.eventId || '').replace('fdcdm_', '');
@@ -369,7 +393,7 @@ function useLiveScores(matchGroups) {
           // matché par id (préfixe afel_/afcl_/afch_ selon la compétition)
           if (EU_CUP_LEAGUES.includes(league)) {
             const prefix = { europa: 'afel_', conference: 'afcl_', champions: 'afch_' }[league];
-            const d = await fetch(`/api/football/eucup/${league}/matches`).then(r => r.ok ? r.json() : null).catch(() => null);
+            const d = await fetchWithTimeout(`/api/football/eucup/${league}/matches`).then(r => r.ok ? r.json() : null).catch(() => null);
             const games = d?.matches || [];
             for (const m of matches) {
               const gid = String(m.eventId || '').replace(prefix, '');
@@ -395,7 +419,7 @@ function useLiveScores(matchGroups) {
           // eux n'ont réellement aucune source live ; Brasileirão en a une depuis le 17 juillet 2026,
           // cf. resolveCompletedFootballAlerts côté syncAlerts.js qui l'utilise déjà pour le règlement).
           if (league === 'bresil') {
-            const d = await fetch('/api/fd/bresil').then(r => r.ok ? r.json() : null).catch(() => null);
+            const d = await fetchWithTimeout('/api/fd/bresil').then(r => r.ok ? r.json() : null).catch(() => null);
             const games = d?.matches || [];
             for (const m of matches) {
               const gid = String(m.eventId || '').replace('fdbr_', '');
@@ -419,7 +443,7 @@ function useLiveScores(matchGroups) {
           // Grèce Super League (8 septembre 2026) : live scores + crests via /api/football/grece,
           // même patron que Brasileirão ci-dessus (jamais passée par FD, source dédiée dès le départ).
           if (league === 'grece') {
-            const d = await fetch('/api/football/grece').then(r => r.ok ? r.json() : null).catch(() => null);
+            const d = await fetchWithTimeout('/api/football/grece').then(r => r.ok ? r.json() : null).catch(() => null);
             const games = d?.matches || [];
             for (const m of matches) {
               const gid = String(m.eventId || '').replace('grc_', '');
@@ -442,7 +466,7 @@ function useLiveScores(matchGroups) {
           }
           // Arabie Saoudite Pro League (8 septembre 2026) — même patron que la Grèce ci-dessus.
           if (league === 'arabie') {
-            const d = await fetch('/api/football/arabie').then(r => r.ok ? r.json() : null).catch(() => null);
+            const d = await fetchWithTimeout('/api/football/arabie').then(r => r.ok ? r.json() : null).catch(() => null);
             const games = d?.matches || [];
             for (const m of matches) {
               const gid = String(m.eventId || '').replace('arb_', '');
@@ -465,7 +489,7 @@ function useLiveScores(matchGroups) {
           }
           // Portugal Primeira Liga (9 septembre 2026) — même patron que la Grèce/l'Arabie ci-dessus.
           if (league === 'portugal') {
-            const d = await fetch('/api/football/portugal').then(r => r.ok ? r.json() : null).catch(() => null);
+            const d = await fetchWithTimeout('/api/football/portugal').then(r => r.ok ? r.json() : null).catch(() => null);
             const games = d?.matches || [];
             for (const m of matches) {
               const gid = String(m.eventId || '').replace('por_', '');
@@ -488,7 +512,7 @@ function useLiveScores(matchGroups) {
           }
           // 🇳🇱 Pays-Bas Eredivisie (17 septembre 2026) — même patron que Grèce/Arabie/Portugal ci-dessus.
           if (league === 'paysbas') {
-            const d = await fetch('/api/football/paysbas').then(r => r.ok ? r.json() : null).catch(() => null);
+            const d = await fetchWithTimeout('/api/football/paysbas').then(r => r.ok ? r.json() : null).catch(() => null);
             const games = d?.matches || [];
             for (const m of matches) {
               const gid = String(m.eventId || '').replace('nl_', '');
@@ -506,7 +530,7 @@ function useLiveScores(matchGroups) {
           }
           // 🇧🇪 Belgique Pro League (17 septembre 2026) — même patron que Grèce/Arabie/Portugal ci-dessus.
           if (league === 'belgique') {
-            const d = await fetch('/api/football/belgique').then(r => r.ok ? r.json() : null).catch(() => null);
+            const d = await fetchWithTimeout('/api/football/belgique').then(r => r.ok ? r.json() : null).catch(() => null);
             const games = d?.matches || [];
             for (const m of matches) {
               const gid = String(m.eventId || '').replace('be_', '');
@@ -524,7 +548,7 @@ function useLiveScores(matchGroups) {
           }
           // 🇨🇭 Suisse Super League (17 septembre 2026) — même patron que Grèce/Arabie/Portugal ci-dessus.
           if (league === 'suisse') {
-            const d = await fetch('/api/football/suisse').then(r => r.ok ? r.json() : null).catch(() => null);
+            const d = await fetchWithTimeout('/api/football/suisse').then(r => r.ok ? r.json() : null).catch(() => null);
             const games = d?.matches || [];
             for (const m of matches) {
               const gid = String(m.eventId || '').replace('ch_', '');
@@ -542,7 +566,7 @@ function useLiveScores(matchGroups) {
           }
           // 🇳🇴 Norvège Eliteserien (17 septembre 2026) — même patron que Grèce/Arabie/Portugal ci-dessus.
           if (league === 'norvege') {
-            const d = await fetch('/api/football/norvege').then(r => r.ok ? r.json() : null).catch(() => null);
+            const d = await fetchWithTimeout('/api/football/norvege').then(r => r.ok ? r.json() : null).catch(() => null);
             const games = d?.matches || [];
             for (const m of matches) {
               const gid = String(m.eventId || '').replace('no_', '');
@@ -560,7 +584,7 @@ function useLiveScores(matchGroups) {
           }
           // 🇹🇷 Turquie Süper Lig (17 septembre 2026) — même patron que Grèce/Arabie/Portugal ci-dessus.
           if (league === 'turquie') {
-            const d = await fetch('/api/football/turquie').then(r => r.ok ? r.json() : null).catch(() => null);
+            const d = await fetchWithTimeout('/api/football/turquie').then(r => r.ok ? r.json() : null).catch(() => null);
             const games = d?.matches || [];
             for (const m of matches) {
               const gid = String(m.eventId || '').replace('tr_', '');
@@ -583,7 +607,7 @@ function useLiveScores(matchGroups) {
           // 2026 (cas réel Strasbourg-Monaco, resté hors "live" dans Running malgré un match
           // réellement en cours) — même patron que Brésil/Grèce/Arabie/Portugal ci-dessus.
           if (['ligue1', 'pl', 'laliga', 'bundes', 'seriea'].includes(league)) {
-            const d = await fetch('/api/fd/matches').then(r => r.ok ? r.json() : null).catch(() => null);
+            const d = await fetchWithTimeout('/api/fd/matches').then(r => r.ok ? r.json() : null).catch(() => null);
             const games = d?.matches || [];
             for (const m of matches) {
               const gid = String(m.eventId || '').replace('fd_', '');
@@ -612,7 +636,7 @@ function useLiveScores(matchGroups) {
           const url = league === 'wnba' ? '/api/wnba/scoreboard'
             : EU.includes(league) ? `/api/euro/${league}/scoreboard`
             : '/api/nba/scoreboard';
-          const d = await fetch(url).then(r => r.ok ? r.json() : null).catch(() => null);
+          const d = await fetchWithTimeout(url).then(r => r.ok ? r.json() : null).catch(() => null);
           const games = d?.games || [];
           for (const m of matches) {
             const g = games.find(g => {
@@ -639,11 +663,33 @@ function useLiveScores(matchGroups) {
       }
       setScores(result);
       setLoaded(true);
+      try { localStorage.setItem(LIVE_SCORES_CACHE_KEY, JSON.stringify(result)); } catch {}
     };
 
     doFetch();
     timerRef.current = setInterval(doFetch, 30_000);
-    return () => clearInterval(timerRef.current);
+
+    // Même resynchro à la reprise de focus que l'effet de sync des alertes plus bas (19 septembre
+    // 2026) — sans ça, les scores live restent eux aussi figés sur leur dernière valeur connue
+    // pendant toute la durée où l'onglet est resté en arrière-plan (Safari suspend/ralentit
+    // fortement les timers), le `setInterval` 30s ci-dessus ne se rattrapant que très lentement une
+    // fois la fenêtre revenue au premier plan.
+    let lastVisibleFetch = 0;
+    const onVisible = () => {
+      if (document.visibilityState !== 'visible') return;
+      const now = Date.now();
+      if (now - lastVisibleFetch < 3000) return;
+      lastVisibleFetch = now;
+      doFetch();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    window.addEventListener('focus', onVisible);
+
+    return () => {
+      clearInterval(timerRef.current);
+      document.removeEventListener('visibilitychange', onVisible);
+      window.removeEventListener('focus', onVisible);
+    };
   }, [matchGroups.map(m => m.matchKey).join(',')]);
 
   return { scores, loaded };
@@ -675,7 +721,7 @@ function useLiveBoxscore(acceptedGroups) {
       for (const match of Object.values(byMatch)) {
         try {
           const base = match.league === 'wnba' ? '/api/wnba' : '/api/nba';
-          const bs = await fetch(`${base}/boxscore?date=${encodeURIComponent(match.fixtureDate)}&home=${match.homeShort}&away=${match.awayShort}`)
+          const bs = await fetchWithTimeout(`${base}/boxscore?date=${encodeURIComponent(match.fixtureDate)}&home=${match.homeShort}&away=${match.awayShort}`)
             .then(r => r.ok ? r.json() : null).catch(() => null);
           if (!bs || bs.error) continue;
           const allPlayers = Object.entries(bs)
@@ -1140,7 +1186,7 @@ export default function RunningPage() {
       // de résolution client séparée nécessaire, syncSettlements() ci-dessus suffit (BBALL_PINNACLE_KEY
       // est dans SETTLEABLE_KEYS).
     })();
-    const syncTimer = setInterval(() => {
+    const runSyncCycle = () => {
       syncBackgroundAlerts().then(reloadFromStorage);
       syncGameTotalAlerts().then(reloadFromStorage);
       syncTeamTotalAlerts().then(reloadFromStorage);
@@ -1155,7 +1201,28 @@ export default function RunningPage() {
       // d'attente tant que la page n'était pas rechargée — trou réel derrière le risque de
       // double-pari du 8 août (project_accept_alert_restart_race_aout8).
       syncSettlements().then(reloadFromStorage);
-    }, 2 * 60 * 1000);
+    };
+    const syncTimer = setInterval(runSyncCycle, 2 * 60 * 1000);
+
+    // Resynchro à la reprise de focus (19 septembre 2026) — même fix que App.jsx (20 juillet 2026)
+    // et PlaceBetPage.jsx, jamais porté à RunningPage.jsx jusqu'ici (trou trouvé sur signalement
+    // utilisateur : page restée figée sur un état périmé après ~6h d'onglet inactif, une alerte
+    // acceptée dans cet état repassait "pending" au rechargement suivant). Safari (et les autres
+    // navigateurs à des degrés divers) suspendent ou ralentissent fortement les timers d'un onglet
+    // resté longtemps en arrière-plan — le `syncTimer` 2min ci-dessus peut donc ne quasiment jamais
+    // se déclencher tant que la fenêtre n'est pas revenue au premier plan, laissant `scores`/les
+    // alertes affichées périmés pendant toute la durée de l'inactivité. Même throttle 3s que
+    // App.jsx pour éviter un double appel si le focus revient juste après un cycle déjà en cours.
+    let lastVisibleSync = 0;
+    const onVisible = () => {
+      if (document.visibilityState !== 'visible') return;
+      const now = Date.now();
+      if (now - lastVisibleSync < 3000) return;
+      lastVisibleSync = now;
+      runSyncCycle();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    window.addEventListener('focus', onVisible);
 
     // syncTelegramActions() d'abord (18 juillet 2026) — sans ça, un SSE déclenché par un accept/reject
     // Telegram ne faisait que relire le localStorage tel quel (déjà périmé), au lieu d'aller chercher
@@ -1174,6 +1241,8 @@ export default function RunningPage() {
       window.removeEventListener('fb_dc_ou_alerts_updated', reloadFootball);
       window.removeEventListener('bball_pinnacle_alerts_updated', reloadFromStorage);
       window.removeEventListener('cloud_synced', onCloudSynced);
+      document.removeEventListener('visibilitychange', onVisible);
+      window.removeEventListener('focus', onVisible);
       clearInterval(syncTimer);
     };
   }, []);

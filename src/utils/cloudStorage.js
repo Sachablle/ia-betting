@@ -43,7 +43,16 @@ const writePendingUserData = list => { try { localStorage.setItem(PENDING_USERDA
 // indéfiniment loadFromCloud() de rapatrier la vraie valeur serveur — sinon un onglet ancien reste
 // figé pour toujours sur sa version locale (bug constaté le 7 juillet 2026 : navigation privée à
 // jour, onglet normal resté bloqué sur d'anciennes données malgré un rechargement complet).
-const PENDING_BLOCK_MS = 30_000;
+// Relevé 30s→10min le 19 septembre 2026 — bug réel trouvé et corrigé (cas Bahia BTTS, acceptée puis
+// revenue "pending" après un simple F5 ~2 min plus tard) : `postUserDataReliably` (3 tentatives) peut
+// légitimement mettre jusqu'à ~50s à échouer avant de mettre la clé en file d'attente — débit mesuré
+// vers ce cluster MongoDB ~90-100 Ko/s (cf. CLAUDE.md), largement en dessous de ce qu'était le réseau
+// au moment où 30s avait été choisi. Avec 30s, la protection expirait souvent AVANT même que la 1ère
+// tentative d'écriture n'ait fini d'échouer — un rechargement dans la minute suivante retrouvait alors
+// une clé "pending" non protégée et écrasait sans le savoir un accept tout juste perdu en vol. 10min
+// couvre largement ce pire cas avec une marge confortable, tout en gardant la garde-fou du 7 juillet
+// (un onglet abandonné des jours finit quand même par céder la place à la vraie valeur serveur).
+const PENDING_BLOCK_MS = 10 * 60_000;
 
 // fetch() brut n'a pas de timeout par défaut : si une requête reste bloquée côté réseau (ne serait-ce
 // qu'une fois), sa promesse ne se résout jamais et occupe une des 6 connexions HTTP par origine du
@@ -77,9 +86,19 @@ async function postUserDataReliably(key, parsed) {
 
 // Réessaie les écritures MongoDB jamais confirmées (3 tentatives épuisées) — appelé depuis
 // loadFromCloud à chaque cycle, comme flushPendingAlertSync/flushPendingSettlementSync.
+// Tentatives en PARALLÈLE (19 septembre 2026, était un `for...of` séquentiel) — bug réel trouvé et
+// corrigé : chaque tentative peut légitimement attendre jusqu'à `USERDATA_FETCH_TIMEOUT_MS` (15s,
+// débit bridé du cluster MongoDB) avant d'échouer ; en séquentiel, une file de ne serait-ce que 3-4
+// clés bloquées (plausible après une nuit avec de vraies coupures réseau, cf. CLAUDE.md) faisait
+// monter le pire cas à 45-60s+ AVANT MÊME que la vraie lecture GET démarre — et cette fonction est
+// appelée en tête de CHAQUE `loadFromCloud()` (montage, cycle 2min, ET désormais aussi chaque retour
+// de focus depuis le fix du 19 septembre sur RunningPage/App.jsx) : plus le sync est fréquent, plus
+// ce coût séquentiel se répète. Cas réel signalé : Backtesting resté bloqué sur "Synchronisation..."/
+// "Chargement..." après plusieurs heures de session. En parallèle, le pire cas redevient max(15s)
+// quel que soit le nombre de clés en attente.
 export async function flushPendingUserData() {
   const pending = readPendingUserData();
-  for (const { key, value } of pending) {
+  await Promise.allSettled(pending.map(async ({ key, value }) => {
     // Repart de la version localStorage ACTUELLE, pas de l'instantané figé au moment de la mise en
     // file — un pending resté bloqué des heures (ex: coupure backend passagère) rejouait sinon un
     // état obsolète et écrasait des changements faits entre-temps (cas réel : une alerte annulée
@@ -94,7 +113,7 @@ export async function flushPendingUserData() {
       });
       if (res.ok) writePendingUserData(readPendingUserData().filter(p => p.key !== key));
     } catch {}
-  }
+  }));
 }
 
 // Résolu une seule fois, dès que le tout premier loadFromCloud() de la session se termine (succès

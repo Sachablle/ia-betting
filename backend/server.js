@@ -1817,6 +1817,30 @@ app.get('/api/fd/matches', async (req, res) => {
 // championnats (_getFdLeaguesResults) et le Brasileirão (_getBresilMatches) ci-dessous.
 const FD_MAX_LIVE_MATCH_MS = 3 * 3600_000;
 
+// Détecte si un scoreboard basket (NBA/WNBA/EuroLeague/CDM/ligues EU génériques) peut être en direct,
+// pour choisir un TTL de cache court (30-60s) plutôt que le TTL long habituel (5min) — bug trouvé le
+// 19 septembre 2026 (cas réel WNBA Minnesota-New York, `hasLive` figé à `false` alors qu'ESPN
+// affichait déjà STATUS_IN_PROGRESS/"8:04 - 1er quart-temps" en direct) : le check historique
+// (`games.some(g => g.status === 'STATUS_IN_PROGRESS')`) se base sur le statut déjà présent dans le
+// cache CONSULTÉ — un piège d'œuf-et-poule classique. Un match mis en cache juste avant son coup
+// d'envoi (`STATUS_SCHEDULED`) fait passer `hasLive` à `false`, verrouillant le TTL long (5min) pile
+// au moment où il faudrait vérifier plus souvent — la transition programmé→en cours peut donc rester
+// invisible jusqu'à 5 minutes après le vrai coup d'envoi. Fix générique : un match encore
+// `STATUS_SCHEDULED` dont l'heure programmée est déjà passée (mais pas trop ancienne — sinon on
+// traiterait un match d'il y a plusieurs jours comme "potentiellement en direct") compte aussi comme
+// vivant, ce qui force une vraie vérification à la prochaine requête au lieu d'attendre le TTL long.
+const SCOREBOARD_LIVE_WINDOW_MS = 5 * 3600_000; // match + prolongations + marge généreuse
+function _scoreboardHasLive(games) {
+  if (!games?.length) return false;
+  const now = Date.now();
+  return games.some(g => {
+    if (g.status === 'STATUS_IN_PROGRESS') return true;
+    if (g.status !== 'STATUS_SCHEDULED') return false;
+    const t = new Date(g.date).getTime();
+    return !isNaN(t) && t <= now && now - t < SCOREBOARD_LIVE_WINDOW_MS;
+  });
+}
+
 // ── Coupe du Monde (football-data.org) ───────────────────────────────────────
 // Cache persisté sur disque : survit aux redémarrages (--watch) pour éviter qu'un
 // rate-limit FD (10 req/min, partagé avec /api/fd/matches) ne vide l'affichage CDM.
@@ -1832,7 +1856,7 @@ app.get('/api/fd/worldcup', async (req, res) => {
   // Cache plus court (1min) si un match est en cours — pour suivre les buts en quasi
   // temps réel ; sinon 5min (réduit le délai de détection du passage en live, quota FD
   // 10 req/min largement assez large pour ça).
-  const hasLive = _cdmCache?.games?.some(g => g.status === 'STATUS_IN_PROGRESS');
+  const hasLive = _scoreboardHasLive(_cdmCache?.games);
   const ttl = hasLive ? 60 * 1000 : 5 * 60 * 1000;
   if (_cdmCache && Date.now() - _cdmCacheTs < ttl) return res.json(_cdmCache);
   if (Date.now() < _cdmErrorUntil) return res.json(_cdmCache || { games: [] });
@@ -3740,7 +3764,7 @@ app.get('/api/nba/playoff-patch', async (req, res) => {
 });
 
 app.get('/api/nba/scoreboard', async (req, res) => {
-  const hasLive = _scoreboardCache.data?.games?.some(g => g.status === 'STATUS_IN_PROGRESS');
+  const hasLive = _scoreboardHasLive(_scoreboardCache.data?.games);
   const ttl     = hasLive ? 30_000 : CACHE_5MIN;
   if (_scoreboardCache.data && Date.now() - _scoreboardCache.ts < ttl)
     return res.json(_scoreboardCache.data);
@@ -4862,7 +4886,7 @@ async function fetchWNBAPlayerStats(playerId) {
 }
 
 app.get('/api/wnba/scoreboard', async (req, res) => {
-  const hasLive = _wnbaScoreboardCache.data?.games?.some(g => g.status === 'STATUS_IN_PROGRESS');
+  const hasLive = _scoreboardHasLive(_wnbaScoreboardCache.data?.games);
   const ttl = hasLive ? 30_000 : CACHE_5MIN;
   if (_wnbaScoreboardCache.data && Date.now() - _wnbaScoreboardCache.ts < ttl)
     return res.json(_wnbaScoreboardCache.data);
@@ -5821,7 +5845,7 @@ app.get('/api/euroleague/projectedlineup', async (req, res) => {
 });
 
 app.get('/api/euroleague/scoreboard', async (req, res) => {
-  const hasLive = _elScoreboardCache.data?.games?.some(g => g.status === 'STATUS_IN_PROGRESS');
+  const hasLive = _scoreboardHasLive(_elScoreboardCache.data?.games);
   const ttl = hasLive ? 30_000 : CACHE_5MIN;
   if (_elScoreboardCache.data && Date.now() - _elScoreboardCache.ts < ttl)
     return res.json(_elScoreboardCache.data);
@@ -6091,8 +6115,20 @@ const EURO_LEAGUES = {
   // vérification (saison 26/27, coup d'envoi le 19 septembre) : cotes branchées dans
   // /api/basketball/odds (_betclicLeagueSlugs, UB_LEAGUE_PATHS) — décision explicite utilisateur de
   // n'afficher QUE les cotes pour l'instant, sans générer d'alertes réelles (NBL reste absente de
-  // LEAGUES_EU/EU_ALERT_LEAGUES/BASKET_CALIBRATION_LEAGUES, comme avant). gbl reste dans le même
-  // état que NBL avant ce jour (aucune cote confirmée).
+  // EU_ALERT_LEAGUES/BASKET_CALIBRATION_LEAGUES, comme avant). gbl reste dans le même état que NBL
+  // avant ce jour (aucune cote confirmée).
+  // NBL — props joueurs (18 septembre 2026) — vérifié en direct (script isolé, mêmes helpers gRPC
+  // que _betclicGrpcCategory déjà en prod) : Betclic expose de vraies cotes pts/reb/ast/tpm/3pm pour
+  // les matchs NBL (`ca_bkb_scrs`/`ca_bkb_pprp`, même categoryId que ACB/BBL/Lega A/EuroLeague), le
+  // matching de nom fonctionne nativement via la branche `lwrd()` non-IS_EU_PROPS de
+  // fetchBetclicPlayerProps (noms NBL simples, pas de préfixe/suffixe club européen à nettoyer —
+  // confirmé sur les 4 matchs d'ouverture). NBL ajoutée à EU_PROP_LEAGUES/EU_LEAGUES_SET (teamMap
+  // du endpoint props) et à LEAGUES_EU dans runEUPropsAlerts() — mais comme les 5 autres ligues
+  // basket EU depuis le 16 septembre (EU_PROPS_OBSERVATION_ONLY), aucune alerte réelle : modèle +
+  // near-miss tournent, cotes affichées sur la fiche match, décision confirmée avec l'utilisateur
+  // avant codage (zéro historique near-miss propre à la NBL pour juger le seuil générique 80%).
+  // Toujours absente d'IS_EU_PROPS (pas besoin, cf. ci-dessus) et d'EU_ALERT_LEAGUES/
+  // BASKET_CALIBRATION_LEAGUES (Résultat/Total équipe, hors scope de ce jour).
   gbl:   { id: 45,  season: '2025-2026', gamesSeason: '2026-2027', name: 'Basket League',  country: 'GR', flag: '🇬🇷', accent: '#0d5eaf' },
   // EuroLeague (id 120, migrée de Bzzoiro le 1er septembre 2026) — format de saison NUMÉRIQUE
   // chez api-basketball ("2025"/"2026"), pas "YYYY-YYYY" comme les 5 autres ligues EU.
@@ -6453,7 +6489,7 @@ app.get('/api/euro/:league/scoreboard', async (req, res) => {
   if (!cfg) return res.status(404).json({ error: 'Unknown league' });
   const ck = `euro_sb_${req.params.league}`;
   const hit = _euroCache[ck];
-  const hasLive = hit?.data?.games?.some(g => g.status === 'STATUS_IN_PROGRESS');
+  const hasLive = _scoreboardHasLive(hit?.data?.games);
   if (hit && (Date.now() - hit.ts < (hasLive ? 30_000 : CACHE_5MIN) || _basketballApiPaused)) return res.json(hit.data);
   try {
     const d = await bballFetch(`/games?league=${cfg.id}&season=${cfg.gamesSeason || cfg.season}`);
@@ -12138,7 +12174,7 @@ app.get('/api/basketball/player-props', async (req, res) => {
     if (snap?.data?.found) return res.json(snap.data);
   }
 
-  const EU_LEAGUES_SET = new Set(['acb','lnb','bbl','legaa','euroleague']);
+  const EU_LEAGUES_SET = new Set(['acb','lnb','bbl','legaa','euroleague','nbl']);
   const cacheStaleTeam = cached && EU_LEAGUES_SET.has(league) && cached.data?.found && Object.keys(cached.data?.teamMap || {}).length === 0;
   // Cache court (5min) si un bookmaker manquant mais d'autres présents → pas encore scrapé au moment du cache
   const winamaxMissing = cached && !cached.data?.winamaxSource && (cached.data?.unibetSource || cached.data?.betclicSource);
@@ -12399,7 +12435,7 @@ async function _refreshPlayerProps(league, home, away, cacheKey, cached) {
     }
     // Team assignment map — EU leagues only
     let teamMap = {};
-    const EU_PROP_LEAGUES = new Set(['acb','lnb','bbl','legaa','euroleague']);
+    const EU_PROP_LEAGUES = new Set(['acb','lnb','bbl','legaa','euroleague','nbl']);
     if (found && EU_PROP_LEAGUES.has(league)) {
       try {
         const getTeamIdFromSb = teamName => {
@@ -14722,11 +14758,15 @@ function mergePlayerProps(scrapedPlayers, playerName, nameMatchFn) {
 let _bgLog = [];
 // ── Moteur de projection joueurs EU (backend) ─────────────────────────────
 // nbl (1er septembre 2026) — vraie moyenne calculée sur les 179 matchs NBL Australie 2025-2026 joués
-// (91,6 pts/équipe), pas encore activée dans LEAGUES_EU/EU_ALERT_LEAGUES (affichage seul pour l'instant).
+// (91,6 pts/équipe). Props Betclic/Unibet confirmées le 18 septembre 2026 (vérifié en direct,
+// vraies cotes pts/reb/ast/tpm) — nbl ajoutée à LEAGUES_EU (props, observation seule, voir
+// runEUPropsAlerts) mais reste hors EU_ALERT_LEAGUES (Résultat/Total équipe : décision explicite
+// du 15 septembre de n'afficher que les cotes h2h sans rien calibrer sur ce marché pour l'instant).
 // gbl (9 septembre 2026) — vraie moyenne calculée sur le classement api-basketball (league=45,
 // season=2025-2026, 13 équipes) : somme des points marqués / somme des matchs joués = 83,7 pts/équipe.
-// Même statut que nbl : pas dans LEAGUES_EU/EU_ALERT_LEAGUES (pas d'odds), sert seulement à mettre
-// à l'échelle les widgets d'affichage Modèle 1X2/O-U (/api/basketball/result, /total).
+// Toujours sans la moindre cote bookmaker (contrairement à nbl depuis le 18 septembre) — pas dans
+// LEAGUES_EU/EU_ALERT_LEAGUES, sert seulement à mettre à l'échelle les widgets d'affichage
+// Modèle 1X2/O-U (/api/basketball/result, /total).
 const EU_LEAGUE_CONST_BG = { acb:83, lnb:79, bbl:82, legaa:80, euroleague:81, nbl:91.6, gbl:83.7 };
 const NBA_REF_BG = 114.5;
 
@@ -14751,6 +14791,31 @@ function calcStdBgEU(games, key) {
 // entre groupes de ligues sur données réelles le 22 juin 2026).
 const EU_GL_KEY = { pts: 'points', reb: 'rebounds', ast: 'assists', tpm: 'tpm' };
 const CONSISTENCY_CV_CUTOFF_EU = { pts: 0.42, reb: 0.46, ast: 0.58, tpm: 0.76 };
+// Matching roster ↔ cotes props, insensible à l'ordre Prénom/Nom (18 septembre 2026) — découvert en
+// intégrant les props NBL (roster api-basketball renvoyant "Goulding Chris" pour "Chris Goulding" côté
+// Betclic/Unibet, cas réel Melbourne United) mais générique à toute ligue EU : le commentaire déjà
+// présent plus haut dans `runEUPropsAlerts()` ("api-sports.io n'est pas cohérent sur l'ordre selon
+// l'endpoint, voire selon le joueur au sein du même roster") documentait déjà ce défaut de données sans
+// jamais l'avoir corrigé pour le matching props (seul `normEuName`, utilisé pour les compos Out, le
+// gérait déjà — via un tri alphabétique des mots qui casse en revanche le cas prénom abrégé "N.
+// Rakocevic" vs "Nick Rakocevic", déjà couvert par le simple dernier-mot). Combine les deux : dernier
+// mot identique (cas déjà géré) OU dernier mot de l'un = premier mot de l'autre (ordre inversé) —
+// longueur ≥3 des deux côtés pour ne jamais valider un match sur une initiale abrégée ("T.").
+function euPlayerNameMatch(a, b) {
+  if (!a || !b) return false;
+  const al = a.toLowerCase(), bl = b.toLowerCase();
+  if (al === bl) return true;
+  const ta = al.replace(/\./g, '').trim().split(/\s+/).filter(Boolean);
+  const tb = bl.replace(/\./g, '').trim().split(/\s+/).filter(Boolean);
+  if (!ta.length || !tb.length) return false;
+  const lastA = ta[ta.length - 1], lastB = tb[tb.length - 1];
+  if (lastA === lastB) return true;
+  const firstA = ta[0], firstB = tb[0];
+  if (lastA.length >= 3 && lastA === firstB) return true;
+  if (lastB.length >= 3 && lastB === firstA) return true;
+  return false;
+}
+
 function isConsistentStatEU(games, stat) {
   const key = EU_GL_KEY[stat];
   const vals = (games || []).filter(g => (g.minutes||0) > 5 && g[key] != null).map(g => g[key]);
@@ -15865,9 +15930,15 @@ async function runEUPropsAlerts(newAlerts, PORT) {
   // EuroLeague, sur toute la saison — même qualité que les 3 ligues déjà actives. EU_PROP_LEAGUES/
   // IS_EU_PROPS/EU_LEAGUE_CONST_BG (échelle de points 79/81) couvraient déjà ces 2 ligues sans rien
   // à changer — seule cette liste bloquait la génération d'alertes.
-  const LEAGUES_EU = ['acb','bbl','legaa','lnb','euroleague'];
-  // Observation seule (16 septembre 2026, demande explicite utilisateur) — aucune des 5 ligues EU
-  // n'a assez de near-miss réel pour faire confiance au seuil générique 80% sans historique propre
+  // NBL ajoutée le 18 septembre 2026 — cotes props Betclic/Unibet confirmées en direct (vraies
+  // lignes pts/reb/ast/tpm sur les 4 matchs d'ouverture), EU_PROP_LEAGUES/EU_LEAGUE_CONST_BG (91,6)
+  // couvraient déjà cette ligue sans rien à changer — même mécanisme, entre directement en
+  // observation seule ci-dessous (zéro historique near-miss propre à la NBL, décision confirmée
+  // avec l'utilisateur avant codage).
+  const LEAGUES_EU = ['acb','bbl','legaa','lnb','euroleague','nbl'];
+  // Observation seule (16 septembre 2026, demande explicite utilisateur ; étendue à NBL le
+  // 18 septembre, même raisonnement) — aucune des 6 ligues EU n'a assez de near-miss réel pour
+  // faire confiance au seuil générique 80% sans historique propre
   // (ACB/BBL/Lega A quasi inactives cet été, LNB/EuroLeague tout juste activées). Modèle et near-miss
   // (_logNearMissCandidate/_logPropNearMissV2 plus bas) continuent de tourner normalement — seule
   // l'émission d'alerte réelle (newAlerts.push) est coupée, même patron que isNewLeague côté foot.
@@ -16009,10 +16080,9 @@ async function runEUPropsAlerts(newAlerts, PORT) {
 
           // Précalcul des estimates — gamelogs fetchés uniquement pour les joueurs avec une ligne props
           const allPlayers = [...homeTop8, ...awayTop8];
-          const ln = n => (n||'').split(' ').pop().toLowerCase();
           const playersWithProps = allPlayers.filter(rosterP =>
             Object.keys(propsPlayers).some(pn =>
-              rosterP.name?.toLowerCase() === pn.toLowerCase() || ln(rosterP.name) === ln(pn)
+              euPlayerNameMatch(rosterP.name, pn)
             )
           );
           const gamelogsAll = await Promise.all(
@@ -16083,10 +16153,19 @@ async function runEUPropsAlerts(newAlerts, PORT) {
 
           for (const [playerName, bkLines] of Object.entries(propsPlayers)) {
             const rosterP = playersWithProps.find(p =>
-              p.name?.toLowerCase() === playerName.toLowerCase() || ln(p.name) === ln(playerName)
+              euPlayerNameMatch(p.name, playerName)
             );
             if (!rosterP || !estimatesMap[rosterP.id]) continue;
             const { est, gamelogs, isHome } = estimatesMap[rosterP.id];
+            // Bug trouvé le 18 septembre 2026 (en intégrant les props NBL) : `redistFactor` n'était
+            // jamais déclaré dans CETTE boucle (seulement dans la boucle d'estimation plus haut, hors
+            // scope ici) — chaque `_logNearMissCandidate`/V2 ast plus bas levait un ReferenceError
+            // silencieusement avalé par le `catch { /* skip game */ }` du bloc englobant, qui abandonnait
+            // alors TOUT le reste du match (joueurs restants compris). Confirmé pré-existant et pas
+            // spécifique à NBL : 0 candidat near-miss EU (acb/bbl/legaa/lnb/euroleague) sur 3666 lignes
+            // toutes stats confondues avant ce fix, malgré ces marchés "actifs" depuis le 27 août/16
+            // septembre — tout le suivi near-miss props EU était cassé depuis sa création.
+            const redistFactor = isHome ? (homeRedist[String(rosterP.id)] ?? 1) : (awayRedist[String(rosterP.id)] ?? 1);
 
             if (isHome && homeGated) continue;
             if (!isHome && awayGated) continue;
@@ -17121,7 +17200,6 @@ async function getPlayerProjectionsWNBA({ homeId, awayId, homeName, awayName, ho
 async function getPlayerProjectionsEU({ league, homeId, awayId, homeName, awayName, homeShort, awayShort, gameDate, round }) {
   const PORT_ = process.env.PORT || 3001;
   const base = `http://localhost:${PORT_}`;
-  const ln = n => (n || '').split(' ').pop().toLowerCase();
   const probOver  = (est, std, threshold, stat, deviation = 0) => probAtLeast(est, std, threshold, stat, deviation);
   const probUnder = (est, std, threshold, stat, deviation = 0) => 1 - probAtLeast(est, std, Math.floor(threshold) + 1, stat, deviation);
   const calcStdBg = (games, key) => {
@@ -17194,7 +17272,7 @@ async function getPlayerProjectionsEU({ league, homeId, awayId, homeName, awayNa
   const allPlayers = [...homeTop8, ...awayTop8];
   const playersWithProps = allPlayers.filter(rosterP =>
     Object.keys(scrapedPlayers).some(pn =>
-      rosterP.name?.toLowerCase() === pn.toLowerCase() || ln(rosterP.name) === ln(pn)
+      euPlayerNameMatch(rosterP.name, pn)
     )
   );
   const gamelogsAll = await Promise.all(playersWithProps.map(p => bgFetchEUGamelog(p.id, league, base)));
@@ -17217,7 +17295,7 @@ async function getPlayerProjectionsEU({ league, homeId, awayId, homeName, awayNa
     if (!est) continue;
 
     const bkLines = scrapedPlayers[Object.keys(scrapedPlayers).find(pn =>
-      rosterP.name?.toLowerCase() === pn.toLowerCase() || ln(rosterP.name) === ln(pn)
+      euPlayerNameMatch(rosterP.name, pn)
     )];
     const stats = {};
     if (bkLines) {

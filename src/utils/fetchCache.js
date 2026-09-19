@@ -10,7 +10,17 @@ const _cache = new Map(); // url → { data, ts, inflight }
 // chargement indéfiniment — cas réel signalé par l'utilisateur sur un match PSG en direct. Timeout dur
 // pour que l'appel finisse toujours par échouer proprement plutôt que de pendre pour toujours ; le
 // `.catch()` déjà présent partout où cachedFetch est utilisé retombe alors sur les anciennes données.
-const CACHED_FETCH_TIMEOUT_MS = 5_000;
+// Relevé 5s→20s le 19 septembre 2026 — bug réel trouvé et corrigé (cas Dashboard : plusieurs widgets
+// retombaient sur "—"/"Aucun match à venir" après une navigation, alors que le backend avait bien la
+// donnée) : des pages comme le Dashboard tirent jusqu'à ~24 `cachedFetch` en même temps rien que pour
+// "Matchs à venir" — le navigateur ne dispose que de 6 connexions HTTP par origine, donc une bonne
+// partie de ces appels passe forcément du temps EN FILE D'ATTENTE avant même de partir, surtout si
+// `/api/userdata` (~4,5s, débit bridé côté cluster MongoDB, cf. CLAUDE.md) occupe une des 6 connexions
+// au même moment. Avec 5s, l'`AbortController` (démarré dès l'appel, pas au vrai départ de la requête)
+// pouvait expirer une requête encore en attente de connexion — elle n'avait tout simplement pas eu sa
+// chance. Même raisonnement déjà validé le 18-19 septembre pour `fetchWithTimeout` (syncAlerts.js,
+// RunningPage.jsx), qui utilise 20s pour la même raison — `cachedFetch` ne l'avait jamais reçu.
+const CACHED_FETCH_TIMEOUT_MS = 20_000;
 
 export function cachedFetch(url, ttlMs = 20_000) {
   const hit = _cache.get(url);

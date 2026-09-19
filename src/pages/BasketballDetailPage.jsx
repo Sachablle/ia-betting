@@ -233,18 +233,23 @@ function LineupBuilder({ home, away, homeNames, awayNames, confirmed }) {
   );
 }
 
+// Abrège la position en 1-2 chars (Guard→G, Forward→F, Center→C) — remonté au niveau module le
+// 18 septembre 2026 (était local à RosterColumn) pour être réutilisé par PropsSection : les ligues
+// EU (api-basketball) renvoient le mot complet ("Guard"/"Forward"/"Center"), contrairement à
+// NBA/WNBA (ESPN `position.abbreviation`, déjà en 1-2 lettres) — sans cette abréviation, "Analyse
+// Props" affichait un mot complet sur les ligues EU au lieu du code court partout ailleurs.
+function abbrevPos(pos) {
+  if (!pos || pos === '—') return '—';
+  const p = pos.toUpperCase();
+  if (p === 'PG' || p === 'SG' || p.startsWith('G')) return 'G';
+  if (p === 'SF' || p === 'PF' || p.startsWith('F')) return 'F';
+  if (p.startsWith('C')) return 'C';
+  return pos.slice(0, 2).toUpperCase();
+}
+
 // ── Roster Panel ──────────────────────────────────────────────────────────────
 
 function RosterColumn({ team, players, names, side, loading, onAssign, injuryData = {} }) {
-  // Abrège la position en 1-2 chars (Guard→G, Forward→F, Center→C)
-  const abbrevPos = pos => {
-    if (!pos || pos === '—') return '—';
-    const p = pos.toUpperCase();
-    if (p === 'PG' || p === 'SG' || p.startsWith('G')) return 'G';
-    if (p === 'SF' || p === 'PF' || p.startsWith('F')) return 'F';
-    if (p.startsWith('C')) return 'C';
-    return pos.slice(0, 2).toUpperCase();
-  };
   // Titulaires = top-5 par minutes (fallback pts si min absent)
   const sorted = [...(players || [])].sort((a, b) => ((b.stats?.min ?? b.stats?.pts ?? -1)) - ((a.stats?.min ?? a.stats?.pts ?? -1)));
   const starters = sorted.slice(0, 5);
@@ -411,12 +416,13 @@ const PROP_CONF_BANDS = {
   },
 };
 const EU_PROP_LEAGUES = new Set(['acb', 'lnb', 'bbl', 'legaa', 'euroleague', 'nbl', 'gbl']);
-// Observation seule (16 septembre 2026, demande explicite utilisateur) — pas assez de near-miss réel
-// sur aucune des 5 ligues pour faire confiance au seuil générique 80% (ACB/BBL/Lega A quasi inactives
-// cet été, LNB/EuroLeague tout juste activées). Le modèle continue de tourner (props affichées comme
-// avant), seule l'émission d'alerte backend est coupée (voir EU_PROPS_OBSERVATION_ONLY, server.js) —
-// ce Set sert uniquement à ajuster le texte de la légende ci-dessous, aucun effet sur le calcul.
-const EU_PROPS_OBSERVATION_LEAGUES = new Set(['acb', 'bbl', 'legaa', 'lnb', 'euroleague']);
+// Observation seule (16 septembre 2026, demande explicite utilisateur ; NBL ajoutée le 18 septembre,
+// même raisonnement) — pas assez de near-miss réel sur aucune des 6 ligues pour faire confiance au
+// seuil générique 80% (ACB/BBL/Lega A quasi inactives cet été, LNB/EuroLeague tout juste activées,
+// NBL jamais suivie jusqu'ici). Le modèle continue de tourner (props affichées comme avant), seule
+// l'émission d'alerte backend est coupée (voir EU_PROPS_OBSERVATION_ONLY, server.js) — ce Set sert
+// uniquement à ajuster le texte de la légende ci-dessous, aucun effet sur le calcul.
+const EU_PROPS_OBSERVATION_LEAGUES = new Set(['acb', 'bbl', 'legaa', 'lnb', 'euroleague', 'nbl']);
 // Vert/cyan/ambre — mêmes couleurs que les badges .bc-edge-badge.high/.mid/.low (PlaceBetPage/index.css)
 function propConfColor(stat, league, pct) {
   const bands = (EU_PROP_LEAGUES.has(league) ? PROP_CONF_BANDS.eu : PROP_CONF_BANDS.nba_short)[stat];
@@ -1608,11 +1614,16 @@ function PropsSection({ fixture, homePlayers, awayPlayers, rosterLoading, isComp
   const [mergedInjuryData, setMergedInjuryData] = useState(injuryData);
   useEffect(() => { setMergedInjuryData(injuryData); }, [injuryData]);
   // Modèle backend réel (1er août 2026) — mêmes fonctions que le moteur d'alertes
-  // (computeEstimate/computeEUEstimate + displayProb), via /api/basketball/player-projections,
-  // pour les 5 ligues qui ont un vrai moteur d'alertes props (NBA/WNBA/ACB/BBL/Lega A). Euroleague
-  // et LNB n'ont aucun équivalent backend (jamais couvertes par generateBackgroundAlerts/
-  // runEUPropsAlerts) — gardent le calcul local historique ci-dessous, seule source disponible.
-  const BACKEND_MODEL_LEAGUES = ['nba', 'wnba', 'acb', 'bbl', 'legaa', 'gbl'];
+  // (computeEstimate/computeEUEstimate + displayProb), via /api/basketball/player-projections
+  // (route générique, fonctionne pour toute ligue EURO_LEAGUES côté backend — gbl y est déjà malgré
+  // l'absence totale de cote, uniquement pour la qualité d'affichage). NBL ajoutée le 18 septembre
+  // 2026 en même temps que ses props Betclic/Unibet (LEAGUES_EU côté server.js) — même traitement
+  // que ACB/BBL/Lega A. LNB/EuroLeague ajoutées le même jour (suite) — écart trouvé en intégrant NBL :
+  // les deux sont couvertes par runEUPropsAlerts()/LEAGUES_EU depuis le 16 septembre (donc par
+  // getPlayerProjectionsEU, générique côté backend, aucune whitelist) mais étaient restées sur
+  // l'ancien calcul local ici, jamais mises à jour au moment de leur activation. Plus aucune ligue EU
+  // sur le calcul local désormais — seules NBA/WNBA/EU couvrent tout le périmètre.
+  const BACKEND_MODEL_LEAGUES = ['nba', 'wnba', 'acb', 'bbl', 'legaa', 'gbl', 'nbl', 'lnb', 'euroleague'];
   const [backendProjections, setBackendProjections] = useState(null);
 
   // Classement ligue par catégorie — clic sur une stat projetée dans Analyse Props (22 juin 2026).
@@ -1966,9 +1977,11 @@ function PropsSection({ fixture, homePlayers, awayPlayers, rosterLoading, isComp
     if (Object.keys(next).length) setEstimates(prev => ({ ...prev, ...next }));
   }, [backendProjections]);
 
-  // Recalcule les estimations quand gamelogs ou schedules changent — attend que le snapshot ait répondu
-  // N'agit plus que pour Euroleague/LNB (1er août 2026) — NBA/WNBA/ACB/BBL/Lega A viennent du
-  // vrai modèle backend ci-dessus (voir BACKEND_MODEL_LEAGUES).
+  // Recalcule les estimations quand gamelogs ou schedules changent — attend que le snapshot ait répondu.
+  // Plus aucune ligue basket n'utilise ce calcul local depuis le 18 septembre 2026 (LNB/EuroLeague
+  // rejoignent NBA/WNBA/ACB/BBL/Lega A/gbl/nbl sur le vrai modèle backend ci-dessus, voir
+  // BACKEND_MODEL_LEAGUES) — cet effet ne s'exécute plus jamais en pratique, gardé tel quel en filet
+  // de sécurité si une future ligue basket est ajoutée sans être immédiatement branchée au backend.
   useEffect(() => {
     if (isCompleted || !schedules) return;
     if (BACKEND_MODEL_LEAGUES.includes(fixture.league)) return;
@@ -2146,9 +2159,17 @@ function PropsSection({ fixture, homePlayers, awayPlayers, rosterLoading, isComp
       // Noms de famille doivent correspondre (avec support noms composés ex: "DeJulius" ⊇ "Julius")
       const lastOk = lastA === lastB ||
         (lastA.length >= 4 && lastB.length >= 4 && (lastA.includes(lastB) || lastB.includes(lastA)));
-      if (!lastOk) return false;
-      if (!firstA || !firstB) return true;
-      return firstA.startsWith(firstB) || firstB.startsWith(firstA) || firstA[0] === firstB[0];
+      if (lastOk) {
+        if (!firstA || !firstB) return true;
+        return firstA.startsWith(firstB) || firstB.startsWith(firstA) || firstA[0] === firstB[0];
+      }
+      // Ordre Prénom/Nom inversé (18 septembre 2026, cas réel NBL — roster api-basketball renvoyant
+      // "Goulding Chris" pour "Chris Goulding" côté Betclic/Unibet) — dernier mot de l'un = premier
+      // mot de l'autre. Longueur ≥3 pour ne jamais valider sur une initiale abrégée ("T."). Même
+      // correctif que `euPlayerNameMatch` côté backend (server.js), générique à toute ligue EU.
+      if (lastA.length >= 3 && lastA === firstB) return true;
+      if (lastB.length >= 3 && lastB === firstA) return true;
+      return false;
     };
     const findProp = name => {
       const matches = Object.entries(playerProps.players || {}).filter(([n]) => nameMatch(n, name));
@@ -2582,7 +2603,7 @@ function PropsSection({ fixture, homePlayers, awayPlayers, rosterLoading, isComp
               style={{ display: 'grid', gridTemplateColumns: COL, gap: '0 0.25rem', alignItems: 'center', padding: '0.25rem 0.5rem', cursor: !isCompleted ? 'pointer' : 'default', background: isExpanded ? 'rgba(255,255,255,0.04)' : 'transparent' }}
               onClick={() => !isCompleted && setExpandedId(prev => prev === String(p.id) ? null : String(p.id))}
             >
-              <span className="props-pos">{p.position}</span>
+              <span className="props-pos">{abbrevPos(p.position)}</span>
               <span className="props-name" style={{ display: 'flex', alignItems: 'center', gap: 3, overflow: 'hidden', minWidth: 0 }}>
                 <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: '1 1 0' }}>{p.name}</span>
                 {/* Badge blessure (RotoWire ou ESPN) */}
@@ -3058,7 +3079,18 @@ function OddsCard({ odds, home, away, league, homePlayers, awayPlayers, onRefres
             if (isEuroLeagueProps && playerProps?.teamMap) {
               const t = playerProps.teamMap[name];
               if (t) return t === (showHome ? 'home' : 'away');
-              return true; // pas dans teamMap → afficher dans les deux vues
+              // Pas dans teamMap → masqué des deux côtés (19 septembre 2026, demande explicite
+              // utilisateur, cas réel NBL Melbourne-Adelaide) — auparavant affiché des deux côtés,
+              // donnant l'impression d'un "mélange" entre les deux équipes. Investigation menée avant
+              // ce fix : ces joueurs (Cole Anthony/Josh Oduro/Joe Ingles côté NBL) correspondent en
+              // réalité à des joueurs NBA homonymes différents dans la base api-basketball (Milwaukee
+              // Bucks/Pelicans/Timberwolves) — une recherche par nom pour "deviner" le bon côté
+              // produirait donc de FAUSSES associations, pire que l'absence d'affichage. Tant que le
+              // backend ne peut pas classer un joueur avec certitude (roster manquant côté
+              // api-basketball, cas fréquent en tout début de saison), on préfère ne rien afficher
+              // plutôt que d'afficher une donnée non fiable — cohérent avec "je veux les vraies
+              // données" plutôt qu'une estimation.
+              return false;
             }
             // NBA/WNBA : assignTeam via rosters ESPN
             const bothRostersLoaded = (homePlayers?.length > 0) && (awayPlayers?.length > 0);
